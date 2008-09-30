@@ -1,4 +1,4 @@
-/*	$OpenBSD: ypldap.c,v 1.3 2008/07/02 17:36:15 pyr Exp $ */
+/*	$OpenBSD: ypldap.c,v 1.5 2008/09/03 11:04:03 jsg Exp $ */
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -365,7 +365,7 @@ main(int argc, char *argv[])
 
 	log_init(1);
 
-	while ((c = getopt(argc, argv, "dD;nf:v")) != -1) {
+	while ((c = getopt(argc, argv, "dD:nf:v")) != -1) {
 		switch (c) {
 		case 'd':
 			debug = 2;
@@ -378,6 +378,7 @@ main(int argc, char *argv[])
 		case 'n':
 			debug = 2;
 			opts |= YPLDAP_OPT_NOACTION;
+			break;
 		case 'f':
 			conffile = optarg;
 			break;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.103 2008/06/11 18:21:20 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.112 2008/09/29 14:53:36 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -63,6 +63,12 @@
 #else
 #define DPRINTF(x...)	do {} while(0)
 #endif
+
+/* Used for DNS request ID randomization */
+struct shuffle {
+	u_int16_t	 id_shuffle[65536];
+	int		 isindex;
+};
 
 /* buffer */
 struct buf {
@@ -221,15 +227,16 @@ struct ctl_tcp_event {
 };
 
 enum httpmethod {
-	HTTP_METHOD_GET		= 0,
-	HTTP_METHOD_HEAD	= 1,
-	HTTP_METHOD_POST	= 2,
-	HTTP_METHOD_PUT		= 3,
-	HTTP_METHOD_DELETE	= 4,
-	HTTP_METHOD_OPTIONS	= 5,
-	HTTP_METHOD_TRACE	= 6,
-	HTTP_METHOD_CONNECT	= 7,
-	HTTP_METHOD_RESPONSE	= 8	/* Server response */
+	HTTP_METHOD_NONE	= 0,
+	HTTP_METHOD_GET		= 1,
+	HTTP_METHOD_HEAD	= 2,
+	HTTP_METHOD_POST	= 3,
+	HTTP_METHOD_PUT		= 4,
+	HTTP_METHOD_DELETE	= 5,
+	HTTP_METHOD_OPTIONS	= 6,
+	HTTP_METHOD_TRACE	= 7,
+	HTTP_METHOD_CONNECT	= 8,
+	HTTP_METHOD_RESPONSE	= 9	/* Server response */
 };
 
 enum direction {
@@ -275,6 +282,7 @@ struct ctl_natlook {
 	in_port_t		 rsport;
 	in_port_t		 rdport;
 	int			 in;
+	int			 proto;
 };
 
 struct ctl_bindany {
@@ -301,9 +309,14 @@ struct ctl_stats {
 	u_int32_t		 last_day;
 };
 
+struct portrange {
+	in_port_t		 val[2];
+	u_int8_t		 op;
+};
+
 struct address {
 	struct sockaddr_storage	 ss;
-	in_port_t		 port;
+	struct portrange	 port;
 	char			 ifname[IFNAMSIZ];
 	TAILQ_ENTRY(address)	 entry;
 };
@@ -329,6 +342,7 @@ TAILQ_HEAD(addresslist, address);
 #define F_RETURN		0x00020000
 #define F_TRAP			0x00040000
 #define F_NEEDPF		0x00080000
+#define F_PORT			0x00100000
 
 enum forwardmode {
 	FWD_NORMAL		= 0,
@@ -338,6 +352,7 @@ enum forwardmode {
 
 struct host_config {
 	objid_t			 id;
+	objid_t			 parentid;
 	objid_t			 tableid;
 	int			 retry;
 	char			 name[MAXHOSTNAMELEN];
@@ -346,6 +361,8 @@ struct host_config {
 
 struct host {
 	TAILQ_ENTRY(host)	 entry;
+	SLIST_ENTRY(host)	 child;
+	SLIST_HEAD(,host)	 children;
 	struct host_config	 conf;
 	u_int32_t		 flags;
 	char			*tablename;
@@ -558,7 +575,7 @@ struct protocol {
 	struct proto_tree	 response_tree;
 
 	int			(*cmp)(struct session *, struct session *);
-	void			*(*validate)(struct relay *,
+	void			*(*validate)(struct session *, struct relay *,
 				    struct sockaddr_storage *,
 				    u_int8_t *, size_t);
 	int			(*request)(struct session *);
@@ -580,6 +597,7 @@ struct relay_config {
 	objid_t			 dsttable;
 	struct sockaddr_storage	 ss;
 	struct sockaddr_storage	 dstss;
+	struct sockaddr_storage	 dstaf;
 	struct timeval		 timeout;
 	enum forwardmode	 fwdmode;
 };
@@ -759,10 +777,10 @@ void	 show(struct ctl_conn *);
 void	 show_sessions(struct ctl_conn *);
 int	 enable_rdr(struct ctl_conn *, struct ctl_id *);
 int	 enable_table(struct ctl_conn *, struct ctl_id *);
-int	 enable_host(struct ctl_conn *, struct ctl_id *);
+int	 enable_host(struct ctl_conn *, struct ctl_id *, struct host *);
 int	 disable_rdr(struct ctl_conn *, struct ctl_id *);
 int	 disable_table(struct ctl_conn *, struct ctl_id *);
-int	 disable_host(struct ctl_conn *, struct ctl_id *);
+int	 disable_host(struct ctl_conn *, struct ctl_id *, struct host *);
 
 /* pfe_filter.c */
 void	 init_filter(struct relayd *);
@@ -800,6 +818,7 @@ SPLAY_PROTOTYPE(session_tree, session, se_nodes, relay_session_cmp);
 
 /* relay_udp.c */
 void	 relay_udp_privinit(struct relayd *, struct relay *);
+void	 relay_udp_init(struct relay *);
 int	 relay_udp_bind(struct sockaddr_storage *, in_port_t,
 	    struct protocol *);
 void	 relay_udp_server(int, short, void *);
@@ -852,6 +871,10 @@ struct protonode *protonode_header(enum direction, struct protocol *,
 		    struct protonode *);
 int		 protonode_add(enum direction, struct protocol *,
 		    struct protonode *);
+int		 protonode_load(enum direction, struct protocol *,
+		    struct protonode *, const char *);
+int		 map6to4(struct sockaddr_storage *);
+int		 map4to6(struct sockaddr_storage *, struct sockaddr_storage *);
 
 /* carp.c */
 int	 carp_demote_init(char *, int);
@@ -870,3 +893,8 @@ void		 pn_ref(u_int16_t);
 void	 snmp_init(struct relayd *, struct imsgbuf *);
 int	 snmp_sendsock(struct imsgbuf *);
 void	 snmp_hosttrap(struct table *, struct host *);
+
+/* shuffle.c */
+void		shuffle_init(struct shuffle *);
+u_int16_t	shuffle_generate16(struct shuffle *);
+

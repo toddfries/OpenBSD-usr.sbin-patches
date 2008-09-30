@@ -1,12 +1,12 @@
-#	$OpenBSD: Makefile,v 1.142 2008/06/15 04:44:30 sturm Exp $
+#	$OpenBSD: Makefile,v 1.144 2008/08/22 15:48:32 deraadt Exp $
 
 .include <bsd.own.mk>
 
 SUBDIR=	ac accton acpidump adduser amd apm apmd arp \
-	authpf bgpctl bgpd bind chroot config cron dev_mkdb \
+	authpf bgpctl bgpd bind chroot config cron crunchgen dev_mkdb \
 	dhcpd dhcrelay dvmrpctl dvmrpd edquota eeprom faithd fdformat \
 	ftp-proxy gpioctl hostapd hotplugd httpd ifstated inetd iostat \
-	kgmon kvm_mkdb lpr mailwrapper map-mbone memconfig mopd mrinfo \
+	kgmon kvm_mkdb lpr mailwrapper map-mbone memconfig mksuncd mopd mrinfo \
 	mrouted mtrace mtree ndp netgroup_mkdb ntpd openssl ospfctl ospfd \
 	pcidump pkg_add popa3d portmap ppp pppd pppoe procmap pstat pwd_mkdb \
 	quot quotaon rarpd rbootd rdate rdconfig relayctl relayd repquota \

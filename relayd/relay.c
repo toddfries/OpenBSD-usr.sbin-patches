@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.90 2008/06/11 18:21:19 reyk Exp $	*/
+/*	$OpenBSD: relay.c,v 1.107 2008/09/29 15:50:56 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -86,6 +86,8 @@ int		 relay_resolve(struct ctl_relay_event *,
 int		 relay_handle_http(struct ctl_relay_event *,
 		    struct protonode *, struct protonode *,
 		    struct protonode *, int);
+int		 relay_lognode(struct session *,
+		    struct protonode *, struct protonode *, char *, size_t);
 void		 relay_read_http(struct bufferevent *, void *);
 static int	_relay_lookup_url(struct ctl_relay_event *, char *, char *,
 		    char *, enum digest_type);
@@ -376,20 +378,22 @@ relay_protodebug(struct relay *rlay)
  show:
 	i = 0;
 	RB_FOREACH(proot, proto_tree, tree) {
+#if DEBUG > 1
+		i = 0;
+#endif
 		PROTONODE_FOREACH(pn, proot, entry) {
-#ifndef DEBUG
+#if DEBUG > 1
+			i = 0;
+#endif
 			if (++i > 100)
 				break;
-#endif
 			relay_nodedebug(name, pn);
 		}
-#ifndef DEBUG
 		/* Limit the number of displayed lines */
 		if (++i > 100) {
 			fprintf(stderr, "\t\t...\n");
 			break;
 		}
-#endif
 	}
 	if (tree == &proto->request_tree) {
 		name = "response";
@@ -408,7 +412,8 @@ relay_privinit(void)
 		ssl_init(env);
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		log_debug("relay_privinit: adding relay %s", rlay->rl_conf.name);
+		log_debug("relay_privinit: adding relay %s",
+		    rlay->rl_conf.name);
 
 		if (debug)
 			relay_protodebug(rlay);
@@ -485,6 +490,16 @@ relay_init(void)
 			    rlay->rl_dstnhosts, rlay->rl_dsttable->conf.name,
 			    rlay->rl_dsttable->conf.check ? "" : " (no check)");
 		}
+
+		switch (rlay->rl_proto->type) {
+		case RELAY_PROTO_DNS:
+			relay_udp_init(rlay);
+			break;
+		case RELAY_PROTO_TCP:
+		case RELAY_PROTO_HTTP:
+			/* Use defaults */
+			break;
+		}
 	}
 
 	/* Schedule statistics timer */
@@ -508,7 +523,7 @@ relay_statistics(int fd, short events, void *arg)
 	 */
 
 	timerclear(&tv);
-	if (gettimeofday(&tv_now, NULL))
+	if (gettimeofday(&tv_now, NULL) == -1)
 		fatal("relay_init: gettimeofday");
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
@@ -835,7 +850,7 @@ relay_write(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
 	struct session		*con = (struct session *)cre->con;
-	if (gettimeofday(&con->se_tv_last, NULL))
+	if (gettimeofday(&con->se_tv_last, NULL) == -1)
 		con->se_done = 1;
 	if (con->se_done)
 		relay_close(con, "last write (done)");
@@ -866,8 +881,8 @@ relay_read(struct bufferevent *bev, void *arg)
 	struct session		*con = (struct session *)cre->con;
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 
-	if (gettimeofday(&con->se_tv_last, NULL))
-		goto done;
+	if (gettimeofday(&con->se_tv_last, NULL) == -1)
+		goto fail;
 	if (!EVBUFFER_LENGTH(src))
 		return;
 	if (relay_bufferevent_write_buffer(cre->dst, src) == -1)
@@ -991,14 +1006,40 @@ relay_expand_http(struct ctl_relay_event *cre, char *val, char *buf, size_t len)
 			    "$SERVER_PORT", ibuf) != 0)
 				return (NULL);
 		}
+		if (strstr(val, "$SERVER_NAME") != NULL) {
+			if (expand_string(buf, len,
+			    "$SERVER_NAME", RELAYD_SERVERNAME) != 0)
+				return (NULL);
+		}
 	}
 	if (strstr(val, "$TIMEOUT") != NULL) {
-		snprintf(ibuf, sizeof(ibuf), "%lu", rlay->rl_conf.timeout.tv_sec);
+		snprintf(ibuf, sizeof(ibuf), "%lu",
+		    rlay->rl_conf.timeout.tv_sec);
 		if (expand_string(buf, len, "$TIMEOUT", ibuf) != 0)
 			return (NULL);
 	}
 
 	return (buf);
+}
+
+int
+relay_lognode(struct session *con, struct protonode *pn, struct protonode *pk,
+    char *buf, size_t len)
+{
+	const char		*label = NULL;
+
+	if ((pn->flags & PNFLAG_LOG) == 0)
+		return (0);
+	bzero(buf, len);
+	if (pn->label != 0)
+		label = pn_id2name(pn->label);
+	if (snprintf(buf, len, " [%s%s%s: %s]",
+	    label == NULL ? "" : label,
+	    label == NULL ? "" : ", ",
+	    pk->key, pk->value) == -1 ||
+	    evbuffer_add(con->se_log, buf, strlen(buf)) == -1)
+		return (-1);
+	return (0);
 }
 
 int
@@ -1076,6 +1117,8 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 
 			/* Fail instantly */
 			if (pn->action == NODE_ACTION_FILTER) {
+				(void)relay_lognode(con, pn, pk,
+				    buf, sizeof(buf));
 				relay_close_http(con, 403,
 				    "rejecting request", pn->label);
 				return (PN_FAIL);
@@ -1106,13 +1149,8 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 	case NODE_ACTION_NONE:
 		return (PN_PASS);
 	}
-	if (mark != -1 && pn->flags & PNFLAG_LOG) {
-		bzero(buf, sizeof(buf));
-		if (snprintf(buf, sizeof(buf), " [%s: %s]",
-		    pk->key, pk->value) == -1 ||
-		    evbuffer_add(con->se_log, buf, strlen(buf)) == -1)
-			goto fail;
-	}
+	if (mark != -1 && relay_lognode(con, pn, pk, buf, sizeof(buf)) == -1)
+		goto fail;
 
 	return (ret);
  fail:
@@ -1128,8 +1166,8 @@ relay_read_httpcontent(struct bufferevent *bev, void *arg)
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL))
-		goto done;
+	if (gettimeofday(&con->se_tv_last, NULL) == -1)
+		goto fail;
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("relay_read_httpcontent: size %d, to read %d",
 	    size, cre->toread);
@@ -1144,7 +1182,7 @@ relay_read_httpcontent(struct bufferevent *bev, void *arg)
 	    size, cre->toread);
 	if (con->se_done)
 		goto done;
-	if (EVBUFFER_LENGTH(src) && bev->readcb != relay_read_httpcontent)
+	if (bev->readcb != relay_read_httpcontent)
 		bev->readcb(bev, arg);
 	bufferevent_enable(bev, EV_READ);
 	return;
@@ -1165,8 +1203,8 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 	long			 lval;
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL))
-		goto done;
+	if (gettimeofday(&con->se_tv_last, NULL) == -1)
+		goto fail;
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("relay_read_httpchunks: size %d, to read %d",
 	    size, cre->toread);
@@ -1176,11 +1214,14 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 	if (!cre->toread) {
 		line = evbuffer_readline(src);
 		if (line == NULL) {
-			relay_close(con, "invalid chunk");
+			/* Ignore empty line, continue */
+			bufferevent_enable(bev, EV_READ);
 			return;
 		}
-		if (!strlen(line))
+		if (!strlen(line)) {
+			free(line);
 			goto next;
+		}
 
 		/* Read prepended chunk size in hex, ingore the trailer */
 		if (sscanf(line, "%lx", &lval) != 1) {
@@ -1190,8 +1231,10 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 		}
 
 		if (relay_bufferevent_print(cre->dst, line) == -1 ||
-		    relay_bufferevent_print(cre->dst, "\r\n") == -1)
+		    relay_bufferevent_print(cre->dst, "\r\n") == -1) {
+			free(line);
 			goto fail;
+		}
 		free(line);
 
 		/* Last chunk is 0 bytes followed by an empty newline */
@@ -1259,12 +1302,16 @@ relay_read_http(struct bufferevent *bev, void *arg)
 	const char		*errstr;
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL))
-		goto done;
+	if (gettimeofday(&con->se_tv_last, NULL) == -1)
+		goto fail;
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("relay_read_http: size %d, to read %d", size, cre->toread);
-	if (!size)
-		return;
+	if (!size) {
+		if (cre->dir == RELAY_DIR_RESPONSE)
+			return;
+		cre->toread = 0;
+		goto done;
+	}
 
 	pk.type = NODE_TYPE_HEADER;
 
@@ -1323,9 +1370,7 @@ relay_read_http(struct bufferevent *bev, void *arg)
 			if (cre->dir == RELAY_DIR_RESPONSE) {
 				cre->method = HTTP_METHOD_RESPONSE;
 				goto lookup;
-			} else if (strcmp("GET", pk.key) == 0)
-				cre->method = HTTP_METHOD_GET;
-			else if (strcmp("HEAD", pk.key) == 0)
+			} else if (strcmp("HEAD", pk.key) == 0)
 				cre->method = HTTP_METHOD_HEAD;
 			else if (strcmp("POST", pk.key) == 0)
 				cre->method = HTTP_METHOD_POST;
@@ -1339,6 +1384,10 @@ relay_read_http(struct bufferevent *bev, void *arg)
 				cre->method = HTTP_METHOD_TRACE;
 			else if (strcmp("CONNECT", pk.key) == 0)
 				cre->method = HTTP_METHOD_CONNECT;
+			else {
+				/* Use GET method as the default */
+				cre->method = HTTP_METHOD_GET;
+			}
 
 			/*
 			 * Decode the path and query
@@ -1474,6 +1523,9 @@ relay_read_http(struct bufferevent *bev, void *arg)
 		}
 
 		switch (cre->method) {
+		case HTTP_METHOD_NONE:
+			relay_close_http(con, 406, "no method", 0);
+			return;
 		case HTTP_METHOD_CONNECT:
 			/* Data stream */
 			bev->readcb = relay_read;
@@ -1486,7 +1538,10 @@ relay_read_http(struct bufferevent *bev, void *arg)
 				bev->readcb = relay_read_httpcontent;
 				break;
 			}
-			/* FALLTHROUGH */
+
+			/* Single-pass HTTP response */
+			bev->readcb = relay_read;
+			break;
 		default:
 			/* HTTP handler */
 			bev->readcb = relay_read_http;
@@ -1501,12 +1556,14 @@ relay_read_http(struct bufferevent *bev, void *arg)
 		/* Write empty newline and switch to relay mode */
 		if (relay_bufferevent_print(cre->dst, "\r\n") == -1)
 			goto fail;
+
 		cre->line = 0;
 		cre->method = 0;
 		cre->done = 0;
 		cre->chunked = 0;
 
-		if (cre->dir == RELAY_DIR_REQUEST &&
+ done:
+		if (cre->dir == RELAY_DIR_REQUEST && !cre->toread &&
 		    proto->lateconnect && cre->dst->bev == NULL) {
 			if (rlay->rl_conf.fwdmode == FWD_TRANS) {
 				relay_bindanyreq(con, 0, IPPROTO_TCP);
@@ -1517,14 +1574,13 @@ relay_read_http(struct bufferevent *bev, void *arg)
 			return;
 		}
 	}
-	if (con->se_done)
-		goto done;
+	if (con->se_done) {
+		relay_close(con, "last http read (done)");
+		return;
+	}
 	if (EVBUFFER_LENGTH(src) && bev->readcb != relay_read_http)
 		bev->readcb(bev, arg);
 	bufferevent_enable(bev, EV_READ);
-	return;
- done:
-	relay_close(con, "last http read (done)");
 	return;
  fail:
 	relay_close_http(con, 500, strerror(errno), 0);
@@ -1916,7 +1972,7 @@ relay_accept(int fd, short sig, void *arg)
 	con->se_out.dir = RELAY_DIR_RESPONSE;
 	con->se_retry = rlay->rl_conf.dstretry;
 	con->se_bnds = -1;
-	if (gettimeofday(&con->se_tv_start, NULL))
+	if (gettimeofday(&con->se_tv_start, NULL) == -1)
 		goto err;
 	bcopy(&con->se_tv_start, &con->se_tv_last, sizeof(con->se_tv_last));
 	bcopy(&ss, &con->se_in.ss, sizeof(con->se_in.ss));
@@ -1964,8 +2020,16 @@ relay_accept(int fd, short sig, void *arg)
 		cnl->in = -1;
 		cnl->id = con->se_id;
 		cnl->proc = proc_id;
+		cnl->proto = IPPROTO_TCP;
+
 		bcopy(&con->se_in.ss, &cnl->src, sizeof(cnl->src));
-		bcopy(&rlay->rl_conf.ss, &cnl->dst, sizeof(cnl->dst));
+		slen = sizeof(cnl->dst);
+		if (getsockname(s,
+		    (struct sockaddr *)&cnl->dst, &slen) == -1) {
+			relay_close(con, "failed to get local address");
+			return;
+		}
+
 		imsg_compose(ibuf_pfe, IMSG_NATLOOK, 0, 0, -1, cnl,
 		    sizeof(*cnl));
 
@@ -2030,7 +2094,8 @@ relay_from_table(struct session *con)
 		/* FALLTHROUGH */
 	case RELAY_DSTMODE_HASH:
 		p = relay_hash_addr(&rlay->rl_conf.ss, p);
-		p = hash32_buf(&rlay->rl_conf.port, sizeof(rlay->rl_conf.port), p);
+		p = hash32_buf(&rlay->rl_conf.port,
+		    sizeof(rlay->rl_conf.port), p);
 		if ((idx = p % rlay->rl_dstnhosts) >= RELAY_MAXHOSTS)
 			return (-1);
 	}
@@ -2073,7 +2138,8 @@ relay_natlook(int fd, short event, void *arg)
 		fatalx("invalid NAT lookup");
 
 	if (con->se_out.ss.ss_family == AF_UNSPEC && cnl->in == -1 &&
-	    rlay->rl_conf.dstss.ss_family == AF_UNSPEC && rlay->rl_dsttable == NULL) {
+	    rlay->rl_conf.dstss.ss_family == AF_UNSPEC &&
+	    rlay->rl_dsttable == NULL) {
 		relay_close(con, "session NAT lookup failed");
 		return;
 	}
@@ -2160,16 +2226,17 @@ relay_bindany(int fd, short event, void *arg)
 		return;
 	}
 
-	relay_connect((struct session *)con);
+	if (relay_connect((struct session *)con) == -1)
+		relay_close(con, "session failed");
 }
 
 int
 relay_connect(struct session *con)
 {
 	struct relay	*rlay = (struct relay *)con->se_relay;
-	int		 bnds = -1;
+	int		 bnds = -1, ret;
 
-	if (gettimeofday(&con->se_tv_start, NULL))
+	if (gettimeofday(&con->se_tv_start, NULL) == -1)
 		return (-1);
 
 	if (rlay->rl_dsttable != NULL) {
@@ -2187,6 +2254,22 @@ relay_connect(struct session *con)
 			return (-1);
 		}
 		bnds = con->se_bnds;
+	}
+
+	/* Do the IPv4-to-IPv6 or IPv6-to-IPv4 translation if requested */
+	if (rlay->rl_conf.dstaf.ss_family != AF_UNSPEC) {
+		if (con->se_out.ss.ss_family == AF_INET &&
+		    rlay->rl_conf.dstaf.ss_family == AF_INET6)
+			ret = map4to6(&con->se_out.ss, &rlay->rl_conf.dstaf);
+		else if (con->se_out.ss.ss_family == AF_INET6 &&
+		    rlay->rl_conf.dstaf.ss_family == AF_INET)
+			ret = map6to4(&con->se_out.ss);
+		else
+			ret = 0;
+		if (ret != 0) {
+			log_debug("relay_connect: mapped to invalid address");
+			return (-1);
+		}
 	}
 
  retry:
@@ -2526,7 +2609,8 @@ relay_ssl_ctx_create(struct relay *rlay)
 		goto err;
 
 	log_debug("relay_ssl_ctx_create: loading private key");
-	if (!ssl_ctx_use_private_key(ctx, rlay->rl_ssl_key, rlay->rl_ssl_key_len))
+	if (!ssl_ctx_use_private_key(ctx, rlay->rl_ssl_key,
+	    rlay->rl_ssl_key_len))
 		goto err;
 	if (!SSL_CTX_check_private_key(ctx))
 		goto err;
@@ -2683,7 +2767,8 @@ relay_ssl_readcb(int fd, short event, void *arg)
 			if (ret == 0)
 				what |= EVBUFFER_EOF;
 			else {
-				ssl_error(rlay->rl_conf.name, "relay_ssl_readcb");
+				ssl_error(rlay->rl_conf.name,
+				    "relay_ssl_readcb");
 				what |= EVBUFFER_ERROR;
 			}
 			goto err;

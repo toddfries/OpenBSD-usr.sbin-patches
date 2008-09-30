@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfe_filter.c,v 1.30 2008/06/11 18:21:19 reyk Exp $	*/
+/*	$OpenBSD: pfe_filter.c,v 1.34 2008/09/29 15:12:22 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -284,7 +284,7 @@ transaction_init(struct relayd *env, const char *anchor)
 		env->sc_pf->pft[i].size = 1;
 		env->sc_pf->pft[i].esize = sizeof(env->sc_pf->pfte[i]);
 		env->sc_pf->pft[i].array = &env->sc_pf->pfte[i];
-	
+
 		bzero(&env->sc_pf->pfte[i], sizeof(env->sc_pf->pfte[i]));
 		(void)strlcpy(env->sc_pf->pfte[i].anchor,
 		    anchor, PF_ANCHOR_NAME_SIZE);
@@ -385,8 +385,9 @@ sync_ruleset(struct relayd *env, struct rdr *rdr, int enable)
 		rio.rule.proto = IPPROTO_TCP;
 		rio.rule.src.addr.type = PF_ADDR_ADDRMASK;
 		rio.rule.dst.addr.type = PF_ADDR_ADDRMASK;
-		rio.rule.dst.port_op = PF_OP_EQ;
-		rio.rule.dst.port[0] = address->port;
+		rio.rule.dst.port_op = address->port.op;
+		rio.rule.dst.port[0] = address->port.val[0];
+		rio.rule.dst.port[1] = address->port.val[1];
 		rio.rule.rtableid = -1; /* stay in the main routing table */
 
 		if (strlen(rdr->conf.tag))
@@ -422,8 +423,12 @@ sync_ruleset(struct relayd *env, struct rdr *rdr, int enable)
 		if (ioctl(env->sc_pf->dev, DIOCADDADDR, &pio) == -1)
 			fatal("sync_ruleset: cannot add address to pool");
 
-		rio.rule.rpool.proxy_port[0] = ntohs(rdr->table->conf.port);
-		rio.rule.rpool.port_op = PF_OP_EQ;
+		if (address->port.op == PF_OP_EQ ||
+		    rdr->table->conf.flags & F_PORT) {
+			rio.rule.rpool.proxy_port[0] =
+			    ntohs(rdr->table->conf.port);
+			rio.rule.rpool.port_op = PF_OP_EQ;
+		}
 		rio.rule.rpool.opts = PF_POOL_ROUNDROBIN;
 		if (rdr->conf.flags & F_STICKY)
 			rio.rule.rpool.opts |= PF_POOL_STICKYADDR;
@@ -497,20 +502,20 @@ natlook(struct relayd *env, struct ctl_natlook *cnl)
 	case AF_INET:
 		in = (struct sockaddr_in *)&cnl->src;
 		out = (struct sockaddr_in *)&cnl->dst;
-		bcopy(&in->sin_addr, &pnl.saddr.addr8, in->sin_len);
+		bcopy(&in->sin_addr, &pnl.saddr.v4, sizeof(pnl.saddr.v4));
 		pnl.sport = in->sin_port;
-		bcopy(&out->sin_addr, &pnl.daddr.addr8, out->sin_len);
+		bcopy(&out->sin_addr, &pnl.daddr.v4, sizeof(pnl.daddr.v4));
 		pnl.dport = out->sin_port;
 		break;
 	case AF_INET6:
 		in6 = (struct sockaddr_in6 *)&cnl->src;
 		out6 = (struct sockaddr_in6 *)&cnl->dst;
-		bcopy(&in6->sin6_addr, &pnl.saddr.addr8, in6->sin6_len);
+		bcopy(&in6->sin6_addr, &pnl.saddr.v6, sizeof(pnl.saddr.v6));
 		pnl.sport = in6->sin6_port;
-		bcopy(&out6->sin6_addr, &pnl.daddr.addr8, out6->sin6_len);
+		bcopy(&out6->sin6_addr, &pnl.daddr.v6, sizeof(pnl.daddr.v6));
 		pnl.dport = out6->sin6_port;
 	}
-	pnl.proto = IPPROTO_TCP;
+	pnl.proto = cnl->proto;
 	pnl.direction = PF_IN;
 	cnl->in = 1;
 
@@ -518,7 +523,7 @@ natlook(struct relayd *env, struct ctl_natlook *cnl)
 		pnl.direction = PF_OUT;
 		cnl->in = 0;
 		if (ioctl(env->sc_pf->dev, DIOCNATLOOK, &pnl) == -1) {
-			log_debug("natlook: error");
+			log_debug("natlook: error: %s", strerror(errno));
 			return (-1);
 		}
 	}
@@ -533,17 +538,16 @@ natlook(struct relayd *env, struct ctl_natlook *cnl)
 	case AF_INET:
 		in = (struct sockaddr_in *)&cnl->rsrc;
 		out = (struct sockaddr_in *)&cnl->rdst;
-		bcopy(&pnl.rsaddr.addr8, &in->sin_addr, sizeof(in->sin_addr));
+		bcopy(&pnl.rsaddr.v4, &in->sin_addr, sizeof(in->sin_addr));
 		in->sin_port = pnl.rsport;
-		bcopy(&pnl.rdaddr.addr8, &out->sin_addr, sizeof(out->sin_addr));
+		bcopy(&pnl.rdaddr.v4, &out->sin_addr, sizeof(out->sin_addr));
 		out->sin_port = pnl.rdport;
 		break;
 	case AF_INET6:
 		in6 = (struct sockaddr_in6 *)&cnl->rsrc;
 		out6 = (struct sockaddr_in6 *)&cnl->rdst;
-		bcopy(&pnl.rsaddr.addr8, &in6->sin6_addr,
-		    sizeof(in6->sin6_addr));
-		bcopy(&pnl.rdaddr.addr8, &out6->sin6_addr,
+		bcopy(&pnl.rsaddr.v6, &in6->sin6_addr, sizeof(in6->sin6_addr));
+		bcopy(&pnl.rdaddr.v6, &out6->sin6_addr,
 		    sizeof(out6->sin6_addr));
 		break;
 	}

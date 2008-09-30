@@ -1,4 +1,4 @@
-.\"	$OpenBSD: relayd.conf.5,v 1.88 2008/06/11 18:21:20 reyk Exp $
+.\"	$OpenBSD: relayd.conf.5,v 1.96 2008/09/29 15:06:52 reyk Exp $
 .\"
 .\" Copyright (c) 2006, 2007 Reyk Floeter <reyk@openbsd.org>
 .\" Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -15,7 +15,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: June 11 2008 $
+.Dd $Mdocdate: September 29 2008 $
 .Dt RELAYD.CONF 5
 .Os
 .Sh NAME
@@ -183,7 +183,7 @@ The table can be later enabled through
 .El
 Each table must contain at least one host;
 multiple hosts are separated by newline, comma, or whitespace.
-Host entries may be defined with the following attribute:
+Host entries may be defined with the following attributes:
 .Bl -tag -width retry
 .It Ic retry Ar number
 The optional retry option adds a tolerance for failed host checks;
@@ -192,6 +192,17 @@ the check will be retried for
 more times before setting the host state to down.
 If this table is used by a relay, it will also specify the number of
 retries for outgoing connection attempts.
+.It Ic parent Ar number
+The optional parent option inherits the state from a parent
+host with the specified identifier.
+The check will be skipped for this host and copied from the parent host.
+This can be used to prevent multiple checks on hosts with multiple IP
+addresses for the same service.
+The host identifiers are sequentially assigned to the configured hosts
+starting with 1; it can be shown with the
+.Xr relayctl 8
+.Ic show summary
+commands.
 .El
 .Pp
 For example:
@@ -403,7 +414,7 @@ Specify the tables of target hosts to be used; see the
 section above for information about table options.
 If the
 .Ic port
-option is not specified, the port from the
+option is not specified, the first port from the
 .Ic listen on
 directive will be used.
 This directive can be specified twice \(en the second entry will be used
@@ -421,6 +432,11 @@ to listen on.
 .Xr pf 4
 will redirect incoming connections for the specified target to the
 hosts in the main or backup table.
+The
+.Ar port
+argument can optionally specify a port range instead of a single port,
+the format is
+.Ar min-port Ic : Ar max-port .
 The rdr rule can be optionally restricted to a given interface name.
 .It Xo
 .Ic route to
@@ -478,7 +494,7 @@ Start the relay but immediately close any accepted connections.
 .Ic forward to
 .Ar address
 .Op Ic port Ar port
-.Op Ic retry Ar number
+.Ar options ...
 .Xc
 Specify the address and port of the target host to connect to.
 If the
@@ -486,16 +502,40 @@ If the
 option is not specified, the port from the
 .Ic listen on
 directive will be used.
-.Pp
 Use the
 .Ic transparent
 keyword to enable fully-transparent mode; the source address of the
 client will be retained in this case.
 .Pp
-The optional host retry option will be used as a tolerance for failed
+The following options may be specified for forward directives:
+.Pp
+.Bl -tag -width Ds
+.It Ic retry Ar number
+The optional host
+.Ic retry
+option will be used as a tolerance for failed
 host connections; the connection will be retried for
 .Ar number
 more times.
+.It Ic inet
+If the requested destination is an IPv6 address,
+.Xr relayd 8
+will forward the connection to an IPv4 address which is determined by
+the last 4 octets of the original IPv6 destination.
+For example, if the original IPv6 destination address is
+2001:db8:7395:ffff::a01:101, the session is relayed to the IPv4
+address 10.1.1.1 (a01:101).
+.It Ic inet6 Ar address-prefix
+If the requested destination is an IPv4 address,
+.Xr relayd 8
+will forward the connection to an IPv6 address which is determined by
+setting the last 4 octets of the specified IPv6
+.Ar address-prefix
+to the 4 octets of the original IPv4 destination.
+For example, if the original IPv4 destination address is 10.1.1.1 and
+the specified address prefix is 2001:db8:7395:ffff::, the session is
+relayed to the IPv6 address 2001:db8:7395:ffff::a01:101.
+.El
 .It Xo
 .Ic forward to
 .Aq Ar table
@@ -509,7 +549,7 @@ section above for information about table options.
 .It Xo
 .Ic forward to
 .Ic nat lookup
-.Op Ic retry Ar number
+.Ar options ...
 .Xc
 When redirecting connections with an
 .Ar rdr
@@ -623,7 +663,7 @@ Handle the data stream from the target host to the relay, like
 HTTP server replies.
 .El
 .Pp
-.Bq Ar action
+.Bq Ar type
 may be one of:
 .Bl -tag -width Ds
 .It Ic cookie
@@ -730,6 +770,9 @@ The TCP source port of the connected client.
 The configured IP address of the relay.
 .It Ic $SERVER_PORT
 The configured TCP server port of the relay.
+.It Ic $SERVER_NAME
+The server software name of
+.Xr relayd 8 .
 .It Ic $TIMEOUT
 The configured session timeout of the relay.
 .El
@@ -780,6 +823,15 @@ To compute the digest, use this simple command:
 .Bd -literal -offset indent
 $ echo -n "example.com/path/?args" | sha1
 .Ed
+.It Ic expect file Ar path
+Like the directive above, but load the non-digest keys from an
+external file with the specified
+.Ar path
+containing one key per line.
+Lines will be stripped at the first whitespace or newline character.
+Any empty lines or lines beginning with a hash mark
+.Pq Sq #
+will be ignored.
 .It Ic filter Ar value Ic from Ar key
 Like the
 .Ic expect Ar .. Ic from
@@ -799,6 +851,12 @@ directive above, but drop any connections with the specified entity
 and any possible value.
 This is the short form of
 .Ic filter Ar * Ic from Ar key .
+.It Ic filter file Ar path
+Like the directive above, but load the non-digest keys from
+.Ar path .
+See
+.Ic expect file Ar path
+for more information.
 .It Ic hash Ar key
 Feed the value of the selected entity into the load balancing hash to
 select the target host.
@@ -809,6 +867,12 @@ keyword in the
 section above.
 .It Ic log Ar key
 Log the name and the value of the entity.
+.It Ic log file Ar path
+Like the directive above, but load the keys from
+.Ar path .
+See
+.Ic expect file Ar path
+for more information.
 .It Xo
 .Ic mark
 .Op Ar value Ic from
@@ -837,6 +901,12 @@ no label
 Do not set a label for subsequently added actions; this is the default.
 .It Ic remove Ar key
 Remove the entity with the selected name.
+.It Ic remove file Ar path
+Like the directive above, but load the keys from
+.Ar path .
+See
+.Ic expect file Ar path
+for more information.
 .It Ic return error Op Ar option
 Return an error reponse to the client if an internal operation or the
 forward connection to the client failed.

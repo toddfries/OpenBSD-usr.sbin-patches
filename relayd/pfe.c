@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfe.c,v 1.48 2008/01/31 09:56:28 reyk Exp $	*/
+/*	$OpenBSD: pfe.c,v 1.52 2008/09/03 13:41:49 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -58,6 +58,7 @@ pfe_sig_handler(int sig, short event, void *arg)
 	case SIGINT:
 	case SIGTERM:
 		pfe_shutdown();
+		break;
 	default:
 		fatalx("pfe_sig_handler: unexpected signal");
 	}
@@ -749,18 +750,20 @@ enable_table(struct ctl_conn *c, struct ctl_id *id)
 }
 
 int
-disable_host(struct ctl_conn *c, struct ctl_id *id)
+disable_host(struct ctl_conn *c, struct ctl_id *id, struct host *host)
 {
-	struct host	*host;
+	struct host	*h;
 	struct table	*table;
 	int		 n;
 
-	if (id->id == EMPTY_ID)
-		host = host_findbyname(env, id->name);
-	else
-		host = host_find(env, id->id);
-	if (host == NULL)
-		return (-1);
+	if (host == NULL) {
+		if (id->id == EMPTY_ID)
+			host = host_findbyname(env, id->name);
+		else
+			host = host_find(env, id->id);
+		if (host == NULL || host->conf.parentid)
+			return (-1);
+	}
 	id->id = host->conf.id;
 
 	if (host->flags & F_DISABLE)
@@ -788,22 +791,30 @@ disable_host(struct ctl_conn *c, struct ctl_id *id)
 		    IMSG_HOST_DISABLE, 0, 0, -1,
 		    &host->conf.id, sizeof(host->conf.id));
 	log_debug("disable_host: disabled host %d", host->conf.id);
-	pfe_sync();
+
+	if (!host->conf.parentid) {
+		/* Disable all children */
+		SLIST_FOREACH(h, &host->children, child)
+			disable_host(c, id, h);
+		pfe_sync();
+	}
 	return (0);
 }
 
 int
-enable_host(struct ctl_conn *c, struct ctl_id *id)
+enable_host(struct ctl_conn *c, struct ctl_id *id, struct host *host)
 {
-	struct host	*host;
+	struct host	*h;
 	int		 n;
 
-	if (id->id == EMPTY_ID)
-		host = host_findbyname(env, id->name);
-	else
-		host = host_find(env, id->id);
-	if (host == NULL)
-		return (-1);
+	if (host == NULL) {
+		if (id->id == EMPTY_ID)
+			host = host_findbyname(env, id->name);
+		else
+			host = host_find(env, id->id);
+		if (host == NULL || host->conf.parentid)
+			return (-1);
+	}
 	id->id = host->conf.id;
 
 	if (!(host->flags & F_DISABLE))
@@ -822,7 +833,13 @@ enable_host(struct ctl_conn *c, struct ctl_id *id)
 		    IMSG_HOST_ENABLE, 0, 0, -1,
 		    &host->conf.id, sizeof(host->conf.id));
 	log_debug("enable_host: enabled host %d", host->conf.id);
-	pfe_sync();
+
+	if (!host->conf.parentid) {
+		/* Enable all children */
+		SLIST_FOREACH(h, &host->children, child)
+			enable_host(c, id, h);
+		pfe_sync();
+	}
 	return (0);
 }
 
@@ -930,7 +947,7 @@ pfe_statistics(int fd, short events, void *arg)
 	u_long			 cnt;
 
 	timerclear(&tv);
-	if (gettimeofday(&tv_now, NULL))
+	if (gettimeofday(&tv_now, NULL) == -1)
 		fatal("pfe_statistics: gettimeofday");
 
 	TAILQ_FOREACH(rdr, env->sc_rdrs, entry) {

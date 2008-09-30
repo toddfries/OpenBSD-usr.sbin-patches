@@ -1,6 +1,6 @@
 #!/bin/sh -
 #
-# $OpenBSD: sysmerge.sh,v 1.15 2008/06/13 23:56:48 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.25 2008/09/17 08:04:17 ajacoutot Exp $
 #
 # This script is based on the FreeBSD mergemaster script, written by
 # Douglas Barton <DougB@FreeBSD.org>
@@ -25,18 +25,46 @@
 #
 
 umask 0022
-PATH="/bin:/usr/bin:/sbin:/usr/sbin"
 
-PAGER="${PAGER:=/usr/bin/more}"
+WRKDIR=`mktemp -d -p /var/tmp sysmerge.XXXXX` || exit 1
 SWIDTH=`stty size | awk '{w=$2} END {if (w==0) {w=80} print w}'`
+PAGER="${PAGER:=/usr/bin/more}"
+MERGE_CMD="${MERGE_CMD:=sdiff -as -w ${SWIDTH} -o}"
+
+# clean leftovers created by make in src
+clean_src() {
+	if [ "${SRCDIR}" ]; then
+		cd ${SRCDIR}/gnu/usr.sbin/sendmail/cf/cf && make cleandir 1> /dev/null
+	fi
+}
+
+# remove newly created work directory and exit with status 1
+error_rm_wrkdir() {
+	rmdir ${WRKDIR} 2> /dev/null
+	exit 1
+}
+
+usage() {
+	echo "usage: ${0##*/} [-ab] [-s src | etcXX.tgz] [-x xetcXX.tgz]" >&2
+}
+
+trap "clean_src; rm -rf ${WRKDIR}; exit 1" 1 2 3 13 15
+
+if [ `id -u` -ne 0 ]; then
+	echo " *** ERROR: Need root privileges to run this script"
+	usage
+	error_rm_wrkdir
+fi
+
+if [ -z "${FETCH_CMD}" ]; then
+	if [ -z "${FTP_KEEPALIVE}" ]; then
+		FTP_KEEPALIVE=0
+	fi
+	FETCH_CMD="/usr/bin/ftp -V -m -k ${FTP_KEEPALIVE}"
+fi
 
 
 do_pre() {
-	if [ `id -u` -ne 0 ]; then
-		echo " *** ERROR: Need root privilege to run this script"
-		exit 1
-	fi
-
 	if [ -z "${SRCDIR}" -a -z "${TGZ}" -a -z "${XTGZ}" ]; then
 		if [ -f "/usr/src/etc/Makefile" ]; then
 			SRCDIR=/usr/src
@@ -46,15 +74,26 @@ do_pre() {
 		fi
 	fi
 
-	WRKDIR=`mktemp -d -p /var/tmp sysmerge.XXXXX` || exit 1
 	TEMPROOT="${WRKDIR}/temproot"
 	BKPDIR="${WRKDIR}/backups"
 
-	trap "rm -rf ${WRKDIR}; exit 1" 1 2 3 13 15
-
 	if [ -z "${BATCHMODE}" -a -z "${AUTOMODE}" ]; then
 		echo "\n===> Running ${0##*/} with the following settings:\n"
-		echo " source(s):            ${SRCDIR}${TGZ} ${XTGZ}"
+		if [ -n "${TGZURL}" ]; then
+			echo " etc source:   ${TGZURL}"
+			echo "               (fetched in ${TGZ})"
+		elif [ -n "${TGZ}" ]; then
+			echo " etc source:   ${TGZ}"
+		elif [ -n "${SRCDIR}" ]; then
+			echo " etc source:   ${SRCDIR}"
+		fi
+		if [ -n "${XTGZURL}" ]; then
+			echo " xetc source:  ${XTGZURL}"
+			echo "               (fetched in ${XTGZ})"
+		else
+			[ -n "${XTGZ}" ] && echo " xetc source:  ${XTGZ}"
+		fi
+		echo ""
 		echo " base work directory:  ${WRKDIR}"
 		echo " temp root directory:  ${TEMPROOT}"
 		echo " backup directory:     ${BKPDIR}"
@@ -66,7 +105,7 @@ do_pre() {
 				echo ""
 				;;
 			*)
-				rmdir ${WRKDIR} 2> /dev/null
+				rm -rf ${WRKDIR} 2> /dev/null
 				exit 1
 				;;
 		esac
@@ -155,16 +194,20 @@ mm_install() {
 
 
 merge_loop() {
-	echo "===> Type h at the sdiff prompt (%) to get usage help\n"
+	if [ `expr "$MERGE_CMD" : ^sdiff.*` -gt 0 ]; then
+		echo "===> Type h at the sdiff prompt (%) to get usage help\n"
+	fi
 	MERGE_AGAIN=1
 	while [ "${MERGE_AGAIN}" ]; do
 		cp -p "${COMPFILE}" "${COMPFILE}.merged"
-		sdiff -as -o "${COMPFILE}.merged" -w ${SWIDTH} \
+		${MERGE_CMD} "${COMPFILE}.merged" \
 			"${DESTDIR}${COMPFILE#.}" "${COMPFILE}"
 		INSTALL_MERGED=v
 		while [ "${INSTALL_MERGED}" = "v" ]; do
 			echo ""
 			echo "  Use 'i' to install merged file"
+			echo "  Use 'n' to view a diff between the merged and new files"
+			echo "  Use 'o' to view a diff between the old and merged files"
 			echo "  Use 'r' to re-do the merge"
 			echo "  Use 'v' to view the merged file"
 			echo "  Default is to leave the temporary file to deal with by hand"
@@ -181,6 +224,16 @@ merge_loop() {
 						echo " *** WARNING: Problem installing ${COMPFILE}, it will remain to merge by hand"
 					fi
 				unset MERGE_AGAIN
+				;;
+			[nN])
+				echo "comparison between merged and new files:\n"
+				diff -u ${COMPFILE}.merged ${COMPFILE}
+				INSTALL_MERGED=v
+				;;
+			[oO])
+				echo "comparison between old and merged files:\n"
+				diff -u ${DESTDIR}${COMPFILE#.} ${COMPFILE}.merged
+				INSTALL_MERGED=v
 				;;
 			[rR])
 				rm "${COMPFILE}.merged"
@@ -240,7 +293,9 @@ diff_loop() {
 
 		if [ -z "${BATCHMODE}" ]; then
 			echo "  Use 'd' to delete the temporary ${COMPFILE}"
-			echo "  Use 'i' to install the temporary ${COMPFILE}"
+			if [ "${COMPFILE}" != "./etc/master.passwd" -a "${COMPFILE}" != "./etc/group" ]; then
+				echo "  Use 'i' to install the temporary ${COMPFILE}"
+			fi
 			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" ]; then
 				echo "  Use 'm' to merge the temporary and installed versions"
 				echo "  Use 'v' to view the diff results again"
@@ -260,12 +315,18 @@ diff_loop() {
 			echo "\n===> Deleting ${COMPFILE}"
 			;;
 		[iI])
-			echo ""
-			if mm_install "${COMPFILE}"; then
-				echo "===> ${COMPFILE} installed successfully"
+			if [ "${COMPFILE}" != "./etc/master.passwd" -a "${COMPFILE}" != "./etc/group" ]; then
+				echo ""
+				if mm_install "${COMPFILE}"; then
+					echo "===> ${COMPFILE} installed successfully"
+				else
+					echo " *** WARNING: Problem installing ${COMPFILE}, it will remain to merge by hand"
+				fi
 			else
-				echo " *** WARNING: Problem installing ${COMPFILE}, it will remain to merge by hand"
+				echo "invalid choice: ${HANDLE_COMPFILE}\n"
+				HANDLE_COMPFILE="todo"
 			fi
+				
 			;;
 		[mM])
 			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" ]; then
@@ -395,10 +456,7 @@ do_post() {
 		fi
 	fi
 
-	# clean leftovers created by make in src
-	if [ "${SRCDIR}" ]; then
-		cd ${SRCDIR}/gnu/usr.sbin/sendmail/cf/cf && make cleandir 1> /dev/null
-	fi
+	clean_src
 
 	echo "===> Making sure your directory hierarchy has correct perms, running mtree"
 	mtree -qdef ${DESTDIR}/etc/mtree/4.4BSD.dist -p ${DESTDIR:=/} -U 1> /dev/null
@@ -413,7 +471,7 @@ do_post() {
 		fi
 		if [ "${FILES_IN_TEMPROOT}" ]; then
 			echo "===> File(s) remaining for you to merge by hand:"
-			find "${TEMPROOT}" -type f -size +0 -exec echo "     {}" \;
+			find "${TEMPROOT}" -type f ! -name \*.merged -size +0 -exec echo "     {}" \;
 		fi
 		if [ "${FILES_IN_BKPDIR}" ]; then
 			echo "===> Backup of replaced file(s) can be found under"
@@ -427,50 +485,56 @@ do_post() {
 }
 
 
-ARGS=`getopt abs:x: $*`
-if [ $? -ne 0 ]; then
-	echo "usage: ${0##*/} [-ab] [-s src | etcXX.tgz] [-x xetcXX.tgz]" >&2
-	exit 1
-fi
-set -- ${ARGS}
-while [ $# -ne 0 ]
-do
-	case "$1" in
-	-a)
+while getopts abs:x: arg; do
+	case ${arg} in
+	a)
 		AUTOMODE=1
-		shift;;
-	-b)
+		;;
+	b)
 		BATCHMODE=1
-		shift;;
-	-s)
-		WHERE="${2}"
-		shift 2
-		if [ -f "${WHERE}/etc/Makefile" ]; then
-			SRCDIR=${WHERE}
-		elif [ -f "${WHERE}" ] && echo -n ${WHERE} |		\
-		    awk -F/ '{print $NF}' | 				\
+		;;
+	s)
+		if [ -f "${OPTARG}/etc/Makefile" ]; then
+			SRCDIR=${OPTARG}
+		elif [ -f "${OPTARG}" ] && echo -n ${OPTARG} | \
+		    awk -F/ '{print $NF}' | \
 		    grep '^etc[0-9][0-9]\.tgz$' > /dev/null 2>&1 ; then
-			TGZ=${WHERE}
+			TGZ=${OPTARG}
+		elif echo ${OPTARG} | \
+		    grep -qE '^(http|ftp)://.*/etc[0-9][0-9]\.tgz$'; then
+			TGZ=${WRKDIR}/etc.tgz
+			TGZURL=${OPTARG}
+			if ! ${FETCH_CMD} -o ${TGZ} ${TGZURL}; then
+				echo " *** ERROR: Could not retrieve ${TGZURL}"
+				error_rm_wrkdir
+			fi
 		else
-			echo " *** ERROR: ${WHERE} is not a path to src nor etcXX.tgz"
-			exit 1
+			echo " *** ERROR: ${OPTARG} is not a path to src nor etcXX.tgz"
+			error_rm_wrkdir
 		fi
 		;;
-	-x)
-		WHERE="${2}"
-		shift 2
-		if [ -f "${WHERE}" ] && echo -n ${WHERE} | 		\
-		    awk -F/ '{print $NF}' | 				\
+	x)
+		if [ -f "${OPTARG}" ] && echo -n ${OPTARG} | \
+		    awk -F/ '{print $NF}' | \
 		    grep '^xetc[0-9][0-9]\.tgz$' > /dev/null 2>&1 ; then
-			XTGZ=${WHERE}
+			XTGZ=${OPTARG}
+		elif echo ${OPTARG} | \
+		    grep -qE '^(http|ftp)://.*/xetc[0-9][0-9]\.tgz$'; then
+			XTGZ=${WRKDIR}/xetc.tgz
+			XTGZURL=${OPTARG}
+			if ! ${FETCH_CMD} -o ${XTGZ} ${XTGZURL}; then
+				echo " *** ERROR: Could not retrieve ${XTGZURL}"
+				error_rm_wrkdir
+			fi
 		else
-			echo " *** ERROR: ${WHERE} is not a path to xetcXX.tgz"
-			exit 1
+			echo " *** ERROR: ${OPTARG} is not a path to xetcXX.tgz"
+			error_rm_wrkdir
 		fi
 		;;
-	--)
-		shift
-		break;;
+	*)
+		usage
+		error_rm_wrkdir
+		;;
 	esac
 done
 

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: sysmerge.8,v 1.8 2008/06/13 00:46:57 ajacoutot Exp $
+.\"	$OpenBSD: sysmerge.8,v 1.11 2008/09/12 13:31:59 ajacoutot Exp $
 .\"
 .\" Copyright (c) 2008 Antoine Jacoutot <ajacoutot@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: June 13 2008 $
+.Dd $Mdocdate: September 12 2008 $
 .Dt SYSMERGE 8
 .Os
 .Sh NAME
@@ -49,7 +49,7 @@ directory before running this script.
 .Pp
 .Nm
 works by comparing a temporary reference root directory
-against locally installed files.
+against currently installed files.
 The reference files are created from a
 .Xr cvs 1
 source tree or a
@@ -58,12 +58,6 @@ release or snapshot file.
 The default, if no source is specified on the command line,
 is to use
 .Pa /usr/src .
-To make sure configuration files are in sync with the actual binaries,
-use the same source as was used to upgrade the system:
-.Pa /usr/src
-when upgrading from source and
-.Pa etcXX.tgz
-when upgrading from binary sets.
 All work is done under
 .Pa ${TMPDIR}/sysmerge.XXXXX
 (known as the
@@ -74,6 +68,15 @@ is created under the work directory.
 Each modified and/or replaced file is saved under the
 .Pa backup
 directory inside the work directory.
+.Pp
+To make sure configuration files are in sync with the actual binaries,
+use the same source as was used to upgrade the system:
+.Pa /usr/src
+when upgrading from source;
+.Pa etcXX.tgz
+and
+.Pa xetcXX.tgz
+when upgrading from binary sets.
 .Pp
 When run in
 .Em automatic
@@ -106,8 +109,8 @@ mode.
 .Pp
 .Nm
 will work through the fileset,
-offering the chance to merge any differences using
-.Xr sdiff 1 .
+offering the chance to merge any differences
+using ${MERGE_CMD}.
 Files may also be left to deal with at a later date.
 Should any problems occur,
 such as a failure to upgrade a file,
@@ -160,12 +163,13 @@ later manual processing.
 Specify a path to an
 .Ox
 top src directory or an etcXX.tgz tarball.
+A tarball path specified as an FTP or HTTP URL will be passed
+to ${FETCH_CMD}.
 .It Fl x Ar xetcXX.tgz
 Specify a path to an
 xetcXX.tgz tarball.
-If this option is specified, it will add
-.Xr X 7
-configuration files to the comparison.
+A tarball path specified as an FTP or HTTP URL will be passed
+to ${FETCH_CMD}.
 .El
 .Sh ENVIRONMENT
 .Bl -tag -width "DESTDIRXXX"
@@ -173,6 +177,17 @@ configuration files to the comparison.
 Directory in which to merge and install files.
 If unset, this defaults to
 .Pa / .
+.It Ev FETCH_CMD
+Command used to fetch remote files.
+Defaults to
+.Xr ftp 1 .
+.It Ev MERGE_CMD
+Command used to merge diffs.
+This will be called with three arguments: the first argument is the
+output file to create, the second argument is the currently installed
+file and the third argument is the reference file.
+If unset, this defaults to
+.Dq sdiff -as -w ${SWIDTH} -o .
 .It Ev TMPDIR
 Directory in which the work directory is created.
 If unset, this defaults to

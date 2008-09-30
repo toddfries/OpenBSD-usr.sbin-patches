@@ -1,4 +1,4 @@
-# $ISC: version,v 1.29.134.18 2007/11/19 15:25:23 each Exp $
+# $Id: version,v 1.13 2008/08/04 16:34:20 millert Exp $
 #
 # This file must follow /bin/sh rules.  It is imported directly via
 # configure.
@@ -6,5 +6,5 @@
 MAJORVER=9
 MINORVER=4
 PATCHVER=2
-RELEASETYPE=
-RELEASEVER=
+RELEASETYPE=-P
+RELEASEVER=2
