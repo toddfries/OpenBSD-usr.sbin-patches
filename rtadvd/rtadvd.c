@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtadvd.c,v 1.36 2008/06/09 22:53:24 rainer Exp $	*/
+/*	$OpenBSD: rtadvd.c,v 1.38 2008/11/21 23:44:04 tedu Exp $	*/
 /*	$KAME: rtadvd.c,v 1.66 2002/05/29 14:18:36 itojun Exp $	*/
 
 /*
@@ -158,6 +158,8 @@ main(argc, argv)
 
 	log_init(1);		/* log to stderr until daemonized */
 
+	closefrom(3);
+
 	/* get command line options and arguments */
 #define OPTIONS "c:dM:Rs"
 	while ((ch = getopt(argc, argv, OPTIONS)) != -1) {
@@ -230,7 +232,7 @@ main(argc, argv)
 		rtsock = -1;
 
 	if ((pw = getpwnam(RTADVD_USER)) == NULL)
-		fatal("getpwnam");
+		fatal("getpwnam(" RTADVD_USER ")");
 	if (chroot(pw->pw_dir) == -1)
 		fatal("chroot");
 	if (chdir("/") == -1)

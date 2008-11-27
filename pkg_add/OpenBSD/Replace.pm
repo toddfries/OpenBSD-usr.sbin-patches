@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Replace.pm,v 1.45 2008/06/11 09:43:25 espie Exp $
+# $OpenBSD: Replace.pm,v 1.47 2008/10/24 16:50:27 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -452,7 +452,7 @@ sub save_old_libraries
 				close $descr;
 				my $f = OpenBSD::PackingElement::FDESC->add($stub_list, DESC);
 				$f->{ignore} = 1;
-				$f->{md5} = $f->compute_md5($dest.DESC);
+				$f->add_digest($f->compute_digest($dest.DESC));
 				$stub_list->to_installation;
 				$o->{plist}->to_installation;
 			}

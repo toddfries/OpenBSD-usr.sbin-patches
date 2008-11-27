@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Error.pm,v 1.13 2008/06/21 13:23:09 espie Exp $
+# $OpenBSD: Error.pm,v 1.16 2008/10/21 21:06:19 espie Exp $
 #
 # Copyright (c) 2004 Marc Espie <espie@openbsd.org>
 #
@@ -26,6 +26,8 @@ our @EXPORT=qw(System VSystem Copy Unlink Fatal Warn Usage set_usage
 our ($FileName, $Line, $FullMessage);
 
 my @signal_name = ();
+
+sub Carp::croak;
 
 sub fillup_names
 {
@@ -197,7 +199,7 @@ sub system
 {
 	my $state = shift;
 	if (open(my $grab, "-|", @_)) {
-		local $_;
+		my $_;
 		while (<$grab>) {
 			$state->print($_);
 		}

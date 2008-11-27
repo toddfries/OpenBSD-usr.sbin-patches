@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgSpec.pm,v 1.16 2007/06/09 11:16:54 espie Exp $
+# $OpenBSD: PkgSpec.pm,v 1.18 2008/10/20 10:25:16 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -18,6 +18,7 @@
 use strict;
 use warnings;
 package OpenBSD::PkgSpec;
+use OpenBSD::PackageName;
 
 # all the shit that does handle package specifications
 sub compare_pseudo_numbers
@@ -81,13 +82,12 @@ sub dewey_compare
 sub check_version
 {
 	my ($v, $spec) = @_;
-	local $_;
 
 	# any version spec
 	return 1 if $spec eq '.*';
 
 	my @specs = split(/\,/o, $spec);
-	for (grep /^\d/o, @specs) { 		# exact number: check match
+	for my $_ (grep /^\d/o, @specs) { 	# exact number: check match
 		return 1 if $v =~ /^$_$/;
 		return 1 if $v =~ /^${_}p\d+$/; # allows for recent patches
 	}
@@ -112,9 +112,8 @@ sub check_version
 sub check_1flavor
 {
 	my ($f, $spec) = @_;
-	local $_;
 
-	for (split /\-/o, $spec) {
+	for my $_ (split /\-/o, $spec) {
 		# must not be here
 		if (m/^\!(.*)$/o) {
 			return 0 if $f->{$1};
@@ -129,7 +128,6 @@ sub check_1flavor
 sub check_flavor
 {
 	my ($f, $spec) = @_;
-	local $_;
 	# no flavor constraints
 	return 1 if $spec eq '';
 
@@ -138,7 +136,7 @@ sub check_flavor
 	my %f = map +($_, 1), split /\-/o, $f;
 
 	# check each flavor constraint
-	for (split /\,/o, $spec) {
+	for my $_ (split /\,/o, $spec) {
 		if (check_1flavor(\%f, $_)) {
 			return 1;
 		}
@@ -149,46 +147,31 @@ sub check_flavor
 sub subpattern_match
 {
 	my ($p, $list) = @_;
-	local $_;
 
-	my ($stemspec, $vspec, $flavorspec);
-
-
-	# then, guess at where the version number is if any,
-	
-	# this finds patterns like -<=2.3,>=3.4.p1-
-	# the only constraint is that the actual number 
-	# - must start with a digit, 
-	# - not contain - or ,
-	if ($p =~ m/^(.*?)\-((?:\>|\>\=|\<|\<\=)?\d[^-]*)(.*)$/o) {
-		($stemspec, $vspec, $flavorspec) = ($1, $2, $3);
-	# `any version' matcher
-	} elsif ($p =~ m/^(.*?)\-\*(.*)$/o) {
-		($stemspec, $vspec, $flavorspec) = ($1, '*', $2);
-	# okay, so no version marker. Assume no flavor spec.
-	} else {
-		($stemspec, $vspec, $flavorspec) = ($p, '', '');
+	# let's try really hard to find the stem and the flavors
+	unless ($p =~ m/^(.*?)\-((?:(?:\>|\>\=|\<|\<\=|\=)?\d|\*)[^-]*)(.*)$/) {
+		die "Invalid spec $p";
 	}
+
+	my ($stemspec, $vspec, $flavorspec) = ($1, $2, $3);
 
 	$stemspec =~ s/\./\\\./go;
 	$stemspec =~ s/\+/\\\+/go;
 	$stemspec =~ s/\*/\.\*/go;
 	$stemspec =~ s/\?/\./go;
 	$stemspec =~ s/^(\\\.libs)\-/$1\\d*\-/go;
+
+	# First trim down the list
+	my @l = grep {/^$stemspec-.*$/} @$list;
+
 	$vspec =~ s/\./\\\./go;
 	$vspec =~ s/\+/\\\+/go;
 	$vspec =~ s/\*/\.\*/go;
 	$vspec =~ s/\?/\./go;
 
-	$p = $stemspec;
-	$p.="-.*" if $vspec ne '';
-
-	# First trim down the list
-	my @l = grep {/^$p$/} @$list;
-
 	my @result = ();
 	# Now, have to extract the version number, and the flavor...
-	for (@l) {
+	for my $_ (@l) {
 		my ($stem, $v, $flavor);
 		if (m/^(.*?)\-(\d[^-]*)(.*)$/o) {
 			($stem, $v, $flavor) = ($1, $2, $3);

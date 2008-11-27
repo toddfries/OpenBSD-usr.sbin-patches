@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageRepository.pm,v 1.58 2008/07/04 10:47:13 espie Exp $
+# $OpenBSD: PackageRepository.pm,v 1.60 2008/10/25 22:28:42 bernd Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -96,7 +96,7 @@ sub parse_fullurl
 sub parse
 {
 	my ($class, $ref) = @_;
-	local $_ = $$ref;
+	my $_ = $$ref;
 	return undef if $_ eq '';
 
 	if (m/^ftp\:/io) {
@@ -265,6 +265,7 @@ sub relative_url
 
 package OpenBSD::PackageRepository::Local;
 our @ISA=qw(OpenBSD::PackageRepository);
+use OpenBSD::Error;
 
 sub urlscheme
 {
@@ -282,6 +283,9 @@ sub parse_fullurl
 sub open_pipe
 {
 	my ($self, $object) = @_;
+	if (defined $ENV{'PKG_CACHE'}) {
+		Copy($self->relative_url($object->{name}), $ENV{'PKG_CACHE'});
+	}
 	my $pid = open(my $fh, "-|");
 	if (!defined $pid) {
 		die "Cannot fork: $!";
@@ -622,7 +626,7 @@ sub parse_problems
 	if (defined $object) {
 		$url = $object->url;
 	}
-	local $_;
+	my $_;
 	my $notyet = 1;
 	while(<$fh>) {
 		next if m/^(?:200|220|221|226|229|230|227|250|331|500|150)[\s\-]/o;
@@ -679,7 +683,7 @@ sub get_http_list
 
 	my $fullname = $self->url;
 	my $l = [];
-	local $_;
+	my $_;
 	open(my $fh, '-|', OpenBSD::Paths->ftp." -o - $fullname 2>$error")
 	    or return;
 	while(<$fh>) {
@@ -727,7 +731,7 @@ sub _list
 {
 	my ($self, $cmd) = @_;
 	my $l =[];
-	local $_;
+	my $_;
 	open(my $fh, '-|', "$cmd") or return;
 	while(<$fh>) {
 		chomp;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_srt.c,v 1.7 2007/04/10 09:37:25 michele Exp $ */
+/*	$OpenBSD: rde_srt.c,v 1.10 2008/11/24 21:55:52 michele Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -37,6 +37,8 @@
 void	 rt_invalidate(void);
 void	 rt_expire_timer(int, short, void *);
 int	 rt_start_expire_timer(struct rt_node *);
+void	 rt_holddown_timer(int, short, void *);
+void	 rt_start_holddown_timer(struct rt_node *);
 
 void	 srt_set_upstream(struct rt_node *, u_int32_t);
 
@@ -48,14 +50,19 @@ void	 srt_update_ds_forwarders(struct src_node *, struct rt_node *,
 void	 srt_current_forwarder(struct src_node *, struct rt_node *,
 	    struct iface *, u_int32_t, u_int32_t);
 
+/* Downstrean neighbor */
 void		 srt_add_ds(struct src_node *, struct rt_node *, u_int32_t,
 		    u_int32_t);
 struct ds	*srt_find_ds(struct src_node *, u_int32_t);
 void		 srt_delete_ds(struct src_node *, struct rt_node *, struct ds *,
 		    struct iface *);
-struct src_node	*srt_find_src(struct in_addr, struct in_addr);
-struct src_node	*srt_add_src(struct in_addr, struct in_addr);
+struct src_node	*srt_find_src(in_addr_t, in_addr_t);
+struct src_node	*srt_add_src(struct in_addr, struct in_addr, u_int32_t);
 void		 srt_delete_src(struct src_node *);
+
+/* Flash updates */
+void		 flash_update(struct rt_node *); 
+void		 flash_update_ds(struct rt_node *); 
 
 RB_HEAD(rt_tree, rt_node)	 rt;
 RB_PROTOTYPE(rt_tree, rt_node, entry, rt_compare)
@@ -70,15 +77,18 @@ void
 rt_expire_timer(int fd, short event, void *arg)
 {
 	struct rt_node	*rn = arg;
+	struct timeval	 tv;
 
 	log_debug("rt_expire_timer: route %s/%d", inet_ntoa(rn->prefix),
 	    rn->prefixlen);
 
-	/* XXX tell neighbors */
+	timerclear(&tv);
+	rn->old_cost = rn->cost;
+	rn->cost = INFINITY_METRIC;
+	tv.tv_sec = ROUTE_HOLD_DOWN;
 
-	/* remove route entry */
-	event_del(&rn->expiration_timer);
-	rt_remove(rn);
+	if (evtimer_add(&rn->holddown_timer, &tv) == -1)
+		fatal("rt_expire_timer");
 }
 
 int
@@ -86,10 +96,45 @@ rt_start_expire_timer(struct rt_node *rn)
 {
 	struct timeval	tv;
 
+	rn->old_cost = 0;
+
+	if (evtimer_pending(&rn->holddown_timer, NULL))
+		if (evtimer_del(&rn->holddown_timer) == -1)
+			fatal("rt_start_expire_timer");
+
 	timerclear(&tv);
 	tv.tv_sec = ROUTE_EXPIRATION_TIME;
 	return (evtimer_add(&rn->expiration_timer, &tv));
+}
 
+void
+rt_holddown_timer(int fd, short event, void *arg)
+{
+	struct rt_node	*rn = arg;
+	struct src_node	*src;
+
+	log_debug("rt_holddown_timer: route %s/%d", inet_ntoa(rn->prefix),
+	    rn->prefixlen);
+
+	/* remove route entry */
+	src = srt_find_src(rn->prefix.s_addr, prefixlen2mask(rn->prefixlen));
+	srt_delete_src(src);
+
+	rt_remove(rn);
+}
+
+void
+rt_start_holddown_timer(struct rt_node *rn)
+{
+	struct timeval	tv;
+
+	timerclear(&tv);
+	tv.tv_sec = ROUTE_HOLD_DOWN;
+	if (evtimer_pending(&rn->expiration_timer, NULL)) {
+		if (evtimer_del(&rn->expiration_timer) == -1)
+			fatal("rt_start_holddown_timer");
+		evtimer_add(&rn->holddown_timer, &tv);
+	}
 }
 
 /* route table */
@@ -143,7 +188,7 @@ rt_find(in_addr_t prefix, u_int8_t prefixlen)
 }
 
 struct rt_node *
-rr_new_rt(struct route_report *rr, int adj_metric, int connected)
+rr_new_rt(struct route_report *rr, u_int32_t adj_metric, int connected)
 {
 	struct timespec	 now;
 	struct rt_node  *rn;
@@ -309,12 +354,12 @@ srt_check_route(struct route_report *rr, int connected)
 
 	/* If the route is new and the Adjusted Metric is less than infinity,
 	   the route should be added. */
-	if ((rn = rt_find(rr->net.s_addr, mask2prefixlen(rr->mask.s_addr)))
-	    == NULL) {
+	rn = rt_find(rr->net.s_addr, mask2prefixlen(rr->mask.s_addr));
+	if (rn == NULL) {
 		if (adj_metric < INFINITY_METRIC) {
 			rn = rr_new_rt(rr, adj_metric, connected);
 			rt_insert(rn);
-			src = srt_add_src(rr->net, rr->mask);
+			src = srt_add_src(rr->net, rr->mask, adj_metric);
 		}
 		return (0);
 	}
@@ -326,7 +371,7 @@ srt_check_route(struct route_report *rr, int connected)
 	nbr_ip = rn->nexthop.s_addr;
 	nbr_report = rr->nexthop.s_addr;
 
-	if ((src = srt_find_src(rr->net, rr->mask)) == NULL)
+	if ((src = srt_find_src(rr->net.s_addr, rr->mask.s_addr)) == NULL)
 		fatal("srt_check_route");
 
 	if (rr->metric < INFINITY_METRIC) {
@@ -337,13 +382,16 @@ srt_check_route(struct route_report *rr, int connected)
 				srt_delete_ds(src, rn, ds_nbr, iface);
 
 		if (adj_metric > rn->cost) {
-			if (nbr_ip == nbr_report)
+			if (nbr_ip == nbr_report) {
 				rn->cost = adj_metric;
+				flash_update_ds(rn);
+			}
 		} else if (adj_metric < rn->cost) {
 			rn->cost = adj_metric;
 			if (nbr_ip != nbr_report) {
 				rn->nexthop.s_addr = nbr_report;
 				srt_set_upstream(rn, ifindex);
+				flash_update(rn);
 			}
 			/* We have a new best route to source, update the
 			 * designated forwarders on downstream interfaces to
@@ -353,7 +401,11 @@ srt_check_route(struct route_report *rr, int connected)
 			if (nbr_report < nbr_ip) {
 				rn->nexthop.s_addr = nbr_report;
 				srt_set_upstream(rn, ifindex);
-			}
+				flash_update(rn);
+			} else if (nbr_report == nbr_ip &&
+			    adj_metric == rn->old_cost)
+				rt_update(rn);
+				flash_update_ds(rn);
 		}
 		/* Update forwarder of current interface if necessary and
 		 * refresh the route */
@@ -364,10 +416,8 @@ srt_check_route(struct route_report *rr, int connected)
 			srt_set_forwarder_self(src, iface, rn);
 infinity:
 		if (nbr_ip == nbr_report) {
-			if (rn->cost < INFINITY_METRIC) {
-				rt_remove(rn);
-				srt_delete_src(src);
-			}
+			if (rn->cost < INFINITY_METRIC)
+				rt_start_holddown_timer(rn);
 		} else
 			if ((ds_nbr = srt_find_ds(src, nbr_report)))
 				srt_delete_ds(src, rn, ds_nbr, iface);
@@ -391,6 +441,7 @@ void
 srt_current_forwarder(struct src_node *src_node, struct rt_node *rn,
     struct iface *iface, u_int32_t metric, u_int32_t nbr_report)
 {
+	/* If it is our designated forwarder */ 
 	if (nbr_report == src_node->adv_rtr[iface->ifindex].addr.s_addr) {
 		if (metric > rn->cost || (metric == rn->cost &&
 		    iface->addr.s_addr < nbr_report)) {
@@ -419,7 +470,7 @@ srt_update_ds_forwarders(struct src_node *src_node, struct rt_node *rn,
     struct iface *iface, u_int32_t nbr_report)
 {
 	struct iface	*ifa;
-	int	i;
+	int		 i;
 
 	for (i = 0; i < MAXVIFS; i++) {
 		if (src_node->adv_rtr[i].addr.s_addr &&
@@ -427,12 +478,7 @@ srt_update_ds_forwarders(struct src_node *src_node, struct rt_node *rn,
 		    (rn->cost == src_node->adv_rtr[i].metric &&
 		    iface->addr.s_addr < nbr_report))) {
 			ifa = if_find_index(i);
-			src_node->adv_rtr[i].metric = rn->cost;
-			src_node->adv_rtr[i].addr.s_addr = iface->addr.s_addr;
-
-			/* XXX: check if there are groups with this source */
-			if (group_list_empty(ifa))
-				rn->ttls[i] = 1;
+			srt_set_forwarder_self(src_node, ifa, rn);
 		}
 	}
 }
@@ -500,20 +546,20 @@ srt_delete_ds(struct src_node *src_node, struct rt_node *rn, struct ds *ds_nbr,
 }
 
 struct src_node *
-srt_find_src(struct in_addr net, struct in_addr mask)
+srt_find_src(in_addr_t net, in_addr_t mask)
 {
 	struct src_node		*src_node;
 
 	RB_FOREACH(src_node, src_head, &rdeconf->src_list)
-		if (src_node->origin.s_addr == net.s_addr &&
-		    src_node->mask.s_addr == mask.s_addr)
+		if (src_node->origin.s_addr == net &&
+		    src_node->mask.s_addr == mask)
 			return (src_node);
 
 	return (NULL);
 }
 
 struct src_node *
-srt_add_src(struct in_addr net, struct in_addr mask)
+srt_add_src(struct in_addr net, struct in_addr mask, u_int32_t adj_metric)
 {
 	struct src_node		*src_node;
 	struct iface		*iface;
@@ -530,13 +576,11 @@ srt_add_src(struct in_addr net, struct in_addr mask)
 		src_node->ds_cnt[i] = 0;
 	}
 
-	LIST_FOREACH(iface, &rdeconf->iface_list, entry)
-		for (i = 0; i < MAXVIFS; i++)
-			if (iface->ifindex == i) {
-				src_node->adv_rtr[i].addr.s_addr =
-				    iface->addr.s_addr;
-				break;
-			}
+	LIST_FOREACH(iface, &rdeconf->iface_list, entry) {
+		src_node->adv_rtr[iface->ifindex].addr.s_addr =
+		    iface->addr.s_addr;
+		src_node->adv_rtr[iface->ifindex].metric = adj_metric;
+	}
 
 	LIST_INIT(&src_node->ds_list);
 	RB_INSERT(src_head, &rdeconf->src_list, src_node);
@@ -549,6 +593,9 @@ srt_delete_src(struct src_node *src_node)
 {
 	struct ds	*ds_nbr;
 
+	if (src_node == NULL)
+		return;
+
 	LIST_FOREACH(ds_nbr, &src_node->ds_list, entry) {
 		LIST_REMOVE(ds_nbr, entry);
 		free(ds_nbr);
@@ -556,4 +603,26 @@ srt_delete_src(struct src_node *src_node)
 
 	RB_REMOVE(src_head, &rdeconf->src_list, src_node);
 	free(src_node);
+}
+
+void
+flash_update(struct rt_node *rn) {
+	struct route_report	rr;
+
+	rr.net = rn->prefix;
+	rr.mask.s_addr = ntohl(prefixlen2mask(rn->prefixlen));
+	rr.metric = rn->cost;
+	rr.ifindex = rn->ifindex;
+	rde_imsg_compose_dvmrpe(IMSG_FLASH_UPDATE, 0, 0, &rr, sizeof(rr));
+}
+
+void
+flash_update_ds(struct rt_node *rn) {
+	struct route_report	rr;
+
+	rr.net = rn->prefix;
+	rr.mask.s_addr = ntohl(prefixlen2mask(rn->prefixlen));
+	rr.metric = rn->cost;
+	rr.ifindex = rn->ifindex;
+	rde_imsg_compose_dvmrpe(IMSG_FLASH_UPDATE_DS, 0, 0, &rr, sizeof(rr));
 }

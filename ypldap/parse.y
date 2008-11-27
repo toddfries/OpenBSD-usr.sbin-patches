@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.1 2008/06/26 15:10:01 pyr Exp $	*/
+/*	$OpenBSD: parse.y,v 1.6 2008/10/28 13:47:22 aschrijver Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -96,13 +96,14 @@ typedef struct {
 
 %}
 
-%token	SERVER FILTER ATTRIBUTE BINDDN MAPS CHANGE DOMAIN PROVIDE
+%token	SERVER FILTER ATTRIBUTE BASEDN BINDDN BINDCRED MAPS CHANGE DOMAIN PROVIDE
 %token	USER GROUP TO EXPIRE HOME SHELL GECOS UID GID INTERVAL
-%token	PASSWD NAME FIXED GROUPNAME GROUPPASSWD GROUPGID MAP
-%token	INCLUDE DIRECTORY CLASS PORT SSL ERROR GROUPMEMBERS
+%token	PASSWD NAME FIXED LIST GROUPNAME GROUPPASSWD GROUPGID MAP
+%token	INCLUDE DIRECTORY CLASS PORT ERROR GROUPMEMBERS
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
-%type	<v.number>	opcode attribute port ssl
+%type	<v.number>	opcode attribute
+%type	<v.string>	port
 
 %%
 
@@ -121,6 +122,7 @@ nl		: '\n' optnl
 optnl		: '\n' optnl
 		| /* empty */
 		;
+
 
 include		: INCLUDE STRING			{
 			struct file	*nfile;
@@ -145,17 +147,14 @@ varset		: STRING '=' STRING			{
 		}
 		;
 
-ssl		: SSL					{ $$ = 1; }
-		| /*empty*/				{ $$ = 0; }
-		;
-
-port		: PORT NUMBER				{ $$ = $2; }
-		| /*empty*/				{ $$ = 0; }
+port		: /* empty */	{ $$ = NULL; }
+		| PORT STRING	{ $$ = $2; }
 		;
 
 opcode		: GROUP					{ $$ = 0; }
 		| PASSWD				{ $$ = 1; }
 		;
+
 
 attribute	: NAME					{ $$ = 0; }
 		| PASSWD				{ $$ = 1; }
@@ -179,6 +178,27 @@ diropt		: BINDDN STRING				{
 			    sizeof(idm->idm_binddn)) >=
 			    sizeof(idm->idm_binddn)) {
 				yyerror("directory binddn truncated");
+				free($2);
+				YYERROR;
+			}
+			free($2);
+		}
+		| BINDCRED STRING			{
+			idm->idm_flags |= F_NEEDAUTH;
+			if (strlcpy(idm->idm_bindcred, $2,
+			    sizeof(idm->idm_bindcred)) >=
+			    sizeof(idm->idm_bindcred)) {
+				yyerror("directory bindcred truncated");
+				free($2);
+				YYERROR;
+			}
+			free($2);
+		}
+		| BASEDN STRING			{
+			if (strlcpy(idm->idm_basedn, $2,
+			    sizeof(idm->idm_basedn)) >=
+			    sizeof(idm->idm_basedn)) {
+				yyerror("directory basedn truncated");
 				free($2);
 				YYERROR;
 			}
@@ -215,38 +235,32 @@ diropt		: BINDDN STRING				{
 			idm->idm_flags |= F_FIXED_ATTR($3);
 			free($4);
 		}
+		| LIST attribute MAPS TO STRING	{
+			if (strlcpy(idm->idm_attrs[$2], $5,
+			    sizeof(idm->idm_attrs[$2])) >=
+			    sizeof(idm->idm_attrs[$2])) {
+				yyerror("attribute truncated");
+				free($5);
+				YYERROR;
+			}
+			idm->idm_list |= F_LIST($2);
+			free($5);
+		}
 		;
 
-directory	: DIRECTORY STRING port ssl 		{
-			const char	*service;
-			struct servent	*srv;
-
+directory	: DIRECTORY STRING port {
 			if ((idm = calloc(1, sizeof(*idm))) == NULL)
 				fatal(NULL);
+			idm->idm_id = conf->sc_maxid++;
 
-			if (strlcpy(idm->idm_name, $2, sizeof(idm->idm_name)) >=
+			if (strlcpy(idm->idm_name, $2,
+			    sizeof(idm->idm_name)) >=
 			    sizeof(idm->idm_name)) {
-				yyerror("directory name truncated");
-				free(idm);
+				yyerror("attribute truncated");
 				free($2);
 				YYERROR;
 			}
 
-			if ($4) {
-				service = "ldaps";
-			} else
-				service = "ldap";
-			srv = getservbyname(service, "tcp");
-
-			if ($3)
-				idm->idm_port = $3;
-			else if (srv == NULL) {
-				if ($4)
-					idm->idm_port = 389;
-				else
-					idm->idm_port = 686;
-			} else
-				idm->idm_port = ntohs(srv->s_port);
 			free($2);
 		} '{' optnl diropts '}'			{
 			TAILQ_INSERT_TAIL(&conf->sc_idms, idm, idm_entry);
@@ -293,6 +307,7 @@ main		: INTERVAL NUMBER			{
 diropts		: diropts diropt nl
 		| diropt optnl
 		;
+
 %%
 
 struct keywords {
@@ -326,6 +341,8 @@ lookup(char *s)
 	/* this has to be sorted always */
 	static const struct keywords keywords[] = {
 		{ "attribute",		ATTRIBUTE },
+		{ "basedn",		BASEDN },
+		{ "bindcred",		BINDCRED },
 		{ "binddn",		BINDDN },
 		{ "change",		CHANGE },
 		{ "class",		CLASS },
@@ -344,6 +361,7 @@ lookup(char *s)
 		{ "home",		HOME },
 		{ "include",		INCLUDE },
 		{ "interval",		INTERVAL },
+		{ "list",		LIST },
 		{ "map",		MAP },
 		{ "maps",		MAPS },
 		{ "name",		NAME },
@@ -352,7 +370,6 @@ lookup(char *s)
 		{ "provide",		PROVIDE },
 		{ "server",		SERVER },
 		{ "shell",		SHELL },
-		{ "ssl",		SSL },
 		{ "to",			TO },
 		{ "uid",		UID },
 		{ "user",		USER },
@@ -445,11 +462,13 @@ findeol(void)
 	int	c;
 
 	parsebuf = NULL;
-	pushback_index = 0;
 
 	/* skip to either EOF or the first real EOL */
 	while (1) {
-		c = lgetc(0);
+		if (pushback_index)
+			c = pushback_buffer[--pushback_index];
+		else
+			c = lgetc(0);
 		if (c == '\n') {
 			file->lineno++;
 			break;

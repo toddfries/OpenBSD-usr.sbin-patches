@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.61 2008/02/26 10:09:58 mpf Exp $ */
+/*	$OpenBSD: parse.y,v 1.63 2008/11/24 18:28:02 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -525,6 +525,7 @@ areaoptsl	: interface
 			}
 		}
 		| defaults
+		| STUB			{ area->stub = 1; }
 		;
 
 interface	: INTERFACE STRING	{
@@ -766,11 +767,13 @@ findeol(void)
 	int	c;
 
 	parsebuf = NULL;
-	pushback_index = 0;
 
 	/* skip to either EOF or the first real EOL */
 	while (1) {
-		c = lgetc(0);
+		if (pushback_index)
+			c = pushback_buffer[--pushback_index];
+		else
+			c = lgetc(0);
 		if (c == '\n') {
 			file->lineno++;
 			break;

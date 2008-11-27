@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.3 2007/03/21 19:33:48 michele Exp $ */
+/*	$OpenBSD: rde.h,v 1.5 2008/11/24 21:55:52 michele Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -29,10 +29,12 @@
 struct rt_node {
 	RB_ENTRY(rt_node)	 entry;
 	struct event		 expiration_timer;
+	struct event		 holddown_timer;
 	u_int8_t		 ttls[MAXVIFS];	/* downstream vif(s) */
 	struct in_addr		 prefix;
 	struct in_addr		 nexthop;
 	u_int32_t		 cost;
+	u_int32_t		 old_cost;	/* used when in hold-down */
 	u_short			 ifindex;	/* learned from this iface */
 	time_t			 uptime;
 	u_int8_t		 flags;
@@ -90,7 +92,7 @@ void		 mfc_delete(struct mfc *);
 void		 rt_init(void);
 int		 rt_compare(struct rt_node *, struct rt_node *);
 struct rt_node	*rt_find(in_addr_t, u_int8_t);
-struct rt_node	*rr_new_rt(struct route_report *, int, int);
+struct rt_node	*rr_new_rt(struct route_report *, u_int32_t, int);
 int		 rt_insert(struct rt_node *);
 void		 rt_update(struct rt_node *);
 int		 rt_remove(struct rt_node *);
