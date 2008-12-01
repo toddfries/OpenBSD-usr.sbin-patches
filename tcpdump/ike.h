@@ -1,4 +1,4 @@
-/* $OpenBSD: ike.h,v 1.20 2007/03/16 14:49:15 tom Exp $ */
+/* $OpenBSD: ike.h,v 1.22 2008/11/29 16:02:45 reyk Exp $ */
 
 /*
  * Copyright (c) 2001 Håkan Olsson.  All rights reserved.
