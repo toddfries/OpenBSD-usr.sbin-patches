@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.7 2008/11/24 22:30:19 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.16 2009/01/04 22:35:09 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -25,13 +25,10 @@
 
 #include <ctype.h>
 #include <event.h>
-#include <fcntl.h>
 #include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
@@ -42,10 +39,14 @@ void		smtp_dispatch_parent(int, short, void *);
 void		smtp_dispatch_mfa(int, short, void *);
 void		smtp_dispatch_lka(int, short, void *);
 void		smtp_dispatch_queue(int, short, void *);
+void		smtp_dispatch_control(int, short, void *);
 void		smtp_setup_events(struct smtpd *);
 void		smtp_disable_events(struct smtpd *);
+void		smtp_pause(struct smtpd *);
+void		smtp_resume(struct smtpd *);
 void		smtp_accept(int, short, void *);
 void		session_timeout(int, short, void *);
+void		session_auth_pickup(struct session *, char *, size_t);
 
 void
 smtp_sig_handler(int sig, short event, void *p)
@@ -178,7 +179,7 @@ smtp_dispatch_parent(int sig, short event, void *p)
 			if (reply->value)
 				s->s_flags |= F_AUTHENTICATED;
 
-			session_pickup(s, NULL);
+			session_auth_pickup(s, NULL, 0);
 
 			break;
 		}
@@ -228,8 +229,8 @@ smtp_dispatch_mfa(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_MFA_RCPT_SUBMIT:
-		case IMSG_MFA_RPATH_SUBMIT: {
+		case IMSG_MFA_MAIL:
+		case IMSG_MFA_RCPT: {
 			struct submit_status	*ss;
 			struct session		*s;
 			struct session		 key;
@@ -294,7 +295,7 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_SMTP_HOSTNAME_ANSWER: {
+		case IMSG_LKA_HOST: {
 			struct session		 key;
 			struct session		*s;
 			struct session		*ss;
@@ -304,12 +305,14 @@ smtp_dispatch_lka(int sig, short event, void *p)
 
 			ss = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
 			if (ss == NULL) {
-				/* Session was removed while we were waiting for the message */
+				/* Session was removed while we were waiting
+				 * for the message */
 				break;
 			}
 
 			strlcpy(ss->s_hostname, s->s_hostname, MAXHOSTNAMELEN);
-
+			strlcpy(ss->s_msg.session_hostname, s->s_hostname,
+			    MAXHOSTNAMELEN);
 			break;
 		}
 		default:
@@ -358,7 +361,28 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_SMTP_MESSAGE_FILE: {
+		case IMSG_QUEUE_CREATE_MESSAGE: {
+			struct submit_status	*ss;
+			struct session		*s;
+			struct session		 key;
+
+			log_debug("smtp_dispatch_queue: queue handled message creation");
+			ss = imsg.data;
+
+			key.s_id = ss->id;
+
+			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
+			if (s == NULL) {
+				/* Session was removed while we were waiting for the message */
+				break;
+			}
+
+			(void)strlcpy(s->s_msg.message_id, ss->u.msgid,
+			    sizeof(s->s_msg.message_id));
+			session_pickup(s, ss);
+			break;
+		}
+		case IMSG_QUEUE_MESSAGE_FILE: {
 			struct submit_status	*ss;
 			struct session		*s;
 			struct session		 key;
@@ -375,9 +399,6 @@ smtp_dispatch_queue(int sig, short event, void *p)
 				break;
 			}
 
-			(void)strlcpy(s->s_msg.message_id, ss->u.msgid,
-			    sizeof(s->s_msg.message_id));
-
 			fd = imsg_get_fd(ibuf, &imsg);
 			if (fd != -1) {
 				s->s_msg.datafp = fdopen(fd, "w");
@@ -392,7 +413,27 @@ smtp_dispatch_queue(int sig, short event, void *p)
 
 			break;
 		}
-		case IMSG_SMTP_SUBMIT_ACK: {
+		case IMSG_QUEUE_TEMPFAIL: {
+			struct submit_status	*ss;
+			struct session		*s;
+			struct session		 key;
+
+			log_debug("smtp_dispatch_queue: queue acknownedged a temporary failure");
+			ss = imsg.data;
+			key.s_id = ss->id;
+			key.s_msg.id = ss->id;
+
+			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
+			if (s == NULL) {
+				/* Session was removed while we were waiting for the message */
+				break;
+			}
+			s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+			break;
+		}
+
+		case IMSG_QUEUE_COMMIT_ENVELOPES:
+		case IMSG_QUEUE_COMMIT_MESSAGE: {
 			struct submit_status	*ss;
 			struct session		*s;
 			struct session		 key;
@@ -423,6 +464,58 @@ smtp_dispatch_queue(int sig, short event, void *p)
 }
 
 void
+smtp_dispatch_control(int sig, short event, void *p)
+{
+	struct smtpd		*env = p;
+	struct imsgbuf		*ibuf;
+	struct imsg		 imsg;
+	ssize_t			 n;
+
+	ibuf = env->sc_ibufs[PROC_CONTROL];
+	switch (event) {
+	case EV_READ:
+		if ((n = imsg_read(ibuf)) == -1)
+			fatal("imsg_read_error");
+		if (n == 0) {
+			/* this pipe is dead, so remove the event handler */
+			event_del(&ibuf->ev);
+			event_loopexit(NULL);
+			return;
+		}
+		break;
+	case EV_WRITE:
+		if (msgbuf_write(&ibuf->w) == -1)
+			fatal("msgbuf_write");
+		imsg_event_add(ibuf);
+		return;
+	default:
+		fatalx("unknown event");
+	}
+
+	for (;;) {
+		if ((n = imsg_get(ibuf, &imsg)) == -1)
+			fatal("smtp_dispatch_control: imsg_read error");
+		if (n == 0)
+			break;
+
+		switch (imsg.hdr.type) {
+		case IMSG_SMTP_PAUSE:
+			smtp_pause(env);
+			break;
+		case IMSG_SMTP_RESUME:
+			smtp_resume(env);
+			break;
+		default:
+			log_debug("smtp_dispatch_control: unexpected imsg %d",
+			    imsg.hdr.type);
+			break;
+		}
+		imsg_free(&imsg);
+	}
+	imsg_event_add(ibuf);
+}
+
+void
 smtp_shutdown(void)
 {
 	log_info("smtp server exiting");
@@ -442,7 +535,8 @@ smtp(struct smtpd *env)
 		{ PROC_PARENT,	smtp_dispatch_parent },
 		{ PROC_MFA,	smtp_dispatch_mfa },
 		{ PROC_QUEUE,	smtp_dispatch_queue },
-		{ PROC_LKA,	smtp_dispatch_lka }
+		{ PROC_LKA,	smtp_dispatch_lka },
+		{ PROC_CONTROL,	smtp_dispatch_control }
 	};
 
 	switch (pid = fork()) {
@@ -487,7 +581,7 @@ smtp(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
-	config_peers(env, peers, 4);
+	config_peers(env, peers, 5);
 
 	smtp_setup_events(env);
 	event_dispatch();
@@ -507,7 +601,7 @@ smtp_setup_events(struct smtpd *env)
 		    l, (l->flags & F_SSL)?" (with ssl)":"");
 
 		session_socket_blockmode(l->fd, BM_NONBLOCK);
-		if (listen(l->fd, l->backlog) == -1)
+		if (listen(l->fd, SMTPD_BACKLOG) == -1)
 			fatal("listen");
 		l->env = env;
 		event_set(&l->ev, l->fd, EV_READ, smtp_accept, l);
@@ -534,6 +628,30 @@ smtp_disable_events(struct smtpd *env)
 		free(l);
 	}
 	TAILQ_INIT(&env->sc_listeners);
+}
+
+void
+smtp_pause(struct smtpd *env)
+{
+	struct listener	*l;
+
+	log_debug("smtp_pause_listeners: pausing listening sockets");
+	TAILQ_FOREACH(l, &env->sc_listeners, entry) {
+		event_del(&l->ev);
+	}
+	env->sc_opts |= SMTPD_SMTP_PAUSED;
+}
+
+void
+smtp_resume(struct smtpd *env)
+{
+	struct listener	*l;
+
+	log_debug("smtp_pause_listeners: resuming listening sockets");
+	TAILQ_FOREACH(l, &env->sc_listeners, entry) {
+		event_add(&l->ev, NULL);
+	}
+	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
 }
 
 void

@@ -1,4 +1,4 @@
-/* $OpenBSD: user.c,v 1.73 2008/10/09 21:10:08 miod Exp $ */
+/* $OpenBSD: user.c,v 1.76 2009/01/21 16:56:02 sobrado Exp $ */
 /* $NetBSD: user.c,v 1.69 2003/04/14 17:40:07 agc Exp $ */
 
 /*
@@ -911,6 +911,7 @@ scantime(time_t *tp, char *s)
 	*tp = 0;
 	if (s != NULL) {
 		(void) memset(&tm, 0, sizeof(tm));
+		tm.tm_isdst = -1;
 		if (strptime(s, "%c", &tm) != NULL) {
 			*tp = mktime(&tm);
 		} else if (strptime(s, "%B %d %Y", &tm) != NULL) {
@@ -1597,27 +1598,35 @@ void
 usermgmt_usage(const char *prog)
 {
 	if (strcmp(prog, "useradd") == 0) {
-		(void) fprintf(stderr, "usage: %s -D [-b basedir] [-e expiry] "
-		    "[-f changetime] [-g group]\n\t\t[-k skeletondir] "
-		    "[-r low..high] [-s shell] [-L class]\n", prog);
-		(void) fprintf(stderr, "usage: %s [-mov] [-G group[,group,...]]"
-		    " [-b basedir] [-c comment]\n\t\t"
-		    "[-d homedir] [-e expiry] [-f changetime] [-g group]\n\t\t"
-		    "[-k skeletondir] [-p password] "
-		    "[-r lowuid..highuid]\n\t\t[-s shell] [-u uid] [-L class] "
-		    "user\n", prog);
+		(void) fprintf(stderr, "usage: %s -D [-b base-directory] "
+		    "[-e expiry-time] [-f inactive-time]\n"
+		    "               [-g gid | name | =uid] [-k skel-directory] "
+		    "[-L login-class]\n"
+		    "               [-r low..high] [-s shell]\n", prog);
+		(void) fprintf(stderr, "       %s [-mov] [-b base-directory] "
+		    "[-c comment] [-d home-directory]\n"
+		    "               [-e expiry-time] [-f inactive-time]\n"
+		    "               [-G secondary-group[,group,...]] "
+		    "[-g gid | name | =uid]\n"
+		    "               [-k skel-directory] [-L login-class] "
+		    "[-p password] [-r low..high]\n"
+		    "               [-s shell] [-u uid] user\n", prog);
 	} else if (strcmp(prog, "usermod") == 0) {
-		(void) fprintf(stderr, "usage: %s [-mov] [-G group[,group,...]]"
-		    " [-c comment] [-d homedir]\n\t\t"
-		    "[-e expire] [-f changetime] [-g group] [-l newname]\n\t\t"
-		    "[-p password] [-s shell] [-u uid] [-L class] user\n",
+		(void) fprintf(stderr, "usage: %s [-mov] "
+		    "[-G secondary-group[,group,...]] [-c comment]\n"
+		    "               [-d home-directory] [-e expiry-time] "
+		    "[-f inactive-time]\n"
+		    "               [-g gid | name | =uid] [-L login-class] "
+		    "[-l new-login]\n"
+		    "               [-p password] [-s shell] [-u uid] user\n",
 		    prog);
 	} else if (strcmp(prog, "userdel") == 0) {
-		(void) fprintf(stderr, "usage: %s -D [-p preserve]\n", prog);
-		(void) fprintf(stderr, "usage: %s [-prv] user\n", prog);
+		(void) fprintf(stderr, "usage: %s -D [-p preserve-value]\n",
+		    prog);
+		(void) fprintf(stderr, "       %s [-prv] user\n", prog);
 #ifdef EXTENSIONS
 	} else if (strcmp(prog, "userinfo") == 0) {
-		(void) fprintf(stderr, "usage: %s [-ev] user\n", prog);
+		(void) fprintf(stderr, "usage: %s [-e] user\n", prog);
 #endif
 	} else if (strcmp(prog, "groupadd") == 0) {
 		(void) fprintf(stderr, "usage: %s [-ov] [-g gid] group\n",
@@ -1628,15 +1637,15 @@ usermgmt_usage(const char *prog)
 		(void) fprintf(stderr, "usage: %s [-ov] [-g gid] [-n newname] "
 		    "group\n", prog);
 	} else if (strcmp(prog, "user") == 0 || strcmp(prog, "group") == 0) {
-		(void) fprintf(stderr, "usage: %s [ add | del | mod "
+		(void) fprintf(stderr, "usage: %s [add | del | mod"
 #ifdef EXTENSIONS
-		"| info "
+		" | info"
 #endif
 		"] ...\n",
 		    prog);
 #ifdef EXTENSIONS
 	} else if (strcmp(prog, "groupinfo") == 0) {
-		(void) fprintf(stderr, "usage: %s [-ev] group\n", prog);
+		(void) fprintf(stderr, "usage: %s [-e] group\n", prog);
 #endif
 	} else {
 		(void) fprintf(stderr, "This program must be called as {user,group}{add,del,mod,info},\n%s is not an understood name.\n", prog);

@@ -1,5 +1,5 @@
-/*	$Id: aldap.c,v 1.7 2008/11/28 10:07:56 aschrijver Exp $ */
-/*	$OpenBSD: aldap.c,v 1.7 2008/11/28 10:07:56 aschrijver Exp $ */
+/*	$Id: aldap.c,v 1.11 2009/01/16 13:11:15 aschrijver Exp $ */
+/*	$OpenBSD: aldap.c,v 1.11 2009/01/16 13:11:15 aschrijver Exp $ */
 
 /*
  * Copyright (c) 2008 Alexander Schrijver <aschrijver@openbsd.org>
@@ -63,63 +63,105 @@ aldap_init(int fd)
 int
 aldap_bind(struct aldap *ldap, char *binddn, char *bindcred)
 {
-	struct ber_element *root;
+	struct ber_element *root = NULL, *elm;
+	int error;
 
-	root = ber_add_sequence(NULL);
-	ber_printf_elements(root, "d{tdsst", ++ldap->msgid, BER_CLASS_APP,
+	if((root = ber_add_sequence(NULL)) == NULL)
+		goto fail;
+
+	elm = ber_printf_elements(root, "d{tdsst", ++ldap->msgid, BER_CLASS_APP,
 	    (unsigned long)LDAP_REQ_BIND, VERSION, binddn, bindcred,
 	    BER_CLASS_CONTEXT, (unsigned long)LDAP_AUTH_SIMPLE);
+	if(elm == NULL)
+		goto fail;
 
 	LDAP_DEBUG("aldap_bind", root);
 
-	if(ber_write_elements(&ldap->ber, root) == -1)
-		return (-1);
+	error = ber_write_elements(&ldap->ber, root);
+	ber_free_elements(root);
+	root = NULL;
+	if (error == -1)
+		goto fail;
 
 	return (ldap->msgid);
+fail:
+	if(root != NULL)
+		ber_free_elements(root);
+	return (-1);
 }
 
 int
 aldap_unbind(struct aldap *ldap)
 {
-	struct ber_element *root;
+	struct ber_element *root = NULL, *elm;
+	int error;
 
-	root = ber_add_sequence(NULL);
-	ber_printf_elements(root, "d{t", ++ldap->msgid, BER_CLASS_APP,
+	if((root = ber_add_sequence(NULL)) == NULL)
+		goto fail;
+	elm = ber_printf_elements(root, "d{t", ++ldap->msgid, BER_CLASS_APP,
 	    LDAP_REQ_UNBIND_30);
+	if(elm == NULL)
+		goto fail;
 
 	LDAP_DEBUG("aldap_unbind", root);
 
-	if(ber_write_elements(&ldap->ber, root) == -1)
-		return (-1);
+	error = ber_write_elements(&ldap->ber, root);
+	ber_free_elements(root);
+	root = NULL;
+	if (error == -1)
+		goto fail;
 
 	return (ldap->msgid);
+fail:
+	if(root != NULL)
+		ber_free_elements(root);
+
+	return (-1);
 }
 
 int
 aldap_search(struct aldap *ldap, char *basedn, enum scope scope, char *filter,
     char **attrs, int typesonly, int sizelimit, int timelimit)
 {
-	struct ber_element *root, *ber;
-	int i;
+	struct ber_element *root = NULL, *ber;
+	int i, error;
 
-	root = ber_add_sequence(NULL);
+	if((root = ber_add_sequence(NULL)) == NULL)
+		goto fail;
+
 	ber = ber_printf_elements(root, "d{tsEEddb", ++ldap->msgid, BER_CLASS_APP,
 	    (unsigned long)LDAP_REQ_SEARCH, basedn, (long long)scope,
 	    (long long)LDAP_DEREF_NEVER, sizelimit, timelimit, typesonly);
+	if(ber == NULL)
+		goto fail;
 
-	ber = ldap_parse_search_filter(ber, filter);
-	ber = ber_add_sequence(ber);
+	if((ber = ldap_parse_search_filter(ber, filter)) == NULL)
+		goto parsefail;
 
+	if((ber = ber_add_sequence(ber)) == NULL)
+		goto fail;
 	if(attrs != NULL)
-		for(i = 0; i >= 0 && attrs[i] != NULL; i++)
-			ber = ber_add_string(ber, attrs[i]);
+		for(i = 0; i >= 0 && attrs[i] != NULL; i++) {
+			if((ber = ber_add_string(ber, attrs[i])) == NULL)
+				goto fail;
+		}
 
 	LDAP_DEBUG("aldap_search", root);
 
-	if(ber_write_elements(&ldap->ber, root) == -1)
-		return (-1);
+	error = ber_write_elements(&ldap->ber, root);
+	ber_free_elements(root);
+	root = NULL;
+	if (error == -1)
+		goto fail;
 
 	return (ldap->msgid);
+
+parsefail: /* XXX -- error reporting */
+fail:
+	if(root != NULL)
+		ber_free_elements(root);
+
+	return (-1);
 }
 
 struct aldap_message *
@@ -135,7 +177,7 @@ aldap_parse(struct aldap *ldap)
 		return NULL;
 
 	if((m->msg = ber_read_elements(&ldap->ber, NULL)) == NULL)
-		return NULL;
+		goto parsefail;
 
 	LDAP_DEBUG("message", m->msg);
 
@@ -162,7 +204,7 @@ aldap_parse(struct aldap *ldap)
 		break;
 	case LDAP_RES_SEARCH_ENTRY:
 		if(ber_scanf_elements(m->protocol_op, "{eS{e", &m->dn,
-			    &m->body.search.entries) != 0)
+		    &m->body.search.entries) != 0)
 			goto parsefail;
 		break;
 	case LDAP_RES_SEARCH_REFERENCE:
@@ -173,13 +215,15 @@ aldap_parse(struct aldap *ldap)
 
 	return m;
 parsefail:
+	aldap_freemsg(m);
 	return NULL;
 }
 
 void
 aldap_freemsg(struct aldap_message *msg)
 {
-	ber_free_elements(msg->msg);
+	if (msg->msg)
+		ber_free_elements(msg->msg);
 	free(msg);
 }
 
@@ -291,10 +335,11 @@ aldap_next_entry(struct aldap_message *msg, char **outkey, char ***outvalues)
 	char *key;
 	char **ret;
 
-	LDAP_DEBUG("entry", msg->body.search.iter);
-
 	if(msg->body.search.iter == NULL)
 		goto notfound;
+
+	LDAP_DEBUG("entry", msg->body.search.iter);
+
 	if(ber_get_eoc(msg->body.search.iter) == 0)
 		goto notfound;
 
@@ -325,10 +370,10 @@ aldap_match_entry(struct aldap_message *msg, char *inkey, char ***outvalues)
 	char *descr = NULL;
 	char **ret;
 
-	LDAP_DEBUG("entry", msg->search_entries);
-
 	if(msg->body.search.entries == NULL)
 		return (-1);
+
+	LDAP_DEBUG("entry", msg->body.search.entries);
 
 	for(a = msg->body.search.entries;;) {
 		if(a == NULL)
@@ -569,7 +614,7 @@ ldap_parse_search_filter(struct ber_element *ber, char *filter)
 static struct ber_element *
 ldap_do_parse_search_filter(struct ber_element *prev, char **cpp)
 {
-	struct ber_element *elm, *root;
+	struct ber_element *elm, *root = NULL;
 	char *attr_desc, *attr_val, *parsed_val, *cp;
 	size_t len;
 	unsigned long type;
@@ -719,11 +764,10 @@ ldap_do_parse_search_filter(struct ber_element *prev, char **cpp)
 			break;
 		}
 
-		if((parsed_val = parseval(attr_val, len)) ==
-		    NULL)
+		if((parsed_val = parseval(attr_val, len)) == NULL)
 			goto callfail;
-		if ((elm = ber_add_nstring(elm, parsed_val, strlen(parsed_val)))
-		    == NULL)
+		if ((elm = ber_add_nstring(elm, parsed_val,
+				    strlen(parsed_val))) == NULL)
 			goto callfail;
 		free(parsed_val);
 		break;
@@ -737,7 +781,9 @@ ldap_do_parse_search_filter(struct ber_element *prev, char **cpp)
 syntaxfail:		/* XXX -- error reporting */
 callfail:
 bad:
-	ber_free_elements(root);
+	if(root != NULL)
+		ber_free_elements(root);
+	ber_link_elements(prev, NULL);
 	return (NULL);
 }
 

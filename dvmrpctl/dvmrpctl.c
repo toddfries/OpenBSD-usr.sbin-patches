@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpctl.c,v 1.4 2007/10/15 02:16:35 deraadt Exp $ */
+/*	$OpenBSD: dvmrpctl.c,v 1.6 2009/01/24 16:23:52 michele Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -67,7 +67,7 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s <command> [arg [...]]\n", __progname);
+	fprintf(stderr, "usage: %s command [argument ...]\n", __progname);
 	exit(1);
 }
 
@@ -337,8 +337,8 @@ show_interface_detail_msg(struct imsg *imsg)
 			    fmt_timeframe_core(iface->probe_timer));
 		printf("    Uptime %s\n", iface->uptime == 0 ?
 		    "00:00:00" : fmt_timeframe_core(iface->uptime));
-		printf("  Neighbor count is %d, adjacent neighbor count is "
-		    "%d\n", iface->nbr_cnt, iface->adj_cnt);
+		printf("  Adjacent neighbor count is "
+		    "%d\n", iface->adj_cnt);
 		break;
 	case IMSG_CTL_END:
 		printf("\n");

@@ -1,4 +1,4 @@
-/*	$OpenBSD: database.c,v 1.7 2008/02/11 13:48:39 norby Exp $ */
+/*	$OpenBSD: database.c,v 1.9 2008/12/28 20:08:31 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -136,7 +136,8 @@ send_db_description(struct nbr *nbr)
 		fatalx("send_db_description: unknown interface type");
 	}
 
-	dd_hdr.opts = area_ospf_options(area_find(oeconf, nbr->iface->area_id));
+	dd_hdr.opts = htonl(area_ospf_options(area_find(oeconf,
+	    nbr->iface->area_id)));
 	dd_hdr.bits = bits;
 	dd_hdr.dd_seq_num = htonl(nbr->dd_seq_num);
 
@@ -233,16 +234,15 @@ recv_db_description(struct nbr *nbr, char *buf, u_int16_t len)
 			}
 			nbr->dd_seq_num++;
 
+			/* event negotiation done */
+			nbr_fsm(nbr, NBR_EVT_NEG_DONE);
+
 			/* this packet may already have data so pass it on */
 			if (len > 0) {
 				nbr->dd_pending++;
 				ospfe_imsg_compose_rde(IMSG_DD, nbr->peerid,
 				    0, buf, len);
 			}
-
-			/* event negotiation done */
-			nbr_fsm(nbr, NBR_EVT_NEG_DONE);
-
 		} else {
 			/* ignore packet */
 			log_debug("recv_db_description: packet ignored in "

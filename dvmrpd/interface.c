@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.5 2007/09/11 18:23:05 claudio Exp $ */
+/*	$OpenBSD: interface.c,v 1.7 2009/01/20 01:35:34 todd Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>

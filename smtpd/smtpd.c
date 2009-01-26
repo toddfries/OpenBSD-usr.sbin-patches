@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.11 2008/11/22 22:22:05 gilles Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.24 2009/01/21 00:00:30 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -26,19 +26,23 @@
 #include <sys/stat.h>
 #include <sys/uio.h>
 
+#include <bsd_auth.h>
 #include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <login_cap.h>
 #include <paths.h>
 #include <pwd.h>
+#include <regex.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
 #include <unistd.h>
+
+#include <keynote.h>
 
 #include "smtpd.h"
 
@@ -67,6 +71,7 @@ pid_t	mda_pid = 0;
 pid_t	mta_pid = 0;
 pid_t	control_pid = 0;
 pid_t	smtp_pid = 0;
+pid_t	runner_pid = 0;
 
 
 int __b64_pton(char const *, unsigned char *, size_t);
@@ -93,7 +98,8 @@ parent_shutdown(void)
 		mda_pid,
 		mta_pid,
 		control_pid,
-		smtp_pid
+		smtp_pid,
+		runner_pid
 	};
 
 	for (i = 0; i < sizeof(pids) / sizeof(pid); i++)
@@ -371,28 +377,24 @@ parent_dispatch_smtp(int fd, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-			/* XXX - NOT ADVERTISED YET */
 		case IMSG_PARENT_AUTHENTICATE: {
 			struct session_auth_req *req;
 			struct session_auth_reply reply;
 			u_int8_t buffer[1024];
 			char *pw_name;
 			char *pw_passwd;
-			struct passwd *pw;
 
 			req = (struct session_auth_req *)imsg.data;
 
 			reply.session_id = req->session_id;
 			reply.value = 0;
 
-			if (__b64_pton(req->buffer, buffer, 1024) >= 0) {
+			if (kn_decode_base64(req->buffer, buffer, sizeof(buffer)) != -1) {
 				pw_name = buffer+1;
 				pw_passwd = pw_name+strlen(pw_name)+1;
-				pw = getpwnam(pw_name);
-				if (pw != NULL)
-					if (strcmp(pw->pw_passwd, crypt(pw_passwd,
-						    pw->pw_passwd)) == 0)
-						reply.value = 1;
+
+				if (auth_userokay(pw_name, NULL, "auth-smtp", pw_passwd))
+					reply.value = 1;
 			}
 			imsg_compose(ibuf, IMSG_PARENT_AUTHENTICATE, 0, 0,
 			    -1, &reply, sizeof(reply));
@@ -426,6 +428,7 @@ parent_sig_handler(int sig, short event, void *p)
 		{ mta_pid,	"mail transfer agent" },
 		{ control_pid,	"control process" },
 		{ smtp_pid,	"smtp server" },
+		{ runner_pid,	"runner" },
 		{ 0,		NULL },
 	};
 
@@ -469,6 +472,8 @@ parent_sig_handler(int sig, short event, void *p)
 					log_debug("DEBUG: external mda process has terminated in a baaaad way");
 				}
 
+				SPLAY_REMOVE(mdaproctree, &env->mdaproc_queue,
+				    mdaproc);
 				free(mdaproc);
 			}
 		} while (pid > 0 || (pid == -1 && errno == EINTR));
@@ -570,6 +575,7 @@ main(int argc, char *argv[])
 	mta_pid = mta(&env);
 	smtp_pid = smtp(&env);
 	control_pid = control(&env);
+	runner_pid = runner(&env);
 
 	setproctitle("parent");
 	SPLAY_INIT(&env.mdaproc_queue);
@@ -622,15 +628,14 @@ int
 setup_spool(uid_t uid, gid_t gid)
 {
 	unsigned int	 n;
-	char		*paths[] = { PATH_MESSAGES, PATH_LOCAL, PATH_RELAY,
-				     PATH_DAEMON, PATH_ENVELOPES };
+	char		*paths[] = { PATH_INCOMING, PATH_QUEUE, PATH_PURGE,
+				     PATH_RUNQUEUE, PATH_RUNQUEUELOW,
+				     PATH_RUNQUEUEHIGH };
 	char		 pathname[MAXPATHLEN];
 	struct stat	 sb;
 	int		 ret;
-	int spret;
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s", PATH_SPOOL);
-	if (spret == -1 || spret >= MAXPATHLEN)
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s", PATH_SPOOL))
 		fatal("snprintf");
 
 	if (stat(pathname, &sb) == -1) {
@@ -675,9 +680,8 @@ setup_spool(uid_t uid, gid_t gid)
 
 	ret = 1;
 	for (n = 0; n < sizeof(paths)/sizeof(paths[0]); n++) {
-		spret = snprintf(pathname, MAXPATHLEN, "%s%s", PATH_SPOOL,
-		    paths[n]);
-		if (spret == -1 || spret >= MAXPATHLEN)
+		if (! bsnprintf(pathname, MAXPATHLEN, "%s%s", PATH_SPOOL,
+			paths[n]))
 			fatal("snprintf");
 
 		if (stat(pathname, &sb) == -1) {
@@ -750,11 +754,14 @@ parent_open_message_file(struct batch *batchp)
 {
 	int fd;
 	char pathname[MAXPATHLEN];
-	int spret;
+	u_int16_t hval;
+	struct message *messagep;
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s%s/%s",
-	    PATH_SPOOL, PATH_MESSAGES, batchp->message_id);
-	if (spret == -1 || spret >= MAXPATHLEN) {
+	messagep = &batchp->message;
+	hval = queue_hash(messagep->message_id);
+
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s%s/%d/%s/message",
+		PATH_SPOOL, PATH_QUEUE, hval, batchp->message_id)) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
 	}
@@ -769,17 +776,15 @@ parent_open_mailbox(struct batch *batchp, struct path *path)
 	int fd;
 	struct passwd *pw;
 	char pathname[MAXPATHLEN];
-	int spret;
 	mode_t mode = O_CREAT|O_APPEND|O_RDWR|O_SYNC|O_NONBLOCK;
 
-	pw = getpwnam(path->pw_name);
+	pw = safe_getpwnam(path->pw_name);
 	if (pw == NULL) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
 	}
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path);
-	if (spret == -1 || spret >= MAXPATHLEN)
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path))
 		return -1;
 
 	fd = open(pathname, mode, 0600);
@@ -797,25 +802,32 @@ parent_open_mailbox(struct batch *batchp, struct path *path)
 		case EMFILE:
 		case ENFILE:
 		case ENOSPC:
-		case EWOULDBLOCK:
 			batchp->message.status |= S_MESSAGE_TEMPFAILURE;
 			break;
+		case EWOULDBLOCK:
+			goto lockfail;
 		default:
 			batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		}
-
 		return -1;
 	}
 
 	if (flock(fd, LOCK_EX|LOCK_NB) == -1) {
-		close(fd);
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return -1;
+		if (errno == EWOULDBLOCK)
+			goto lockfail;
+		fatal("flock");
 	}
 
 	fchown(fd, pw->pw_uid, 0);
 
 	return fd;
+
+lockfail:
+	if (fd != -1)
+		close(fd);
+
+	batchp->message.status |= S_MESSAGE_TEMPFAILURE|S_MESSAGE_LOCKFAILURE;
+	return -1;
 }
 
 
@@ -825,17 +837,15 @@ parent_open_maildir(struct batch *batchp, struct path *path)
 	int fd;
 	struct passwd *pw;
 	char pathname[MAXPATHLEN];
-	int spret;
 	mode_t mode = O_CREAT|O_RDWR|O_TRUNC|O_SYNC;
 
-	pw = getpwnam(path->pw_name);
+	pw = safe_getpwnam(path->pw_name);
 	if (pw == NULL) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
 	}
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path);
-	if (spret == -1 || spret >= MAXPATHLEN)
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path))
 		return -1;
 
 	if (! parent_maildir_init(pw, pathname)) {
@@ -843,22 +853,14 @@ parent_open_maildir(struct batch *batchp, struct path *path)
 		return -1;
 	}
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s/tmp/%s",
-	    pathname, batchp->message.message_uid);
-
-	if (spret == -1 || spret >= MAXPATHLEN) {
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s/tmp/%s",
+		pathname, batchp->message.message_uid)) {
 		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
 		return -1;
 	}
 
 	fd = open(pathname, mode, 0600);
 	if (fd == -1) {
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return -1;
-	}
-
-	if (flock(fd, LOCK_EX|LOCK_NB) == -1) {
-		close(fd);
 		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
 		return -1;
 	}
@@ -874,11 +876,9 @@ parent_maildir_init(struct passwd *pw, char *root)
 	u_int8_t i;
 	char pathname[MAXPATHLEN];
 	char *subdir[] = { "/", "/tmp", "/cur", "/new" };
-	int spret;
 
 	for (i = 0; i < sizeof (subdir) / sizeof (char *); ++i) {
-		spret = snprintf(pathname, MAXPATHLEN, "%s%s", root, subdir[i]);
-		if (spret == -1 || spret >= MAXPATHLEN)
+		if (! bsnprintf(pathname, MAXPATHLEN, "%s%s", root, subdir[i]))
 			return 0;
 		if (mkdir(pathname, 0700) == -1)
 			if (errno != EEXIST)
@@ -896,7 +896,7 @@ parent_rename_mailfile(struct batch *batchp)
 	char srcpath[MAXPATHLEN];
 	char dstpath[MAXPATHLEN];
 	struct path *path;
-	int spret;
+	int ret;
 
 	if (batchp->type & T_DAEMON_BATCH) {
 		path = &batchp->message.sender;
@@ -905,28 +905,29 @@ parent_rename_mailfile(struct batch *batchp)
 		path = &batchp->message.recipient;
 	}
 
-	pw = getpwnam(path->pw_name);
+	pw = safe_getpwnam(path->pw_name);
 	if (pw == NULL) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return 0;
 	}
 
-	spret = snprintf(srcpath, MAXPATHLEN, "%s/tmp/%s",
-	    path->rule.r_value.path, batchp->message.message_uid);
-	if (spret == -1 || spret >= MAXPATHLEN)
+	if (! bsnprintf(srcpath, MAXPATHLEN, "%s/tmp/%s",
+		path->rule.r_value.path, batchp->message.message_uid) ||
+	    ! bsnprintf(dstpath, MAXPATHLEN, "%s/new/%s",
+		path->rule.r_value.path, batchp->message.message_uid))
 		return 0;
 
-	spret = snprintf(dstpath, MAXPATHLEN, "%s/new/%s",
-	    path->rule.r_value.path, batchp->message.message_uid);
-	if (spret == -1 || spret >= MAXPATHLEN)
-		return 0;
-
+	ret = 1;
+	if (setegid(pw->pw_gid) || seteuid(pw->pw_uid))
+		fatal("privdrop failed");
 	if (rename(srcpath, dstpath) == -1) {
+		ret = 0;
 		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return 0;
 	}
+	if (setegid(0) || seteuid(0))
+		fatal("privdrop failed");
 
-	return 1;
+	return ret;
 }
 
 int
@@ -943,7 +944,7 @@ parent_external_mda(struct batch *batchp, struct path *path)
 		pw_name = SMTPD_USER;
 
 	log_debug("executing filter as user: %s", pw_name);
-	pw = getpwnam(pw_name);
+	pw = safe_getpwnam(pw_name);
 	if (pw == NULL) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
@@ -995,11 +996,9 @@ parent_open_filename(struct batch *batchp, struct path *path)
 {
 	int fd;
 	char pathname[MAXPATHLEN];
-	int spret;
 	mode_t mode = O_CREAT|O_APPEND|O_RDWR|O_SYNC|O_NONBLOCK;
 
-	spret = snprintf(pathname, MAXPATHLEN, "%s", path->u.filename);
-	if (spret == -1 || spret >= MAXPATHLEN)
+	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->u.filename))
 		return -1;
 
 	fd = open(pathname, mode, 0600);
@@ -1017,9 +1016,10 @@ parent_open_filename(struct batch *batchp, struct path *path)
 		case EMFILE:
 		case ENFILE:
 		case ENOSPC:
-		case EWOULDBLOCK:
 			batchp->message.status |= S_MESSAGE_TEMPFAILURE;
 			break;
+		case EWOULDBLOCK:
+			goto lockfail;
 		default:
 			batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		}
@@ -1027,12 +1027,19 @@ parent_open_filename(struct batch *batchp, struct path *path)
 	}
 
 	if (flock(fd, LOCK_EX|LOCK_NB) == -1) {
-		close(fd);
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return -1;
+		if (errno == EWOULDBLOCK)
+			goto lockfail;
+		fatal("flock");
 	}
 
 	return fd;
+
+lockfail:
+	if (fd != -1)
+		close(fd);
+
+	batchp->message.status |= S_MESSAGE_TEMPFAILURE|S_MESSAGE_LOCKFAILURE;
+	return -1;
 }
 
 int

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.10 2008/02/11 13:48:39 norby Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.14 2009/01/03 00:23:50 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -34,7 +34,7 @@ int		 lsa_intra_a_pref_check(struct lsa *, u_int16_t);
 void		 lsa_timeout(int, short, void *);
 void		 lsa_refresh(struct vertex *);
 int		 lsa_equal(struct lsa *, struct lsa *);
-int		 lsa_get_prefix(void *, u_int16_t, struct lsa_prefix *);
+int		 lsa_get_prefix(void *, u_int16_t, struct rt_prefix *);
 
 RB_GENERATE(lsa_tree, vertex, entry, lsa_compare)
 
@@ -348,9 +348,10 @@ lsa_intra_a_pref_check(struct lsa *lsa, u_int16_t len)
 int
 lsa_self(struct rde_nbr *nbr, struct lsa *new, struct vertex *v)
 {
-#if 0
 	struct lsa	*dummy;
+#if 0
 	struct iface	*iface;
+#endif
 
 	if (nbr->self)
 		return (0);
@@ -358,10 +359,13 @@ lsa_self(struct rde_nbr *nbr, struct lsa *new, struct vertex *v)
 	if (rde_router_id() == new->hdr.adv_rtr)
 		goto self;
 
+#if 0
+	/* TODO: Do we need something like this for *-prefix-LSAs? */
 	if (ntohs(new->hdr.type) == LSA_TYPE_NETWORK)
 		LIST_FOREACH(iface, &nbr->area->iface_list, entry)
-		    if (iface->addr.s_addr == new->hdr.ls_id)
-			    goto self;
+			if (iface->addr.s_addr == new->hdr.ls_id)
+				goto self;
+#endif
 
 	return (0);
 self:
@@ -393,8 +397,6 @@ self:
 	v->lsa->hdr.seq_num = new->hdr.seq_num;
 	lsa_refresh(v);
 	return (1);
-#endif
-	return (0);
 }
 
 int
@@ -580,9 +582,9 @@ lsa_num_links(struct vertex *v)
 }
 
 void
-lsa_snap(struct area *area, u_int32_t peerid)
+lsa_snap(struct rde_nbr *nbr, u_int32_t peerid)
 {
-	struct lsa_tree	*tree = &area->lsa_tree;
+	struct lsa_tree	*tree = &nbr->area->lsa_tree;
 	struct vertex	*v;
 
 	do {
@@ -598,9 +600,14 @@ lsa_snap(struct area *area, u_int32_t peerid)
 				    0, &v->lsa->hdr, sizeof(struct lsa_hdr));
 			}
 		}
-		if (tree != &area->lsa_tree)
+		if (tree == &asext_tree)
 			break;
-		tree = &asext_tree;
+		if (tree == &nbr->area->lsa_tree) {
+			tree = &nbr->iface->lsa_tree;
+			continue;
+		} else 
+			tree = &asext_tree;
+
 	} while (1);
 }
 
@@ -624,6 +631,10 @@ lsa_dump(struct lsa_tree *tree, int imsg_type, pid_t pid)
 			continue;
 		case IMSG_CTL_SHOW_DB_EXT:
 			if (v->type == LSA_TYPE_EXTERNAL)
+				break;
+			continue;
+		case IMSG_CTL_SHOW_DB_LINK:
+			if (v->type == LSA_TYPE_LINK)
 				break;
 			continue;
 		case IMSG_CTL_SHOW_DB_NET:
@@ -816,26 +827,27 @@ lsa_equal(struct lsa *a, struct lsa *b)
 }
 
 int
-lsa_get_prefix(void *buf, u_int16_t len, struct lsa_prefix *p)
+lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 {
-	u_int32_t	*buf32 = buf;
-	u_int32_t	*addr = NULL;
-	u_int8_t	 prefixlen;
+	struct lsa_prefix	*lp = buf;
+	u_int32_t		*buf32, *addr = NULL;
+	u_int8_t		 prefixlen;
 
-	if (len < sizeof(u_int32_t))
+	if (len < sizeof(*lp))
 		return (-1);
 
-	prefixlen = ntohl(*buf32) >> 24;
+	prefixlen = lp->prefixlen;
 
 	if (p) {
 		bzero(p, sizeof(*p));
-		p->prefixlen = prefixlen;
-		p->options = (ntohl(*buf32) >> 16) & 0xff;
-		p->metric = *buf32 & 0xffff;
+		p->prefixlen = lp->prefixlen;
+		p->options = lp->options;
+		p->metric = ntohs(lp->metric);
 		addr = (u_int32_t *)&p->prefix;
 	}
-	buf32++;
-	len -= sizeof(u_int32_t);
+
+	buf32 = (u_int32_t *)(lp + 1);
+	len -= sizeof(*lp);
 
 	for (; ((prefixlen + 31) / 32) > 0; prefixlen -= 32) {
 		if (len < sizeof(u_int32_t))

@@ -1,4 +1,4 @@
-/*	$OpenBSD: aliases.c,v 1.7 2008/11/25 23:01:00 gilles Exp $	*/
+/*	$OpenBSD: aliases.c,v 1.14 2009/01/07 00:26:30 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,24 +24,17 @@
 
 #include <ctype.h>
 #include <db.h>
-#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
-#include <paths.h>
-#include <pwd.h>
-#include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <util.h>
 
 #include "smtpd.h"
 
 int aliases_expand_include(struct aliaseslist *, char *);
-int alias_parse(struct alias *, char *);
 int alias_is_filter(struct alias *, char *, size_t);
 int alias_is_username(struct alias *, char *, size_t);
 int alias_is_address(struct alias *, char *, size_t);
@@ -60,11 +53,6 @@ aliases_exist(struct smtpd *env, char *username)
 	map = map_findbyname(env, "aliases");
 	if (map == NULL)
 		return 0;
-
-	if (map->m_src != S_DB) {
-		log_info("map source for \"aliases\" must be \"db\".");
-		return 0;
-	}
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL)
@@ -89,7 +77,7 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 	DBT key;
 	DBT val;
 	DB *aliasesdb;
-	size_t nbaliases;
+	size_t nbaliases, nbsave;
 	struct alias alias;
 	struct alias *aliasp;
 	struct alias *nextalias;
@@ -98,11 +86,6 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 	map = map_findbyname(env, "aliases");
 	if (map == NULL)
 		return 0;
-
-	if (map->m_src != S_DB) {
-		log_info("map source for \"aliases\" must be \"db\".");
-		return 0;
-	}
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL)
@@ -116,7 +99,7 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 		return 0;
 	}
 
-	nbaliases = val.size / sizeof(struct alias);
+	nbsave = nbaliases = val.size / sizeof(struct alias);
 	if (nbaliases == 0) {
 		aliasesdb->close(aliasesdb);
 		return 0;
@@ -132,13 +115,13 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 		else {
 			aliasp = calloc(1, sizeof(struct alias));
 			if (aliasp == NULL)
-				err(1, "calloc");
+				fatal("aliases_get: calloc");
 			*aliasp = alias;
 			TAILQ_INSERT_HEAD(aliases, aliasp, entry);
 		}
 	} while (--nbaliases);
 	aliasesdb->close(aliasesdb);
-	return 1;
+	return nbsave;
 }
 
 int
@@ -150,23 +133,17 @@ aliases_virtual_exist(struct smtpd *env, struct path *path)
 	DB *aliasesdb;
 	struct map *map;
 	char	strkey[MAX_LINE_SIZE];
-	int spret;
 
 	map = map_findbyname(env, "virtual");
 	if (map == NULL)
 		return 0;
 
-	if (map->m_src != S_DB) {
-		log_info("map source for \"virtual\" must be \"db\".");
-		return 0;
-	}
-
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL)
 		return 0;
 
-	spret = snprintf(strkey, MAX_LINE_SIZE, "%s@%s", path->user, path->domain);
-	if (spret == -1 || spret >= MAX_LINE_SIZE) {
+	if (! bsnprintf(strkey, MAX_LINE_SIZE, "%s@%s", path->user,
+		path->domain)) {
 		aliasesdb->close(aliasesdb);
 		return 0;
 	}
@@ -176,8 +153,7 @@ aliases_virtual_exist(struct smtpd *env, struct path *path)
 
 	if ((ret = aliasesdb->get(aliasesdb, &key, &val, 0)) != 0) {
 
-		spret = snprintf(strkey, MAX_LINE_SIZE, "@%s", path->domain);
-		if (spret == -1 || spret >= MAX_LINE_SIZE) {
+		if (! bsnprintf(strkey, MAX_LINE_SIZE, "@%s", path->domain)) {
 			aliasesdb->close(aliasesdb);
 			return 0;
 		}
@@ -203,29 +179,23 @@ aliases_virtual_get(struct smtpd *env, struct aliaseslist *aliases,
 	DBT key;
 	DBT val;
 	DB *aliasesdb;
-	size_t nbaliases;
+	size_t nbaliases, nbsave;
 	struct alias alias;
 	struct alias *aliasp;
 	struct alias *nextalias;
 	struct map *map;
 	char	strkey[MAX_LINE_SIZE];
-	int spret;
 
 	map = map_findbyname(env, "virtual");
 	if (map == NULL)
 		return 0;
 
-	if (map->m_src != S_DB) {
-		log_info("map source for \"virtual\" must be \"db\".");
-		return 0;
-	}
-
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL)
 		return 0;
 
-	spret = snprintf(strkey, MAX_LINE_SIZE, "%s@%s", path->user, path->domain);
-	if (spret == -1 || spret >= MAX_LINE_SIZE) {
+	if (! bsnprintf(strkey, MAX_LINE_SIZE, "%s@%s", path->user,
+		path->domain)) {
 		aliasesdb->close(aliasesdb);
 		return 0;
 	}
@@ -235,8 +205,7 @@ aliases_virtual_get(struct smtpd *env, struct aliaseslist *aliases,
 
 	if ((ret = aliasesdb->get(aliasesdb, &key, &val, 0)) != 0) {
 
-		spret = snprintf(strkey, MAX_LINE_SIZE, "@%s", path->domain);
-		if (spret == -1 || spret >= MAX_LINE_SIZE) {
+		if (! bsnprintf(strkey, MAX_LINE_SIZE, "@%s", path->domain)) {
 			aliasesdb->close(aliasesdb);
 			return 0;
 		}
@@ -250,7 +219,7 @@ aliases_virtual_get(struct smtpd *env, struct aliaseslist *aliases,
 		}
 	}
 
-	nbaliases = val.size / sizeof(struct alias);
+	nbsave = nbaliases = val.size / sizeof(struct alias);
 	if (nbaliases == 0) {
 		aliasesdb->close(aliasesdb);
 		return 0;
@@ -266,13 +235,13 @@ aliases_virtual_get(struct smtpd *env, struct aliaseslist *aliases,
 		else {
 			aliasp = calloc(1, sizeof(struct alias));
 			if (aliasp == NULL)
-				err(1, "calloc");
+				fatal("aliases_virtual_get: calloc");
 			*aliasp = alias;
 			TAILQ_INSERT_HEAD(aliases, aliasp, entry);
 		}
 	} while (--nbaliases);
 	aliasesdb->close(aliasesdb);
-	return 1;
+	return nbsave;
 }
 
 int
@@ -288,7 +257,7 @@ aliases_expand_include(struct aliaseslist *aliases, char *filename)
 
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
-		warnx("failed to open include file \"%s\".", filename);
+		log_warnx("failed to open include file \"%s\".", filename);
 		return 0;
 	}
 
@@ -298,16 +267,16 @@ aliases_expand_include(struct aliaseslist *aliases, char *filename)
 			continue;
 		}
 		if (! alias_parse(&alias, line)) {
-			warnx("could not parse include entry \"%s\".", line);
+			log_warnx("could not parse include entry \"%s\".", line);
 		}
 
 		if (alias.type == ALIAS_INCLUDE) {
-			warnx("nested inclusion is not supported.");
+			log_warnx("nested inclusion is not supported.");
 		}
 		else {
 			aliasp = calloc(1, sizeof(struct alias));
 			if (aliasp == NULL)
-				err(1, "calloc");
+				fatal("aliases_expand_include: calloc");
 			*aliasp = alias;
 			TAILQ_INSERT_TAIL(aliases, aliasp, entry);
 		}

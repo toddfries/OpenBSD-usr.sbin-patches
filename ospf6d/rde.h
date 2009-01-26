@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.5 2007/11/27 12:23:06 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.7 2009/01/03 00:23:50 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -74,6 +74,14 @@ struct rde_nbr {
 	int				 self;
 };
 
+/* expanded and host-byte-order version of a lsa_prefix */
+struct rt_prefix {
+	struct in6_addr	prefix;
+	u_int16_t	metric;
+	u_int8_t	prefixlen;
+	u_int8_t	options;
+};
+
 struct rt_nexthop {
 	TAILQ_ENTRY(rt_nexthop)	entry;
 	struct in6_addr		nexthop;
@@ -133,7 +141,7 @@ void		 lsa_age(struct vertex *);
 struct vertex	*lsa_find(struct iface *, u_int16_t, u_int32_t, u_int32_t);
 struct vertex	*lsa_find_net(struct area *area, u_int32_t);
 u_int16_t	 lsa_num_links(struct vertex *);
-void		 lsa_snap(struct area *, u_int32_t);
+void		 lsa_snap(struct rde_nbr *, u_int32_t);
 void		 lsa_dump(struct lsa_tree *, int, pid_t);
 void		 lsa_merge(struct rde_nbr *, struct lsa *, struct vertex *);
 void		 lsa_remove_invalid_sums(struct area *);

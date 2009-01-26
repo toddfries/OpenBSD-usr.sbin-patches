@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfctl.c,v 1.41 2007/10/15 02:16:35 deraadt Exp $ */
+/*	$OpenBSD: ospfctl.c,v 1.44 2009/01/02 00:09:53 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -76,7 +76,7 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s <command> [arg [...]]\n", __progname);
+	fprintf(stderr, "usage: %s command [argument ...]\n", __progname);
 	exit(1);
 }
 
@@ -364,6 +364,7 @@ show_interface_msg(struct imsg *imsg)
 			err(1, NULL);
 		printf("%-11s %-18s %-6s %-10s %-10s %s %3d %3d\n",
 		    iface->name, netid, if_state_name(iface->state),
+		    iface->hello_timer < 0 ? "-" :
 		    fmt_timeframe_core(iface->hello_timer),
 		    get_linkstate(get_ifms_type(iface->mediatype),
 		    iface->linkstate), fmt_timeframe_core(iface->uptime),
@@ -1103,7 +1104,7 @@ void
 show_fib_head(void)
 {
 	printf("flags: * = valid, O = OSPF, C = Connected, S = Static\n");
-	printf("%-6s %-20s %-17s\n", "Flags", "Destination", "Nexthop");
+	printf("%-6s %-4s %-20s %-17s\n", "Flags", "Prio", "Destination", "Nexthop");
 }
 
 int
@@ -1133,6 +1134,7 @@ show_fib_msg(struct imsg *imsg)
 			printf(" ");
 
 		printf("     ");
+		printf("%4d ", k->priority);
 		if (asprintf(&p, "%s/%u", inet_ntoa(k->prefix), k->prefixlen) ==
 		    -1)
 			err(1, NULL);

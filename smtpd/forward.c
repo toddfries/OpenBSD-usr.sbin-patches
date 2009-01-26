@@ -1,4 +1,4 @@
-/*	$OpenBSD: forward.c,v 1.4 2008/11/25 23:06:15 gilles Exp $	*/
+/*	$OpenBSD: forward.c,v 1.10 2009/01/08 19:17:31 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,24 +24,15 @@
 #include <sys/stat.h>
 
 #include <ctype.h>
-#include <db.h>
-#include <err.h>
 #include <errno.h>
 #include <event.h>
-#include <fcntl.h>
-#include <paths.h>
 #include <pwd.h>
-#include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <util.h>
 
 #include "smtpd.h"
-
-int alias_parse(struct alias *, char *);
 
 int
 forwards_get(struct aliaseslist *aliases, char *username)
@@ -50,12 +41,13 @@ forwards_get(struct aliaseslist *aliases, char *username)
 	struct alias alias;
 	struct alias *aliasp;
 	char	pathname[MAXPATHLEN];
-	struct passwd *pw;
 	char *buf, *lbuf;
 	size_t len;
 	struct stat sb;
+	struct passwd *pw;
+	size_t nbaliases = 0;
 
-	pw = getpwnam(username);
+	pw = safe_getpwnam(username);
 	if (pw == NULL)
 		return 0;
 
@@ -108,11 +100,12 @@ forwards_get(struct aliaseslist *aliases, char *username)
 			fatal("calloc");
 		*aliasp = alias;
 		TAILQ_INSERT_HEAD(aliases, aliasp, entry);
+		nbaliases++;
 
 	}
 	free(lbuf);
 	fclose(fp);
-	return 1;
+	return nbaliases;
 
 bad:
 	log_debug("+ forward file error, probably bad perms/mode");

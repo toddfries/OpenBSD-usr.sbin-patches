@@ -1,4 +1,4 @@
-/*	$OpenBSD: dns.c,v 1.4 2008/11/25 23:03:24 gilles Exp $	*/
+/*	$OpenBSD: dns.c,v 1.7 2009/01/01 16:15:47 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -20,21 +20,16 @@
 #include <sys/socket.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
-#include <sys/time.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
 
-#include <err.h>
 #include <event.h>
-#include <netdb.h>
 #include <resolv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sysexits.h>
-#include <unistd.h>
 
 #include "smtpd.h"
 
@@ -49,7 +44,7 @@ static void
 mxsort(struct mxrecord *array, size_t len)
 {
 	u_int32_t i;
-	u_int32_t j;
+	int32_t j;
 	struct mxrecord store;
 
 	for (i = 1; i < len; i++) {
@@ -171,9 +166,8 @@ getmxbyname(char *name, char ***result)
 	chunklen += ((mxnb + 1) * sizeof(char *));
 
 	*result = calloc(1, chunklen);
-	if (*result == NULL) {
-		err(1, "calloc");
-	}
+	if (*result == NULL)
+		fatal("getmxbyname: calloc");
 
 	ptr = (u_int8_t *)*result + (mxnb + 1) * sizeof(char *);
 	for (i = 0; i < mxnb; ++i) {

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: gpioctl.8,v 1.16 2008/11/29 09:19:25 mbalmer Exp $
+.\"	$OpenBSD: gpioctl.8,v 1.19 2008/12/05 15:45:53 stevesk Exp $
 .\"
 .\" Copyright (c) 2004 Alexander Yurchenko <grange@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: November 29 2008 $
+.Dd $Mdocdate: December 5 2008 $
 .Dt GPIOCTL 8
 .Os
 .Sh NAME
@@ -69,12 +69,14 @@ to its pins.
 Each GPIO device has an associated device file in the
 .Pa /dev
 directory.
-By default
-.Nm
-uses
-.Pa /dev/gpio0 ,
-which corresponds to the first found
-GPIO device in the system.
+.Ar device
+can be specified with or without the
+.Pa /dev
+prefix.
+For example,
+.Pa /dev/gpio0
+or
+.Pa gpio0 .
 .Pp
 GPIO pins can be either
 .Dq read
@@ -163,7 +165,7 @@ file.
 .Sh EXAMPLES
 Configure pin 20 to have push-pull output:
 .Pp
-.Dl # gpioctl gpio0 20 out pp
+.Dl # gpioctl gpio0 20 set out pp
 .Pp
 Write logical 1 to pin 20:
 .Pp

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.7 2008/11/25 20:26:40 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.13 2009/01/12 19:56:27 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -26,14 +26,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <err.h>
 #include <errno.h>
 #include <event.h>
-#include <fcntl.h>
 #include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -44,6 +40,7 @@ __dead void	mta_shutdown(void);
 void		mta_sig_handler(int, short, void *);
 void		mta_dispatch_parent(int, short, void *);
 void		mta_dispatch_queue(int, short, void *);
+void		mta_dispatch_runner(int, short, void *);
 void		mta_setup_events(struct smtpd *);
 void		mta_disable_events(struct smtpd *);
 void		mta_timeout(int, short, void *);
@@ -150,12 +147,78 @@ mta_dispatch_queue(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_CREATE_BATCH: {
+		case IMSG_QUEUE_MESSAGE_FD: {
+			struct batch	*batchp;
+			int fd;
+
+			if ((fd = imsg_get_fd(ibuf, &imsg)) == -1) {
+				/* NEEDS_FIX - unsure yet how it must be handled */
+				fatalx("mta_dispatch_queue: imsg_get_fd");
+			}
+
+			batchp = (struct batch *)imsg.data;
+			batchp = batch_by_id(env, batchp->id);
+
+			if ((batchp->messagefp = fdopen(fd, "r")) == NULL)
+				fatal("mta_dispatch_queue: fdopen");
+
+			evbuffer_add_printf(batchp->bev->output, "DATA\r\n");
+
+			bufferevent_enable(batchp->bev, EV_WRITE|EV_READ);
+			break;
+		}
+		default:
+			log_debug("parent_dispatch_mta: unexpected imsg %d",
+			    imsg.hdr.type);
+			break;
+		}
+		imsg_free(&imsg);
+	}
+	imsg_event_add(ibuf);
+}
+
+void
+mta_dispatch_runner(int sig, short event, void *p)
+{
+	struct smtpd		*env = p;
+	struct imsgbuf		*ibuf;
+	struct imsg		 imsg;
+	ssize_t			 n;
+
+	ibuf = env->sc_ibufs[PROC_RUNNER];
+	switch (event) {
+	case EV_READ:
+		if ((n = imsg_read(ibuf)) == -1)
+			fatal("imsg_read_error");
+		if (n == 0) {
+			/* this pipe is dead, so remove the event handler */
+			event_del(&ibuf->ev);
+			event_loopexit(NULL);
+			return;
+		}
+		break;
+	case EV_WRITE:
+		if (msgbuf_write(&ibuf->w) == -1)
+			fatal("msgbuf_write");
+		imsg_event_add(ibuf);
+		return;
+	default:
+		fatalx("unknown event");
+	}
+
+	for (;;) {
+		if ((n = imsg_get(ibuf, &imsg)) == -1)
+			fatal("mta_dispatch_runner: imsg_read error");
+		if (n == 0)
+			break;
+
+		switch (imsg.hdr.type) {
+		case IMSG_BATCH_CREATE: {
 			struct batch *batchp;
 
 			batchp = calloc(1, sizeof (struct batch));
 			if (batchp == NULL)
-				err(1, "calloc");
+				fatal("mta_dispatch_runner: calloc");
 
 			*batchp = *(struct batch *)imsg.data;
 			batchp->mx_off = 0;
@@ -173,13 +236,13 @@ mta_dispatch_queue(int sig, short event, void *p)
 
 			messagep = calloc(1, sizeof (struct message));
 			if (messagep == NULL)
-				fatal("calloc");
+				fatal("mta_dispatch_runner: calloc");
 
 			*messagep = *(struct message *)imsg.data;
 
 			batchp = batch_by_id(env, messagep->batch_id);
 			if (batchp == NULL)
-				errx(1, "%s: internal inconsistency.", __func__);
+				fatalx("mta_dispatch_runner: internal inconsistency.");
 
 			TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
 
@@ -191,7 +254,7 @@ mta_dispatch_queue(int sig, short event, void *p)
 			batchp = (struct batch *)imsg.data;
 			batchp = batch_by_id(env, batchp->id);
 			if (batchp == NULL)
-				errx(1, "%s: internal inconsistency.", __func__);
+				fatalx("mta_dispatch_runner: internal inconsistency.");
 
 			batchp->flags |= F_BATCH_COMPLETE;
 
@@ -202,28 +265,8 @@ mta_dispatch_queue(int sig, short event, void *p)
 			}
 			break;
 		}
-		case IMSG_QUEUE_MESSAGE_FD: {
-			struct batch	*batchp;
-			int fd;
-
-			if ((fd = imsg_get_fd(ibuf, &imsg)) == -1) {
-				/* NEEDS_FIX - unsure yet how it must be handled */
-				errx(1, "imsg_get_fd");
-			}
-
-			batchp = (struct batch *)imsg.data;
-			batchp = batch_by_id(env, batchp->id);
-
-			if ((batchp->messagefp = fdopen(fd, "r")) == NULL)
-				err(1, "fdopen");
-
-			evbuffer_add_printf(batchp->bev->output, "DATA\r\n");
-
-			bufferevent_enable(batchp->bev, EV_WRITE|EV_READ);
-			break;
-		}
 		default:
-			log_debug("parent_dispatch_mta: unexpected imsg %d",
+			log_debug("mta_dispatch_runner: unexpected imsg %d",
 			    imsg.hdr.type);
 			break;
 		}
@@ -277,7 +320,8 @@ mta(struct smtpd *env)
 	struct event	 ev_sigterm;
 
 	struct peer peers[] = {
-		{ PROC_QUEUE,	mta_dispatch_queue }
+		{ PROC_QUEUE,	mta_dispatch_queue },
+		{ PROC_RUNNER,	mta_dispatch_runner }
 	};
 
 	switch (pid = fork()) {
@@ -320,7 +364,7 @@ mta(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
-	config_peers(env, peers, 1);
+	config_peers(env, peers, 2);
 
 	SPLAY_INIT(&env->batch_queue);
 
@@ -455,8 +499,6 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		bufferevent_enable(bev, EV_READ|EV_WRITE);
 		return 0;
 	}
-
-	line[strcspn(line, "\r")] = '\0';
 
 	bufferevent_enable(bev, EV_READ|EV_WRITE);
 
@@ -722,11 +764,19 @@ mta_write_handler(struct bufferevent *bev, void *arg)
 				buf[len - 1] = '\0';
 			else {
 				if ((lbuf = malloc(len + 1)) == NULL)
-					err(1, "malloc");
+					fatal("mta_write_handler: malloc");
 				memcpy(lbuf, buf, len);
 				lbuf[len] = '\0';
 				buf = lbuf;
 			}
+
+			/* "If first character of the line is a period, one
+			 *  additional period is inserted at the beginning."
+			 * [4.5.2]
+			 */
+			if (*buf == '.')
+				evbuffer_add_printf(batchp->bev->output, ".");
+
 			evbuffer_add_printf(batchp->bev->output, "%s\r\n", buf);
 			free(lbuf);
 			lbuf = NULL;

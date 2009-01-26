@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.8 2007/12/13 08:54:05 claudio Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.17 2009/01/03 00:18:51 stsp Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -468,7 +468,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 
 			ref = lsa_cache_add(imsg.data, l);
 
-			if (lsa_hdr.type == LSA_TYPE_EXTERNAL) {
+			if (lsa_hdr.type == htons(LSA_TYPE_EXTERNAL)) {
 				/*
 				 * flood on all areas but stub areas and
 				 * virtual links
@@ -482,6 +482,12 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 						&lsa_hdr, imsg.data);
 				    }
 				}
+			} else if (lsa_hdr.type == htons(LSA_TYPE_LINK)) {
+				/*
+				 * flood on interface only
+				 */
+				noack += lsa_flood(nbr->iface, nbr,
+				    &lsa_hdr, imsg.data);
 			} else {
 				/*
 				 * flood on all area interfaces on
@@ -620,6 +626,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 		case IMSG_CTL_END:
 		case IMSG_CTL_SHOW_DATABASE:
 		case IMSG_CTL_SHOW_DB_EXT:
+		case IMSG_CTL_SHOW_DB_LINK:
 		case IMSG_CTL_SHOW_DB_NET:
 		case IMSG_CTL_SHOW_DB_RTR:
 		case IMSG_CTL_SHOW_DB_SELF:
@@ -697,14 +704,13 @@ orig_rtr_lsa(struct iface *iface)
 void
 orig_rtr_lsa_area(struct area *area)
 {
-#if 0 /* XXX needs work */
 	struct lsa_hdr		 lsa_hdr;
 	struct lsa_rtr		 lsa_rtr;
 	struct lsa_rtr_link	 rtr_link;
 	struct iface		*iface;
 	struct buf		*buf;
 	struct nbr		*nbr, *self = NULL;
-	u_int16_t		 num_links = 0;
+	u_int32_t		 flags;
 	u_int16_t		 chksum;
 	u_int8_t		 border, virtual = 0;
 
@@ -728,53 +734,20 @@ orig_rtr_lsa_area(struct area *area)
 
 		bzero(&rtr_link, sizeof(rtr_link));
 
-		if (iface->state & IF_STA_LOOPBACK) {
-//XXX			rtr_link.id = iface->addr.s_addr;
-			rtr_link.data = 0xffffffff;
-			rtr_link.type = LINK_TYPE_STUB_NET;
-			rtr_link.metric = htons(iface->metric);
-			num_links++;
-			if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-				fatalx("orig_rtr_lsa: buf_add failed");
-			continue;
-		}
-
 		switch (iface->type) {
 		case IF_TYPE_POINTOPOINT:
 			LIST_FOREACH(nbr, &iface->nbr_list, entry)
 				if (nbr != iface->self &&
 				    nbr->state & NBR_STA_FULL)
 					break;
-			if (nbr) {
+			if (nbr && iface->state & IF_STA_POINTTOPOINT) {
 				log_debug("orig_rtr_lsa: point-to-point, "
 				    "interface %s", iface->name);
-				rtr_link.id = nbr->id.s_addr;
-//XXX				rtr_link.data = iface->addr.s_addr;
 				rtr_link.type = LINK_TYPE_POINTTOPOINT;
-				/* RFC 3137: stub router support */
-				if (oeconf->flags & OSPFD_FLAG_STUB_ROUTER ||
-				    oe_nofib)
-					rtr_link.metric = 0xffff;
-				else
-					rtr_link.metric = htons(iface->metric);
-				num_links++;
-				if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
-			}
-			if (iface->state & IF_STA_POINTTOPOINT) {
-				log_debug("orig_rtr_lsa: stub net, "
-				    "interface %s", iface->name);
-				bzero(&rtr_link, sizeof(rtr_link));
-				if (nbr) {
-//XXX					rtr_link.id = nbr->addr.s_addr;
-					rtr_link.data = 0xffffffff;
-				} else {
-//XXX					rtr_link.id = iface->addr.s_addr;
-//XXX					rtr_link.data = iface->mask.s_addr;
-				}
-				rtr_link.type = LINK_TYPE_STUB_NET;
 				rtr_link.metric = htons(iface->metric);
-				num_links++;
+				rtr_link.iface_id = htonl(iface->ifindex);
+				rtr_link.nbr_iface_id = htonl(nbr->iface_id);
+				rtr_link.nbr_rtr_id = nbr->id.s_addr;
 				if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
 					fatalx("orig_rtr_lsa: buf_add failed");
 			}
@@ -795,28 +768,20 @@ orig_rtr_lsa_area(struct area *area)
 					log_debug("orig_rtr_lsa: transit net, "
 					    "interface %s", iface->name);
 
-//XXX					rtr_link.id = iface->dr->addr.s_addr;
-//XXX					rtr_link.data = iface->addr.s_addr;
 					rtr_link.type = LINK_TYPE_TRANSIT_NET;
+					rtr_link.metric = htons(iface->metric);
+					rtr_link.iface_id = htonl(iface->ifindex);
+					rtr_link.nbr_iface_id = htonl(iface->dr->iface_id);
+					rtr_link.nbr_rtr_id = iface->dr->id.s_addr;
+					if (buf_add(buf, &rtr_link,
+					    sizeof(rtr_link)))
+						fatalx("orig_rtr_lsa: "
+						    "buf_add failed");
 					break;
 				}
 			}
-
-			if ((iface->flags & IFF_UP) == 0 ||
-			    iface->linkstate == LINK_STATE_DOWN ||
-			    (!LINK_STATE_IS_UP(iface->linkstate) &&
-			    iface->media_type == IFT_CARP))
-				continue;
-
-			log_debug("orig_rtr_lsa: stub net, "
-			    "interface %s", iface->name);
-
-/*XXX			rtr_link.id =
-			    iface->addr.s_addr & iface->mask.s_addr;
-			rtr_link.data = iface->mask.s_addr;
-XXX*/
-			rtr_link.type = LINK_TYPE_STUB_NET;
 			break;
+#if 0 /* TODO virtualllink/pointtomulti */
 		case IF_TYPE_VIRTUALLINK:
 			LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 				if (nbr != iface->self &&
@@ -833,7 +798,6 @@ XXX*/
 					rtr_link.metric = 0xffff;
 				else
 					rtr_link.metric = htons(iface->metric);
-				num_links++;
 				virtual = 1;
 				if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
 					fatalx("orig_rtr_lsa: buf_add failed");
@@ -849,7 +813,6 @@ XXX*/
 			rtr_link.data = 0xffffffff;
 			rtr_link.type = LINK_TYPE_STUB_NET;
 			rtr_link.metric = htons(iface->metric);
-			num_links++;
 			if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
 				fatalx("orig_rtr_lsa: buf_add failed");
 
@@ -870,7 +833,6 @@ XXX*/
 					else
 						rtr_link.metric =
 						    htons(iface->metric);
-					num_links++;
 					if (buf_add(buf, &rtr_link,
 					    sizeof(rtr_link)))
 						fatalx("orig_rtr_lsa: "
@@ -878,30 +840,22 @@ XXX*/
 				}
 			}
 			continue;
+#endif /* TODO virtualllink/pointtomulti */
 		default:
 			fatalx("orig_rtr_lsa: unknown interface type");
 		}
-
-		rtr_link.num_tos = 0;
-		/* RFC 3137: stub router support */
-		if ((oeconf->flags & OSPFD_FLAG_STUB_ROUTER || oe_nofib) &&
-		    rtr_link.type != LINK_TYPE_STUB_NET)
-			rtr_link.metric = 0xffff;
-		else
-			rtr_link.metric = htons(iface->metric);
-		num_links++;
-		if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-			fatalx("orig_rtr_lsa: buf_add failed");
 	}
 
 	/* LSA router header */
-	lsa_rtr.flags = 0;
+	lsa_rtr.opts = 0;
+	flags = 0;
+
 	/*
 	 * Set the E bit as soon as an as-ext lsa may be redistributed, only
 	 * setting it in case we redistribute something is not worth the fuss.
 	 */
 	if (oeconf->redistribute && !area->stub)
-		lsa_rtr.flags |= OSPF_RTR_E;
+		flags |= OSPF_RTR_E;
 
 	border = (area_border_router(oeconf) != 0);
 	if (border != oeconf->border) {
@@ -910,21 +864,23 @@ XXX*/
 	}
 
 	if (oeconf->border)
-		lsa_rtr.flags |= OSPF_RTR_B;
+		flags |= OSPF_RTR_B;
 	/* TODO set V flag if a active virtual link ends here and the
 	 * area is the tranist area for this link. */
 	if (virtual)
-		lsa_rtr.flags |= OSPF_RTR_V;
+		flags |= OSPF_RTR_V;
 
-	lsa_rtr.dummy = 0;
-	lsa_rtr.nlinks = htons(num_links);
+	LSA_24_SETLO(lsa_rtr.opts, area_ospf_options(area));
+	LSA_24_SETHI(lsa_rtr.opts, flags);
+	lsa_rtr.opts = htonl(lsa_rtr.opts);
 	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_rtr)),
 	    &lsa_rtr, sizeof(lsa_rtr));
 
 	/* LSA header */
 	lsa_hdr.age = htons(DEFAULT_AGE);
-	lsa_hdr.type = LSA_TYPE_ROUTER;
-	lsa_hdr.ls_id = oeconf->rtr_id.s_addr;
+	lsa_hdr.type = htons(LSA_TYPE_ROUTER);
+	/* XXX needs to be fixed if multiple router-lsa need to be announced */
+	lsa_hdr.ls_id = 0;
 	lsa_hdr.adv_rtr = oeconf->rtr_id.s_addr;
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(buf->wpos);
@@ -943,36 +899,33 @@ XXX*/
 		    inet_ntoa(area->id));
 
 	buf_free(buf);
-#endif
 }
 
 void
 orig_net_lsa(struct iface *iface)
 {
-#if 0	/* XXX needs work */
 	struct lsa_hdr		 lsa_hdr;
 	struct nbr		*nbr;
 	struct buf		*buf;
 	int			 num_rtr = 0;
+	u_int32_t		 opts;
 	u_int16_t		 chksum;
 
 	/* XXX READ_BUF_SIZE */
 	if ((buf = buf_dynamic(sizeof(lsa_hdr), READ_BUF_SIZE)) == NULL)
 		fatal("orig_net_lsa");
 
-	/* reserve space for LSA header and LSA Router header */
-	if (buf_reserve(buf, sizeof(lsa_hdr)) == NULL)
+	/* reserve space for LSA header and options field */
+	if (buf_reserve(buf, sizeof(lsa_hdr) + sizeof(opts)) == NULL)
 		fatal("orig_net_lsa: buf_reserve failed");
 
-	/* LSA net mask and then all fully adjacent routers */
-	if (buf_add(buf, &iface->mask, sizeof(iface->mask)))
-		fatal("orig_net_lsa: buf_add failed");
-
+	opts = 0;
 	/* fully adjacent neighbors + self */
 	LIST_FOREACH(nbr, &iface->nbr_list, entry)
 		if (nbr->state & NBR_STA_FULL) {
 			if (buf_add(buf, &nbr->id, sizeof(nbr->id)))
 				fatal("orig_net_lsa: buf_add failed");
+			opts |= nbr->options;
 			num_rtr++;
 		}
 
@@ -988,8 +941,105 @@ orig_net_lsa(struct iface *iface)
 	else
 		lsa_hdr.age = htons(MAX_AGE);
 
-	lsa_hdr.type = LSA_TYPE_NETWORK;
-//XXX	lsa_hdr.ls_id = iface->addr.s_addr;
+	lsa_hdr.type = htons(LSA_TYPE_NETWORK);
+	/* for network LSAs, the link state ID equals the interface ID */
+	lsa_hdr.ls_id = htonl(iface->ifindex);
+	lsa_hdr.adv_rtr = oeconf->rtr_id.s_addr;
+	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
+	lsa_hdr.len = htons(buf->wpos);
+	lsa_hdr.ls_chksum = 0;		/* updated later */
+	memcpy(buf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+
+	opts &= opts & htonl(LSA_24_MASK);
+	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(opts)), &opts,
+	    sizeof(opts));
+
+	chksum = htons(iso_cksum(buf->buf, buf->wpos, LS_CKSUM_OFFSET));
+	memcpy(buf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
+	    &chksum, sizeof(chksum));
+
+	imsg_compose(ibuf_rde, IMSG_LS_UPD, iface->self->peerid, 0,
+	    buf->buf, buf->wpos);
+
+	buf_free(buf);
+}
+
+void
+orig_link_lsa(struct iface *iface)
+{
+	struct lsa_hdr		 lsa_hdr;
+	struct lsa_link	 	 lsa_link;
+	struct lsa_prefix	 lsa_prefix;
+	struct buf		*buf;
+	struct iface_addr	*ia;
+	struct in6_addr		 prefix;
+	unsigned int		 num_prefix = 0;
+	u_int16_t		 chksum;
+	u_int32_t		 options;
+
+	log_debug("orig_link_lsa: interface %s", iface->name);
+
+	switch (iface->type) {
+	case IF_TYPE_VIRTUALLINK:	/* forbidden by rfc5340 */
+		return;
+	case IF_TYPE_BROADCAST:
+	case IF_TYPE_NBMA:
+		if ((iface->state & IF_STA_MULTI) == 0)
+			return;
+		break;
+	case IF_TYPE_POINTOPOINT:
+	case IF_TYPE_POINTOMULTIPOINT:
+		if ((iface->state & IF_STA_POINTTOPOINT) == 0)
+			return;
+		break;
+	default:
+		fatalx("orig_link_lsa: unknown interface type");
+	}
+
+	/* XXX READ_BUF_SIZE */
+	if ((buf = buf_dynamic(sizeof(lsa_hdr) + sizeof(lsa_link),
+	    READ_BUF_SIZE)) == NULL)
+		fatal("orig_link_lsa");
+
+	/* reserve space for LSA header and LSA link header */
+	if (buf_reserve(buf, sizeof(lsa_hdr) + sizeof(lsa_link)) == NULL)
+		fatal("orig_link_lsa: buf_reserve failed");
+	
+	/* link-local address, and all prefixes configured on interface */
+	TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
+		if (IN6_IS_ADDR_LINKLOCAL(&ia->addr)) {
+			log_debug("orig_link_lsa: link local address %s",
+			    log_in6addr(&ia->addr));
+			lsa_link.lladdr = ia->addr;
+			continue;
+		}
+
+		lsa_prefix.prefixlen = ia->prefixlen;
+		lsa_prefix.options = 0;
+		lsa_prefix.metric = 0;
+		inet6applymask(&prefix, &ia->addr, ia->prefixlen);
+		log_debug("orig_link_lsa: prefix %s", log_in6addr(&prefix));
+		if (buf_add(buf, &lsa_prefix, sizeof(lsa_prefix)))
+			fatal("orig_link_lsa: buf_add failed");
+		if (buf_add(buf, &prefix, LSA_PREFIXSIZE(ia->prefixlen)))
+			fatal("orig_link_lsa: buf_add failed");
+		num_prefix++;
+	}
+
+	/* LSA link header (lladdr has already been filled in above) */
+	LSA_24_SETHI(lsa_link.opts, iface->priority);
+	options = area_ospf_options(area_find(oeconf, iface->area_id));
+	LSA_24_SETLO(lsa_link.opts, options);
+	lsa_link.opts = htonl(lsa_link.opts);
+	lsa_link.numprefix = htonl(num_prefix);
+	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_link)),
+	    &lsa_link, sizeof(lsa_link));
+
+	/* LSA header */
+	lsa_hdr.age = htons(DEFAULT_AGE);
+	lsa_hdr.type = htons(LSA_TYPE_LINK);
+	/* for link LSAs, the link state ID equals the interface ID */
+	lsa_hdr.ls_id = htonl(iface->ifindex);
 	lsa_hdr.adv_rtr = oeconf->rtr_id.s_addr;
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(buf->wpos);
@@ -1004,7 +1054,6 @@ orig_net_lsa(struct iface *iface)
 	    buf->buf, buf->wpos);
 
 	buf_free(buf);
-#endif
 }
 
 u_int32_t

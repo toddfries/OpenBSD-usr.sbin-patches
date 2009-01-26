@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.232 2008/06/15 10:03:46 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.235 2009/01/13 21:35:16 sthen Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -795,10 +795,12 @@ rde_update_dispatch(struct imsg *imsg)
 		}
 
 		/*
-		 * if either ATTR_NEW_AGGREGATOR or ATTR_NEW_ASPATH is present
+		 * if either ATTR_AS4_AGGREGATOR or ATTR_AS4_PATH is present
 		 * try to fixup the attributes.
+		 * XXX do not fixup if F_ATTR_LOOP is set.
 		 */
-		if (asp->flags & F_ATTR_AS4BYTE_NEW)
+		if (asp->flags & F_ATTR_AS4BYTE_NEW &&
+		    !(asp->flags & F_ATTR_LOOP))
 			rde_as4byte_fixup(peer, asp);
 
 		/* enforce remote AS if requested */
@@ -1168,14 +1170,14 @@ bad_len:
 		if (!CHECK_FLAGS(flags, ATTR_WELL_KNOWN, 0)) {
 bad_flags:
 			rde_update_err(peer, ERR_UPDATE, ERR_UPD_ATTRFLAGS,
-			    op, attr_len);
+			    op, len);
 			return (-1);
 		}
 
 		UPD_READ(&a->origin, p, plen, 1);
 		if (a->origin > ORIGIN_INCOMPLETE) {
 			rde_update_err(peer, ERR_UPDATE, ERR_UPD_ORIGIN,
-			    op, attr_len);
+			    op, len);
 			return (-1);
 		}
 		if (a->flags & F_ATTR_ORIGIN)
@@ -1222,7 +1224,7 @@ bad_flags:
 		tmp32 = ntohl(nexthop.v4.s_addr);
 		if (IN_MULTICAST(tmp32) || IN_BADCLASS(tmp32)) {
 			rde_update_err(peer, ERR_UPDATE, ERR_UPD_NETWORK,
-			    op, attr_len);
+			    op, len);
 			return (-1);
 		}
 		a->nexthop = nexthop_get(&nexthop);
@@ -1334,7 +1336,7 @@ bad_flags:
 		mpa->unreach_len = attr_len;
 		plen += attr_len;
 		break;
-	case ATTR_NEW_AGGREGATOR:
+	case ATTR_AS4_AGGREGATOR:
 		if (attr_len != 8)
 			goto bad_len;
 		if (!CHECK_FLAGS(flags, ATTR_OPTIONAL|ATTR_TRANSITIVE,
@@ -1342,15 +1344,21 @@ bad_flags:
 			goto bad_flags;
 		a->flags |= F_ATTR_AS4BYTE_NEW;
 		goto optattr;
-	case ATTR_NEW_ASPATH:
+	case ATTR_AS4_PATH:
 		if (!CHECK_FLAGS(flags, ATTR_OPTIONAL|ATTR_TRANSITIVE,
 		    ATTR_PARTIAL))
 			goto bad_flags;
 		if (aspath_verify(p, attr_len, 1) != 0) {
-			/* XXX draft does not specify how to handle errors */
-			rde_update_err(peer, ERR_UPDATE, ERR_UPD_ASPATH,
-			    NULL, 0);
-			return (-1);
+			/*
+			 * XXX RFC does not specify how to handle errors.
+			 * XXX Instead of dropping the session because of a
+			 * XXX bad path just mark the full update as not
+			 * XXX loop-free the update is no longer eligible and
+			 * XXX will not be considered for routing or
+			 * XXX redistribution. Something better is needed.
+			 */
+			a->flags |= F_ATTR_LOOP;
+			goto optattr;
 		}
 		a->flags |= F_ATTR_AS4BYTE_NEW;
 		goto optattr;
@@ -1577,8 +1585,8 @@ rde_as4byte_fixup(struct rde_peer *peer, struct rde_aspath *a)
 	u_int32_t	 as;
 
 	/* first get the attributes */
-	nasp = attr_optget(a, ATTR_NEW_ASPATH);
-	naggr = attr_optget(a, ATTR_NEW_AGGREGATOR);
+	nasp = attr_optget(a, ATTR_AS4_PATH);
+	naggr = attr_optget(a, ATTR_AS4_AGGREGATOR);
 
 	if (rde_as4byte(peer)) {
 		/* NEW session using 4-byte ASNs */
@@ -1593,7 +1601,7 @@ rde_as4byte_fixup(struct rde_peer *peer, struct rde_aspath *a)
 	if ((oaggr = attr_optget(a, ATTR_AGGREGATOR))) {
 		memcpy(&as, oaggr->data, sizeof(as));
 		if (ntohl(as) != AS_TRANS) {
-			/* per RFC draft ignore NEW_ASPATH and NEW_AGGREGATOR */
+			/* per RFC ignore AS4_PATH and AS4_AGGREGATOR */
 			if (nasp)
 				attr_free(a, nasp);
 			if (naggr)
@@ -1608,11 +1616,11 @@ rde_as4byte_fixup(struct rde_peer *peer, struct rde_aspath *a)
 				fatalx("attr_optadd failed but impossible");
 		}
 	}
-	/* there is no need for NEW_AGGREGATOR any more */
+	/* there is no need for AS4_AGGREGATOR any more */
 	if (naggr)
 		attr_free(a, naggr);
 
-	/* merge NEW_ASPATH with ASPATH */
+	/* merge AS4_PATH with ASPATH */
 	if (nasp)
 		aspath_merge(a, nasp);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayctl.c,v 1.34 2008/07/19 12:10:07 reyk Exp $	*/
+/*	$OpenBSD: relayctl.c,v 1.36 2008/12/31 15:22:27 sobrado Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -89,7 +89,7 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s <command> [arg [...]]\n", __progname);
+	fprintf(stderr, "usage: %s command [argument ...]\n", __progname);
 	exit(1);
 }
 
@@ -351,6 +351,8 @@ show_summary_msg(struct imsg *imsg, int type)
 			    "", host->up_cnt, host->check_cnt);
 			if (host->retry_cnt)
 				printf(", %d retries", host->retry_cnt);
+			if (host->he && host->up == HOST_DOWN)
+				printf(", error: %s", host_error(host->he));
 			printf("\n");
 		}
 		break;
@@ -461,7 +463,7 @@ print_table_status(int up, int fl)
 	} else if (!up) {
 		snprintf(buf, sizeof(buf) - 1, "empty");
 	} else
-		snprintf(buf, sizeof(buf) - 1, "active (%d hosts up)", up);
+		snprintf(buf, sizeof(buf) - 1, "active (%d hosts)", up);
 	return (buf);
 }
 

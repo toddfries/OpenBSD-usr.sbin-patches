@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.11 2008/02/11 13:48:39 norby Exp $ */
+/*	$OpenBSD: rde.c,v 1.14 2009/01/03 00:23:50 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -294,7 +294,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			if (nbr == NULL)
 				break;
 
-			lsa_snap(nbr->area, imsg.hdr.peerid);
+			lsa_snap(nbr, imsg.hdr.peerid);
 
 			imsg_compose(ibuf_ospfe, IMSG_DB_END, imsg.hdr.peerid,
 			    0, NULL, 0);
@@ -348,7 +348,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				buf += sizeof(req_hdr);
 
 				if ((v = lsa_find(nbr->iface,
-				    ntohl(req_hdr.type), req_hdr.ls_id,
+				    req_hdr.type, req_hdr.ls_id,
 				    req_hdr.adv_rtr)) == NULL) {
 					imsg_compose(ibuf_ospfe, IMSG_LS_BADREQ,
 					    imsg.hdr.peerid, 0, NULL, 0);
@@ -488,6 +488,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			break;
 		case IMSG_CTL_SHOW_DATABASE:
 		case IMSG_CTL_SHOW_DB_EXT:
+		case IMSG_CTL_SHOW_DB_LINK:
 		case IMSG_CTL_SHOW_DB_NET:
 		case IMSG_CTL_SHOW_DB_RTR:
 		case IMSG_CTL_SHOW_DB_SELF:

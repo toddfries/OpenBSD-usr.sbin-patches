@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.13 2008/11/25 20:35:54 gilles Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.40 2009/01/12 19:56:27 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -27,16 +27,16 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
-#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <pwd.h>
-#include <signal.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
+
+#include <keynote.h>
 
 #include "smtpd.h"
 
@@ -59,10 +59,21 @@ int		session_rfc1652_mail_handler(struct session *, char *);
 int		session_rfc3207_stls_handler(struct session *, char *);
 
 int		session_rfc4954_auth_handler(struct session *, char *);
+int		session_rfc4954_auth_plain(struct session *, char *, size_t);
+int		session_rfc4954_auth_login(struct session *, char *, size_t);
+void		session_auth_pickup(struct session *, char *, size_t);
 
+void		session_read(struct bufferevent *, void *);
+int		session_read_data(struct session *, char *, size_t);
+void		session_write(struct bufferevent *, void *);
+void		session_error(struct bufferevent *, short, void *);
+void		session_msg_submit(struct session *);
 void		session_command(struct session *, char *, char *);
 int		session_set_path(struct path *, char *);
 void		session_timeout(int, short, void *);
+void		session_respond(struct session *, char *, ...)
+		    __attribute__ ((format (printf, 2, 3)));
+void		session_cleanup(struct session *);
 
 struct session_timeout {
 	enum session_state	state;
@@ -116,19 +127,16 @@ int
 session_rfc3207_stls_handler(struct session *s, char *args)
 {
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
 	if (args != NULL) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Syntax error (no parameters allowed)\r\n");
+		session_respond(s, "501 No parameters allowed");
 		return 1;
 	}
 
-	evbuffer_add_printf(s->s_bev->output,
-	    "220 Ready to start TLS\r\n");
+	session_respond(s, "220 Ready to start TLS");
 
 	s->s_state = S_TLS;
 
@@ -140,17 +148,14 @@ session_rfc4954_auth_handler(struct session *s, char *args)
 {
 	char	*method;
 	char	*eom;
-	struct session_auth_req req;
 
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
 	if (args == NULL) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Syntax error (no parameters given)\r\n");
+		session_respond(s, "501 No parameters given");
 		return 1;
 	}
 
@@ -161,26 +166,92 @@ session_rfc4954_auth_handler(struct session *s, char *args)
 	if (eom != NULL)
 		*eom++ = '\0';
 
-	if (eom == NULL) {
-		/* NEEDS_FIX - unsupported yet */
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Syntax error\r\n");
+	if (strcasecmp(method, "PLAIN") == 0)
+		return session_rfc4954_auth_plain(s, eom, eom ? strlen(eom) : 0);
+	else if (strcasecmp(method, "LOGIN") == 0)
+		return session_rfc4954_auth_login(s, eom, eom ? strlen(eom) : 0);
+
+	session_respond(s, "501 Syntax error");
+	return 1;
+
+}
+
+int
+session_rfc4954_auth_plain(struct session *s, char *arg, size_t nr)
+{
+	if (arg == NULL) {
+		session_respond(s, "334");
+		s->s_state = S_AUTH_INIT;
 		return 1;
 	}
 
-	req.session_id = s->s_id;
-	if (strlcpy(req.buffer, eom, sizeof(req.buffer)) >=
-	    sizeof(req.buffer)) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Syntax error\r\n");
+	s->s_auth.session_id = s->s_id;
+	if (strlcpy(s->s_auth.buffer, arg, sizeof(s->s_auth.buffer)) >=
+	    sizeof(s->s_auth.buffer)) {
+		session_respond(s, "501 Syntax error");
 		return 1;
 	}
 
-	s->s_state = S_AUTH;
+	s->s_state = S_AUTH_FINALIZE;
 
 	imsg_compose(s->s_env->sc_ibufs[PROC_PARENT], IMSG_PARENT_AUTHENTICATE,
-	    0, 0, -1, &req, sizeof(req));
+	    0, 0, -1, &s->s_auth, sizeof(s->s_auth));
+	bufferevent_disable(s->s_bev, EV_READ);
 
+	return 1;
+}
+
+int
+session_rfc4954_auth_login(struct session *s, char *arg, size_t nr)
+{
+	struct session_auth_req req;
+	size_t len = 0;
+
+	switch (s->s_state) {
+	case S_HELO:
+		session_respond(s, "334 VXNlcm5hbWU6");
+		s->s_auth.session_id = s->s_id;
+		s->s_state = S_AUTH_USERNAME;
+		return 1;
+
+	case S_AUTH_USERNAME:
+		bzero(s->s_auth.buffer, sizeof(s->s_auth.buffer));
+		if (kn_decode_base64(arg, req.buffer, 1024) == -1 ||
+		    ! bsnprintf(s->s_auth.buffer + 1, sizeof(s->s_auth.buffer) - 1, "%s", req.buffer))
+			goto err;
+
+		session_respond(s, "334 UGFzc3dvcmQ6");
+		s->s_state = S_AUTH_PASSWORD;
+
+		return 1;
+
+	case S_AUTH_PASSWORD: {
+		len = strlen(s->s_auth.buffer + 1);
+		if (kn_decode_base64(arg, req.buffer, 1024) == -1 ||
+		    ! bsnprintf(s->s_auth.buffer + len + 2, sizeof(s->s_auth.buffer) - len - 2, "%s", req.buffer))
+			goto err;
+
+		break;
+	}
+	default:
+		fatal("session_rfc4954_auth_login: unknown state");
+	}
+
+	s->s_state = S_AUTH_FINALIZE;
+
+	req = s->s_auth;
+	len = strlen(s->s_auth.buffer + 1) + strlen(arg) + 2;
+	if (kn_encode_base64(req.buffer, len, s->s_auth.buffer, sizeof(s->s_auth.buffer)) == -1)
+		goto err;
+
+	imsg_compose(s->s_env->sc_ibufs[PROC_PARENT], IMSG_PARENT_AUTHENTICATE,
+	    0, 0, -1, &s->s_auth, sizeof(s->s_auth));
+	bufferevent_disable(s->s_bev, EV_READ);
+
+	return 1;
+err:
+	s->s_state = S_HELO;
+	session_respond(s, "535 Authentication failed");
 	return 1;
 }
 
@@ -190,8 +261,7 @@ session_rfc1652_mail_handler(struct session *s, char *args)
 	char *body;
 
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
@@ -204,8 +274,7 @@ session_rfc1652_mail_handler(struct session *s, char *args)
 		}
 
 		else if (strcasecmp("body=8bitmime", body) != 0) {
-			evbuffer_add_printf(s->s_bev->output,
-			    "503 Invalid BODY\r\n");
+			session_respond(s, "503 Invalid BODY");
 			return 1;
 		}
 
@@ -222,20 +291,18 @@ session_rfc5321_helo_handler(struct session *s, char *args)
 	char	 addrbuf[INET6_ADDRSTRLEN];
 
 	if (args == NULL) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 HELO requires domain address.\r\n");
+		session_respond(s, "501 HELO requires domain address");
 		return 1;
 	}
 
 	if (strlcpy(s->s_msg.session_helo, args, sizeof(s->s_msg.session_helo))
 	    >= sizeof(s->s_msg.session_helo)) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Invalid domain name\r\n");
+		session_respond(s, "501 Invalid domain name");
 		return 1;
 	}
 
 	s->s_state = S_HELO;
-	s->s_flags = 0;
+	s->s_flags &= F_SECURE;
 
 	if (s->s_ss.ss_family == PF_INET) {
 		struct sockaddr_in *ssin = (struct sockaddr_in *)&s->s_ss;
@@ -249,8 +316,7 @@ session_rfc5321_helo_handler(struct session *s, char *args)
 	bzero(addrbuf, sizeof (addrbuf));
 	inet_ntop(s->s_ss.ss_family, p, addrbuf, sizeof (addrbuf));
 
-	evbuffer_add_printf(s->s_bev->output,
-	    "250 %s Hello %s [%s%s], pleased to meet you\r\n",
+	session_respond(s, "250 %s Hello %s [%s%s], pleased to meet you",
 	    s->s_env->sc_hostname, args,
 	    s->s_ss.ss_family == PF_INET ? "" : "IPv6:", addrbuf);
 
@@ -264,20 +330,19 @@ session_rfc5321_ehlo_handler(struct session *s, char *args)
 	char	 addrbuf[INET6_ADDRSTRLEN];
 
 	if (args == NULL) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 EHLO requires domain address.\r\n");
+		session_respond(s, "501 EHLO requires domain address");
 		return 1;
 	}
 
 	if (strlcpy(s->s_msg.session_helo, args, sizeof(s->s_msg.session_helo))
 	    >= sizeof(s->s_msg.session_helo)) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "501 Invalid domain name\r\n");
+		session_respond(s, "501 Invalid domain name");
 		return 1;
 	}
 
 	s->s_state = S_HELO;
-	s->s_flags = F_EHLO;
+	s->s_flags &= F_SECURE;
+	s->s_flags |= F_EHLO;
 	s->s_flags |= F_8BITMIME;
 
 	if (s->s_ss.ss_family == PF_INET) {
@@ -291,23 +356,21 @@ session_rfc5321_ehlo_handler(struct session *s, char *args)
 
 	bzero(addrbuf, sizeof (addrbuf));
 	inet_ntop(s->s_ss.ss_family, p, addrbuf, sizeof (addrbuf));
-	evbuffer_add_printf(s->s_bev->output,
-	    "250-%s Hello %s [%s%s], pleased to meet you\r\n",
+	session_respond(s, "250-%s Hello %s [%s%s], pleased to meet you",
 	    s->s_env->sc_hostname, args,
 	    s->s_ss.ss_family == PF_INET ? "" : "IPv6:", addrbuf);
 
-	evbuffer_add_printf(s->s_bev->output, "250-8BITMIME\r\n");
+	session_respond(s, "250-8BITMIME");
 
 	/* only advertise starttls if listener can support it */
 	if (s->s_l->flags & F_STARTTLS)
-		evbuffer_add_printf(s->s_bev->output, "250-STARTTLS\r\n");
+		session_respond(s, "250-STARTTLS");
 
 	/* only advertise auth if session is secure */
-	/*
-	if (s->s_flags & F_SECURE)
-		evbuffer_add_printf(s->s_bev->output, "250-AUTH %s\r\n", "PLAIN");
-	 */
-	evbuffer_add_printf(s->s_bev->output, "250 HELP\r\n");
+	if ((s->s_l->flags & F_AUTH) && (s->s_flags & F_SECURE))
+		session_respond(s, "250-AUTH PLAIN LOGIN");
+
+	session_respond(s, "250 HELP");
 
 	return 1;
 }
@@ -315,9 +378,8 @@ session_rfc5321_ehlo_handler(struct session *s, char *args)
 int
 session_rfc5321_rset_handler(struct session *s, char *args)
 {
-	s->s_msg.rcptcount = 0;
 	s->s_state = S_HELO;
-	evbuffer_add_printf(s->s_bev->output, "250 Reset state.\r\n");
+	session_respond(s, "250 Reset state");
 
 	return 1;
 }
@@ -325,7 +387,7 @@ session_rfc5321_rset_handler(struct session *s, char *args)
 int
 session_rfc5321_noop_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output, "250 OK.\r\n");
+	session_respond(s, "250 OK");
 
 	return 1;
 }
@@ -336,36 +398,33 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 	char buffer[MAX_PATH_SIZE];
 
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
 	if (strlcpy(buffer, args, sizeof(buffer)) >= sizeof(buffer)) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "553 Syntax error for sender address\r\n");
+		session_respond(s, "553 Sender address syntax error");
 		return 1;
 	}
 
 	if (! session_set_path(&s->s_msg.sender, buffer)) {
 		/* No need to even transmit to MFA, path is invalid */
-		evbuffer_add_printf(s->s_bev->output,
-		    "553 Syntax error for sender address\r\n");
+		session_respond(s, "553 Sender address syntax error");
 		return 1;
 	}
 
-	s->s_msg.rcptcount = 0;
-
+	session_cleanup(s);
 	s->s_state = S_MAILREQUEST;
+	s->s_msg.rcptcount = 0;
 	s->s_msg.id = s->s_id;
 	s->s_msg.session_id = s->s_id;
 	s->s_msg.session_ss = s->s_ss;
 
 	log_debug("session_mail_handler: sending notification to mfa");
 
-	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_RPATH_SUBMIT,
+	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_MAIL,
 	    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
-
+	bufferevent_disable(s->s_bev, EV_READ);
 	return 1;
 }
 
@@ -376,48 +435,49 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 	struct message_recipient	mr;
 
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
 	if (s->s_state == S_HELO) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Need MAIL before RCPT\r\n");
+		session_respond(s, "503 Need MAIL before RCPT");
 		return 1;
 	}
 
 	bzero(&mr, sizeof(mr));
 
 	if (strlcpy(buffer, args, sizeof(buffer)) >= sizeof(buffer)) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "553 Syntax error for recipient address\r\n");
+		session_respond(s, "553 Recipient address syntax error");
 		return 1;
 	}
 
 	if (! session_set_path(&mr.path, buffer)) {
 		/* No need to even transmit to MFA, path is invalid */
-		evbuffer_add_printf(s->s_bev->output,
-		    "553 Syntax error for recipient address\r\n");
+		session_respond(s, "553 Recipient address syntax error");
 		return 1;
 	}
 
 	mr.id = s->s_msg.id;
-
 	s->s_state = S_RCPTREQUEST;
 	mr.ss = s->s_ss;
+	mr.msg = s->s_msg;
 
-	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_RCPT_SUBMIT,
+
+	if (s->s_flags & F_AUTHENTICATED) {
+		s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
+		mr.flags |= F_MESSAGE_AUTHENTICATED;
+	}
+
+	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_RCPT,
 	    0, 0, -1, &mr, sizeof(mr));
-
+	bufferevent_disable(s->s_bev, EV_READ);
 	return 1;
 }
 
 int
 session_rfc5321_quit_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output, "221 %s Closing connection.\r\n",
-	    s->s_env->sc_hostname);
+	session_respond(s, "221 %s Closing connection", s->s_env->sc_hostname);
 
 	s->s_flags |= F_QUIT;
 
@@ -428,34 +488,29 @@ int
 session_rfc5321_data_handler(struct session *s, char *args)
 {
 	if (s->s_state == S_GREETED) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Polite people say HELO first\r\n");
+		session_respond(s, "503 Polite people say HELO first");
 		return 1;
 	}
 
 	if (s->s_state == S_HELO) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Need MAIL before DATA\r\n");
+		session_respond(s, "503 Need MAIL before DATA");
 		return 1;
 	}
 
 	if (s->s_state == S_MAIL) {
-		evbuffer_add_printf(s->s_bev->output,
-		    "503 Need RCPT before DATA\r\n");
+		session_respond(s, "503 Need RCPT before DATA");
 		return 1;
 	}
 
-	s->s_state = S_DATA;
+	s->s_state = S_DATAREQUEST;
 	session_pickup(s, NULL);
-
 	return 1;
 }
 
 int
 session_rfc5321_vrfy_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output,
-	    "252 Cannot VRFY user; try RCPT to attempt delivery.\r\n");
+	session_respond(s, "252 Cannot VRFY; try RCPT to attempt delivery");
 
 	return 1;
 }
@@ -463,8 +518,7 @@ session_rfc5321_vrfy_handler(struct session *s, char *args)
 int
 session_rfc5321_expn_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output,
-	    "502 Sorry, we do not allow this operation.\r\n");
+	session_respond(s, "502 Sorry, we do not allow this operation");
 
 	return 1;
 }
@@ -472,8 +526,7 @@ session_rfc5321_expn_handler(struct session *s, char *args)
 int
 session_rfc5321_turn_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output,
-	    "502 Sorry, we do not allow this operation.\r\n");
+	session_respond(s, "502 Sorry, we do not allow this operation");
 
 	return 1;
 }
@@ -481,12 +534,11 @@ session_rfc5321_turn_handler(struct session *s, char *args)
 int
 session_rfc5321_help_handler(struct session *s, char *args)
 {
-	evbuffer_add_printf(s->s_bev->output,
-	    "214- This is OpenSMTPD\r\n"
-	    "214- To report bugs in the implementation, please contact\r\n"
-	    "214- bugs@openbsd.org with full details\r\n");
-	evbuffer_add_printf(s->s_bev->output,
-	    "214 End of HELP info\r\n");
+	session_respond(s, "214- This is OpenSMTPD");
+	session_respond(s, "214- To report bugs in the implementation, please "
+	    "contact bugs@openbsd.org");
+	session_respond(s, "214- with full details");
+	session_respond(s, "214 End of HELP info");
 
 	return 1;
 }
@@ -518,15 +570,15 @@ session_command(struct session *s, char *cmd, char *args)
 	}
 
 	/* RFC 4954 - AUTH */
-	/*
-	for (i = 0; i < (int)(sizeof(rfc4954_cmdtab) / sizeof(struct session_cmd)); ++i)
-		if (strcasecmp(rfc4954_cmdtab[i].name, cmd) == 0)
-			break;
-	if (i < (int)(sizeof(rfc4954_cmdtab) / sizeof(struct session_cmd))) {
-		if (rfc4954_cmdtab[i].func(s, args))
-			return;
+	if ((s->s_l->flags & F_AUTH) && (s->s_flags & F_SECURE)) {
+		for (i = 0; i < (int)(sizeof(rfc4954_cmdtab) / sizeof(struct session_cmd)); ++i)
+			if (strcasecmp(rfc4954_cmdtab[i].name, cmd) == 0)
+				break;
+		if (i < (int)(sizeof(rfc4954_cmdtab) / sizeof(struct session_cmd))) {
+			if (rfc4954_cmdtab[i].func(s, args))
+				return;
+		}
 	}
-	*/
 
 rfc5321:
 	/* RFC 5321 - SMTP */
@@ -538,8 +590,38 @@ rfc5321:
 			return;
 	}
 
-	evbuffer_add_printf(s->s_bev->output,
-	    "500 Command unrecognized.\r\n");
+	session_respond(s, "500 Command unrecognized");
+}
+
+void
+session_auth_pickup(struct session *s, char *arg, size_t nr)
+{
+	if (s == NULL)
+		fatal("session_pickup: desynchronized");
+
+	bufferevent_enable(s->s_bev, EV_READ);
+
+	switch (s->s_state) {
+	case S_AUTH_INIT:
+		session_rfc4954_auth_plain(s, arg, nr);
+		break;
+	case S_AUTH_USERNAME:
+		session_rfc4954_auth_login(s, arg, nr);
+		break;
+	case S_AUTH_PASSWORD:
+		session_rfc4954_auth_login(s, arg, nr);
+		break;
+	case S_AUTH_FINALIZE:
+		if (s->s_flags & F_AUTHENTICATED)
+			session_respond(s, "235 Authentication succeeded");
+		else
+			session_respond(s, "535 Authentication failed");
+		s->s_state = S_HELO;
+		break;
+	default:
+		fatal("session_auth_pickup: unknown state");
+	}
+	return;
 }
 
 void
@@ -548,15 +630,17 @@ session_pickup(struct session *s, struct submit_status *ss)
 	if (s == NULL)
 		fatal("session_pickup: desynchronized");
 
-	bufferevent_disable(s->s_bev, EV_READ);
-	bufferevent_enable(s->s_bev, EV_WRITE);
+	bufferevent_enable(s->s_bev, EV_READ);
+
+	if ((ss != NULL && ss->code == 421) ||
+	    (s->s_msg.status & S_MESSAGE_TEMPFAILURE))
+		goto tempfail;
 
 	switch (s->s_state) {
 	case S_INIT:
 		s->s_state = S_GREETED;
 		log_debug("session_pickup: greeting client");
-		evbuffer_add_printf(s->s_bev->output,
-		    SMTPD_BANNER, s->s_env->sc_hostname);
+		session_respond(s, SMTPD_BANNER, s->s_env->sc_hostname);
 		break;
 
 	case S_GREETED:
@@ -564,28 +648,16 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_TLS:
+		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
 		s->s_state = S_GREETED;
 		ssl_session_init(s);
-		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
-		break;
-
-	case S_AUTH:
-		if (s->s_flags & F_AUTHENTICATED) {
-			evbuffer_add_printf(s->s_bev->output,
-			    "235 Authentication Succeeded\r\n");
-		}
-		else {
-			evbuffer_add_printf(s->s_bev->output,
-			    "535 Authentication Credentials Invalid\r\n");
-		}
 		break;
 
 	case S_MAILREQUEST:
 		/* sender was not accepted, downgrade state */
 		if (ss->code != 250) {
 			s->s_state = S_HELO;
-			evbuffer_add_printf(s->s_bev->output,
-			    "%d Sender rejected\r\n", ss->code);
+			session_respond(s, "%d Sender rejected", ss->code);
 			return;
 		}
 
@@ -593,23 +665,15 @@ session_pickup(struct session *s, struct submit_status *ss)
 		s->s_msg.sender = ss->u.path;
 
 		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
-		    IMSG_QUEUE_CREATE_MESSAGE_FILE, 0, 0, -1, &s->s_msg,
+		    IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1, &s->s_msg,
 		    sizeof(s->s_msg));
-
+		bufferevent_disable(s->s_bev, EV_READ);
 		break;
 
 	case S_MAIL:
-		evbuffer_add_printf(s->s_bev->output,
-		    "%d Sender ok\r\n", ss->code);
 
-		strlcpy(s->s_msg.message_id, ss->u.msgid, MAXPATHLEN);
+		session_respond(s, "%d Sender ok", ss->code);
 
-		if (s->s_msg.datafp == NULL) {
-			/* Remove message file */
-			imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_DELETE_MESSAGE_FILE,
-			    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
-			return;
-		}
 		break;
 
 	case S_RCPTREQUEST:
@@ -620,44 +684,39 @@ session_pickup(struct session *s, struct submit_status *ss)
 				s->s_state = S_MAIL;
 			else
 				s->s_state = S_RCPT;
-			evbuffer_add_printf(s->s_bev->output,
-			    "%d %s\r\n", ss->code, "Recipient rejected");
+			session_respond(s, "%d Recipient rejected", ss->code);
 			return;
 		}
 
 		s->s_state = S_RCPT;
 		s->s_msg.rcptcount++;
 		s->s_msg.recipient = ss->u.path;
-		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
-		    IMSG_QUEUE_MESSAGE_SUBMIT, 0, 0, -1, &s->s_msg,
-		    sizeof(s->s_msg));
-
-		break;
+		session_respond(s, "%d Recipient ok", ss->code);
 
 	case S_RCPT:
-		evbuffer_add_printf(s->s_bev->output,
-		    "%d Recipient ok\r\n", ss->code);
+		break;
+
+	case S_DATAREQUEST:
+		s->s_state = S_DATA;
+		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
+		    IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1, &s->s_msg,
+		    sizeof(s->s_msg));
+		bufferevent_disable(s->s_bev, EV_READ);
 		break;
 
 	case S_DATA:
-		if (s->s_msg.datafp == NULL) {
-			evbuffer_add_printf(s->s_bev->output,
-			    "421 Service temporarily unavailable\r\n");
-			return;
-		}
-		s->s_state = S_DATACONTENT;
-		evbuffer_add_printf(s->s_bev->output,
-		    "354 Enter mail, end with \".\" on a line by itself\r\n");
-		break;
+		if (s->s_msg.datafp == NULL)
+			goto tempfail;
 
-	case S_DATACONTENT:
+		s->s_state = S_DATACONTENT;
+		session_respond(s, "354 Enter mail, end with \".\" on a line by"
+		    " itself");
 		break;
 
 	case S_DONE:
 		s->s_state = S_HELO;
-		s->s_msg.datafp = NULL;
-		evbuffer_add_printf(s->s_bev->output,
-		    "250 %s Message accepted for delivery\r\n",
+
+		session_respond(s, "250 %s Message accepted for delivery",
 		    s->s_msg.message_id);
 
 		break;
@@ -667,6 +726,13 @@ session_pickup(struct session *s, struct submit_status *ss)
 		fatal("session_pickup: unknown state");
 		break;
 	}
+
+	return;
+
+tempfail:
+	s->s_flags |= F_QUIT;
+	session_respond(s, "421 Service temporarily unavailable");
+	return;
 }
 
 void
@@ -676,17 +742,17 @@ session_init(struct listener *l, struct session *s)
 	s->s_env = l->env;
 	s->s_l = l;
 	s->s_id = queue_generate_id();
+
 	strlcpy(s->s_hostname, "<unknown>", MAXHOSTNAMELEN);
 	strlcpy(s->s_msg.session_hostname, s->s_hostname, MAXHOSTNAMELEN);
-
-	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
-
-	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOSTNAME_LOOKUP,
-	    0, 0, -1, s, sizeof(struct session));
+	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
+	    sizeof(struct session));
 
 	if ((s->s_bev = bufferevent_new(s->s_fd, session_read, session_write,
 	    session_error, s)) == NULL)
-		fatal(NULL);
+		fatalx("session_init: bufferevent_new failed");
+
+	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 
 	if (l->flags & F_SSMTP) {
 		log_debug("session_init: initializing ssl");
@@ -704,64 +770,36 @@ session_read(struct bufferevent *bev, void *p)
 	char		*line;
 	char		*ep;
 	char		*args;
+	size_t		 nr;
 
 read:
 	s->s_tm = time(NULL);
+	nr = EVBUFFER_LENGTH(bev->input);
 	line = evbuffer_readline(bev->input);
-	if (line == NULL) {
-		bufferevent_disable(s->s_bev, EV_READ);
-		bufferevent_enable(s->s_bev, EV_WRITE);
+	if (line == NULL)
+		return;
+	nr -= EVBUFFER_LENGTH(bev->input);
+
+	if (s->s_state == S_DATACONTENT) {
+		if (session_read_data(s, line, nr)) {
+			free(line);
+			return;
+		}
+		free(line);
+		goto read;
+	}
+
+	if (IS_AUTH(s->s_state)) {
+		session_auth_pickup(s, line, nr);
+		free(line);
 		return;
 	}
 
-	if (s->s_state == S_DATACONTENT) {
-		line[strcspn(line, "\r")] = '\0';
-		if (strcmp(line, ".") == 0) {
-			s->s_state = S_DONE;
-			fclose(s->s_msg.datafp);
-
-			if (s->s_msg.status & S_MESSAGE_PERMFAILURE) {
-				evbuffer_add_printf(s->s_bev->output,
-				    "554 Transaction failed\r\n");
-
-				s->s_msg.datafp = NULL;
-				/* Remove message file */
-				imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_DELETE_MESSAGE_FILE,
-				    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
-				bufferevent_enable(s->s_bev, EV_WRITE);
-				free(line);
-				return;
-			}
-			bufferevent_disable(s->s_bev, EV_READ);
-			session_msg_submit(s);
-			free(line);
-			return;
-		} else {
-			size_t i;
-			size_t len;
-
-			len = strlen(line);
-			fwrite(line, 1, len, s->s_msg.datafp);
-			fwrite("\n", 1, 1, s->s_msg.datafp);
-			fflush(s->s_msg.datafp);
-
-			if (! (s->s_flags & F_8BITMIME)) {
-				for (i = 0; i < len; ++i) {
-					if (line[i] & 0x80) {
-						s->s_msg.status |= S_MESSAGE_PERMFAILURE;
-						strlcpy(s->s_msg.session_errorline, "8BIT data transfered over 7BIT limited channel",
-							sizeof s->s_msg.session_errorline);
-					}
-				}
-			}
-			free(line);
-		}
-		goto read;
+	if (nr > SMTP_CMDLINE_MAX) {
+		session_respond(s, "500 Line too long");
+		return;
 	}
-	bufferevent_disable(s->s_bev, EV_READ);
-	bufferevent_enable(s->s_bev, EV_WRITE);
 
-	line[strcspn(line, "\r")] = '\0';
 	if ((ep = strchr(line, ':')) == NULL)
 		ep = strchr(line, ' ');
 	if (ep != NULL) {
@@ -777,47 +815,92 @@ read:
 	return;
 }
 
+int
+session_read_data(struct session *s, char *line, size_t nread)
+{
+	size_t len;
+	size_t i;
+
+	if (strcmp(line, ".") == 0) {
+		if (! safe_fclose(s->s_msg.datafp))
+			s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+		s->s_msg.datafp = NULL;
+
+		if (s->s_msg.status & S_MESSAGE_PERMFAILURE) {
+			session_respond(s, "554 Transaction failed");
+			s->s_state = S_HELO;
+		} else if (s->s_msg.status & S_MESSAGE_TEMPFAILURE) {
+			session_respond(s, "421 Temporary failure");
+			s->s_state = S_HELO;
+		} else {
+			session_msg_submit(s);
+			s->s_state = S_DONE;
+		}
+
+		return 1;
+	}
+
+	/* Don't waste resources on message if it's going to bin anyway. */
+	if (s->s_msg.status & (S_MESSAGE_PERMFAILURE|S_MESSAGE_TEMPFAILURE))
+		return 0;
+
+	if (nread > SMTP_TEXTLINE_MAX) {
+		s->s_msg.status |= S_MESSAGE_PERMFAILURE;
+		return 0;
+	}
+
+	/* "If the first character is a period and there are other characters
+	 *  on the line, the first character is deleted." [4.5.2]
+	 */
+	if (*line == '.')
+		line++;
+
+	len = strlen(line);
+
+	if (fwrite(line, len, 1, s->s_msg.datafp) != 1 ||
+	    fwrite("\n", 1, 1, s->s_msg.datafp) != 1) {
+		s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+		return 0;
+	}
+
+	if (! (s->s_flags & F_8BITMIME)) {
+		for (i = 0; i < len; ++i)
+			if (line[i] & 0x80)
+				break;
+		if (i != len) {
+			s->s_msg.status |= S_MESSAGE_PERMFAILURE;
+			return 0;
+		}
+	}
+
+	return 0;
+}
+
 void
 session_write(struct bufferevent *bev, void *p)
 {
 	struct session	*s = p;
 
 	if (!(s->s_flags & F_QUIT)) {
-		if (! EVBUFFER_LENGTH(EVBUFFER_OUTPUT(bev))) {
-			bufferevent_disable(s->s_bev, EV_WRITE);
-			bufferevent_enable(s->s_bev, EV_READ);
-		}
-
+		
 		if (s->s_state == S_TLS)
 			session_pickup(s, NULL);
 
 		return;
 	}
 
-	if (! EVBUFFER_LENGTH(EVBUFFER_OUTPUT(bev))) {
-		session_destroy(s);
-	}
+	session_destroy(s);
 }
 
 void
 session_destroy(struct session *s)
 {
-	/*
-	 * cleanup
-	 */
-	log_debug("session_destroy: killing client");
+	session_cleanup(s);
+
+	log_debug("session_destroy: killing client: %p", s);
 	close(s->s_fd);
 
-	if (s->s_msg.datafp != NULL) {
-		fclose(s->s_msg.datafp);
-		s->s_msg.datafp = NULL;
-		/* Remove message file */
-		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_DELETE_MESSAGE_FILE,
-		    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
-	}
-
 	if (s->s_bev != NULL) {
-		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
 		bufferevent_free(s->s_bev);
 	}
 	ssl_session_destroy(s);
@@ -825,6 +908,23 @@ session_destroy(struct session *s)
 	SPLAY_REMOVE(sessiontree, &s->s_env->sc_sessions, s);
 	bzero(s, sizeof(*s));
 	free(s);
+}
+
+void
+session_cleanup(struct session *s)
+{
+	if (s->s_msg.datafp != NULL) {
+		fclose(s->s_msg.datafp);
+		s->s_msg.datafp = NULL;
+	}
+
+	if (s->s_msg.message_id[0] != '\0') {
+		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
+		    IMSG_QUEUE_REMOVE_MESSAGE, 0, 0, -1, &s->s_msg,
+		    sizeof(s->s_msg));
+		s->s_msg.message_id[0] = '\0';
+		s->s_msg.message_uid[0] = '\0';
+	}
 }
 
 void
@@ -839,8 +939,9 @@ void
 session_msg_submit(struct session *s)
 {
 	imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
-	    IMSG_QUEUE_MESSAGE_COMPLETE, 0, 0, -1, &s->s_msg,
+	    IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1, &s->s_msg,
 	    sizeof(s->s_msg));
+	bufferevent_disable(s->s_bev, EV_READ);
 	s->s_state = S_DONE;
 }
 
@@ -913,8 +1014,10 @@ session_timeout(int fd, short event, void *p)
 	rmsession = NULL;
 	SPLAY_FOREACH(sessionp, sessiontree, &env->sc_sessions) {
 
-		if (rmsession != NULL)
+		if (rmsession != NULL) {
 			session_destroy(rmsession);
+			rmsession = NULL;
+		}
 
 		for (i = 0; i < sizeof (rfc5321_timeouttab) /
 			 sizeof(struct session_timeout); ++i)
@@ -940,5 +1043,18 @@ session_timeout(int fd, short event, void *p)
 	evtimer_add(&env->sc_ev, &tv);
 }
 
+void
+session_respond(struct session *s, char *fmt, ...)
+{
+	va_list ap;
+
+	va_start(ap, fmt);
+	if (evbuffer_add_vprintf(EVBUFFER_OUTPUT(s->s_bev), fmt, ap) == -1 ||
+	    evbuffer_add_printf(EVBUFFER_OUTPUT(s->s_bev), "\r\n") == -1)
+		fatal("session_respond: evbuffer_add_vprintf failed");
+	va_end(ap);
+
+	bufferevent_enable(s->s_bev, EV_WRITE);
+}
 
 SPLAY_GENERATE(sessiontree, session, s_nodes, session_cmp);

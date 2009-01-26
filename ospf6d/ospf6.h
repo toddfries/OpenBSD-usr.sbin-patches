@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6.h,v 1.8 2007/11/27 11:29:34 claudio Exp $ */
+/*	$OpenBSD: ospf6.h,v 1.13 2008/12/30 22:29:54 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2007 Esben Norby <norby@openbsd.org>
@@ -78,7 +78,7 @@
 /* OSPF compatibility flags */
 #define OSPF_OPTION_V6		0x01
 #define OSPF_OPTION_E		0x02
-#define OSPF_OPTION_MC		0x04
+#define OSPF_OPTION_x		0x04	/* ignored, should be 0 */
 #define OSPF_OPTION_N		0x08
 #define OSPF_OPTION_R		0x10
 #define OSPF_OPTION_DC		0x20
@@ -118,10 +118,7 @@ struct ospf_hdr {
 /* Hello header (type 1) */
 struct hello_hdr {
 	u_int32_t		iface_id;
-	u_int8_t		rtr_priority;
-	u_int8_t		opts1;
-	u_int8_t		opts2;
-	u_int8_t		opts3;
+	u_int32_t		opts;	/* 8bit rtr_priority + 24bits options */
 	u_int16_t		hello_interval;
 	u_int16_t		rtr_dead_interval;
 	u_int32_t		d_rtr;
@@ -179,6 +176,17 @@ struct ls_upd_hdr {
 #define LINK_TYPE_RESERVED	3
 #define LINK_TYPE_VIRTUAL	4
 
+/* for some reason they thought 24bit types are fun, make them less a hazard */
+#define LSA_24_MASK 0xffffff
+#define LSA_24_GETHI(x)	\
+	((x) >> 24)
+#define LSA_24_GETLO(x)	\
+	((x) & LSA_24_MASK)
+#define LSA_24_SETHI(x, y)	\
+	((x) = ((x) & LSA_24_MASK) | (((y) & 0xff) << 24))
+#define LSA_24_SETLO(x, y)	\
+	((x) = ((y) & LSA_24_MASK) | ((x) & ~LSA_24_MASK))
+
 /* LSA headers */
 #define LSA_METRIC_MASK		0x00ffffff	/* only for sum & as-ext */
 #define LSA_ASEXT_E_FLAG	0x80000000
@@ -186,13 +194,23 @@ struct ls_upd_hdr {
 #define OSPF_RTR_B		0x01
 #define OSPF_RTR_E		0x02
 #define OSPF_RTR_V		0x04
-#define OSPF_RTR_W		0x08
+#define OSPF_RTR_x		0x08	/* ignored, should be 0 */
+#define OSPF_RTR_Nt		0x10
+
+#define OSPF_PREFIX_NU		0x01
+#define OSPF_PREFIX_LA		0x02
+#define OSPF_PREFIX_x		0x04	/* ignored, should be 0 */
+#define OSPF_PREFIX_P		0x08
+#define OSPF_PREFIX_DN		0x10
+
+/* return encoded IPv6 prefix size in bytes depending on the prefixlen */
+#define LSA_PREFIXSIZE(x)	(((x) + 31)/32 * 4)
 
 struct lsa_prefix {
-	struct in6_addr		prefix;
-	u_int16_t		metric;
 	u_int8_t		prefixlen;
 	u_int8_t		options;
+	u_int16_t		metric;
+	/* + an IPv6 prefix encoded in (prefixlen + 31)/32 words */
 };
 
 struct lsa_rtr {
@@ -209,7 +227,7 @@ struct lsa_rtr_link {
 };
 
 struct lsa_net {
-	u_int32_t		mask;
+	u_int32_t		opts;	/* 24bits options */
 	u_int32_t		att_rtr[1];
 };
 
@@ -223,7 +241,7 @@ struct lsa_prefix_sum {
 };
 
 struct lsa_rtr_sum {
-	u_int32_t		options;	/* lower 24bit options */
+	u_int32_t		opts;		/* lower 24bit options */
 	u_int32_t		metric;		/* only lower 24 bit */
 	u_int32_t		dest_rtr_id;
 };
@@ -236,10 +254,10 @@ struct lsa_asext {
 };
 
 struct lsa_link {
-	u_int32_t		options;	/* rtr pri & 24bit options */
+	u_int32_t		opts;		/* rtr pri & 24bit options */
 	struct in6_addr		lladdr;
 	u_int32_t		numprefix;
-	/* + numprefix prefix */
+	/* + numprefix * lsa_prefix */
 };
 
 struct lsa_intra_prefix {
@@ -247,7 +265,7 @@ struct lsa_intra_prefix {
 	u_int16_t		ref_type;
 	u_int32_t		ref_lsid;
 	u_int32_t		ref_adv_rtr;
-	/* + numprefix prefix */
+	/* + numprefix * lsa_prefix */
 };
 
 struct lsa_hdr {

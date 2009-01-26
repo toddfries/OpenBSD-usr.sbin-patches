@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpd.h,v 1.21 2008/09/26 15:19:55 reyk Exp $	*/
+/*	$OpenBSD: snmpd.h,v 1.23 2008/12/23 08:06:10 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -334,6 +334,9 @@ struct snmpd {
 	struct snmp_stats	 sc_stats;
 
 	struct addresslist	 sc_trapreceivers;
+
+	int			 sc_ncpu;
+	int64_t			*sc_cpustates;
 };
 
 /* control.c */
@@ -427,6 +430,7 @@ int		 mps_getts(struct oid *, struct ber_oid *,
 		    struct ber_element **);
 void		 mps_encodeinaddr(struct ber_oid *, struct in_addr *, int);
 void		 mps_decodeinaddr(struct ber_oid *, struct in_addr *, int);
+struct ber_oid	*mps_table(struct oid *, struct ber_oid *, struct ber_oid *);
 
 /* smi.c */
 int		 smi_init(void);
@@ -440,6 +444,9 @@ char		*smi_oidstring(struct ber_oid *, char *, size_t);
 void		 smi_delete(struct oid *);
 void		 smi_insert(struct oid *);
 int		 smi_oid_cmp(struct oid *, struct oid *);
+
+/* timer.c */
+void		 timer_init(void);
 
 /* snmpd.c */
 int		 snmpd_socket_af(struct sockaddr_storage *, in_port_t);

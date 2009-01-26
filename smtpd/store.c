@@ -1,4 +1,4 @@
-/*	$OpenBSD: store.c,v 1.6 2008/11/17 21:56:18 chl Exp $	*/
+/*	$OpenBSD: store.c,v 1.10 2009/01/14 22:41:41 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -21,52 +21,58 @@
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
-#include <sys/ioctl.h>
 #include <sys/socket.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <event.h>
-#include <fcntl.h>
-#include <paths.h>
-#include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sysexits.h>
-#include <time.h>
-#include <util.h>
 #include <unistd.h>
 
 #include "smtpd.h"
 
-int file_copy(FILE *, FILE *, size_t);
+int file_copy(FILE *, FILE *);
 int file_append(FILE *, FILE *);
 
 int
-file_copy(FILE *dest, FILE *src, size_t len)
+file_copy(FILE *dest, FILE *src)
 {
-	char buffer[8192];
-	size_t rlen;
+	char *buf, *lbuf;
+	size_t len;
+	char *escape;
+	
+	lbuf = NULL;
+	while ((buf = fgetln(src, &len))) {
+		if (buf[len - 1] == '\n') {
+			buf[len - 1] = '\0';
+			len--;
+		}
+		else {
+			/* EOF without EOL, copy and add the NUL */
+			if ((lbuf = malloc(len + 1)) == NULL)
+				err(1, NULL);
+			memcpy(lbuf, buf, len);
+			lbuf[len] = '\0';
+			buf = lbuf;
+		}
 
-	for (; len;) {
+		escape = buf;
+		while (*escape != '\0' && *escape == '>')
+			++escape;
+		if (strncmp("From ", escape, 5) == 0) {
+			if (fprintf(dest, ">") != 1)
+				return 0;
+		}
 
-		rlen = len < sizeof(buffer) ? len : sizeof(buffer);
-
-		if (fread(buffer, 1, rlen, src) != rlen)
+		if (fprintf(dest, "%s\n", buf) != (int)len + 1)
 			return 0;
-
-		if (fwrite(buffer, 1, rlen, dest) != rlen)
-			return 0;
-
-		len -= rlen;
 	}
-
+	free(lbuf);
 	return 1;
 }
 
@@ -80,7 +86,7 @@ file_append(FILE *dest, FILE *src)
 		return 0;
 	srcsz = sb.st_size;
 
-	if (! file_copy(dest, src, srcsz))
+	if (! file_copy(dest, src))
 		return 0;
 
 	return 1;
@@ -169,12 +175,12 @@ store_write_daemon(struct batch *batchp, struct message *messagep)
 
 	if (fprintf(mboxfp, "Hi !\n\n"
 		"This is the MAILER-DAEMON, please DO NOT REPLY to this e-mail it is\n"
-		"just a notification to let you know that an error has occured.\n\n") == -1)
+		"just a notification to let you know that an error has occurred.\n\n") == -1)
 		goto bad;
 
 	if ((batchp->status & S_BATCH_PERMFAILURE) && fprintf(mboxfp,
 		"You ran into a PERMANENT FAILURE, which means that the e-mail can't\n"
-		"be delivered to the remote host no matter how much I'll try.\n\n"
+		"be delivered to the remote host no matter how much I try.\n\n"
 		"Diagnostic:\n"
 		"%s\n\n", batchp->errorline) == -1)
 		goto bad;

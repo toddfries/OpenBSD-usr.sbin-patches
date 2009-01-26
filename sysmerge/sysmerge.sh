@@ -1,6 +1,6 @@
 #!/bin/sh -
 #
-# $OpenBSD: sysmerge.sh,v 1.25 2008/09/17 08:04:17 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.27 2008/12/16 22:23:55 ajacoutot Exp $
 #
 # This script is based on the FreeBSD mergemaster script, written by
 # Douglas Barton <DougB@FreeBSD.org>
@@ -28,8 +28,10 @@ umask 0022
 
 WRKDIR=`mktemp -d -p /var/tmp sysmerge.XXXXX` || exit 1
 SWIDTH=`stty size | awk '{w=$2} END {if (w==0) {w=80} print w}'`
-PAGER="${PAGER:=/usr/bin/more}"
 MERGE_CMD="${MERGE_CMD:=sdiff -as -w ${SWIDTH} -o}"
+
+EDITOR="${EDITOR:=/usr/bin/vi}"
+PAGER="${PAGER:=/usr/bin/more}"
 
 # clean leftovers created by make in src
 clean_src() {
@@ -70,7 +72,7 @@ do_pre() {
 			SRCDIR=/usr/src
 		else
 			echo " *** ERROR: please specify a valid path to src or (x)etcXX.tgz"
-			exit 1
+			error_rm_wrkdir
 		fi
 	fi
 
@@ -105,8 +107,7 @@ do_pre() {
 				echo ""
 				;;
 			*)
-				rm -rf ${WRKDIR} 2> /dev/null
-				exit 1
+				error_rm_wrkdir
 				;;
 		esac
 	fi
@@ -205,7 +206,8 @@ merge_loop() {
 		INSTALL_MERGED=v
 		while [ "${INSTALL_MERGED}" = "v" ]; do
 			echo ""
-			echo "  Use 'i' to install merged file"
+			echo "  Use 'e' to edit the merged file"
+			echo "  Use 'i' to install the merged file"
 			echo "  Use 'n' to view a diff between the merged and new files"
 			echo "  Use 'o' to view a diff between the old and merged files"
 			echo "  Use 'r' to re-do the merge"
@@ -215,6 +217,20 @@ merge_loop() {
 			echo -n "===> How should I deal with the merged file? [Leave it for later] "
 			read INSTALL_MERGED
 			case "${INSTALL_MERGED}" in
+			[eE])
+				echo "editing merged file...\n"
+				if [ -z "${VISUAL}" ]; then
+					EDIT="${EDITOR}"
+				else
+					EDIT="${VISUAL}"
+				fi
+				if which ${EDIT} > /dev/null 2>&1; then
+					${EDIT} ${COMPFILE}.merged
+				else
+					echo " *** ERROR: ${EDIT} can not be found or is not executable"
+				fi
+				INSTALL_MERGED=v
+				;;
 			[iI])
 				mv "${COMPFILE}.merged" "${COMPFILE}"
 				echo ""
@@ -362,7 +378,7 @@ diff_loop() {
 do_compare() {
 	echo "===> Starting comparison"
 
-	cd ${TEMPROOT} || exit 1
+	cd ${TEMPROOT} || error_rm_wrkdir
 
 	# use -size +0 to avoid comparing empty log files and device nodes
 	for COMPFILE in `find . -type f -size +0`; do
