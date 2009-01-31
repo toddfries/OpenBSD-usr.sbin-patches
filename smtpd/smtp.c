@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.16 2009/01/04 22:35:09 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.22 2009/01/30 21:40:21 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -47,6 +47,8 @@ void		smtp_resume(struct smtpd *);
 void		smtp_accept(int, short, void *);
 void		session_timeout(int, short, void *);
 void		session_auth_pickup(struct session *, char *, size_t);
+
+struct s_smtp	s_smtp;
 
 void
 smtp_sig_handler(int sig, short event, void *p)
@@ -171,10 +173,14 @@ smtp_dispatch_parent(int sig, short event, void *p)
 			key.s_msg.id = reply->session_id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
+			if (s == NULL)
+				fatal("smtp_dispatch_parent: session is gone");
+
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
 				break;
 			}
+			s->s_flags &= ~F_EVLOCKED;
 
 			if (reply->value)
 				s->s_flags |= F_AUTHENTICATED;
@@ -241,10 +247,14 @@ smtp_dispatch_mfa(int sig, short event, void *p)
 			key.s_msg.id = ss->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
+			if (s == NULL)
+				fatal("smtp_dispatch_mfa: session is gone");
+
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
 				break;
 			}
+			s->s_flags &= ~F_EVLOCKED;
 
 			session_pickup(s, ss);
 			break;
@@ -304,15 +314,21 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			key.s_id = s->s_id;
 
 			ss = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (ss == NULL) {
-				/* Session was removed while we were waiting
-				 * for the message */
+			if (ss == NULL)
+				fatal("smtp_dispatch_lka: session is gone");
+
+			if (ss->s_flags & F_QUIT) {
+				session_destroy(s);
 				break;
 			}
+			ss->s_flags &= ~F_EVLOCKED;
 
 			strlcpy(ss->s_hostname, s->s_hostname, MAXHOSTNAMELEN);
 			strlcpy(ss->s_msg.session_hostname, s->s_hostname,
 			    MAXHOSTNAMELEN);
+
+			session_pickup(s, NULL);
+
 			break;
 		}
 		default:
@@ -372,10 +388,14 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			key.s_id = ss->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
+			if (s == NULL)
+				fatal("smtp_dispatch_queue: session is gone");
+
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
 				break;
 			}
+			s->s_flags &= ~F_EVLOCKED;
 
 			(void)strlcpy(s->s_msg.message_id, ss->u.msgid,
 			    sizeof(s->s_msg.message_id));
@@ -394,12 +414,17 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			key.s_id = ss->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
-				break;
-			}
+			if (s == NULL)
+				fatal("smtp_dispatch_queue: session is gone");
 
 			fd = imsg_get_fd(ibuf, &imsg);
+
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
+				break;
+			}
+			s->s_flags &= ~F_EVLOCKED;
+
 			if (fd != -1) {
 				s->s_msg.datafp = fdopen(fd, "w");
 				if (s->s_msg.datafp == NULL) {
@@ -424,10 +449,14 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			key.s_msg.id = ss->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
+			if (s == NULL)
+				fatal("smtp_dispatch_queue: session is gone");
+
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
 				break;
 			}
+			s->s_flags &= ~F_EVLOCKED;
 			s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
 			break;
 		}
@@ -444,13 +473,21 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			key.s_msg.id = ss->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (s == NULL) {
-				/* Session was removed while we were waiting for the message */
-				break;
+			if (s == NULL)
+				fatal("smtp_dispatch_queue: session is gone");
+
+			if (imsg.hdr.type == IMSG_QUEUE_COMMIT_MESSAGE) {
+				s->s_msg.message_id[0] = '\0';
+				s->s_msg.message_uid[0] = '\0';
 			}
 
-			session_pickup(s, ss);
+			if (s->s_flags & F_QUIT) {
+				session_destroy(s);
+				break;
+			}
+			s->s_flags &= ~F_EVLOCKED;
 
+			session_pickup(s, ss);
 			break;
 		}
 		default:
@@ -505,6 +542,14 @@ smtp_dispatch_control(int sig, short event, void *p)
 		case IMSG_SMTP_RESUME:
 			smtp_resume(env);
 			break;
+		case IMSG_STATS: {
+			struct stats *s;
+
+			s = imsg.data;
+			s->u.smtp = s_smtp;
+			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
+			break;
+		}
 		default:
 			log_debug("smtp_dispatch_control: unexpected imsg %d",
 			    imsg.hdr.type);
@@ -633,24 +678,17 @@ smtp_disable_events(struct smtpd *env)
 void
 smtp_pause(struct smtpd *env)
 {
-	struct listener	*l;
-
 	log_debug("smtp_pause_listeners: pausing listening sockets");
-	TAILQ_FOREACH(l, &env->sc_listeners, entry) {
-		event_del(&l->ev);
-	}
+	smtp_disable_events(env);
 	env->sc_opts |= SMTPD_SMTP_PAUSED;
 }
 
 void
 smtp_resume(struct smtpd *env)
 {
-	struct listener	*l;
-
 	log_debug("smtp_pause_listeners: resuming listening sockets");
-	TAILQ_FOREACH(l, &env->sc_listeners, entry) {
-		event_add(&l->ev, NULL);
-	}
+	imsg_compose(env->sc_ibufs[PROC_PARENT], IMSG_PARENT_SEND_CONFIG,
+	    0, 0, -1, NULL, 0);
 	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
 }
 
@@ -666,7 +704,7 @@ smtp_accept(int fd, short event, void *p)
 	log_debug("smtp_accept: incoming client on listener: %p", l);
 	len = sizeof(struct sockaddr_storage);
 	if ((s_fd = accept(l->fd, (struct sockaddr *)&ss, &len)) == -1) {
-		event_add(&l->ev, NULL);
+		event_del(&l->ev);
 		return;
 	}
 
@@ -677,10 +715,19 @@ smtp_accept(int fd, short event, void *p)
 
 	s->s_fd = s_fd;
 	s->s_tm = time(NULL);
+	s->s_env = l->env;
+	s->s_l = l;
+
 	(void)memcpy(&s->s_ss, &ss, sizeof(s->s_ss));
 
 	session_init(l, s);
 	event_add(&l->ev, NULL);
+
+	s_smtp.sessions++;
+	s_smtp.sessions_active++;
+
+	if (s_smtp.sessions_active == s->s_env->sc_maxconn)
+		event_del(&l->ev);
 }
 
 void

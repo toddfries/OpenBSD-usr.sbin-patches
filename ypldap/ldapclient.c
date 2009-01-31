@@ -1,4 +1,4 @@
-/* $OpenBSD: ldapclient.c,v 1.9 2008/10/28 13:47:22 aschrijver Exp $ */
+/* $OpenBSD: ldapclient.c,v 1.13 2009/01/27 23:29:42 pyr Exp $ */
 
 /*
  * Copyright (c) 2008 Alexander Schrijver <aschrijver@openbsd.org>
@@ -53,27 +53,18 @@ void	client_try_server_wrapper(int, short, void *);
 int	client_addr_init(struct idm *);
 int	client_addr_free(struct idm *);
 
-struct aldap	*aldap_open(struct ypldap_addr *);
-int		 aldap_close(struct aldap *);
+struct aldap	*client_aldap_open(struct ypldap_addr *);
 
-int
-aldap_close(struct aldap *al)
-{
-	if(close(al->ber.fd) == -1)
-		return (-1);
-
-	free(al);
-
-	return (0);
-}
-
+/*
+ * dummy wrapper to provide aldap_init with its fd's.
+ */
 struct aldap *
-aldap_open(struct ypldap_addr *addr)
+client_aldap_open(struct ypldap_addr *addr)
 {
 	int			 fd = -1;
 	struct ypldap_addr	 *p;
 
-	for(p = addr; p != NULL; p = p->next) {
+	for (p = addr; p != NULL; p = p->next) {
 		char			 hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
 		struct sockaddr		*sa = (struct sockaddr *)&p->ss;
 
@@ -91,7 +82,7 @@ aldap_open(struct ypldap_addr *addr)
 		close(fd);
 	}
 
-	if(fd == -1)
+	if (fd == -1)
 		return NULL;
 
 	return aldap_init(fd);
@@ -132,7 +123,7 @@ client_addr_free(struct idm *idm)
 {
         struct ypldap_addr         *h;
 
-	if(idm->idm_addr == NULL)
+	if (idm->idm_addr == NULL)
 		return (-1);
 
 	for (h = idm->idm_addr; h != NULL; h = h->next)
@@ -219,7 +210,7 @@ client_dispatch_dns(int fd, short event, void *p)
 					fatal(NULL);
 				memcpy(&h->ss, data, sizeof(h->ss));
 
-				if(idm->idm_addr == NULL)
+				if (idm->idm_addr == NULL)
 					h->next = NULL;
 				else
 					h->next = idm->idm_addr;
@@ -242,13 +233,13 @@ client_dispatch_dns(int fd, short event, void *p)
 	}
 
 	TAILQ_FOREACH(idm, &env->sc_idms, idm_entry) {
-		if(client_try_idm(env, idm) == -1)
+		if (client_try_idm(env, idm) == -1)
 			idm->idm_state = STATE_LDAP_FAIL;
 
-		if(idm->idm_state < STATE_LDAP_DONE)
+		if (idm->idm_state < STATE_LDAP_DONE)
 			wait_cnt++;
 	}
-	if(wait_cnt == 0)
+	if (wait_cnt == 0)
 		imsg_compose(env->sc_ibuf, IMSG_END_UPDATE, 0, 0, NULL, 0);
 
 	if (!shut)
@@ -437,7 +428,7 @@ ldapclient(int pipe_main2client[2])
 int
 client_try_idm(struct env *env, struct idm *idm)
 {
-	const char		*where;
+	const char		*where, *errstr;
 	char			*attrs[ATTR_MAX+1];
 	char			**ldap_attrs;
 	int			 i, j, k;
@@ -446,19 +437,19 @@ client_try_idm(struct env *env, struct idm *idm)
 	struct aldap		*al;
 
 	where = "connect";
-	if((al = aldap_open(idm->idm_addr)) == NULL)
+	if ((al = client_aldap_open(idm->idm_addr)) == NULL)
 		return (-1);
 
 	if (idm->idm_flags & F_NEEDAUTH) {
 		where = "binding";
-		if(aldap_bind(al, idm->idm_binddn, idm->idm_bindcred) == -1)
+		if (aldap_bind(al, idm->idm_binddn, idm->idm_bindcred) == -1)
 			goto bad;
 
 		where = "parsing";
-		if((m = aldap_parse(al)) == NULL)
+		if ((m = aldap_parse(al)) == NULL)
 			goto bad;
 		where = "verifying msgid";
-		if(al->msgid != m->msgid) {
+		if (al->msgid != m->msgid) {
 			aldap_freemsg(m);
 			goto bad;
 		}
@@ -474,16 +465,19 @@ client_try_idm(struct env *env, struct idm *idm)
 	attrs[j] = NULL;
 
 	where = "search";
-	if(aldap_search(al, idm->idm_basedn, LDAP_SCOPE_SUBTREE,
-		    idm->idm_filters[FILTER_USER], attrs, 0, 0, 0) == -1)
+	if (aldap_search(al, idm->idm_basedn, LDAP_SCOPE_SUBTREE,
+		    idm->idm_filters[FILTER_USER], attrs, 0, 0, 0) == -1) {
+		aldap_get_errno(al, &errstr);
+		log_debug("%s\n", errstr);
 		goto bad;
+	}
 
 	/*
 	 * build password line.
 	 */
-	while((m = aldap_parse(al)) != NULL) {
+	while ((m = aldap_parse(al)) != NULL) {
 		where = "verifying msgid";
-		if(al->msgid != m->msgid) {
+		if (al->msgid != m->msgid) {
 			aldap_freemsg(m);
 			goto bad;
 		}
@@ -494,7 +488,7 @@ client_try_idm(struct env *env, struct idm *idm)
 		}
 		/* search entry; the rest we won't handle */
 		where = "verifying message_type";
-		if(m->message_type != LDAP_RES_SEARCH_ENTRY) {
+		if (m->message_type != LDAP_RES_SEARCH_ENTRY) {
 			aldap_freemsg(m);
 			goto bad;
 		}
@@ -518,11 +512,11 @@ client_try_idm(struct env *env, struct idm *idm)
 					goto next_pwdentry;
 				if (ldap_attrs[0] == NULL)
 					goto next_pwdentry;
-				for(k = 0; k >= 0 && ldap_attrs[k] != NULL; k++) {
+				for (k = 0; k >= 0 && ldap_attrs[k] != NULL; k++) {
 					if (strlcat(ir.ir_line, ldap_attrs[k],
 					    sizeof(ir.ir_line)) >= sizeof(ir.ir_line))
 						continue;
-					if(ldap_attrs[k+1] != NULL)
+					if (ldap_attrs[k+1] != NULL)
 						if (strlcat(ir.ir_line, ",",
 							    sizeof(ir.ir_line))
 						    >= sizeof(ir.ir_line)) {
@@ -567,16 +561,20 @@ next_pwdentry:
 	attrs[j] = NULL;
 
 	where = "search";
-	if(aldap_search(al, idm->idm_basedn, LDAP_SCOPE_SUBTREE,
-		    idm->idm_filters[FILTER_GROUP], attrs, 0, 0, 0) == -1)
+	if (aldap_search(al, idm->idm_basedn, LDAP_SCOPE_SUBTREE,
+		    idm->idm_filters[FILTER_GROUP], attrs, 0, 0, 0) == -1) {
+		aldap_get_errno(al, &errstr);
+		log_debug("%s\n", errstr);
+		
 		goto bad;
+	}
 
 	/*
 	 * build group line.
 	 */
-	while((m = aldap_parse(al)) != NULL) {
+	while ((m = aldap_parse(al)) != NULL) {
 		where = "verifying msgid";
-		if(al->msgid != m->msgid) {
+		if (al->msgid != m->msgid) {
 			aldap_freemsg(m);
 			goto bad;
 		}
@@ -587,7 +585,7 @@ next_pwdentry:
 		}
 		/* search entry; the rest we won't handle */
 		where = "verifying message_type";
-		if(m->message_type != LDAP_RES_SEARCH_ENTRY) {
+		if (m->message_type != LDAP_RES_SEARCH_ENTRY) {
 			aldap_freemsg(m);
 			goto bad;
 		}
@@ -611,11 +609,11 @@ next_pwdentry:
 					goto next_grpentry;
 				if (ldap_attrs[0] == NULL)
 					goto next_grpentry;
-				for(k = 0; k >= 0 && ldap_attrs[k] != NULL; k++) {
+				for (k = 0; k >= 0 && ldap_attrs[k] != NULL; k++) {
 					if (strlcat(ir.ir_line, ldap_attrs[k],
 					    sizeof(ir.ir_line)) >= sizeof(ir.ir_line))
 						continue;
-					if(ldap_attrs[k+1] != NULL)
+					if (ldap_attrs[k+1] != NULL)
 						if (strlcat(ir.ir_line, ",",
 							    sizeof(ir.ir_line))
 						    >= sizeof(ir.ir_line)) {
@@ -625,7 +623,7 @@ next_pwdentry:
 				}
 				aldap_free_entry(ldap_attrs);
 			} else {
-				if(aldap_match_entry(m, attrs[j++], &ldap_attrs) == -1)
+				if (aldap_match_entry(m, attrs[j++], &ldap_attrs) == -1)
 					goto next_grpentry;
 				if (ldap_attrs[0] == NULL)
 					goto next_grpentry;
@@ -672,14 +670,14 @@ client_periodic_update(int fd, short event, void *p)
 	/* If LDAP isn't finished, notify the master process to trash the
 	 * update. */
 	TAILQ_FOREACH(idm, &env->sc_idms, idm_entry) {
-		if(idm->idm_state < STATE_LDAP_DONE)
+		if (idm->idm_state < STATE_LDAP_DONE)
 			fail_cnt++;
 
 		idm->idm_state = STATE_NONE;
 
 		client_addr_free(idm);
 	}
-	if(fail_cnt > 0) {
+	if (fail_cnt > 0) {
 		log_debug("trash the update");
 		imsg_compose(env->sc_ibuf, IMSG_TRASH_UPDATE, 0, 0, NULL, 0);
 	}

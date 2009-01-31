@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.6 2009/01/08 19:17:31 jacekm Exp $	*/
+/*	$OpenBSD: util.c,v 1.10 2009/01/28 12:56:46 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -51,16 +51,18 @@ bsnprintf(char *str, size_t size, const char *format, ...)
 int
 safe_fclose(FILE *fp)
 {
-
+	if (ferror(fp)) {
+		fclose(fp);
+		return 0;
+	}
 	if (fflush(fp)) {
+		fclose(fp);
 		if (errno == ENOSPC)
 			return 0;
 		fatal("safe_fclose: fflush");
 	}
-
 	if (fsync(fileno(fp)))
 		fatal("safe_fclose: fsync");
-
 	if (fclose(fp))
 		fatal("safe_fclose: fclose");
 
@@ -73,6 +75,17 @@ safe_getpwnam(const char *name)
 	struct passwd *ret;
 
 	ret = getpwnam(name);
+	endpwent();
+
+	return ret;
+}
+
+struct passwd *
+safe_getpwuid(uid_t uid)
+{
+	struct passwd *ret;
+
+	ret = getpwuid(uid);
 	endpwent();
 
 	return ret;
@@ -98,4 +111,38 @@ hostname_match(char *hostname, char *pattern)
 	}
 
 	return (*hostname == '\0' && *pattern == '\0');
+}
+
+int
+recipient_to_path(struct path *path, char *recipient)
+{
+	char *username;
+	char *hostname;
+
+	username = recipient;
+	hostname = strchr(username, '@');
+
+	if (username[0] == '\0') {
+		*path->user = '\0';
+		*path->domain = '\0';
+		return 1;
+	}
+
+	if (hostname == NULL) {
+		if (strcasecmp(username, "postmaster") != 0)
+			return 0;
+		hostname = "localhost";
+	} else {
+		*hostname++ = '\0';
+	}
+
+	if (strlcpy(path->user, username, sizeof(path->user))
+	    >= MAX_LOCALPART_SIZE)
+		return 0;
+
+	if (strlcpy(path->domain, hostname, sizeof(path->domain))
+	    >= MAX_DOMAINPART_SIZE)
+		return 0;
+
+	return 1;
 }

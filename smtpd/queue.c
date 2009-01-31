@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.45 2009/01/12 19:54:37 jacekm Exp $	*/
+/*	$OpenBSD: queue.c,v 1.53 2009/01/29 21:59:15 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,10 +24,10 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
-#include <dirent.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,16 +48,14 @@ void		queue_setup_events(struct smtpd *);
 void		queue_disable_events(struct smtpd *);
 void		queue_purge_incoming(void);
 
-int		queue_create_incoming_layout(char *);
-void		queue_delete_incoming_message(char *);
-int		queue_record_incoming_envelope(struct message *);
-int		queue_remove_incoming_envelope(struct message *);
-int		queue_commit_incoming_message(struct message *);
-int		queue_open_incoming_message_file(struct message *);
-void		queue_message_update(struct message *);
+int		queue_create_layout_message(char *, char *);
+void		queue_delete_layout_message(char *, char *);
+int		queue_record_layout_envelope(char *, struct message *);
+int		queue_remove_layout_envelope(char *, struct message *);
+int		queue_commit_layout_message(char *, struct message *);
+int		queue_open_layout_messagefile(char *, struct message *);
 
-int		queue_open_message_file(struct batch *);
-void		queue_delete_message(char *);
+struct s_queue	s_queue;
 
 void
 queue_sig_handler(int sig, short event, void *p)
@@ -108,6 +106,67 @@ queue_dispatch_control(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_QUEUE_CREATE_MESSAGE: {
+			struct message		*messagep;
+			struct submit_status	 ss;
+
+			log_debug("mfa_dispatch_control: creating message file");
+			messagep = imsg.data;
+
+			ss.id = messagep->session_id;
+			ss.code = 250;
+			bzero(ss.u.msgid, MAX_ID_SIZE);
+
+			if (! enqueue_create_layout(ss.u.msgid))
+				ss.code = 421;
+
+			imsg_compose(ibuf, IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1,
+			    &ss, sizeof(ss));
+
+			break;
+		}
+		case IMSG_QUEUE_MESSAGE_FILE: {
+			int fd;
+			struct submit_status ss;
+			struct message *messagep;
+
+			messagep = imsg.data;
+			ss.msg = *messagep;
+			ss.id = messagep->session_id;
+			ss.code = 250;
+			fd = enqueue_open_messagefile(messagep);
+			if (fd == -1) 
+				ss.code = 421;
+
+			imsg_compose(ibuf, IMSG_QUEUE_MESSAGE_FILE, 0, 0, fd, &ss,
+			    sizeof(ss));
+
+			break;
+		}
+		case IMSG_QUEUE_COMMIT_MESSAGE: {
+			struct message		*messagep;
+			struct submit_status	 ss;
+
+			messagep = imsg.data;
+			ss.id = messagep->session_id;
+
+			ss.code = 250;
+			if (! enqueue_commit_message(messagep))
+				ss.code = 421;
+
+			imsg_compose(ibuf, IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
+			    &ss, sizeof(ss));
+
+			break;
+		}
+		case IMSG_STATS: {
+			struct stats *s;
+
+			s = imsg.data;
+			s->u.queue = s_queue;
+			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
+			break;
+		}
 		default:
 			log_debug("queue_dispatch_control: unexpected imsg %d",
 			    imsg.hdr.type);
@@ -162,7 +221,7 @@ queue_dispatch_smtp(int sig, short event, void *p)
 			messagep = imsg.data;
 			ss.id = messagep->session_id;
 			ss.code = 250;
-			bzero(ss.u.msgid, MAXPATHLEN);
+			bzero(ss.u.msgid, MAX_ID_SIZE);
 
 			if (! queue_create_incoming_layout(ss.u.msgid))
 				ss.code = 421;
@@ -184,6 +243,8 @@ queue_dispatch_smtp(int sig, short event, void *p)
 
 			messagep = imsg.data;
 			ss.id = messagep->session_id;
+
+			s_queue.inserts++;
 
 			if (! queue_commit_incoming_message(messagep))
 				ss.code = 421;
@@ -257,7 +318,8 @@ queue_dispatch_mda(int sig, short event, void *p)
 		switch (imsg.hdr.type) {
 
 		case IMSG_QUEUE_MESSAGE_UPDATE: {
-			queue_message_update(imsg.data);
+			imsg_compose(env->sc_ibufs[PROC_RUNNER], IMSG_RUNNER_UPDATE_ENVELOPE,
+			    0, 0, -1, imsg.data, sizeof(struct message));
 			break;
 		}
 
@@ -313,14 +375,15 @@ queue_dispatch_mta(int sig, short event, void *p)
 			struct batch *batchp;
 
 			batchp = imsg.data;
-			fd = queue_open_message_file(batchp);
+			fd = queue_open_message_file(batchp->message_id);
 			imsg_compose(ibuf,  IMSG_QUEUE_MESSAGE_FD, 0, 0, fd, batchp,
 			    sizeof(*batchp));
 			break;
 		}
 
 		case IMSG_QUEUE_MESSAGE_UPDATE: {
-			queue_message_update(imsg.data);
+			imsg_compose(env->sc_ibufs[PROC_RUNNER], IMSG_RUNNER_UPDATE_ENVELOPE,
+			    0, 0, -1, imsg.data, sizeof(struct message));
 			break;
 		}
 
@@ -359,7 +422,7 @@ queue_dispatch_lka(int sig, short event, void *p)
 			fatal("msgbuf_write");
 		imsg_event_add(ibuf);
 		return;
-	default:
+ 	default:
 		fatalx("unknown event");
 	}
 
@@ -374,6 +437,8 @@ queue_dispatch_lka(int sig, short event, void *p)
 		case IMSG_QUEUE_SUBMIT_ENVELOPE: {
 			struct message		*messagep;
 			struct submit_status	 ss;
+			int (*f)(struct message *);
+			enum smtp_proc_type peer;
 
 			messagep = imsg.data;
 			messagep->id = queue_generate_id();
@@ -386,11 +451,19 @@ queue_dispatch_lka(int sig, short event, void *p)
 				messagep->type = T_MTA_MESSAGE;
 
 			/* Write to disk */
-			if (! queue_record_incoming_envelope(messagep)) {
+			if (messagep->flags & F_MESSAGE_ENQUEUED) {
+				f = enqueue_record_envelope;
+				peer = PROC_CONTROL;
+			}
+			else {
+				f = queue_record_incoming_envelope;
+				peer = PROC_SMTP;
+			}
+
+			if (! f(messagep)) {
 				ss.code = 421;
-				imsg_compose(env->sc_ibufs[PROC_SMTP], IMSG_QUEUE_TEMPFAIL,
+				imsg_compose(env->sc_ibufs[peer], IMSG_QUEUE_TEMPFAIL,
 				    0, 0, -1, &ss, sizeof(ss));
-				break;
 			}
 
 			break;
@@ -399,13 +472,20 @@ queue_dispatch_lka(int sig, short event, void *p)
 		case IMSG_QUEUE_COMMIT_ENVELOPES: {
 			struct message		*messagep;
 			struct submit_status	 ss;
+			enum smtp_proc_type	 peer;
 
 			messagep = imsg.data;
 			ss.id = messagep->session_id;
 			ss.code = 250;
 
-			imsg_compose(env->sc_ibufs[PROC_SMTP], IMSG_QUEUE_COMMIT_ENVELOPES,
+			if (messagep->flags & F_MESSAGE_ENQUEUED)
+				peer = PROC_CONTROL;
+			else
+				peer = PROC_SMTP;
+
+			imsg_compose(env->sc_ibufs[peer], IMSG_QUEUE_COMMIT_ENVELOPES,
 			    0, 0, -1, &ss, sizeof(ss));
+
 			break;
 		}
 
@@ -551,23 +631,6 @@ queue(struct smtpd *env)
 	return (0);
 }
 
-u_int64_t
-queue_generate_id(void)
-{
-	u_int64_t	id;
-	struct timeval	tp;
-
-	if (gettimeofday(&tp, NULL) == -1)
-		fatal("queue_generate_id: time");
-
-	id = (u_int32_t)tp.tv_sec;
-	id <<= 32;
-	id |= (u_int32_t)tp.tv_usec;
-	usleep(1);
-
-	return (id);
-}
-
 int
 queue_remove_batch_message(struct smtpd *env, struct batch *batchp, struct message *messagep)
 {
@@ -581,7 +644,6 @@ queue_remove_batch_message(struct smtpd *env, struct batch *batchp, struct messa
 		free(batchp);
 		return 1;
 	}
-
 	return 0;
 }
 
@@ -620,394 +682,13 @@ message_by_id(struct smtpd *env, struct batch *batchp, u_int64_t id)
 void
 queue_purge_incoming(void)
 {
-	DIR		*dirp;
-	struct dirent	*dp;
+	char		 path[MAXPATHLEN];
+	struct qwalk	*q;
 
-	dirp = opendir(PATH_INCOMING);
-	if (dirp == NULL)
-		fatal("queue_purge_incoming: opendir");
+	q = qwalk_new(PATH_INCOMING);
 
-	while ((dp = readdir(dirp)) != NULL) {
-		if (strcmp(dp->d_name, ".") == 0 ||
-		    strcmp(dp->d_name, "..") == 0) {
-			continue;
-		}
-		queue_delete_incoming_message(dp->d_name);
-	}
+	while (qwalk(q, path))
+		queue_delete_incoming_message(basename(path));
 
-	closedir(dirp);
-}
-
-int
-queue_create_incoming_layout(char *message_id)
-{
-	char rootdir[MAXPATHLEN];
-	char evpdir[MAXPATHLEN];
-
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%d.XXXXXXXXXXXXXXXX",
-		PATH_INCOMING, time(NULL)))
-		fatalx("queue_create_incoming_layout: snprintf");
-
-	if (mkdtemp(rootdir) == NULL) {
-		if (errno == ENOSPC)
-			return 0;
-		fatal("queue_create_incoming_layout: mkdtemp");
-	}
-
-	if (strlcpy(message_id, rootdir + strlen(PATH_INCOMING) + 1, MAXPATHLEN)
-	    >= MAXPATHLEN)
-		fatalx("queue_create_incoming_layout: truncation");
-	
-	if (! bsnprintf(evpdir, MAXPATHLEN, "%s%s", rootdir, PATH_ENVELOPES))
-		fatalx("queue_create_incoming_layout: snprintf");
-
-	if (mkdir(evpdir, 0700) == -1) {
-		if (errno == ENOSPC) {
-			rmdir(rootdir);
-			return 0;
-		}
-		fatal("queue_create_incoming_layout: mkdir");
-	}
-
-	return 1;
-}
-
-void
-queue_delete_incoming_message(char *msgid)
-{
-	char rootdir[MAXPATHLEN];
-	char purgedir[MAXPATHLEN];
-
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%s", PATH_INCOMING, msgid))
-		fatalx("snprintf");
-
-	if (! bsnprintf(purgedir, MAXPATHLEN, "%s/%s", PATH_PURGE, msgid))
-		fatalx("snprintf");
-
-	if (rename(rootdir, purgedir) == -1) {
-		if (errno == ENOENT)
-			return;
-		fatal("queue_delete_incoming_message: rename");
-	}
-}
-
-int
-queue_record_incoming_envelope(struct message *message)
-{
-	char evpname[MAXPATHLEN];
-	FILE *fp;
-	int fd;
-
-again:
-	if (! bsnprintf(evpname, MAXPATHLEN, "%s/%s%s/%s.%qu", PATH_INCOMING,
-		message->message_id, PATH_ENVELOPES, message->message_id,
-		(u_int64_t)arc4random()))
-		fatalx("queue_record_incoming_envelope: snprintf");
-
-	fd = open(evpname, O_WRONLY|O_CREAT|O_EXCL, 0600);
-	if (fd == -1) {
-		if (errno == EEXIST)
-			goto again;
-		if (errno == ENOSPC || errno == ENFILE)
-			goto tempfail;
-		fatal("queue_record_incoming_envelope: open");
-	}
-
-	fp = fdopen(fd, "w");
-	if (fp == NULL)
-		fatal("queue_record_incoming_envelope: fdopen");
-
-	message->creation = time(NULL);
-	if (strlcpy(message->message_uid, strrchr(evpname, '/') + 1, MAXPATHLEN)
-	    >= MAXPATHLEN)
-		fatalx("queue_record_incoming_envelope: truncation");
-
-	if (fwrite(message, sizeof (struct message), 1, fp) != 1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_record_incoming_envelope: write");
-	}
-
-	if (! safe_fclose(fp))
-		goto tempfail;
-
-	return 1;
-
-tempfail:
-	unlink(evpname);
-	close(fd);
-	message->creation = 0;
-	message->message_uid[0] = '\0';
-
-	return 0;
-}
-
-int
-queue_remove_incoming_envelope(struct message *message)
-{
-	char pathname[MAXPATHLEN];
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%s%s/%s", PATH_INCOMING,
-		message->message_id, PATH_ENVELOPES, message->message_uid))
-		fatal("queue_remove_incoming_envelope: snprintf");
-
-	if (unlink(pathname) == -1)
-		if (errno != ENOENT)
-			fatal("queue_remove_incoming_envelope: unlink");
-
-	return 1;
-}
-
-int
-queue_commit_incoming_message(struct message *messagep)
-{
-	char rootdir[MAXPATHLEN];
-	char queuedir[MAXPATHLEN];
-	
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%s", PATH_INCOMING,
-		messagep->message_id))
-		fatal("queue_commit_message_incoming: snprintf");
-
-	if (! bsnprintf(queuedir, MAXPATHLEN, "%s/%d", PATH_QUEUE,
-		queue_hash(messagep->message_id)))
-		fatal("queue_commit_message_incoming: snprintf");
-
-	if (mkdir(queuedir, 0700) == -1) {
-		if (errno == ENOSPC)
-			return 0;
-		if (errno != EEXIST)
-			fatal("queue_commit_message_incoming: mkdir");
-	}
-
-	if (strlcat(queuedir, "/", MAXPATHLEN) >= MAXPATHLEN ||
-	    strlcat(queuedir, messagep->message_id, MAXPATHLEN) >= MAXPATHLEN)
-		fatalx("queue_commit_incoming_message: truncation");
-
-	if (rename(rootdir, queuedir) == -1) {
-		if (errno == ENOSPC)
-			return 0;
-		fatal("queue_commit_message_incoming: rename");
-	}
-
-	return 1;
-}
-
-int
-queue_open_incoming_message_file(struct message *messagep)
-{
-	char pathname[MAXPATHLEN];
-	mode_t mode = O_CREAT|O_EXCL|O_RDWR;
-	
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%s/message", PATH_INCOMING,
-		messagep->message_id))
-		fatal("queue_open_incoming_message_file: snprintf");
-
-	return open(pathname, mode, 0600);
-}
-
-int
-queue_remove_envelope(struct message *messagep)
-{
-	char pathname[MAXPATHLEN];
-	u_int16_t hval;
-
-	hval = queue_hash(messagep->message_id);
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%d/%s%s/%s", PATH_QUEUE,
-		hval, messagep->message_id, PATH_ENVELOPES,
-		messagep->message_uid))
-		fatal("queue_remove_envelope: snprintf");
-
-	if (unlink(pathname) == -1)
-		fatal("queue_remove_envelope: unlink");
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%d/%s%s", PATH_QUEUE,
-		hval, messagep->message_id, PATH_ENVELOPES))
-		fatal("queue_remove_envelope: snprintf");
-
-	if (rmdir(pathname) != -1)
-		queue_delete_message(messagep->message_id);
-
-	return 1;
-}
-
-int
-queue_update_envelope(struct message *messagep)
-{
-	char temp[MAXPATHLEN];
-	char dest[MAXPATHLEN];
-	FILE *fp;
-
-	if (! bsnprintf(temp, MAXPATHLEN, "%s/envelope.tmp", PATH_INCOMING))
-		fatalx("queue_update_envelope");
-
-	if (! bsnprintf(dest, MAXPATHLEN, "%s/%d/%s%s/%s", PATH_QUEUE,
-		queue_hash(messagep->message_id), messagep->message_id,
-		PATH_ENVELOPES, messagep->message_uid))
-		fatal("queue_update_envelope: snprintf");
-
-	fp = fopen(temp, "w");
-	if (fp == NULL) {
-		if (errno == ENOSPC || errno == ENFILE)
-			goto tempfail;
-		fatal("queue_update_envelope: open");
-	}
-	if (fwrite(messagep, sizeof(struct message), 1, fp) != 1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_update_envelope: fwrite");
-	}
-	if (! safe_fclose(fp))
-		goto tempfail;
-
-	if (rename(temp, dest) == -1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_update_envelope: rename");
-	}
-
-	return 1;
-
-tempfail:
-	if (unlink(temp) == -1)
-		if (errno != ENOENT)
-			fatal("queue_update_envelope: unlink");
-	if (fp)
-		fclose(fp);
-
-	return 0;
-}
-
-int
-queue_load_envelope(struct message *messagep, char *evpid)
-{
-	char pathname[MAXPATHLEN];
-	char msgid[MAXPATHLEN];
-	FILE *fp;
-
-	if (strlcpy(msgid, evpid, MAXPATHLEN) >= MAXPATHLEN)
-		fatalx("queue_load_envelope: truncation");
-	*strrchr(msgid, '.') = '\0';
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%d/%s%s/%s", PATH_QUEUE,
-		queue_hash(msgid), msgid, PATH_ENVELOPES, evpid))
-		fatalx("queue_load_envelope: snprintf");
-
-	fp = fopen(pathname, "r");
-	if (fp == NULL) {
-		if (errno == ENOENT)
-			return 0;
-		if (errno == ENOSPC || errno == ENFILE)
-			return 0;
-		fatal("queue_load_envelope: fopen");
-	}
-	if (fread(messagep, sizeof(struct message), 1, fp) != 1)
-		fatal("queue_load_envelope: fread");
-	fclose(fp);
-
-	return 1;
-}
-
-int
-queue_open_message_file(struct batch *batchp)
-{
-	int fd;
-	char pathname[MAXPATHLEN];
-	mode_t mode = O_RDONLY;
-	u_int16_t hval;
-
-	hval = queue_hash(batchp->message_id);
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%d/%s/message", PATH_QUEUE,
-		hval, batchp->message_id))
-		fatal("queue_open_message_file: snprintf");
-
-	if ((fd = open(pathname, mode)) == -1)
-		fatal("queue_open_message_file: open");
-
-	return fd;
-}
-
-void
-queue_delete_message(char *msgid)
-{
-	char rootdir[MAXPATHLEN];
-	char evpdir[MAXPATHLEN];
-	char msgpath[MAXPATHLEN];
-	u_int16_t hval;
-
-	hval = queue_hash(msgid);
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%d/%s", PATH_QUEUE,
-		hval, msgid))
-		fatal("queue_delete_message: snprintf");
-
-	if (! bsnprintf(evpdir, MAXPATHLEN, "%s%s",
-		rootdir, PATH_ENVELOPES))
-		fatal("queue_delete_message: snprintf");
-	
-	if (! bsnprintf(msgpath, MAXPATHLEN, "%s/message", rootdir))
-		fatal("queue_delete_message: snprintf");
-
-	if (unlink(msgpath) == -1)
-		if (errno != ENOENT)
-			fatal("queue_delete_message: unlink");
-
-	if (rmdir(evpdir) == -1)
-		if (errno != ENOENT)
-			fatal("queue_delete_message: rmdir");
-
-	if (rmdir(rootdir) == -1)
-		if (errno != ENOENT)
-			fatal("queue_delete_message: rmdir");
-
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%d", PATH_QUEUE,
-		hval))
-		fatal("queue_delete_message: snprintf");
-
-	rmdir(rootdir);
-
-	return;
-}
-
-void
-queue_message_update(struct message *messagep)
-{
-	messagep->flags &= ~F_MESSAGE_PROCESSING;
-	messagep->batch_id = 0;
-	messagep->retry++;
-
-	if (messagep->status & S_MESSAGE_PERMFAILURE) {
-		if (messagep->type & T_DAEMON_MESSAGE)
-			queue_remove_envelope(messagep);
-		else {
-			messagep->id = queue_generate_id();
-			messagep->type |= T_DAEMON_MESSAGE;
-			messagep->status &= ~S_MESSAGE_PERMFAILURE;
-			messagep->lasttry = 0;
-			messagep->retry = 0;
-			messagep->creation = time(NULL);
-			queue_update_envelope(messagep);
-		}
-		return;
-	}
-
-	if (messagep->status & S_MESSAGE_TEMPFAILURE) {
-		messagep->status &= ~S_MESSAGE_TEMPFAILURE;
-		queue_update_envelope(messagep);
-		return;
-	}
-
-	/* no error, remove envelope */
-	queue_remove_envelope(messagep);
-}
-
-u_int16_t
-queue_hash(char *msgid)
-{
-	u_int16_t	h;
-
-	for (h = 5381; *msgid; msgid++)
-		h = ((h << 5) + h) + *msgid;
-
-	return (h % DIRHASH_BUCKETS);
+	qwalk_close(q);
 }

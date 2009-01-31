@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.9 2008/12/30 21:31:54 claudio Exp $ */
+/*	$OpenBSD: interface.c,v 1.11 2009/01/29 19:07:53 stsp Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -142,6 +142,7 @@ if_fsm(struct iface *iface, enum iface_event event)
 	if (iface->state != old_state) {
 		orig_rtr_lsa(iface);
 		orig_link_lsa(iface);
+		orig_intra_lsa_rtr(iface);
 	}
 
 	if (old_state & (IF_STA_MULTI | IF_STA_POINTTOPOINT) &&
@@ -276,7 +277,7 @@ void
 if_start(struct ospfd_conf *xconf, struct iface *iface)
 {
 	/* init the dummy local neighbor */
-	iface->self = nbr_new(ospfe_router_id(), iface, 1);
+	iface->self = nbr_new(ospfe_router_id(), iface, iface->ifindex, 1);
 
 	/* set event handlers for interface */
 	evtimer_set(&iface->lsack_tx_timer, ls_ack_tx_timer, iface);

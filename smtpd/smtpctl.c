@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.5 2009/01/04 22:35:09 gilles Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.12 2009/01/30 21:52:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -44,8 +44,8 @@
 
 __dead void	usage(void);
 int		show_command_output(struct imsg*);
-void		show_queue(int);
-void		show_runqueue(int);
+int		show_stats_output(struct imsg *);
+int		enqueue(int, char **);
 
 struct imsgname {
 	int type;
@@ -65,12 +65,18 @@ struct imsgname imsgunknown = {
 int proctype;
 struct imsgbuf	*ibuf;
 
+int sendmail = 0;
+extern char *__progname;
+
 __dead void
 usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s <command> [arg [...]]\n", __progname);
+	if (sendmail)
+		fprintf(stderr, "usage: %s [-i] rcpt [...]]\n", __progname);
+	else
+		fprintf(stderr, "usage: %s <command> [arg [...]]\n", __progname);
 	exit(1);
 }
 
@@ -85,32 +91,36 @@ int
 main(int argc, char *argv[])
 {
 	struct sockaddr_un	sun;
-	struct parse_result	*res;
+	struct parse_result	*res = NULL;
 	struct imsg		imsg;
 	int			ctl_sock;
 	int			done = 0;
 	int			n;
 
-	/* check for root privileges */
-	if (geteuid())
-		errx(1, "need root privileges");
-
 	/* parse options */
-	if ((res = parse(argc - 1, argv + 1)) == NULL)
-		exit(1);
+	if (strcmp(__progname, "sendmail") == 0 || strcmp(__progname, "send-mail") == 0)
+		sendmail = 1;
+	else {
+		/* check for root privileges */
+		if (geteuid())
+			errx(1, "need root privileges");
 
-	/* handle "disconnected" commands */
-	switch (res->action) {
-	case SHOW_QUEUE:
-		show_queue(0);
-		break;
-	case SHOW_RUNQUEUE:
-		show_runqueue(0);
-		break;
-	default:
-		goto connected;
+		if ((res = parse(argc - 1, argv + 1)) == NULL)
+			exit(1);
+
+		/* handle "disconnected" commands */
+		switch (res->action) {
+		case SHOW_QUEUE:
+			show_queue(PATH_QUEUE, 0);
+			break;
+		case SHOW_RUNQUEUE:
+			show_queue(PATH_RUNQUEUE, 0);
+			break;
+		default:
+			goto connected;
+		}
+		return 0;
 	}
-	return 0;
 
 connected:
 	/* connect to relayd control socket */
@@ -126,6 +136,9 @@ connected:
 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
 	imsg_init(ibuf, ctl_sock, NULL);
+
+	if (sendmail)
+		return enqueue(argc, argv);
 
 	/* process user request */
 	switch (res->action) {
@@ -155,6 +168,9 @@ connected:
 		break;
 	case RESUME_SMTP:
 		imsg_compose(ibuf, IMSG_SMTP_RESUME, 0, 0, -1, NULL, 0);
+		break;
+	case SHOW_STATS:
+		imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, NULL, 0);
 		break;
 	case MONITOR:
 		/* XXX */
@@ -188,6 +204,9 @@ connected:
 			case RESUME_MTA:
 			case RESUME_SMTP:
 				done = show_command_output(&imsg);
+				break;
+			case SHOW_STATS:
+				done = show_stats_output(&imsg);
 				break;
 			case NONE:
 				break;
@@ -223,3 +242,49 @@ show_command_output(struct imsg *imsg)
 	return (1);
 }
 
+int
+show_stats_output(struct imsg *imsg)
+{
+	static int	 	left = 4;
+	static struct s_parent	s_parent;
+	static struct s_queue	s_queue;
+	static struct s_runner	s_runner;
+	static struct s_smtp	s_smtp;
+
+	switch (imsg->hdr.type) {
+	case IMSG_PARENT_STATS:
+		s_parent = *(struct s_parent *)imsg->data;
+		break;
+	case IMSG_QUEUE_STATS:
+		s_queue = *(struct s_queue *)imsg->data;
+		break;
+	case IMSG_RUNNER_STATS:
+		s_runner = *(struct s_runner *)imsg->data;
+		break;
+	case IMSG_SMTP_STATS:
+		s_smtp = *(struct s_smtp *)imsg->data;
+		break;
+	default:
+		errx(1, "show_stats_output: bad hdr type (%d)", imsg->hdr.type);
+	}
+
+	left--;
+	if (left > 0)
+		return (0);
+
+	printf("parent.uptime = %d\n", time(NULL) - s_parent.start);
+
+	printf("queue.inserts = %zd\n", s_queue.inserts);
+
+	printf("runner.active = %zd\n", s_runner.active);
+
+	printf("smtp.sessions = %zd\n", s_smtp.sessions);
+	printf("smtp.sessions.aborted = %zd\n", s_smtp.aborted);
+	printf("smtp.sessions.active = %zd\n", s_smtp.sessions_active);
+	printf("smtp.sessions.ssmtp = %zd\n", s_smtp.ssmtp);
+	printf("smtp.sessions.ssmtp.active = %zd\n", s_smtp.ssmtp_active);
+	printf("smtp.sessions.starttls = %zd\n", s_smtp.starttls);
+	printf("smtp.sessions.starttls.active = %zd\n", s_smtp.starttls_active);
+
+	return (1);
+}

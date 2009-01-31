@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.13 2009/01/12 19:56:27 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.26 2009/01/29 15:40:34 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -26,6 +26,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <ssl/ssl.h>
+
 #include <errno.h>
 #include <event.h>
 #include <pwd.h>
@@ -45,12 +47,14 @@ void		mta_setup_events(struct smtpd *);
 void		mta_disable_events(struct smtpd *);
 void		mta_timeout(int, short, void *);
 void		mta_write(int, short, void *);
-int		mta_connect(struct batch *);
+int		mta_connect(struct session *);
 void		mta_read_handler(struct bufferevent *, void *);
 void		mta_write_handler(struct bufferevent *, void *);
 void		mta_error_handler(struct bufferevent *, short, void *);
 int		mta_reply_handler(struct bufferevent *, void *);
 void		mta_batch_update_queue(struct batch *);
+void		mta_expand_mxarray(struct session *);
+void		ssl_client_init(struct session *);
 
 void
 mta_sig_handler(int sig, short event, void *p)
@@ -149,6 +153,7 @@ mta_dispatch_queue(int sig, short event, void *p)
 		switch (imsg.hdr.type) {
 		case IMSG_QUEUE_MESSAGE_FD: {
 			struct batch	*batchp;
+			struct session	*sessionp;
 			int fd;
 
 			if ((fd = imsg_get_fd(ibuf, &imsg)) == -1) {
@@ -158,13 +163,13 @@ mta_dispatch_queue(int sig, short event, void *p)
 
 			batchp = (struct batch *)imsg.data;
 			batchp = batch_by_id(env, batchp->id);
+			sessionp = batchp->sessionp;
 
 			if ((batchp->messagefp = fdopen(fd, "r")) == NULL)
 				fatal("mta_dispatch_queue: fdopen");
 
-			evbuffer_add_printf(batchp->bev->output, "DATA\r\n");
-
-			bufferevent_enable(batchp->bev, EV_WRITE|EV_READ);
+			session_respond(sessionp, "DATA");
+			bufferevent_enable(sessionp->s_bev, EV_READ);
 			break;
 		}
 		default:
@@ -214,16 +219,30 @@ mta_dispatch_runner(int sig, short event, void *p)
 
 		switch (imsg.hdr.type) {
 		case IMSG_BATCH_CREATE: {
+			struct session *s;
 			struct batch *batchp;
 
+			/* create a client session */
+			if ((s = calloc(1, sizeof(*s))) == NULL)
+				fatal(NULL);
+			s->s_state = S_INIT;
+			s->s_env = env;
+			s->s_id = queue_generate_id();
+			SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
+
+			/* create the batch for this session */
 			batchp = calloc(1, sizeof (struct batch));
 			if (batchp == NULL)
 				fatal("mta_dispatch_runner: calloc");
 
 			*batchp = *(struct batch *)imsg.data;
+			batchp->session_id = s->s_id;
 			batchp->mx_off = 0;
 			batchp->env = env;
 			batchp->flags = 0;
+			batchp->sessionp = s;
+
+			s->batch = batchp;
 
 			TAILQ_INIT(&batchp->messages);
 			SPLAY_INSERT(batchtree, &env->batch_queue, batchp);
@@ -244,12 +263,17 @@ mta_dispatch_runner(int sig, short event, void *p)
 			if (batchp == NULL)
 				fatalx("mta_dispatch_runner: internal inconsistency.");
 
-			TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
+			batchp->session_ss = messagep->session_ss;
+			strlcpy(batchp->session_hostname, messagep->session_hostname, MAXHOSTNAMELEN);
+			strlcpy(batchp->session_helo, messagep->session_helo, MAXHOSTNAMELEN);
+
+ 			TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
 
 			break;
 		}
 		case IMSG_BATCH_CLOSE: {
-			struct batch	*batchp;
+			struct batch		*batchp;
+			struct session		*s;
 
 			batchp = (struct batch *)imsg.data;
 			batchp = batch_by_id(env, batchp->id);
@@ -258,11 +282,14 @@ mta_dispatch_runner(int sig, short event, void *p)
 
 			batchp->flags |= F_BATCH_COMPLETE;
 
-			while (! mta_connect(batchp)) {
-				if (batchp->mx_off == batchp->mx_cnt) {
+			log_debug("batch ready, we can initiate a session");
+
+			s = batchp->sessionp;
+
+			mta_expand_mxarray(s);
+			while (! mta_connect(s))
+				if (s->mx_off == s->mx_cnt)
 					break;
-				}
-			}
 			break;
 		}
 		default:
@@ -333,6 +360,7 @@ mta(struct smtpd *env)
 		return (pid);
 	}
 
+	ssl_init();
 	purge_config(env, PURGE_EVERYTHING);
 
 	pw = env->sc_pw;
@@ -377,7 +405,7 @@ mta(struct smtpd *env)
 
 /* shamelessly ripped usr.sbin/relayd/check_tcp.c ;) */
 int
-mta_connect(struct batch *batchp)
+mta_connect(struct session* sessionp)
 {
 	int s;
 	int type;
@@ -385,7 +413,7 @@ mta_connect(struct batch *batchp)
 	struct sockaddr_in ssin;
 	struct sockaddr_in6 ssin6;
 
-	if ((s = socket(batchp->mxarray[batchp->mx_off].ss.ss_family, SOCK_STREAM, 0)) == -1) {
+	if ((s = socket(sessionp->mxarray[sessionp->mx_off].ss.ss_family, SOCK_STREAM, 0)) == -1) {
 		goto bad;
 	}
 
@@ -401,8 +429,8 @@ mta_connect(struct batch *batchp)
 
 	session_socket_blockmode(s, BM_NONBLOCK);
 
-	if (batchp->mxarray[batchp->mx_off].ss.ss_family == PF_INET) {
-		ssin = *(struct sockaddr_in *)&batchp->mxarray[batchp->mx_off].ss;
+	if (sessionp->mxarray[sessionp->mx_off].ss.ss_family == PF_INET) {
+		ssin = *(struct sockaddr_in *)&sessionp->mxarray[sessionp->mx_off].ss;
 		if (connect(s, (struct sockaddr *)&ssin, sizeof(struct sockaddr_in)) == -1) {
 			if (errno != EINPROGRESS) {
 				goto bad;
@@ -410,8 +438,8 @@ mta_connect(struct batch *batchp)
 		}
 	}
 
-	if (batchp->mxarray[batchp->mx_off].ss.ss_family == PF_INET6) {
-		ssin6 = *(struct sockaddr_in6 *)&batchp->mxarray[batchp->mx_off].ss;
+	if (sessionp->mxarray[sessionp->mx_off].ss.ss_family == PF_INET6) {
+		ssin6 = *(struct sockaddr_in6 *)&sessionp->mxarray[sessionp->mx_off].ss;
 		if (connect(s, (struct sockaddr *)&ssin6, sizeof(struct sockaddr_in6)) == -1) {
 			if (errno != EINPROGRESS) {
 				goto bad;
@@ -419,16 +447,16 @@ mta_connect(struct batch *batchp)
 		}
 	}
 
-	batchp->tv.tv_sec = SMTPD_CONNECT_TIMEOUT;
-	batchp->tv.tv_usec = 0;
-	batchp->peerfd = s;
-	event_set(&batchp->ev, s, EV_TIMEOUT|EV_WRITE, mta_write, batchp);
-	event_add(&batchp->ev, &batchp->tv);
+	sessionp->s_tv.tv_sec = SMTPD_CONNECT_TIMEOUT;
+	sessionp->s_tv.tv_usec = 0;
+	sessionp->s_fd = s;
+	event_set(&sessionp->s_ev, s, EV_TIMEOUT|EV_WRITE, mta_write, sessionp);
+	event_add(&sessionp->s_ev, &sessionp->s_tv);
 
 	return 1;
 
 bad:
-	batchp->mx_off++;
+	sessionp->mx_off++;
 	close(s);
 	return 0;
 }
@@ -436,40 +464,46 @@ bad:
 void
 mta_write(int s, short event, void *arg)
 {
-	struct batch *batchp = arg;
+	struct session *sessionp = arg;
+	struct batch *batchp = sessionp->batch;
 	int ret;
 
 	if (event == EV_TIMEOUT) {
-		batchp->mx_off++;
+		sessionp->mx_off++;
 		close(s);
-		if (batchp->bev) {
-			bufferevent_free(batchp->bev);
-			batchp->bev = NULL;
+		if (sessionp->s_bev) {
+			bufferevent_free(sessionp->s_bev);
+			sessionp->s_bev = NULL;
 		}
 		strlcpy(batchp->errorline, "connection timed-out.", MAX_LINE_SIZE);
 
 		ret = 0;
-		while (batchp->mx_off < batchp->mx_cnt &&
-		    (ret = mta_connect(batchp)) == 0) {
+		while (sessionp->mx_off < sessionp->mx_cnt &&
+		    (ret = mta_connect(sessionp)) == 0) {
 			continue;
 		}
 		if (ret)
 			return;
 
 		mta_batch_update_queue(batchp);
+		session_destroy(sessionp);
 		return;
 	}
 
-	batchp->bev = bufferevent_new(s, mta_read_handler, mta_write_handler,
-	    mta_error_handler, batchp);
+	sessionp->s_bev = bufferevent_new(s, mta_read_handler, mta_write_handler,
+	    mta_error_handler, sessionp);
 
-	if (batchp->bev == NULL) {
+	if (sessionp->s_bev == NULL) {
 		mta_batch_update_queue(batchp);
-		close(s);
+		session_destroy(sessionp);
 		return;
 	}
 
-	bufferevent_enable(batchp->bev, EV_READ|EV_WRITE);
+	if (sessionp->mxarray[sessionp->mx_off].flags & F_SSMTP) {
+		ssl_client_init(sessionp);
+		return;
+	}
+	bufferevent_enable(sessionp->s_bev, EV_READ);
 }
 
 void
@@ -482,7 +516,8 @@ mta_read_handler(struct bufferevent *bev, void *arg)
 int
 mta_reply_handler(struct bufferevent *bev, void *arg)
 {
-	struct batch *batchp = arg;
+	struct session *sessionp = arg;
+	struct batch *batchp = sessionp->batch;
 	struct smtpd *env = batchp->env;
 	struct message *messagep = NULL;
 	char *line;
@@ -495,12 +530,8 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 	int flags = 0;
 
 	line = evbuffer_readline(bev->input);
-	if (line == NULL) {
-		bufferevent_enable(bev, EV_READ|EV_WRITE);
+	if (line == NULL)
 		return 0;
-	}
-
-	bufferevent_enable(bev, EV_READ|EV_WRITE);
 
 	log_debug("remote server sent: [%s]", line);
 
@@ -511,24 +542,54 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		batchp->status |= S_BATCH_PERMFAILURE;
 		strlcpy(batchp->errorline, line, MAX_LINE_SIZE);
 		mta_batch_update_queue(batchp);
+		session_destroy(sessionp);
 		return 0;
 	}
 
 	if (line[3] == '-') {
+		if (strcasecmp(&line[4], "STARTTLS") == 0)
+			sessionp->s_flags |= F_PEERHASTLS;
 		return 1;
 	}
 
 	switch (code) {
 	case 250:
-		if (batchp->state == S_DONE) {
+		if (sessionp->s_state == S_DONE) {
 			mta_batch_update_queue(batchp);
+			session_destroy(sessionp);
 			return 0;
 		}
+
+		if (sessionp->s_state == S_GREETED &&
+		    (sessionp->s_flags & F_PEERHASTLS) &&
+		    !(sessionp->s_flags & F_SECURE)) {
+			session_respond(sessionp, "STARTTLS");
+			sessionp->s_state = S_TLS;
+			return 0;
+		}
+
+		if (sessionp->s_state == S_GREETED &&
+		    !(sessionp->s_flags & F_PEERHASTLS) &&
+		    sessionp->mxarray[sessionp->mx_off].flags & F_STARTTLS) {
+			/* PERM - we want TLS but it is not advertised */
+			batchp->status |= S_BATCH_PERMFAILURE;
+			mta_batch_update_queue(batchp);
+			session_destroy(sessionp);
+			return 0;
+		}
+
 		break;
 
 	case 220:
-		evbuffer_add_printf(batchp->bev->output, "EHLO %s\r\n", env->sc_hostname);
-		batchp->state = S_GREETED;
+		if (sessionp->s_state == S_TLS) {
+			ssl_client_init(sessionp);
+			bufferevent_disable(bev, EV_READ|EV_WRITE);
+			sessionp->s_state = S_GREETED;
+			return 0;
+		}
+
+		session_respond(sessionp, "EHLO %s", env->sc_hostname);
+		sessionp->s_state = S_GREETED;
 		return 1;
 
 	case 421:
@@ -537,6 +598,7 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		batchp->status |= S_BATCH_TEMPFAILURE;
 		strlcpy(batchp->errorline, line, MAX_LINE_SIZE);
 		mta_batch_update_queue(batchp);
+		session_destroy(sessionp);
 		return 0;
 
 		/* The following codes are state dependant and will cause
@@ -544,20 +606,21 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		 */
 	case 530:
 	case 550:
-		if (batchp->state == S_RCPT) {
+		if (sessionp->s_state == S_RCPT) {
 			batchp->messagep->status = (S_MESSAGE_REJECTED|S_MESSAGE_PERMFAILURE);
 			strlcpy(batchp->messagep->session_errorline, line, MAX_LINE_SIZE);
 			break;
 		}
 	case 354:
-		if (batchp->state == S_RCPT && batchp->messagep == NULL) {
-			batchp->state = S_DATA;
+		if (sessionp->s_state == S_RCPT && batchp->messagep == NULL) {
+			sessionp->s_state = S_DATA;
 			break;
 		}
 
 	case 221:
-		if (batchp->state == S_DONE) {
+		if (sessionp->s_state == S_DONE) {
 			mta_batch_update_queue(batchp);
+			session_destroy(sessionp);
 			return 0;
 		}
 
@@ -572,11 +635,12 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		batchp->status |= S_BATCH_PERMFAILURE;
 		strlcpy(batchp->errorline, line, MAX_LINE_SIZE);
 		mta_batch_update_queue(batchp);
+		session_destroy(sessionp);
 		return 0;
 	}
 
 
-	switch (batchp->state) {
+	switch (sessionp->s_state) {
 	case S_GREETED: {
 		char *user;
 		char *domain;
@@ -592,16 +656,17 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		}
 
 		if (user[0] == '\0' && domain[0] == '\0')
-			evbuffer_add_printf(batchp->bev->output, "MAIL FROM:<>\r\n");
+			session_respond(sessionp, "MAIL FROM:<>");
 		else
-			evbuffer_add_printf(batchp->bev->output, "MAIL FROM:<%s@%s>\r\n", user, domain);
-		batchp->state = S_MAIL;
+			session_respond(sessionp,  "MAIL FROM:<%s@%s>", user, domain);
+
+		sessionp->s_state = S_MAIL;
 
 		break;
 	}
 
 	case S_MAIL:
-		batchp->state = S_RCPT;
+		sessionp->s_state = S_RCPT;
 
 	case S_RCPT: {
 		char *user;
@@ -635,7 +700,7 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 				user = messagep->recipient.user;
 				domain = messagep->recipient.domain;
 			}
-			evbuffer_add_printf(batchp->bev->output, "RCPT TO:<%s@%s>\r\n", user, domain);
+			session_respond(sessionp, "RCPT TO:<%s@%s>", user, domain);
 		}
 		else {
 			/* Do we have at least one accepted recipient ? */
@@ -647,64 +712,85 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 				if (messagep == NULL) {
 					batchp->status |= S_BATCH_PERMFAILURE;
 					mta_batch_update_queue(batchp);
+					session_destroy(sessionp);
 					return 0;
 				}
 			}
 
-			bufferevent_disable(batchp->bev, EV_WRITE|EV_READ);
 			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FD,
 			    0, 0, -1, batchp, sizeof(*batchp));
+			bufferevent_disable(sessionp->s_bev, EV_READ);
 		}
 		break;
 	}
 
 	case S_DATA: {
-		bufferevent_enable(batchp->bev, EV_READ|EV_WRITE);
+/*
+		if (fprintf(fp, "Received: from %s (%s [%s%s])\n"
+			"\tby %s with ESMTP id %s\n"
+			"\tfor <%s@%s>; %s\n\n",
+			messagep->session_helo, messagep->session_hostname,
+			messagep->session_ss.ss_family == PF_INET ? "" : "IPv6:", addrbuf,
+			batchp->env->sc_hostname, messagep->message_id,
+			messagep->sender.user, messagep->sender.domain, ctimebuf) == -1) {
+*/
+		session_respond(sessionp, "Received: from %s (%s [%s])",
+		    batchp->session_helo, batchp->session_hostname, "127.0.0.1");
 
-		evbuffer_add_printf(batchp->bev->output,
-		    "Received: from %s (%s [%s])\r\n"
-		    "\tby %s with ESMTP id %s\r\n",
-		    "localhost", "localhost", "127.0.0.1",
-		    "", batchp->message_id);
+		session_respond(sessionp, "\tby %s with ESMTP id %s",
+		    batchp->env->sc_hostname, batchp->message_id);
 
-		evbuffer_add_printf(batchp->bev->output, "X-OpenSMTPD: experiment\r\n");
+		if (sessionp->s_flags & F_SECURE) {
+			session_respond(sessionp, "X-OpenSMTPD-Cipher: %s",
+			    SSL_get_cipher(sessionp->s_ssl));
+		}
+
+		TAILQ_FOREACH(messagep, &batchp->messages, entry) {
+			session_respond(sessionp, "X-OpenSMTPD-Loop: %s@%s",
+			    messagep->session_rcpt.user,
+			    messagep->session_rcpt.domain);
+		}
 
 		if (batchp->type & T_DAEMON_BATCH) {
-			evbuffer_add_printf(batchp->bev->output,
-			    "Hi !\r\n\r\n"
-			    "This is the MAILER-DAEMON, please DO NOT REPLY to this e-mail it is\r\n"
-			    "just a notification to let you know that an error has occured.\r\n\r\n");
+			session_respond(sessionp, "Hi !");
+			session_respond(sessionp, "%s", "");
+			session_respond(sessionp, "This is the MAILER-DAEMON, please DO NOT REPLY to this e-mail it is");
+			session_respond(sessionp, "just a notification to let you know that an error has occured.");
+			session_respond(sessionp, "%s", "");
 
 			if (batchp->status & S_BATCH_PERMFAILURE) {
-				evbuffer_add_printf(batchp->bev->output,
-				    "You ran into a PERMANENT FAILURE, which means that the e-mail can't\r\n"
-				    "be delivered to the remote host no matter how much I'll try.\r\n\r\n"
-				    "Diagnostic:\r\n"
-				    "%s\r\n\r\n", batchp->errorline);
+				session_respond(sessionp, "You ran into a PERMANENT FAILURE, which means that the e-mail can't");
+				session_respond(sessionp, "be delivered to the remote host no matter how much I'll try.");
+				session_respond(sessionp, "%s", "");
+				session_respond(sessionp, "Diagnostic:");
+				session_respond(sessionp, "%s", batchp->errorline);
+				session_respond(sessionp, "%s", "");
 			}
 
 			if (batchp->status & S_BATCH_TEMPFAILURE) {
-				evbuffer_add_printf(batchp->bev->output,
-				    "You ran into a TEMPORARY FAILURE, which means that the e-mail can't\r\n"
-				    "be delivered right now, but could be deliberable at a later time. I\r\n"
-				    "will attempt until it succeeds for the next four days, then let you\r\n"
-				    "know if it didn't work out.\r\n"
-				    "Diagnostic:\r\n"
-				    "%s\r\n\r\n", batchp->errorline);
+				session_respond(sessionp, "You ran into a TEMPORARY FAILURE, which means that the e-mail can't");
+				session_respond(sessionp, "be delivered right now, but could be deliberable at a later time. I");
+				session_respond(sessionp, "will attempt until it succeeds for the next four days, then let you");
+				session_respond(sessionp, "know if it didn't work out.");
+				session_respond(sessionp, "%s", "");
+				session_respond(sessionp, "Diagnostic:");
+				session_respond(sessionp, "%s", batchp->errorline);
+				session_respond(sessionp, "%s", "");
 			}
 
 			i = 0;
 			TAILQ_FOREACH(messagep, &batchp->messages, entry) {
 				if (messagep->status & S_MESSAGE_TEMPFAILURE) {
 					if (i == 0) {
-						evbuffer_add_printf(batchp->bev->output,
-						    "The following recipients caused a temporary failure:\r\n");
+						session_respond(sessionp, "The following recipients caused a temporary failure:");
 						++i;
 					}
 
-					evbuffer_add_printf(batchp->bev->output,
-					    "\t<%s@%s>:\r\n%s\r\n\r\n",
-					    messagep->recipient.user, messagep->recipient.domain, messagep->session_errorline);
+					session_respond(sessionp,
+					    "\t<%s@%s>:", messagep->recipient.user, messagep->recipient.domain);
+					session_respond(sessionp,
+					    "%s", messagep->session_errorline);
+					session_respond(sessionp, "%s", "");
 				}
 			}
 
@@ -712,30 +798,32 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 			TAILQ_FOREACH(messagep, &batchp->messages, entry) {
 				if (messagep->status & S_MESSAGE_PERMFAILURE) {
 					if (i == 0) {
-						evbuffer_add_printf(batchp->bev->output,
-						    "The following recipients caused a permanent failure:\r\n");
+						session_respond(sessionp,
+						    "The following recipients caused a permanent failure:");
 						++i;
 					}
 
-					evbuffer_add_printf(batchp->bev->output,
-					    "\t<%s@%s>:\r\n%s\r\n\r\n",
-					    messagep->recipient.user, messagep->recipient.domain, messagep->session_errorline);
+					session_respond(sessionp,
+					    "\t<%s@%s>:", messagep->recipient.user, messagep->recipient.domain);
+					session_respond(sessionp,
+					    "%s", messagep->session_errorline);
+					session_respond(sessionp, "%s", "");
 				}
 			}
 
-			evbuffer_add_printf(batchp->bev->output,
-			    "Below is a copy of the original message:\r\n\r\n");
+			session_respond(sessionp, "Below is a copy of the original message:");
+			session_respond(sessionp, "%s", "");
 		}
 
 		break;
 	}
 	case S_DONE:
-		evbuffer_add_printf(batchp->bev->output, "QUIT\r\n");
-		batchp->state = S_QUIT;
+		session_respond(sessionp, "QUIT");
+		sessionp->s_state = S_QUIT;
 		break;
 
 	default:
-		log_info("unknown command: %d", batchp->state);
+		log_info("unknown command: %d", sessionp->s_state);
 	}
 
 	return 1;
@@ -744,19 +832,20 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 void
 mta_write_handler(struct bufferevent *bev, void *arg)
 {
-	struct batch *batchp = arg;
+	struct session *sessionp = arg;
+	struct batch *batchp = sessionp->batch;
 	char *buf, *lbuf;
 	size_t len;
-
-	if (batchp->state == S_QUIT) {
+	
+	if (sessionp->s_state == S_QUIT) {
 		bufferevent_disable(bev, EV_READ|EV_WRITE);
 		log_debug("closing connection because of QUIT");
-		close(batchp->peerfd);
+		close(sessionp->s_fd);
 		return;
 	}
 
 	/* Progressively fill the output buffer with data */
-	if (batchp->state == S_DATA) {
+	if (sessionp->s_state == S_DATA) {
 
 		lbuf = NULL;
 		if ((buf = fgetln(batchp->messagefp, &len))) {
@@ -775,30 +864,30 @@ mta_write_handler(struct bufferevent *bev, void *arg)
 			 * [4.5.2]
 			 */
 			if (*buf == '.')
-				evbuffer_add_printf(batchp->bev->output, ".");
+				evbuffer_add_printf(sessionp->s_bev->output, ".");
 
-			evbuffer_add_printf(batchp->bev->output, "%s\r\n", buf);
+			session_respond(sessionp, "%s", buf);
 			free(lbuf);
 			lbuf = NULL;
 		}
 		else {
-			evbuffer_add_printf(batchp->bev->output, ".\r\n");
-			batchp->state = S_DONE;
+			session_respond(sessionp, ".");
+			sessionp->s_state = S_DONE;
 			fclose(batchp->messagefp);
 			batchp->messagefp = NULL;
 		}
 	}
-	bufferevent_enable(batchp->bev, EV_READ|EV_WRITE);
 }
 
 void
 mta_error_handler(struct bufferevent *bev, short error, void *arg)
 {
-	struct batch *batchp = arg;
+	struct session *sessionp = arg;
+
 	if (error & (EVBUFFER_TIMEOUT|EVBUFFER_EOF)) {
 		bufferevent_disable(bev, EV_READ|EV_WRITE);
 		log_debug("closing connection because of an error");
-		close(batchp->peerfd);
+		close(sessionp->s_fd);
 		return;
 	}
 }
@@ -832,11 +921,120 @@ mta_batch_update_queue(struct batch *batchp)
 	if (batchp->messagefp)
 		fclose(batchp->messagefp);
 
-	if (batchp->bev)
-		bufferevent_free(batchp->bev);
-
-	if (batchp->peerfd != -1)
-		close(batchp->peerfd);
-
 	free(batchp);
+}
+
+void
+mta_expand_mxarray(struct session *sessionp)
+{
+	int i;
+	int j;
+	u_int16_t	port;
+	struct mxhost		mxhost;
+	struct sockaddr_in	*ssin;
+	struct sockaddr_in6	*ssin6;
+	struct batch *batchp = sessionp->batch;
+
+	/* First pass, we compute the length of the final mxarray */
+	for (i = 0; i < batchp->mx_cnt; ++i) {
+		mxhost = batchp->mxarray[i];
+
+		if (mxhost.ss.ss_family == AF_INET) {
+			ssin = (struct sockaddr_in *)&mxhost.ss;
+			port = ntohs(ssin->sin_port);
+		}
+		else if (mxhost.ss.ss_family == AF_INET6) {
+			ssin6 = (struct sockaddr_in6 *)&mxhost.ss;
+			port = ntohs(ssin6->sin6_port);
+		}
+
+		if (port) {
+			++sessionp->mx_cnt;
+			continue;
+		}
+
+		switch (mxhost.flags & F_SSL) {
+		case F_SSL:
+			sessionp->mx_cnt += 2;
+			break;
+		case F_SSMTP:
+		case F_STARTTLS:
+		default:
+			++sessionp->mx_cnt;
+		}
+	}
+
+	/* Second pass, we actually fill the array */
+	sessionp->mxarray = calloc(sessionp->mx_cnt, sizeof(struct mxhost));
+	if (sessionp->mxarray == NULL)
+		fatal("calloc");
+
+	for (i = j = 0; i < batchp->mx_cnt; ++i) {
+		mxhost = batchp->mxarray[i];
+
+		if (mxhost.ss.ss_family == AF_INET) {
+			ssin = (struct sockaddr_in *)&mxhost.ss;
+			port = ntohs(ssin->sin_port);
+		}
+		else if (mxhost.ss.ss_family == AF_INET6) {
+			ssin6 = (struct sockaddr_in6 *)&mxhost.ss;
+			port = ntohs(ssin6->sin6_port);
+		}
+
+		if (port) {
+			sessionp->mxarray[j++] = mxhost;
+			continue;
+		}
+
+		switch (mxhost.flags & F_SSL) {
+		case F_SSL: {
+			u_int8_t flags = mxhost.flags;
+
+			if (mxhost.ss.ss_family == AF_INET) {
+				ssin->sin_port = htons(465);
+				mxhost.ss = *(struct sockaddr_storage *)ssin;
+			}
+			else if (mxhost.ss.ss_family == AF_INET6) {
+				ssin6->sin6_port = htons(465);
+				mxhost.ss = *(struct sockaddr_storage *)ssin6;
+			}
+			mxhost.flags = flags & ~F_STARTTLS;
+			sessionp->mxarray[j++] = mxhost;
+
+			if (mxhost.ss.ss_family == AF_INET) {
+				ssin->sin_port = htons(25);
+				mxhost.ss = *(struct sockaddr_storage *)ssin;
+			}
+			else if (mxhost.ss.ss_family == AF_INET6) {
+				ssin6->sin6_port = htons(25);
+				mxhost.ss = *(struct sockaddr_storage *)ssin6;
+			}
+			mxhost.flags = flags & ~F_SSMTP;
+			sessionp->mxarray[j++] = mxhost;
+			break;
+		}
+		case F_SSMTP:
+			if (mxhost.ss.ss_family == AF_INET) {
+				ssin->sin_port = htons(465);
+				mxhost.ss = *(struct sockaddr_storage *)ssin;
+			}
+			else if (mxhost.ss.ss_family == AF_INET6) {
+				ssin6->sin6_port = htons(465);
+				mxhost.ss = *(struct sockaddr_storage *)ssin6;
+			}
+			sessionp->mxarray[j++] = mxhost;
+			break;
+		case F_STARTTLS:
+		default:
+			if (mxhost.ss.ss_family == AF_INET) {
+				ssin->sin_port = htons(25);
+				mxhost.ss = *(struct sockaddr_storage *)ssin;
+			}
+			else if (mxhost.ss.ss_family == AF_INET6) {
+				ssin6->sin6_port = htons(25);
+				mxhost.ss = *(struct sockaddr_storage *)ssin6;
+			}
+			sessionp->mxarray[j++] = mxhost;
+		}
+	}
 }

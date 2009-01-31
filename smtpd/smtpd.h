@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.46 2009/01/14 23:48:35 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.68 2009/01/30 21:52:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -23,10 +23,13 @@
 #define READ_BUF_SIZE		 32768
 #define MAX_NAME_SIZE		 64
 
+#define MAX_HOPS_COUNT		 100
+
 /* sizes include the tailing '\0' */
 #define MAX_LINE_SIZE		 1024
 #define MAX_LOCALPART_SIZE	 65
 #define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
+#define MAX_ID_SIZE		 64
 
 /* return and forward path size */
 #define MAX_PATH_SIZE		 256
@@ -46,6 +49,7 @@
 
 #define PATH_SPOOL		"/var/spool/smtpd"
 
+#define PATH_ENQUEUE		"/enqueue"
 #define PATH_INCOMING		"/incoming"
 #define PATH_QUEUE		"/queue"
 #define PATH_PURGE		"/purge"
@@ -176,11 +180,15 @@ enum imsg_type {
 	IMSG_QUEUE_REMOVE_MESSAGE,
 	IMSG_QUEUE_COMMIT_MESSAGE,
 	IMSG_QUEUE_TEMPFAIL,
+	IMSG_QUEUE_STATS,
 
 	IMSG_QUEUE_REMOVE_SUBMISSION,
 	IMSG_QUEUE_MESSAGE_UPDATE,
 	IMSG_QUEUE_MESSAGE_FD,
 	IMSG_QUEUE_MESSAGE_FILE,
+
+	IMSG_RUNNER_UPDATE_ENVELOPE,
+	IMSG_RUNNER_STATS,
 
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
@@ -189,16 +197,21 @@ enum imsg_type {
 	IMSG_PARENT_MAILBOX_OPEN,
 	IMSG_PARENT_MESSAGE_OPEN,
 	IMSG_PARENT_MAILBOX_RENAME,
+	IMSG_PARENT_STATS,
 
 	IMSG_PARENT_AUTHENTICATE,
+	IMSG_PARENT_SEND_CONFIG,
 
 	IMSG_MDA_PAUSE,
 	IMSG_MTA_PAUSE,
 	IMSG_SMTP_PAUSE,
+	IMSG_SMTP_STATS,
 
 	IMSG_MDA_RESUME,
 	IMSG_MTA_RESUME,
-	IMSG_SMTP_RESUME
+	IMSG_SMTP_RESUME,
+
+	IMSG_STATS
 };
 
 #define IMSG_HEADER_SIZE	 sizeof(struct imsg_hdr)
@@ -399,7 +412,8 @@ enum message_flags {
 	F_MESSAGE_RESOLVED	= 0x1,
 	F_MESSAGE_SCHEDULED	= 0x2,
 	F_MESSAGE_PROCESSING	= 0x4,
-	F_MESSAGE_AUTHENTICATED	= 0x8
+	F_MESSAGE_AUTHENTICATED	= 0x8,
+	F_MESSAGE_ENQUEUED	= 0x10
 };
 
 struct message {
@@ -412,13 +426,14 @@ struct message {
 	u_int64_t			 session_id;
 	u_int64_t			 batch_id;
 
-	char				 message_id[MAXPATHLEN];
-	char				 message_uid[MAXPATHLEN];
+	char				 message_id[MAX_ID_SIZE];
+	char				 message_uid[MAX_ID_SIZE];
 
 	char				 session_helo[MAXHOSTNAMELEN];
 	char				 session_hostname[MAXHOSTNAMELEN];
 	char				 session_errorline[MAX_LINE_SIZE];
 	struct sockaddr_storage		 session_ss;
+	struct path			 session_rcpt;
 
 	struct path			 sender;
 	struct path			 recipient;
@@ -469,21 +484,21 @@ struct batch {
 	SPLAY_ENTRY(batch)	 b_nodes;
 
 	u_int64_t		 id;
+	u_int64_t		 session_id;
 	enum batch_type		 type;
 	enum batch_flags	 flags;
 
 	struct rule			 rule;
 
-	struct event			 ev;
-	struct timeval			 tv;
-	int				 peerfd;
-	struct bufferevent		*bev;
-	u_int8_t			 state;
 	struct smtpd			*env;
 
-	char				 message_id[MAXPATHLEN];
+	char				 message_id[MAX_ID_SIZE];
 	char				 hostname[MAXHOSTNAMELEN];
 	char				 errorline[MAX_LINE_SIZE];
+
+	char				 session_helo[MAXHOSTNAMELEN];
+	char				 session_hostname[MAXHOSTNAMELEN];
+	struct sockaddr_storage		 session_ss;
 
 	int8_t				 getaddrinfo_error;
 	struct mxhost			 mxarray[MXARRAYSIZE*2];
@@ -493,6 +508,8 @@ struct batch {
 	time_t				 creation;
 	time_t				 lasttry;
 	u_int8_t			 retry;
+
+	struct session			*sessionp;
 
 	struct message			message;
 	struct message			*messagep;
@@ -561,7 +578,9 @@ enum session_flags {
 	F_QUIT		= 0x2,
 	F_8BITMIME	= 0x4,
 	F_SECURE	= 0x8,
-	F_AUTHENTICATED	= 0x10
+	F_AUTHENTICATED	= 0x10,
+	F_PEERHASTLS	= 0x20,
+	F_EVLOCKED	= 0x40
 };
 
 struct session {
@@ -585,6 +604,13 @@ struct session {
 	struct message			 s_msg;
 
 	struct session_auth_req		 s_auth;
+
+	struct mxhost			*mxarray;
+	u_int8_t			 mx_cnt;
+	u_int8_t			 mx_off;
+
+	struct batch			*batch;
+
 };
 
 struct smtpd {
@@ -598,6 +624,7 @@ struct smtpd {
 #define SMTPD_SMTP_PAUSED		       	 0x00000010
 	u_int32_t				 sc_flags;
 	struct timeval				 sc_qintval;
+	u_int32_t				 sc_maxconn;
 	struct event				 sc_ev;
 	int					 sc_pipes[PROC_COUNT]
 						    [PROC_COUNT][2];
@@ -615,12 +642,47 @@ struct smtpd {
 	SPLAY_HEAD(mdaproctree, mdaproc)	mdaproc_queue;
 };
 
+struct s_parent {
+	time_t		start;
+};
+
+struct s_queue {
+	size_t		inserts;
+};
+
+struct s_runner {
+	size_t		active;
+};
+
+struct s_smtp {
+	size_t		sessions;
+	size_t		sessions_active;
+
+	size_t		ssmtp;
+	size_t		ssmtp_active;
+
+	size_t		starttls;
+	size_t		starttls_active;
+
+	size_t		aborted;
+};
+
+struct stats {
+	int			fd;
+	union u_stats {
+		struct s_parent	parent;
+		struct s_queue	queue;
+		struct s_runner	runner;
+		struct s_smtp	smtp;
+	}			u;
+};
+
 struct submit_status {
 	u_int64_t			 id;
 	int				 code;
 	union submit_path {
 		struct path		 path;
-		char			 msgid[MAXPATHLEN];
+		char			 msgid[MAX_ID_SIZE];
 		char			 errormsg[MAX_LINE_SIZE];
 	}				 u;
 	enum message_flags		 flags;
@@ -721,6 +783,35 @@ struct batch    *batch_by_id(struct smtpd *, u_int64_t);
 struct message	*message_by_id(struct smtpd *, struct batch *, u_int64_t);
 u_int16_t	 queue_hash(char *);
 
+/* queue_shared.c */
+int		 queue_create_layout_message(char *, char *);
+void		 queue_delete_layout_message(char *, char *);
+int		 queue_record_layout_envelope(char *, struct message *);
+int		 queue_remove_layout_envelope(char *, struct message *);
+int		 queue_commit_layout_message(char *, struct message *);
+int		 queue_open_layout_messagefile(char *, struct message *);
+int		 enqueue_create_layout(char *);
+void		 enqueue_delete_message(char *);
+int		 enqueue_record_envelope(struct message *);
+int		 enqueue_remove_envelope(struct message *);
+int		 enqueue_commit_message(struct message *);
+int		 enqueue_open_messagefile(struct message *);
+int		 queue_create_incoming_layout(char *);
+void		 queue_delete_incoming_message(char *);
+int		 queue_record_incoming_envelope(struct message *);
+int		 queue_remove_incoming_envelope(struct message *);
+int		 queue_commit_incoming_message(struct message *);
+int		 queue_open_incoming_message_file(struct message *);
+int		 queue_open_message_file(char *msgid);
+void		 queue_message_update(struct message *);
+void		 queue_delete_message(char *);
+struct qwalk	*qwalk_new(char *);
+int		 qwalk(struct qwalk *, char *);
+void		 qwalk_close(struct qwalk *);
+void		 show_queue(char *, int);
+
+u_int16_t	queue_hash(char *);
+
 /* mda.c */
 pid_t		 mda(struct smtpd *);
 int		 mdaproc_cmp(struct mdaproc *, struct mdaproc *);
@@ -747,10 +838,13 @@ void		 session_init(struct listener *, struct session *);
 int		 session_cmp(struct session *, struct session *);
 void		 session_pickup(struct session *, struct submit_status *);
 void		 session_destroy(struct session *);
+void		 session_respond(struct session *, char *, ...)
+		    __attribute__ ((format (printf, 2, 3)));
+
 SPLAY_PROTOTYPE(sessiontree, session, s_nodes, session_cmp);
 
 /* store.c */
-int store_write_header(struct batch *, struct message *, FILE *);
+int store_write_header(struct batch *, struct message *, FILE *, int);
 int store_write_message(struct batch *, struct message *);
 int store_write_daemon(struct batch *, struct message *);
 int store_message(struct batch *, struct message *,
@@ -796,4 +890,6 @@ int		 bsnprintf(char *, size_t, const char *, ...)
     __attribute__ ((format (printf, 3, 4)));
 int		 safe_fclose(FILE *);
 struct passwd 	*safe_getpwnam(const char *);
+struct passwd 	*safe_getpwuid(uid_t);
 int		 hostname_match(char *, char *);
+int		 recipient_to_path(struct path *, char *);

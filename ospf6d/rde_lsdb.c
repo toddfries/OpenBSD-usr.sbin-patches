@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.14 2009/01/03 00:23:50 stsp Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.17 2009/01/29 18:52:17 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -329,7 +329,7 @@ lsa_intra_a_pref_check(struct lsa *lsa, u_int16_t len)
 	}
 
 	len -= off;
-	npref = ntohl(iap->numprefix);
+	npref = ntohs(iap->numprefix);
 
 	for (i = 0; i < npref; i++) {
 		rv = lsa_get_prefix(buf + off, len, NULL);
@@ -645,6 +645,9 @@ lsa_dump(struct lsa_tree *tree, int imsg_type, pid_t pid)
 			if (v->type == LSA_TYPE_ROUTER)
 				break;
 			continue;
+		case IMSG_CTL_SHOW_DB_INTRA:
+			if (v->type == LSA_TYPE_INTRA_A_PREFIX)
+				break;
 		case IMSG_CTL_SHOW_DB_SUM:
 			if (v->type == LSA_TYPE_INTER_A_PREFIX)
 				break;
@@ -832,6 +835,7 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	struct lsa_prefix	*lp = buf;
 	u_int32_t		*buf32, *addr = NULL;
 	u_int8_t		 prefixlen;
+	u_int16_t		 consumed = 0;
 
 	if (len < sizeof(*lp))
 		return (-1);
@@ -847,16 +851,16 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	}
 
 	buf32 = (u_int32_t *)(lp + 1);
-	len -= sizeof(*lp);
+	consumed += sizeof(*lp);
 
 	for (; ((prefixlen + 31) / 32) > 0; prefixlen -= 32) {
-		if (len < sizeof(u_int32_t))
+		if (len < consumed + sizeof(u_int32_t))
 			return (-1);
 		if (addr)
 			*addr++ = *buf32++;
-		len -= sizeof(u_int32_t);
+		consumed += sizeof(u_int32_t);
 	}
 
-	return (len);
+	return (consumed);
 }
 

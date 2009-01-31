@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.40 2009/01/12 19:56:27 jacekm Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.52 2009/01/30 21:52:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -71,9 +71,9 @@ void		session_msg_submit(struct session *);
 void		session_command(struct session *, char *, char *);
 int		session_set_path(struct path *, char *);
 void		session_timeout(int, short, void *);
-void		session_respond(struct session *, char *, ...)
-		    __attribute__ ((format (printf, 2, 3)));
 void		session_cleanup(struct session *);
+
+extern struct s_smtp	s_smtp;
 
 struct session_timeout {
 	enum session_state	state;
@@ -196,6 +196,7 @@ session_rfc4954_auth_plain(struct session *s, char *arg, size_t nr)
 
 	imsg_compose(s->s_env->sc_ibufs[PROC_PARENT], IMSG_PARENT_AUTHENTICATE,
 	    0, 0, -1, &s->s_auth, sizeof(s->s_auth));
+	s->s_flags |= F_EVLOCKED;
 	bufferevent_disable(s->s_bev, EV_READ);
 
 	return 1;
@@ -246,6 +247,7 @@ session_rfc4954_auth_login(struct session *s, char *arg, size_t nr)
 
 	imsg_compose(s->s_env->sc_ibufs[PROC_PARENT], IMSG_PARENT_AUTHENTICATE,
 	    0, 0, -1, &s->s_auth, sizeof(s->s_auth));
+	s->s_flags |= F_EVLOCKED;
 	bufferevent_disable(s->s_bev, EV_READ);
 
 	return 1;
@@ -424,6 +426,7 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 
 	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_MAIL,
 	    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
+	s->s_flags |= F_EVLOCKED;
 	bufferevent_disable(s->s_bev, EV_READ);
 	return 1;
 }
@@ -457,6 +460,8 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 		return 1;
 	}
 
+	s->s_msg.session_rcpt = mr.path;
+
 	mr.id = s->s_msg.id;
 	s->s_state = S_RCPTREQUEST;
 	mr.ss = s->s_ss;
@@ -470,6 +475,7 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 
 	imsg_compose(s->s_env->sc_ibufs[PROC_MFA], IMSG_MFA_RCPT,
 	    0, 0, -1, &mr, sizeof(mr));
+	s->s_flags |= F_EVLOCKED;
 	bufferevent_disable(s->s_bev, EV_READ);
 	return 1;
 }
@@ -648,6 +654,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_TLS:
+		s->s_flags |= F_EVLOCKED;
 		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
 		s->s_state = S_GREETED;
 		ssl_session_init(s);
@@ -667,13 +674,13 @@ session_pickup(struct session *s, struct submit_status *ss)
 		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
 		    IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1, &s->s_msg,
 		    sizeof(s->s_msg));
+		s->s_flags |= F_EVLOCKED;
 		bufferevent_disable(s->s_bev, EV_READ);
 		break;
 
 	case S_MAIL:
 
 		session_respond(s, "%d Sender ok", ss->code);
-
 		break;
 
 	case S_RCPTREQUEST:
@@ -691,9 +698,9 @@ session_pickup(struct session *s, struct submit_status *ss)
 		s->s_state = S_RCPT;
 		s->s_msg.rcptcount++;
 		s->s_msg.recipient = ss->u.path;
-		session_respond(s, "%d Recipient ok", ss->code);
 
 	case S_RCPT:
+		session_respond(s, "%d Recipient ok", ss->code);
 		break;
 
 	case S_DATAREQUEST:
@@ -701,6 +708,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 		imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
 		    IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1, &s->s_msg,
 		    sizeof(s->s_msg));
+		s->s_flags |= F_EVLOCKED;
 		bufferevent_disable(s->s_bev, EV_READ);
 		break;
 
@@ -715,14 +723,13 @@ session_pickup(struct session *s, struct submit_status *ss)
 
 	case S_DONE:
 		s->s_state = S_HELO;
-
+		s->s_msg.message_id[0] = '\0';
 		session_respond(s, "250 %s Message accepted for delivery",
 		    s->s_msg.message_id);
 
 		break;
 
 	default:
-		log_debug("session_pickup: state value: %d", s->s_state);
 		fatal("session_pickup: unknown state");
 		break;
 	}
@@ -739,18 +746,18 @@ void
 session_init(struct listener *l, struct session *s)
 {
 	s->s_state = S_INIT;
-	s->s_env = l->env;
-	s->s_l = l;
 	s->s_id = queue_generate_id();
+
+	if ((s->s_bev = bufferevent_new(s->s_fd, session_read, session_write,
+	    session_error, s)) == NULL)
+		fatalx("session_init: bufferevent_new failed");
 
 	strlcpy(s->s_hostname, "<unknown>", MAXHOSTNAMELEN);
 	strlcpy(s->s_msg.session_hostname, s->s_hostname, MAXHOSTNAMELEN);
 	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
 	    sizeof(struct session));
-
-	if ((s->s_bev = bufferevent_new(s->s_fd, session_read, session_write,
-	    session_error, s)) == NULL)
-		fatalx("session_init: bufferevent_new failed");
+	s->s_flags |= F_EVLOCKED;
+	bufferevent_disable(s->s_bev, EV_READ);
 
 	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 
@@ -759,8 +766,6 @@ session_init(struct listener *l, struct session *s)
 		ssl_session_init(s);
 		return;
 	}
-
-	session_pickup(s, NULL);
 }
 
 void
@@ -900,6 +905,10 @@ session_destroy(struct session *s)
 	log_debug("session_destroy: killing client: %p", s);
 	close(s->s_fd);
 
+	s_smtp.sessions_active--;
+	if (s_smtp.sessions_active < s->s_env->sc_maxconn)
+		event_add(&s->s_l->ev, NULL);
+
 	if (s->s_bev != NULL) {
 		bufferevent_free(s->s_bev);
 	}
@@ -924,6 +933,8 @@ session_cleanup(struct session *s)
 		    sizeof(s->s_msg));
 		s->s_msg.message_id[0] = '\0';
 		s->s_msg.message_uid[0] = '\0';
+		s->s_flags |= F_EVLOCKED;
+		bufferevent_disable(s->s_bev, EV_READ);
 	}
 }
 
@@ -932,7 +943,15 @@ session_error(struct bufferevent *bev, short event, void *p)
 {
 	struct session	*s = p;
 
-	session_destroy(s);
+	/* If events are locked, do not destroy session
+	 * but set F_QUIT flag so that we destroy it as
+	 * soon as the event lock is removed.
+	 */
+	s_smtp.aborted++;
+	if (s->s_flags & F_EVLOCKED)
+		s->s_flags |= F_QUIT;
+	else
+		session_destroy(s);
 }
 
 void
@@ -941,6 +960,7 @@ session_msg_submit(struct session *s)
 	imsg_compose(s->s_env->sc_ibufs[PROC_QUEUE],
 	    IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1, &s->s_msg,
 	    sizeof(s->s_msg));
+	s->s_flags |= F_EVLOCKED;
 	bufferevent_disable(s->s_bev, EV_READ);
 	s->s_state = S_DONE;
 }
@@ -964,40 +984,13 @@ int
 session_set_path(struct path *path, char *line)
 {
 	size_t len;
-	char *username;
-	char *hostname;
 
 	len = strlen(line);
 	if (*line != '<' || line[len - 1] != '>')
 		return 0;
 	line[len - 1] = '\0';
 
-	username = line + 1;
-	hostname = strchr(username, '@');
-
-	if (username[0] == '\0') {
-		*path->user = '\0';
-		*path->domain = '\0';
-		return 1;
-	}
-
-	if (hostname == NULL) {
-		if (strcasecmp(username, "postmaster") != 0)
-			return 0;
-		hostname = "localhost";
-	} else {
-		*hostname++ = '\0';
-	}
-
-	if (strlcpy(path->user, username, sizeof(path->user))
-	    >= MAX_LOCALPART_SIZE)
-		return 0;
-
-	if (strlcpy(path->domain, hostname, sizeof(path->domain))
-	    >= MAX_DOMAINPART_SIZE)
-		return 0;
-
-	return 1;
+	return recipient_to_path(path, line + 1);
 }
 
 void

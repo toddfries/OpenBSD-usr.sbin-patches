@@ -1,4 +1,4 @@
-/*	$OpenBSD: hello.c,v 1.11 2008/12/28 20:08:31 claudio Exp $ */
+/*	$OpenBSD: hello.c,v 1.13 2009/01/27 21:58:28 stsp Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -160,34 +160,16 @@ recv_hello(struct iface *iface, struct in6_addr *src, u_int32_t rtr_id,
 		return;
 	}
 
-	switch (iface->type) {
-	case IF_TYPE_POINTOPOINT:
-	case IF_TYPE_VIRTUALLINK:
-		/* match router-id */
-		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (nbr == iface->self)
-				continue;
-			if (nbr->id.s_addr == rtr_id)
-				break;
-		}
-		break;
-	case IF_TYPE_BROADCAST:
-	case IF_TYPE_NBMA:
-	case IF_TYPE_POINTOMULTIPOINT:
-		/* match src IP */
-		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (nbr == iface->self)
-				continue;
-			if (IN6_ARE_ADDR_EQUAL(&nbr->addr, src))
-				break;
-		}
-		break;
-	default:
-		fatalx("recv_hello: unknown interface type");
+	/* match router-id */
+	LIST_FOREACH(nbr, &iface->nbr_list, entry) {
+		if (nbr == iface->self)
+			continue;
+		if (nbr->id.s_addr == rtr_id)
+			break;
 	}
 
 	if (!nbr) {
-		nbr = nbr_new(rtr_id, iface, 0);
+		nbr = nbr_new(rtr_id, iface, ntohl(hello.iface_id), 0);
 		/* set neighbor parameters */
 		nbr->dr.s_addr = hello.d_rtr;
 		nbr->bdr.s_addr = hello.bd_rtr;
@@ -219,7 +201,6 @@ recv_hello(struct iface *iface, struct in6_addr *src, u_int32_t rtr_id,
 		nbr->dr.s_addr = hello.d_rtr;
 		nbr->bdr.s_addr = hello.bd_rtr;
 		nbr->priority = LSA_24_GETHI(ntohl(hello.opts));
-		nbr->iface_id = ntohl(hello.iface_id);
 		return;
 	}
 
