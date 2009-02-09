@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtsol.c,v 1.15 2008/06/10 04:49:11 reyk Exp $	*/
+/*	$OpenBSD: rtsol.c,v 1.17 2009/02/05 09:57:12 chl Exp $	*/
 /*	$KAME: rtsol.c,v 1.15 2002/05/31 10:10:03 itojun Exp $	*/
 
 /*
@@ -36,6 +36,8 @@
 #include <sys/time.h>
 #include <sys/queue.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <net/if.h>
 #include <net/route.h>
@@ -260,7 +262,7 @@ rtsol_input(int s)
 
 	if (i < sizeof(struct nd_router_advert)) {
 		warnmsg(LOG_ERR, __func__,
-		    "packet size(%d) is too short", i);
+		    "packet size(%zd) is too short", i);
 		return;
 	}
 
