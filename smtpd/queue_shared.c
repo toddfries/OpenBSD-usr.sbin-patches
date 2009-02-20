@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_shared.c,v 1.6 2009/01/30 16:37:52 gilles Exp $	*/
+/*	$OpenBSD: queue_shared.c,v 1.9 2009/02/16 10:15:10 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -53,6 +53,7 @@ int		walk_simple(struct qwalk *, char *);
 int		walk_queue(struct qwalk *, char *);
 
 void		display_envelope(struct message *, int);
+void		getflag(u_int *, int, char *, char *, size_t);
 
 int
 queue_create_layout_message(char *queuepath, char *message_id)
@@ -216,13 +217,12 @@ int
 queue_open_layout_messagefile(char *queuepath, struct message *messagep)
 {
 	char pathname[MAXPATHLEN];
-	mode_t mode = O_CREAT|O_EXCL|O_RDWR;
 	
 	if (! bsnprintf(pathname, MAXPATHLEN, "%s/%s/message", queuepath,
 		messagep->message_id))
 		fatal("queue_open_incoming_message_file: snprintf");
 
-	return open(pathname, mode, 0600);
+	return open(pathname, O_CREAT|O_EXCL|O_RDWR, 0600);
 }
 
 int
@@ -303,7 +303,6 @@ queue_open_message_file(char *msgid)
 {
 	int fd;
 	char pathname[MAXPATHLEN];
-	mode_t mode = O_RDONLY;
 	u_int16_t hval;
 
 	hval = queue_hash(msgid);
@@ -312,7 +311,7 @@ queue_open_message_file(char *msgid)
 		hval, msgid))
 		fatal("queue_open_message_file: snprintf");
 
-	if ((fd = open(pathname, mode)) == -1)
+	if ((fd = open(pathname, O_RDONLY)) == -1)
 		fatal("queue_open_message_file: open");
 
 	return fd;
@@ -366,6 +365,7 @@ void
 queue_message_update(struct message *messagep)
 {
 	messagep->flags &= ~F_MESSAGE_PROCESSING;
+	messagep->status &= ~(S_MESSAGE_ACCEPTED|S_MESSAGE_REJECTED);
 	messagep->batch_id = 0;
 	messagep->retry++;
 
@@ -683,6 +683,33 @@ show_queue(char *queuepath, int flags)
 void
 display_envelope(struct message *envelope, int flags)
 {
+	char	 status[128];
+
+	status[0] = '\0';
+
+	getflag(&envelope->status, S_MESSAGE_TEMPFAILURE, "TEMPFAIL",
+	    status, sizeof(status));
+
+	if (envelope->status)
+		errx(1, "%s: unexpected status 0x%04x", envelope->message_uid,
+		    envelope->status);
+
+	getflag(&envelope->flags, F_MESSAGE_AUTHENTICATED, "AUTH",
+	    status, sizeof(status));
+	getflag(&envelope->flags, F_MESSAGE_PROCESSING, "PROCESSING",
+	    status, sizeof(status));
+	getflag(&envelope->flags, F_MESSAGE_SCHEDULED, "SCHEDULED",
+	    status, sizeof(status));
+
+	if (envelope->flags)
+		errx(1, "%s: unexpected flags 0x%04x", envelope->message_uid,
+		    envelope->flags);
+	
+	if (status[0])
+		status[strlen(status) - 1] = '\0';
+	else
+		strlcpy(status, "-", sizeof(status));
+
 	switch (envelope->type) {
 	case T_MDA_MESSAGE:
 		printf("MDA");
@@ -699,11 +726,22 @@ display_envelope(struct message *envelope, int flags)
 	default:
 		printf("UNKNOWN");
 	}
-
-	printf("|%s|%s@%s|%s@%s|%d|%u\n",
+	
+	printf("|%s|%s|%s@%s|%s@%s|%d|%u\n",
 	    envelope->message_uid,
+	    status,
 	    envelope->sender.user, envelope->sender.domain,
 	    envelope->recipient.user, envelope->recipient.domain,
 	    envelope->lasttry,
 	    envelope->retry);
+}
+
+void
+getflag(u_int *bitmap, int bit, char *bitstr, char *buf, size_t len)
+{
+	if (*bitmap & bit) {
+		*bitmap &= ~bit;
+		strlcat(buf, bitstr, len);
+		strlcat(buf, ",", len);
+	}
 }
