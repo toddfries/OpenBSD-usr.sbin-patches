@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.22 2009/01/30 21:40:21 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.26 2009/02/18 00:29:52 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -310,24 +310,18 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			struct session		*s;
 			struct session		*ss;
 
-			s = imsg.data;
-			key.s_id = s->s_id;
+			ss = imsg.data;
+			key.s_id = ss->s_id;
 
-			ss = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
-			if (ss == NULL)
+			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
+			if (s == NULL)
 				fatal("smtp_dispatch_lka: session is gone");
 
-			if (ss->s_flags & F_QUIT) {
-				session_destroy(s);
-				break;
-			}
-			ss->s_flags &= ~F_EVLOCKED;
-
-			strlcpy(ss->s_hostname, s->s_hostname, MAXHOSTNAMELEN);
-			strlcpy(ss->s_msg.session_hostname, s->s_hostname,
+			strlcpy(s->s_hostname, ss->s_hostname, MAXHOSTNAMELEN);
+			strlcpy(s->s_msg.session_hostname, ss->s_hostname,
 			    MAXHOSTNAMELEN);
 
-			session_pickup(s, NULL);
+			session_init(s->s_l, s);
 
 			break;
 		}
@@ -476,12 +470,11 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			if (s == NULL)
 				fatal("smtp_dispatch_queue: session is gone");
 
-			if (imsg.hdr.type == IMSG_QUEUE_COMMIT_MESSAGE) {
-				s->s_msg.message_id[0] = '\0';
-				s->s_msg.message_uid[0] = '\0';
-			}
-
 			if (s->s_flags & F_QUIT) {
+				if (imsg.hdr.type == IMSG_QUEUE_COMMIT_MESSAGE) {
+					s->s_msg.message_id[0] = '\0';
+					s->s_msg.message_uid[0] = '\0';
+				}
 				session_destroy(s);
 				break;
 			}
@@ -626,6 +619,7 @@ smtp(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
+	config_pipes(env, peers, 5);
 	config_peers(env, peers, 5);
 
 	smtp_setup_events(env);
@@ -713,6 +707,7 @@ smtp_accept(int fd, short event, void *p)
 		fatal(NULL);
 	len = sizeof(s->s_ss);
 
+	s->s_id = queue_generate_id();
 	s->s_fd = s_fd;
 	s->s_tm = time(NULL);
 	s->s_env = l->env;
@@ -720,7 +715,6 @@ smtp_accept(int fd, short event, void *p)
 
 	(void)memcpy(&s->s_ss, &ss, sizeof(s->s_ss));
 
-	session_init(l, s);
 	event_add(&l->ev, NULL);
 
 	s_smtp.sessions++;
@@ -728,6 +722,13 @@ smtp_accept(int fd, short event, void *p)
 
 	if (s_smtp.sessions_active == s->s_env->sc_maxconn)
 		event_del(&l->ev);
+
+	strlcpy(s->s_hostname, "<unknown>", MAXHOSTNAMELEN);
+	strlcpy(s->s_msg.session_hostname, s->s_hostname, MAXHOSTNAMELEN);
+	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
+	    sizeof(struct session));
+
+	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 }
 
 void

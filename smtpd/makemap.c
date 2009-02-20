@@ -1,4 +1,4 @@
-/*	$OpenBSD: makemap.c,v 1.7 2009/01/01 16:15:47 jacekm Exp $	*/
+/*	$OpenBSD: makemap.c,v 1.10 2009/02/17 23:50:58 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -37,47 +37,103 @@
 
 #include "smtpd.h"
 
+#define	PATH_ALIASES	"/etc/mail/aliases"
+
 extern char *__progname;
 
 __dead void	usage(void);
 int		parse_map(char *);
 int		parse_entry(char *, size_t, size_t);
+int		make_plain(DBT *, char *);
+int		make_aliases(DBT *, char *);
 
-DB *db;
-char *source;
-int dbputs;
+char		*conf_aliases(char *);
+
+DB	*db;
+char	*source;
+char	*oflag;
+int	 dbputs;
 
 enum program {
 	P_MAKEMAP,
 	P_NEWALIASES
 } mode;
 
+enum output_type {
+	T_PLAIN,
+	T_ALIASES
+} type;
+
+/*
+ * Stub functions so that makemap compiles using minimum object files.
+ */
+void
+purge_config(struct smtpd *env, u_int8_t what)
+{
+	bzero(env, sizeof(struct smtpd));
+}
+
+int
+ssl_load_certfile(struct smtpd *env, const char *name)
+{
+	return (0);
+}
+
 int
 main(int argc, char *argv[])
 {
-	char dbname[MAXPATHLEN];
-	char dest[MAXPATHLEN];
+	char	 dbname[MAXPATHLEN];
+	char	*opts;
+	char	*conf;
+	int	 ch;
+
+	log_init(1);
 
 	mode = strcmp(__progname, "newaliases") ? P_MAKEMAP : P_NEWALIASES;
+	conf = CONF_FILE;
+	type = T_PLAIN;
+	opts = "ho:t:";
+	if (mode == P_NEWALIASES)
+		opts = "f:h";
 
-	switch (mode) {
-	case P_MAKEMAP:
-		if (argc != 2)
+	while ((ch = getopt(argc, argv, opts)) != -1) {
+		switch (ch) {
+		case 'f':
+			conf = optarg;
+			break;
+		case 'o':
+			oflag = optarg;
+			break;
+		case 't':
+			if (strcmp(optarg, "aliases") == 0)
+				type = T_ALIASES;
+			else
+				errx(1, "unsupported type '%s'", optarg);
+			break;
+		default:
 			usage();
-		source = argv[1];
-		break;
-	case P_NEWALIASES:
-		if (argc != 1)
-			usage();
+		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	if (mode == P_NEWALIASES) {
 		if (geteuid())
 			errx(1, "need root privileges");
-		source = PATH_ALIASES;
-		break;
-	default:
-		abort();
+		if (argc != 0)
+			usage();
+		type = T_ALIASES;
+		source = conf_aliases(conf);
+	} else {
+		if (argc != 1)
+			usage();
+		source = argv[0];
 	}
 
-	if (! bsnprintf(dbname, MAXPATHLEN, "%s.db.XXXXXXXXXXX", source))
+	if (oflag == NULL && asprintf(&oflag, "%s.db", source) == -1)
+		err(1, "asprintf");
+
+	if (! bsnprintf(dbname, MAXPATHLEN, "%s.XXXXXXXXXXX", oflag))
 		errx(1, "path too long");
 	if (mkstemp(dbname) == -1)
 		err(1, "mkstemp");
@@ -101,18 +157,15 @@ main(int argc, char *argv[])
 		goto bad;
 	}
 
-	if (! bsnprintf(dest, MAXPATHLEN, "%s.db", source)) {
-		warnx("path too long");
-		goto bad;
-	}
-
-	if (rename(dbname, dest) == -1) {
+	if (rename(dbname, oflag) == -1) {
 		warn("rename");
 		goto bad;
 	}
 
-	if (dbputs == 0)
-		warnx("warning: empty map created: %s", dest);
+	if (mode == P_NEWALIASES)
+		printf("%s: %d aliases\n", source, dbputs);
+	else if (dbputs == 0)
+		warnx("warning: empty map created: %s", oflag);
 
 	return 0;
 bad:
@@ -123,11 +176,11 @@ bad:
 int
 parse_map(char *filename)
 {
-	FILE *fp;
-	char *line;
-	size_t len;
-	size_t lineno = 0;
-	char delim[] = { '\\', '\\', '#' };
+	FILE	*fp;
+	char	*line;
+	size_t	 len;
+	size_t	 lineno = 0;
+	char	 delim[] = { '\\', '\\', '#' };
 
 	fp = fopen(filename, "r");
 	if (fp == NULL) {
@@ -135,9 +188,16 @@ parse_map(char *filename)
 		return 0;
 	}
 
+	if (flock(fileno(fp), LOCK_SH|LOCK_NB) == -1) {
+		if (errno == EWOULDBLOCK)
+			warnx("%s is locked", filename);
+		else
+			warn("%s: flock", filename);
+		fclose(fp);
+		return 0;
+	}
+
 	while ((line = fparseln(fp, &len, &lineno, delim, 0)) != NULL) {
-		if (len == 0)
-			continue;
 		if (! parse_entry(line, len, lineno)) {
 			free(line);
 			fclose(fp);
@@ -153,123 +213,150 @@ parse_map(char *filename)
 int
 parse_entry(char *line, size_t len, size_t lineno)
 {
-	char *name;
-	char *rcpt;
-	char *endp;
-	char *subrcpt;
-	DBT key;
-	DBT val;
+	DBT	 key;
+	DBT	 val;
+	char	*keyp;
+	char	*valp;
 
-	/* Blank lines are OK. */
-	while (isspace(*line))
-		line++;
-	if (*line == '\0')
+	keyp = line;
+	while (isspace(*keyp))
+		keyp++;
+	if (*keyp == '\0')
 		return 1;
 
-	name = line;
-	switch (mode) {
-	case P_MAKEMAP:
-		rcpt = strchr(line, ' ');
-		if (rcpt == NULL)
-			rcpt = strchr(line, '\t');
-		break;
-	case P_NEWALIASES:
-		rcpt = strchr(line, ':');
-		break;
-	default:
-		abort();
-	}
-	if (rcpt == NULL)
+	valp = keyp;
+	strsep(&valp, " \t:");
+	if (valp == NULL || valp == keyp)
 		goto bad;
-	*rcpt++ = '\0';
-
-	/* name: strip initial whitespace. */
-	while (isspace(*name))
-		++name;
-	if (*name == '\0')
-		goto bad;
-
-	/* name: strip trailing whitespace. */
-	endp = name + strlen(name) - 1;
-	while (name < endp && isspace(*endp))
-		*endp-- = '\0';
 
 	/* Check for dups. */
-	key.data = name;
-	key.size = strlen(name) + 1;
+	key.data = keyp;
+	key.size = strlen(keyp) + 1;
 	if (db->get(db, &key, &val, 0) == 0) {
-		warnx("%s:%zd: duplicate entry for %s", source, lineno, name);
+		warnx("%s:%zd: duplicate entry for %s", source, lineno, keyp);
 		return 0;
 	}
 
-	/* At this point name and rcpt are non-zero nul-terminated strings. */
-	while ((subrcpt = strsep(&rcpt, ",")) != NULL) {
-		struct alias	 alias;
-		void		*p;
+	switch (type) {
+	case T_PLAIN:
+		if (! make_plain(&val, valp))
+			goto bad;
+		break;
+	case T_ALIASES:
+		if (! make_aliases(&val, valp))
+			goto bad;
+		break;
+	}
 
+	if (db->put(db, &key, &val, 0) == -1) {
+		warn("dbput");
+		return 0;
+	}
+	dbputs++;
+
+	free(val.data);
+
+	return 1;
+
+bad:
+	warnx("%s:%zd: invalid entry", source, lineno);
+	return 0;
+}
+
+int
+make_plain(DBT *val, char *text)
+{
+	struct alias	*a;
+
+	a = calloc(1, sizeof(struct alias));
+	if (a == NULL)
+		err(1, "calloc");
+
+	a->type = ALIAS_TEXT;
+	val->data = a;
+	val->size = strlcpy(a->u.text, text, sizeof(a->u.text));
+
+	if (val->size >= sizeof(a->u.text)) {
+		free(a);
+		return 0;
+	}
+
+	return (val->size);
+}
+
+int
+make_aliases(DBT *val, char *text)
+{
+	struct alias	 a;
+	char		*subrcpt;
+	char		*endp;
+
+	val->data = NULL;
+	val->size = 0;
+
+	while ((subrcpt = strsep(&text, ",")) != NULL) {
 		/* subrcpt: strip initial whitespace. */
 		while (isspace(*subrcpt))
 			++subrcpt;
 		if (*subrcpt == '\0')
-			goto bad;
+			goto error;
 
 		/* subrcpt: strip trailing whitespace. */
 		endp = subrcpt + strlen(subrcpt) - 1;
 		while (subrcpt < endp && isspace(*endp))
 			*endp-- = '\0';
 
-		if (! alias_parse(&alias, subrcpt))
-			goto bad;
+		if (! alias_parse(&a, subrcpt))
+			goto error;
 
-		key.data = name;
-		key.size = strlen(name) + 1;
-		val.data = NULL;
-		val.size = 0;
-		if (db->get(db, &key, &val, 0) == -1) {
-			warn("dbget");
-			return 0;
-		}
-
-		p = calloc(1, val.size + sizeof(struct alias));
-		if (p == NULL) {
-			warn("calloc");
-			return 0;
-		}
-		memcpy(p, val.data, val.size);
-		memcpy((u_int8_t *)p + val.size, &alias, sizeof(struct alias));
-
-		val.data = p;
-		val.size += sizeof(struct alias);
-		if (db->put(db, &key, &val, 0) == -1) {
-			warn("dbput");
-			free(p);
-			return 0;
-		}
-
-		dbputs++;
-		free(p);
+		val->data = realloc(val->data, val->size + sizeof(a));
+		if (val->data == NULL)
+			err(1, "get_targets: realloc");
+		memcpy((u_int8_t *)val->data + val->size, &a, sizeof(a));
+		val->size += sizeof(a);
 	}
 
-	return 1;
+	return (val->size);
 
-bad:
-	/* The actual line is not printed; it may be mangled by above code. */
-	warnx("%s:%zd: invalid entry", source, lineno);
+error:
+	free(val->data);
+
 	return 0;
+}
+
+char *
+conf_aliases(char *cfgpath)
+{
+	struct smtpd	 env;
+	struct map	*map;
+	char		*path;
+	char		*p;
+
+	if (parse_config(&env, cfgpath, 0))
+		exit(1);
+
+	map = map_findbyname(&env, "aliases");
+	if (map == NULL)
+		return (PATH_ALIASES);
+
+	path = strdup(map->m_config);
+	if (path == NULL)
+		err(1, NULL);
+	p = strstr(path, ".db");
+	if (p == NULL || p[3] != '\0')
+		errx(1, "%s: %s: no .db suffix present", cfgpath, path);
+	*p = '\0';
+
+	return (path);
 }
 
 void
 usage(void)
 {
-	switch (mode) {
-	case P_MAKEMAP:
-		fprintf(stderr, "usage: %s file\n", __progname);
-		break;
-	case P_NEWALIASES:
-		fprintf(stderr, "usage: %s\n", __progname);
-		break;
-	default:
-		abort();
-	}
+	if (mode == P_NEWALIASES)
+		fprintf(stderr, "usage: %s [-f file]\n", __progname);
+	else
+		fprintf(stderr, "usage: %s [-t type] [-o dbfile] file\n",
+		    __progname);
 	exit(1);
 }

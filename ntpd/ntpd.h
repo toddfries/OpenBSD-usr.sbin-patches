@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntpd.h,v 1.97 2009/02/06 21:48:00 stevesk Exp $ */
+/*	$OpenBSD: ntpd.h,v 1.99 2009/02/11 01:00:10 stevesk Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -56,6 +56,7 @@
 #define	SENSOR_OFFSETS		7
 #define	SETTIME_TIMEOUT		15	/* max seconds to wait with -s */
 #define	LOG_NEGLIGIBLE_ADJTIME	32	/* negligible drift to not log (ms) */
+#define	LOG_NEGLIGIBLE_ADJFREQ	0.05	/* negligible rate to not log (ppm) */
 #define	FREQUENCY_SAMPLES	8	/* samples for est. of permanent drift */
 #define	MAX_FREQUENCY_ADJUST	128e-5	/* max correction per iteration */
 #define REPORT_INTERVAL		(24*60*60) /* interval between status reports */
@@ -267,6 +268,9 @@ int	 priv_adjtime(void);
 void	 priv_settime(double);
 void	 priv_host_dns(char *, u_int32_t);
 int	 offset_compare(const void *, const void *);
+void	 update_scale(double);
+time_t	 scale_interval(time_t);
+time_t	 error_interval(void);
 extern struct ntpd_conf *conf;
 
 /* parse.y */
@@ -294,9 +298,6 @@ int	client_nextaddr(struct ntp_peer *);
 int	client_query(struct ntp_peer *);
 int	client_dispatch(struct ntp_peer *, u_int8_t);
 void	client_log_error(struct ntp_peer *, const char *, int);
-void	update_scale(double);
-time_t	scale_interval(time_t);
-time_t	error_interval(void);
 void	set_next(struct ntp_peer *, time_t);
 
 /* util.c */

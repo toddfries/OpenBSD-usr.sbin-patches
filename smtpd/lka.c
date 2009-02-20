@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.19 2009/01/28 17:43:45 gilles Exp $	*/
+/*	$OpenBSD: lka.c,v 1.24 2009/02/18 12:06:01 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -48,9 +48,7 @@ void		lka_setup_events(struct smtpd *);
 void		lka_disable_events(struct smtpd *);
 int		lka_verify_mail(struct smtpd *, struct path *);
 int		lka_resolve_mail(struct smtpd *, struct rule *, struct path *);
-int		lka_resolve_rcpt(struct smtpd *, struct rule *, struct path *);
 int		lka_forward_file(struct passwd *);
-size_t		getmxbyname(char *, char ***);
 int		lka_expand(char *, size_t, struct path *);
 int		aliases_exist(struct smtpd *, char *);
 int		aliases_get(struct smtpd *, struct aliaseslist *, char *);
@@ -424,7 +422,7 @@ lka_dispatch_runner(int sig, short event, void *p)
 			struct addrinfo hints, *res, *resp;
 			char **mx = NULL;
 			char *lmx[1];
-			size_t len, i, j;
+			int len, i, j;
 			int error;
 			u_int16_t port = htons(25);
 
@@ -436,6 +434,12 @@ lka_dispatch_runner(int sig, short event, void *p)
 			if (batchp->rule.r_action == A_RELAY) {
 				log_debug("attempting to resolve %s", batchp->hostname);
 				len = getmxbyname(batchp->hostname, &mx);
+				if (len < 0) {
+					batchp->getaddrinfo_error = len;
+					imsg_compose(ibuf, IMSG_LKA_MX, 0, 0, -1,
+					    batchp, sizeof(*batchp));
+					break;
+				}
 				if (len == 0) {
 					lmx[0] = batchp->hostname;
 					mx = lmx;
@@ -455,14 +459,14 @@ lka_dispatch_runner(int sig, short event, void *p)
 			memset(&hints, 0, sizeof(hints));
 			hints.ai_family = PF_UNSPEC;
 			hints.ai_protocol = IPPROTO_TCP;
-			for (i = j = 0; i < len; ++i) {
+			for (i = j = 0; i < len && (j < MXARRAYSIZE * 2); ++i) {
 				error = getaddrinfo(mx[i], NULL, &hints, &res);
 				if (error)
 					continue;
 
 				log_debug("resolving MX: %s", mx[i]);
 
-				for (resp = res; resp != NULL; resp = resp->ai_next) {
+				for (resp = res; resp != NULL && (j < MXARRAYSIZE * 2); resp = resp->ai_next) {
 
 					if (batchp->rule.r_action == A_RELAYVIA)
 						batchp->mxarray[j].flags = batchp->rule.r_value.relayhost.flags;
@@ -477,13 +481,13 @@ lka_dispatch_runner(int sig, short event, void *p)
 					}
 					if (resp->ai_family == PF_INET6) {
 						struct sockaddr_in6 *ssin6;
+
 						batchp->mxarray[j].ss = *(struct sockaddr_storage *)resp->ai_addr;
 						ssin6 = (struct sockaddr_in6 *)&batchp->mxarray[j].ss;
 						ssin6->sin6_port = port;
 						++j;
 					}
 				}
-
 				freeaddrinfo(res);
 			}
 
@@ -576,6 +580,7 @@ lka(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
+	config_pipes(env, peers, 5);
 	config_peers(env, peers, 5);
 
 	lka_setup_events(env);
@@ -653,39 +658,6 @@ lka_resolve_mail(struct smtpd *env, struct rule *rule, struct path *path)
 		if (lka_expand(path->rule.r_value.path, MAXPATHLEN, path) >=
 		    MAXPATHLEN)
 			return 0;
-	}
-
-	return 1;
-}
-
-int
-lka_resolve_rcpt(struct smtpd *env, struct rule *rule, struct path *path)
-{
-	char username[MAXLOGNAME];
-	struct passwd *pw;
-	char *p;
-
-	(void)strlcpy(username, path->user, MAXLOGNAME);
-
-	for (p = &username[0]; *p != '\0' && *p != '+'; ++p)
-		*p = tolower((int)*p);
-	*p = '\0';
-
-	if ((path->flags & F_EXPANDED) == 0 && aliases_virtual_exist(env, path))
-		path->flags |= F_VIRTUAL;
-	else if ((path->flags & F_EXPANDED) == 0 && aliases_exist(env, username))
-		path->flags |= F_ALIAS;
-	else {
-		pw = safe_getpwnam(path->pw_name);
-		if (pw == NULL)
-			pw = safe_getpwnam(username);
-		if (pw == NULL)
-			return 0;
-		(void)strlcpy(path->pw_name, pw->pw_name, MAXLOGNAME);
-		if (lka_expand(path->rule.r_value.path, MAXPATHLEN, path) >=
-		    MAXPATHLEN) {
-			return 0;
-		}
 	}
 
 	return 1;
@@ -836,6 +808,7 @@ lka_resolve_alias(struct path *path, struct alias *alias)
 		log_debug("ADDRESS: %s@%s", alias->u.path.user, alias->u.path.domain);
 		*path = alias->u.path;
 		break;
+	case ALIAS_TEXT:
 	case ALIAS_INCLUDE:
 		fatalx("lka_resolve_alias: unexpected type");
 		break;

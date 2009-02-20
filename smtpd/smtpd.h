@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.68 2009/01/30 21:52:55 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.74 2009/02/19 11:33:25 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -34,6 +34,9 @@
 /* return and forward path size */
 #define MAX_PATH_SIZE		 256
 
+/* makemap mapped value text length */
+#define MAX_MAKEMAP_SIZE	 256
+
 /*#define SMTPD_CONNECT_TIMEOUT	 (60)*/
 #define SMTPD_CONNECT_TIMEOUT	 (10)
 #define SMTPD_QUEUE_INTERVAL	 (15 * 60)
@@ -61,16 +64,13 @@
 #define PATH_RUNQUEUEHIGH	"/runqueue-high"
 #define PATH_RUNQUEUELOW	"/runqueue-low"
 
-/* used by newaliases */
-#define	PATH_ALIASES		"/etc/mail/aliases"
-#define	PATH_ALIASESDB		"/etc/mail/aliases.db"
-
 /* number of MX records to lookup */
 #define MXARRAYSIZE	5
 
 /* rfc5321 limits */
 #define	SMTP_TEXTLINE_MAX	1000
 #define	SMTP_CMDLINE_MAX	512
+#define	SMTP_ANYLINE_MAX	SMTP_TEXTLINE_MAX
 
 #define F_STARTTLS		 0x01
 #define F_SSMTP			 0x02
@@ -376,7 +376,8 @@ enum alias_type {
 	ALIAS_FILENAME,
 	ALIAS_FILTER,
 	ALIAS_INCLUDE,
-	ALIAS_ADDRESS
+	ALIAS_ADDRESS,
+	ALIAS_TEXT
 };
 
 struct alias {
@@ -386,6 +387,7 @@ struct alias {
 		char username[MAXLOGNAME];
 		char filename[MAXPATHLEN];
 		char filter[MAXPATHLEN];
+		char text[MAX_MAKEMAP_SIZE];
 		struct path path;
 	}                                   u;
 };
@@ -626,9 +628,11 @@ struct smtpd {
 	struct timeval				 sc_qintval;
 	u_int32_t				 sc_maxconn;
 	struct event				 sc_ev;
-	int					 sc_pipes[PROC_COUNT]
-						    [PROC_COUNT][2];
+	int					 *sc_pipes[PROC_COUNT]
+						     [PROC_COUNT];
 	struct imsgbuf				*sc_ibufs[PROC_COUNT];
+	int					 sc_instances[PROC_COUNT];
+	int					 sc_instance;
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
 	TAILQ_HEAD(listenerlist, listener)	 sc_listeners;
@@ -734,7 +738,7 @@ int		 msgbuf_write(struct msgbuf *);
 
 
 /* dns.c */
-size_t getmxbyname(char *, char ***);
+int		 getmxbyname(char *, char ***);
 
 
 /* forward.c */
@@ -860,6 +864,7 @@ void		 purge_config(struct smtpd *, u_int8_t);
 void		 unconfigure(struct smtpd *);
 void		 configure(struct smtpd *);
 void		 init_peers(struct smtpd *);
+void		 config_pipes(struct smtpd *, struct peer *, u_int);
 void		 config_peers(struct smtpd *, struct peer *, u_int);
 
 /* parse.y */
@@ -893,3 +898,5 @@ struct passwd 	*safe_getpwnam(const char *);
 struct passwd 	*safe_getpwuid(uid_t);
 int		 hostname_match(char *, char *);
 int		 recipient_to_path(struct path *, char *);
+int		 valid_localpart(char *);
+int		 valid_domainpart(char *);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.52 2009/01/30 21:52:55 gilles Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.57 2009/02/19 11:33:25 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -661,6 +661,8 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_MAILREQUEST:
+		if (ss == NULL)
+			fatalx("bad ss at S_MAILREQUEST");
 		/* sender was not accepted, downgrade state */
 		if (ss->code != 250) {
 			s->s_state = S_HELO;
@@ -679,11 +681,14 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_MAIL:
-
+		if (ss == NULL)
+			fatalx("bad ss at S_MAIL");
 		session_respond(s, "%d Sender ok", ss->code);
 		break;
 
 	case S_RCPTREQUEST:
+		if (ss == NULL)
+			fatalx("bad ss at S_RCPTREQUEST");
 		/* recipient was not accepted */
 		if (ss->code != 250) {
 			/* We do not have a valid recipient, downgrade state */
@@ -700,6 +705,8 @@ session_pickup(struct session *s, struct submit_status *ss)
 		s->s_msg.recipient = ss->u.path;
 
 	case S_RCPT:
+		if (ss == NULL)
+			fatalx("bad ss at S_RCPT");
 		session_respond(s, "%d Recipient ok", ss->code);
 		break;
 
@@ -713,6 +720,8 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_DATA:
+		if (ss == NULL)
+			fatalx("bad ss at S_DATA");
 		if (s->s_msg.datafp == NULL)
 			goto tempfail;
 
@@ -723,10 +732,10 @@ session_pickup(struct session *s, struct submit_status *ss)
 
 	case S_DONE:
 		s->s_state = S_HELO;
-		s->s_msg.message_id[0] = '\0';
 		session_respond(s, "250 %s Message accepted for delivery",
 		    s->s_msg.message_id);
-
+		s->s_msg.message_id[0] = '\0';
+		s->s_msg.message_uid[0] = '\0';
 		break;
 
 	default:
@@ -746,26 +755,20 @@ void
 session_init(struct listener *l, struct session *s)
 {
 	s->s_state = S_INIT;
-	s->s_id = queue_generate_id();
 
 	if ((s->s_bev = bufferevent_new(s->s_fd, session_read, session_write,
 	    session_error, s)) == NULL)
 		fatalx("session_init: bufferevent_new failed");
 
-	strlcpy(s->s_hostname, "<unknown>", MAXHOSTNAMELEN);
-	strlcpy(s->s_msg.session_hostname, s->s_hostname, MAXHOSTNAMELEN);
-	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
-	    sizeof(struct session));
-	s->s_flags |= F_EVLOCKED;
-	bufferevent_disable(s->s_bev, EV_READ);
-
-	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
-
 	if (l->flags & F_SSMTP) {
 		log_debug("session_init: initializing ssl");
+		s->s_flags |= F_EVLOCKED;
+		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
 		ssl_session_init(s);
 		return;
 	}
+
+	session_pickup(s, NULL);
 }
 
 void
@@ -781,8 +784,13 @@ read:
 	s->s_tm = time(NULL);
 	nr = EVBUFFER_LENGTH(bev->input);
 	line = evbuffer_readline(bev->input);
-	if (line == NULL)
+	if (line == NULL) {
+		if (EVBUFFER_LENGTH(bev->input) > SMTP_ANYLINE_MAX) {
+			session_respond(s, "500 Line too long");
+			s->s_flags |= F_QUIT;
+		}
 		return;
+	}
 	nr -= EVBUFFER_LENGTH(bev->input);
 
 	if (s->s_state == S_DATACONTENT) {
