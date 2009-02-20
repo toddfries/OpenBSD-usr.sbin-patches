@@ -106,6 +106,7 @@ main(int argc, char *argv[])
 	struct timeval *timeout;
 	char *argv0, *opts;
 	struct pollfd set[2];
+	struct ifinfo *ifi;
 
 	/*
 	 * Initialization
@@ -260,8 +261,6 @@ main(int argc, char *argv[])
 		timeout = rtsol_check_timer();
 
 		if (once) {
-			struct ifinfo *ifi;
-
 			/* if we have no timeout, we are done (or failed) */
 			if (timeout == NULL)
 				break;
@@ -287,7 +286,12 @@ main(int argc, char *argv[])
 		if (set[0].revents & POLLIN)
 			rtsol_input(s);
 	}
-	/* NOTREACHED */
+
+	/* if any interface failed to get an RA packet, return error */
+	for (ifi = iflist; ifi; ifi = ifi->next) {
+		if (ifi->state != IFS_DOWN && ifi->racnt == 0)
+			return (1);
+	}
 
 	return 0;
 }
