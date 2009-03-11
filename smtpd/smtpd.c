@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.30 2009/02/15 10:32:23 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.49 2009/03/10 21:14:21 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -34,6 +34,7 @@
 #include <fcntl.h>
 #include <login_cap.h>
 #include <paths.h>
+#include <paths.h>
 #include <pwd.h>
 #include <regex.h>
 #include <signal.h>
@@ -41,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sysexits.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <keynote.h>
@@ -58,14 +60,17 @@ void		parent_dispatch_control(int, short, void *);
 void		parent_sig_handler(int, short, void *);
 int		parent_open_message_file(struct batch *);
 int		parent_mailbox_init(struct passwd *, char *);
-int		parent_mailbox_open(struct passwd *, struct batch *, struct path *);
-int		parent_filename_open(struct passwd *, struct batch *, struct path *);
+int		parent_mailbox_open(char *, struct passwd *, struct batch *);
+int		parent_filename_open(char *, struct passwd *, struct batch *);
 int		parent_mailfile_rename(struct batch *, struct path *);
-int		parent_maildir_open(struct passwd *, struct batch *, struct path *);
+int		parent_maildir_open(char *, struct passwd *, struct batch *);
 int		parent_maildir_init(struct passwd *, char *);
-int		parent_external_mda(struct passwd *, struct batch *, struct path *);
+int		parent_external_mda(char *, struct passwd *, struct batch *);
+int		parent_forward_open(char *);
 int		check_child(pid_t, const char *);
 int		setup_spool(uid_t, gid_t);
+
+extern char	**environ;
 
 pid_t	lka_pid = 0;
 pid_t	mfa_pid = 0;
@@ -189,6 +194,18 @@ parent_dispatch_lka(int fd, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_PARENT_FORWARD_OPEN: {
+			int ret;
+			struct forward_req *fwreq;
+
+			fwreq = imsg.data;
+			ret = parent_forward_open(fwreq->pw_name);
+			if (ret == -1)
+				if (errno == ENOENT)
+					fwreq->pw_name[0] = '\0';
+			imsg_compose(ibuf, IMSG_PARENT_FORWARD_OPEN, 0, 0, ret, fwreq, sizeof(*fwreq));
+			break;
+		}
 		default:
 			log_debug("parent_dispatch_lka: unexpected imsg %d",
 			    imsg.hdr.type);
@@ -286,11 +303,12 @@ parent_dispatch_mda(int fd, short event, void *p)
 			struct path *path;
 			struct passwd *pw;
 			char *pw_name;
+			char *file;
 			u_int8_t i;
 			int desc;
 			struct action_handler {
 				enum action_type action;
-				int (*handler)(struct passwd *, struct batch *, struct path *);
+				int (*handler)(char *, struct passwd *, struct batch *);
 			} action_hdl_table[] = {
 				{ A_MBOX,	parent_mailbox_open },
 				{ A_MAILDIR,	parent_maildir_open },
@@ -308,20 +326,31 @@ parent_dispatch_mda(int fd, short event, void *p)
 				if (action_hdl_table[i].action == path->rule.r_action)
 					break;
 			if (i == sizeof(action_hdl_table) / sizeof(struct action_handler))
-				errx(1, "%s: unknown action.", __func__);
+				fatalx("parent_dispatch_mda: unknown action");
 
+			file = path->rule.r_value.path;
 			pw_name = path->pw_name;
-			if (*pw_name == '\0')
+			if (path->rule.r_action == A_FILENAME) {
+				file = path->u.filename;
 				pw_name = SMTPD_USER;
+			}
 
+			errno = 0;
 			pw = safe_getpwnam(pw_name);
-			if (pw == NULL)
-				batchp->message.status |= S_MESSAGE_PERMFAILURE;
+			if (pw == NULL) {
+				if (errno)
+					batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+				else
+					batchp->message.status |= S_MESSAGE_PERMFAILURE;
+				imsg_compose(ibuf, IMSG_MDA_MAILBOX_FILE, 0, 0,
+				    -1, batchp, sizeof(struct batch));
+				break;
+			}
 
 			if (setegid(pw->pw_gid) || seteuid(pw->pw_uid))
 				fatal("privdrop failed");
 
-			desc = action_hdl_table[i].handler(pw, batchp, path);
+			desc = action_hdl_table[i].handler(file, pw, batchp);
 			imsg_compose(ibuf, IMSG_MDA_MAILBOX_FILE, 0, 0,
 			    desc, batchp, sizeof(struct batch));
 
@@ -760,7 +789,7 @@ setup_spool(uid_t uid, gid_t gid)
 	struct stat	 sb;
 	int		 ret;
 
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s", PATH_SPOOL))
+	if (! bsnprintf(pathname, sizeof(pathname), "%s", PATH_SPOOL))
 		fatal("snprintf");
 
 	if (stat(pathname, &sb) == -1) {
@@ -805,7 +834,7 @@ setup_spool(uid_t uid, gid_t gid)
 
 	ret = 1;
 	for (n = 0; n < sizeof(paths)/sizeof(paths[0]); n++) {
-		if (! bsnprintf(pathname, MAXPATHLEN, "%s%s", PATH_SPOOL,
+		if (! bsnprintf(pathname, sizeof(pathname), "%s%s", PATH_SPOOL,
 			paths[n]))
 			fatal("snprintf");
 
@@ -885,7 +914,7 @@ parent_open_message_file(struct batch *batchp)
 	messagep = &batchp->message;
 	hval = queue_hash(messagep->message_id);
 
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s%s/%d/%s/message",
+	if (! bsnprintf(pathname, sizeof(pathname), "%s%s/%d/%s/message",
 		PATH_SPOOL, PATH_QUEUE, hval, batchp->message_id)) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
@@ -927,21 +956,227 @@ parent_mailbox_init(struct passwd *pw, char *pathname)
 }
 
 int
-parent_mailbox_open(struct passwd *pw, struct batch *batchp, struct path *path)
+parent_mailbox_open(char *path, struct passwd *pw, struct batch *batchp)
 {
-	int fd;
-	char pathname[MAXPATHLEN];
-	int mode = O_CREAT|O_APPEND|O_RDWR|O_SYNC|O_NONBLOCK;
+	pid_t pid;
+	int pipefd[2];
+	struct mdaproc *mdaproc;
+	char sender[MAX_PATH_SIZE];
 
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path))
+	/* This can never happen, but better safe than sorry. */
+	if (! bsnprintf(sender, MAX_PATH_SIZE, "%s@%s",
+		batchp->message.sender.user,
+		batchp->message.sender.domain)) {
+		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
+	}
 
-	if (! parent_mailbox_init(pw, pathname)) {
+	if (! parent_mailbox_init(pw, path)) {
 		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
 		return -1;
 	}
 
-	fd = open(pathname, mode, 0600);
+	log_debug("executing mail.local");
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipefd) == -1) {
+		batchp->message.status |= S_MESSAGE_PERMFAILURE;
+		return -1;
+	}
+
+	/* raise privileges because mail.local needs root to
+	 * deliver to user mailboxes.
+	 */
+	if (seteuid(0) == -1)
+		fatal("privraise failed");
+
+	pid = fork();
+	if (pid == -1) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		batchp->message.status |= S_MESSAGE_PERMFAILURE;
+		return -1;
+	}
+
+	if (pid == 0) {
+		setproctitle("mail.local");
+
+		close(pipefd[0]);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+		dup2(pipefd[1], 0);
+
+		execlp(PATH_MAILLOCAL, "mail.local", "-f", sender, pw->pw_name, (void *)NULL);
+		_exit(1);
+	}
+
+	if (seteuid(pw->pw_uid) == -1)
+		fatal("privdrop failed");
+
+	mdaproc = calloc(1, sizeof (struct mdaproc));
+	if (mdaproc == NULL)
+		fatal("calloc");
+	mdaproc->pid = pid;
+
+	SPLAY_INSERT(mdaproctree, &batchp->env->mdaproc_queue, mdaproc);
+
+	close(pipefd[1]);
+	return pipefd[0];
+}
+
+int
+parent_maildir_init(struct passwd *pw, char *root)
+{
+	u_int8_t i;
+	char pathname[MAXPATHLEN];
+	char *subdir[] = { "/", "/tmp", "/cur", "/new" };
+
+	for (i = 0; i < sizeof (subdir) / sizeof (char *); ++i) {
+		if (! bsnprintf(pathname, sizeof(pathname), "%s%s", root,
+			subdir[i]))
+			return 0;
+		if (mkdir(pathname, 0700) == -1)
+			if (errno != EEXIST)
+				return 0;
+	}
+
+	return 1;
+}
+
+int
+parent_maildir_open(char *path, struct passwd *pw, struct batch *batchp)
+{
+	int fd;
+	char tmp[MAXPATHLEN];
+	int mode = O_CREAT|O_RDWR|O_TRUNC|O_SYNC;
+
+	if (! parent_maildir_init(pw, path)) {
+		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		return -1;
+	}
+
+	if (! bsnprintf(tmp, sizeof(tmp), "%s/tmp/%s", path,
+		batchp->message.message_uid)) {
+		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		return -1;
+	}
+
+	fd = open(tmp, mode, 0600);
+	if (fd == -1) {
+		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		return -1;
+	}
+
+	return fd;
+}
+
+int
+parent_mailfile_rename(struct batch *batchp, struct path *path)
+{
+	char srcpath[MAXPATHLEN];
+	char dstpath[MAXPATHLEN];
+
+	if (! bsnprintf(srcpath, sizeof(srcpath), "%s/tmp/%s",
+		path->rule.r_value.path, batchp->message.message_uid) ||
+	    ! bsnprintf(dstpath, sizeof(dstpath), "%s/new/%s",
+		path->rule.r_value.path, batchp->message.message_uid))
+		return 0;
+
+	if (rename(srcpath, dstpath) == -1) {
+		if (unlink(srcpath) == -1)
+			fatal("unlink");
+		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		return 0;
+	}
+
+	return 1;
+}
+
+int
+parent_external_mda(char *path, struct passwd *pw, struct batch *batchp)
+{
+	pid_t pid;
+	int pipefd[2];
+	arglist args;
+	char *word;
+	struct mdaproc *mdaproc;
+	char *envp[2];
+
+	log_debug("executing filter as user: %s", pw->pw_name);
+
+	if (pipe(pipefd) == -1) {
+		if (errno == ENFILE) {
+			log_warn("parent_external_mda: pipe");
+			batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+			return -1;
+		}
+		fatal("parent_external_mda: pipe");
+	}
+
+	pid = fork();
+	if (pid == -1) {
+		log_warn("parent_external_mda: fork");
+		close(pipefd[0]);
+		close(pipefd[1]);
+		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		return -1;
+	}
+
+	if (pid == 0) {
+		setproctitle("external MDA");
+
+		if (seteuid(0) == -1)
+			fatal("privraise failed");
+		if (setgroups(1, &pw->pw_gid) ||
+		    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+		    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+			fatal("cannot drop privileges");
+
+		bzero(&args, sizeof(args));
+		while ((word = strsep(&path, " \t")) != NULL)
+			if (*word != '\0')
+				addargs(&args, "%s", word);
+
+		if (setsid() == -1)
+			fatal("setsid");
+
+		if (signal(SIGPIPE, SIG_DFL) == SIG_ERR)
+			fatal("signal");
+
+		if (dup2(pipefd[0], STDIN_FILENO) == -1)
+			fatal("dup2");
+
+		if (chdir(pw->pw_dir) == -1 && chdir("/") == -1)
+			fatal("chdir");
+
+		if (closefrom(STDERR_FILENO + 1) == -1)
+			fatal("closefrom");
+
+		envp[0] = "PATH=" _PATH_DEFPATH;
+		envp[1] = (char *)NULL;
+		environ = envp;
+
+		execvp(args.list[0], args.list);
+		_exit(1);
+	}
+
+	mdaproc = calloc(1, sizeof (struct mdaproc));
+	if (mdaproc == NULL)
+		fatal("calloc");
+	mdaproc->pid = pid;
+
+	SPLAY_INSERT(mdaproctree, &batchp->env->mdaproc_queue, mdaproc);
+
+	close(pipefd[0]);
+	return pipefd[1];
+}
+
+int
+parent_filename_open(char *path, struct passwd *pw, struct batch *batchp)
+{
+	int fd;
+	int mode = O_CREAT|O_APPEND|O_RDWR|O_SYNC|O_NONBLOCK;
+
+	fd = open(path, mode, 0600);
 	if (fd == -1) {
 		/* XXX - this needs to be discussed ... */
 		switch (errno) {
@@ -983,186 +1218,48 @@ lockfail:
 }
 
 int
-parent_maildir_init(struct passwd *pw, char *root)
+parent_forward_open(char *username)
 {
-	u_int8_t i;
+	struct passwd *pw;
+	struct stat sb;
 	char pathname[MAXPATHLEN];
-	char *subdir[] = { "/", "/tmp", "/cur", "/new" };
-
-	for (i = 0; i < sizeof (subdir) / sizeof (char *); ++i) {
-		if (! bsnprintf(pathname, MAXPATHLEN, "%s%s", root, subdir[i]))
-			return 0;
-		if (mkdir(pathname, 0700) == -1)
-			if (errno != EEXIST)
-				return 0;
-		chown(pathname, pw->pw_uid, pw->pw_gid);
-	}
-
-	return 1;
-}
-
-int
-parent_maildir_open(struct passwd *pw, struct batch *batchp, struct path *path)
-{
 	int fd;
-	char pathname[MAXPATHLEN];
-	int mode = O_CREAT|O_RDWR|O_TRUNC|O_SYNC;
 
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->rule.r_value.path))
+	pw = safe_getpwnam(username);
+	if (pw == NULL)
 		return -1;
 
-	if (! parent_maildir_init(pw, pathname)) {
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+	if (! bsnprintf(pathname, sizeof (pathname), "%s/.forward", pw->pw_dir))
 		return -1;
-	}
 
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s/tmp/%s",
-		pathname, batchp->message.message_uid)) {
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return -1;
-	}
-
-	fd = open(pathname, mode, 0600);
+	fd = open(pathname, O_RDONLY);
 	if (fd == -1) {
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
+		if (errno == ENOENT)
+			goto clear;
 		return -1;
 	}
 
-	fchown(fd, pw->pw_uid, pw->pw_gid);
+	/* make sure ~/ is not writable by anyone but owner */
+	if (stat(pw->pw_dir, &sb) == -1)
+		goto clearlog;
 
-	return fd;
-}
+	if (sb.st_uid != pw->pw_uid || sb.st_mode & (S_IWGRP|S_IWOTH))
+		goto clearlog;
 
-int
-parent_mailfile_rename(struct batch *batchp, struct path *path)
-{
-	char srcpath[MAXPATHLEN];
-	char dstpath[MAXPATHLEN];
+	/* make sure ~/.forward is not writable by anyone but owner */
+	if (fstat(fd, &sb) == -1)
+		goto clearlog;
 
-	if (! bsnprintf(srcpath, MAXPATHLEN, "%s/tmp/%s",
-		path->rule.r_value.path, batchp->message.message_uid) ||
-	    ! bsnprintf(dstpath, MAXPATHLEN, "%s/new/%s",
-		path->rule.r_value.path, batchp->message.message_uid))
-		return 0;
-
-	if (rename(srcpath, dstpath) == -1) {
-		if (unlink(srcpath) == -1)
-			fatal("unlink");
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return 0;
-	}
-
-	return 1;
-}
-
-int
-parent_external_mda(struct passwd *pw, struct batch *batchp, struct path *path)
-{
-	pid_t pid;
-	int pipefd[2];
-	struct mdaproc *mdaproc;
-
-	log_debug("executing filter as user: %s", pw->pw_name);
-
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipefd) == -1) {
-		batchp->message.status |= S_MESSAGE_PERMFAILURE;
-		return -1;
-	}
-
-	/* raise privileges before fork so that the child can
-	 * revoke them permanently instead of inheriting the
-	 * saved uid.
-	 */
-	if (seteuid(0) == -1)
-		fatal("privraise failed");
-
-	pid = fork();
-	if (pid == -1) {
-		close(pipefd[0]);
-		close(pipefd[1]);
-		batchp->message.status |= S_MESSAGE_PERMFAILURE;
-		return -1;
-	}
-
-	if (pid == 0) {
-		setproctitle("external MDA");
-
-		if (setgroups(1, &pw->pw_gid) ||
-		    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-		    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
-			fatal("mta: cannot drop privileges");
-
-		close(pipefd[0]);
-		close(STDOUT_FILENO);
-		close(STDERR_FILENO);
-		dup2(pipefd[1], 0);
-
-		execlp(_PATH_BSHELL, "sh", "-c", path->rule.r_value.path, (void *)NULL);
-		_exit(1);
-	}
-
-	if (seteuid(pw->pw_uid) == -1)
-		fatal("privdrop failed");
-
-	mdaproc = calloc(1, sizeof (struct mdaproc));
-	if (mdaproc == NULL)
-		fatal("calloc");
-	mdaproc->pid = pid;
-
-	SPLAY_INSERT(mdaproctree, &batchp->env->mdaproc_queue, mdaproc);
-
-	close(pipefd[1]);
-	return pipefd[0];
-}
-
-int
-parent_filename_open(struct passwd *pw, struct batch *batchp, struct path *path)
-{
-	int fd;
-	char pathname[MAXPATHLEN];
-	int mode = O_CREAT|O_APPEND|O_RDWR|O_SYNC|O_NONBLOCK;
-
-	if (! bsnprintf(pathname, MAXPATHLEN, "%s", path->u.filename))
-		return -1;
-
-	fd = open(pathname, mode, 0600);
-	if (fd == -1) {
-		/* XXX - this needs to be discussed ... */
-		switch (errno) {
-		case ENOTDIR:
-		case ENOENT:
-		case EACCES:
-		case ELOOP:
-		case EROFS:
-		case EDQUOT:
-		case EINTR:
-		case EIO:
-		case EMFILE:
-		case ENFILE:
-		case ENOSPC:
-			batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-			break;
-		case EWOULDBLOCK:
-			goto lockfail;
-		default:
-			batchp->message.status |= S_MESSAGE_PERMFAILURE;
-		}
-		return -1;
-	}
-
-	if (flock(fd, LOCK_EX|LOCK_NB) == -1) {
-		if (errno == EWOULDBLOCK)
-			goto lockfail;
-		fatal("flock");
-	}
+	if (sb.st_uid != pw->pw_uid || sb.st_mode & (S_IWGRP|S_IWOTH))
+		goto clearlog;
 
 	return fd;
 
-lockfail:
-	if (fd != -1)
-		close(fd);
+clearlog:
+	log_info("cannot process forward file for user %s due to wrong permissions", username);
 
-	batchp->message.status |= S_MESSAGE_TEMPFAILURE|S_MESSAGE_LOCKFAILURE;
+clear:
+	username[0] = '\0';
 	return -1;
 }
 

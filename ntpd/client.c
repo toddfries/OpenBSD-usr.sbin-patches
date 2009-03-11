@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.c,v 1.81 2008/06/10 03:51:53 naddy Exp $ */
+/*	$OpenBSD: client.c,v 1.84 2009/03/04 19:17:36 stevesk Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -20,6 +20,7 @@
 #include <sys/param.h>
 #include <errno.h>
 #include <md5.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -218,10 +219,21 @@ client_dispatch(struct ntp_peer *p, u_int8_t settime)
 
 	if ((msg.status & LI_ALARM) == LI_ALARM || msg.stratum == 0 ||
 	    msg.stratum > NTP_MAXSTRATUM) {
+		char s[16];
+
+		if ((msg.status & LI_ALARM) == LI_ALARM) {
+			strlcpy(s, "alarm", sizeof(s));
+		} else if (msg.stratum == 0) {
+			/* Kiss-o'-Death (KoD) packet */
+			strlcpy(s, "KoD", sizeof(s));
+		} else if (msg.stratum > NTP_MAXSTRATUM) {
+			snprintf(s, sizeof(s), "stratum %d", msg.stratum);
+		}
 		interval = error_interval();
 		set_next(p, interval);
-		log_info("reply from %s: not synced, next query %ds",
-		    log_sockaddr((struct sockaddr *)&p->addr->ss), interval);
+		log_info("reply from %s: not synced (%s), next query %ds",
+		    log_sockaddr((struct sockaddr *)&p->addr->ss), s,
+			interval);
 		return (0);
 	}
 
@@ -263,7 +275,7 @@ client_dispatch(struct ntp_peer *p, u_int8_t settime)
 	p->reply[p->shift].status.precision = msg.precision;
 	p->reply[p->shift].status.rootdelay = sfp_to_d(msg.rootdelay);
 	p->reply[p->shift].status.rootdispersion = sfp_to_d(msg.dispersion);
-	p->reply[p->shift].status.refid = ntohl(msg.refid);
+	p->reply[p->shift].status.refid = msg.refid;
 	p->reply[p->shift].status.reftime = lfp_to_d(msg.reftime);
 	p->reply[p->shift].status.poll = msg.ppoll;
 	p->reply[p->shift].status.stratum = msg.stratum;

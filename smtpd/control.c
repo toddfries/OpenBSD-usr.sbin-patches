@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.13 2009/02/17 22:49:22 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.19 2009/03/08 20:39:49 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -29,6 +29,7 @@
 #include <event.h>
 #include <fcntl.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -254,8 +255,10 @@ control_close(int fd)
 {
 	struct ctl_conn	*c;
 
-	if ((c = control_connbyfd(fd)) == NULL)
+	if ((c = control_connbyfd(fd)) == NULL) {
 		log_warn("control_close: fd %d: not found", fd);
+		return;
+	}
 
 	msgbuf_clear(&c->ibuf.w);
 	TAILQ_REMOVE(&ctl_conns, c, entry);
@@ -315,49 +318,83 @@ control_dispatch_ext(int fd, short event, void *arg)
 		case IMSG_MFA_RCPT: {
 			struct message_recipient *mr;
 
+			if (c->state != CS_INIT && c->state != CS_RCPT)
+				goto badstate;
+
 			mr = imsg.data;
 			imsg_compose(env->sc_ibufs[PROC_MFA], IMSG_MFA_RCPT, 0, 0, -1,
 			    mr, sizeof(*mr));
-
+			event_del(&c->ibuf.ev);
 			break;
 		}
 		case IMSG_QUEUE_CREATE_MESSAGE: {
 			struct message *messagep;
 
+			if (c->state != CS_NONE && c->state != CS_DONE)
+				goto badstate;
+
 			messagep = imsg.data;
 			messagep->session_id = fd;
 			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1,
 			    messagep, sizeof(*messagep));
-
+			event_del(&c->ibuf.ev);
 			break;
 		}
 		case IMSG_QUEUE_MESSAGE_FILE: {
 			struct message *messagep;
 
+			if (c->state != CS_RCPT)
+				goto badstate;
+
 			messagep = imsg.data;
 			messagep->session_id = fd;
 			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1,
 			    messagep, sizeof(*messagep));
+			event_del(&c->ibuf.ev);
 			break;
 		}
 		case IMSG_QUEUE_COMMIT_MESSAGE: {
 			struct message *messagep;
 
+			if (c->state != CS_FD)
+				goto badstate;
+
 			messagep = imsg.data;
 			messagep->session_id = fd;
 			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
 			    messagep, sizeof(*messagep));
+			event_del(&c->ibuf.ev);
 			break;
 		}
 		case IMSG_STATS: {
 			struct stats	s;
+
+			if (euid)
+				goto badcred;
 
 			s.fd = fd;
 			imsg_compose(env->sc_ibufs[PROC_PARENT], IMSG_STATS, 0, 0, -1, &s, sizeof(s));
 			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_STATS, 0, 0, -1, &s, sizeof(s));
 			imsg_compose(env->sc_ibufs[PROC_RUNNER], IMSG_STATS, 0, 0, -1, &s, sizeof(s));
 			imsg_compose(env->sc_ibufs[PROC_SMTP], IMSG_STATS, 0, 0, -1, &s, sizeof(s));
+			break;
+		}
+		case IMSG_RUNNER_SCHEDULE: {
+			struct sched s;
 
+			if (euid)
+				goto badcred;
+
+			s = *(struct sched *)imsg.data;
+			s.fd = fd;
+
+			if (! valid_message_id(s.mid) && ! valid_message_uid(s.mid)) {
+				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
+				    NULL, 0);
+				break;
+			}
+
+			imsg_compose(env->sc_ibufs[PROC_RUNNER], IMSG_RUNNER_SCHEDULE, 0, 0, -1, &s, sizeof(s));
 			break;
 		}
 		case IMSG_CTL_SHUTDOWN:
@@ -466,6 +503,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 		}
 		imsg_free(&imsg);
 		continue;
+
+badstate:
 badcred:
 		imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
 		    NULL, 0);
@@ -632,15 +671,17 @@ control_dispatch_mfa(int sig, short event, void *p)
 			struct ctl_conn		*c;
 
 			ss = imsg.data;
-
-			if (ss->code == 250)
-				break;
-
 			if ((c = control_connbyfd(ss->id)) == NULL) {
 				log_warn("control_dispatch_queue: fd %lld: not found", ss->id);
 				return;
 			}
-			
+
+			event_add(&c->ibuf.ev, NULL);
+			if (ss->code == 250) {
+				c->state = CS_RCPT;
+				break;
+			}
+
 			imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1, NULL, 0);
 
 			break;
@@ -700,14 +741,17 @@ control_dispatch_queue(int sig, short event, void *p)
 				log_warn("control_dispatch_queue: fd %lld: not found", ss->id);
 				return;
 			}
+			event_add(&c->ibuf.ev, NULL);
 
 			if (ss->code != 250) {
 				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
 				    NULL, 0);
 			}
 			else {
+				c->state = CS_INIT;
 				ss->msg.session_id = ss->id;
-				strlcpy(ss->msg.message_id, ss->u.msgid, MAXPATHLEN);
+				strlcpy(ss->msg.message_id, ss->u.msgid,
+				    sizeof(ss->msg.message_id));
 				imsg_compose(&c->ibuf, IMSG_CTL_OK, 0, 0, -1,
 				    &ss->msg, sizeof(struct message));
 			}
@@ -723,7 +767,8 @@ control_dispatch_queue(int sig, short event, void *p)
 				log_warn("control_dispatch_queue: fd %lld: not found", ss->id);
 				return;
 			}
-
+			event_add(&c->ibuf.ev, NULL);
+			c->state = CS_RCPT;
 			imsg_compose(&c->ibuf, IMSG_CTL_OK, 0, 0, -1,
 			    NULL, 0);
 
@@ -740,11 +785,14 @@ control_dispatch_queue(int sig, short event, void *p)
 				    ss->id);
 				return;
 			}
+			event_add(&c->ibuf.ev, NULL);
 
 			fd = imsg_get_fd(ibuf, &imsg);
-			if (ss->code == 250)
+			if (ss->code == 250) {
+				c->state = CS_FD;
 				imsg_compose(&c->ibuf, IMSG_CTL_OK, 0, 0, fd,
 				    &ss->msg, sizeof(struct message));
+			}
 			else
 				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
 				    &ss->msg, sizeof(struct message));
@@ -760,10 +808,13 @@ control_dispatch_queue(int sig, short event, void *p)
 				    ss->id);
 				return;
 			}
+			event_add(&c->ibuf.ev, NULL);
 
-			if (ss->code == 250)
+			if (ss->code == 250) {
+				c->state = CS_DONE;
 				imsg_compose(&c->ibuf, IMSG_CTL_OK, 0, 0, -1,
 				    &ss->msg, sizeof(struct message));
+			}
 			else
 				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
 				    &ss->msg, sizeof(struct message));
@@ -843,6 +894,22 @@ control_dispatch_runner(int sig, short event, void *p)
 			imsg_compose(&c->ibuf, IMSG_RUNNER_STATS, 0, 0, -1,
 			    &s->u.runner, sizeof(s->u.runner));
 
+			break;
+		}
+		case IMSG_RUNNER_SCHEDULE: {
+			struct sched	*s;
+			struct ctl_conn	*c;
+
+			s = imsg.data;
+			if ((c = control_connbyfd(s->fd)) == NULL) {
+				log_warn("control_dispatch_runner: fd %d not found", s->fd);
+				return;
+			}
+
+			if (s->ret)
+				imsg_compose(&c->ibuf, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+			else
+				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1, NULL, 0);
 			break;
 		}
 		default:
@@ -926,7 +993,7 @@ session_socket_blockmode(int fd, enum blockmodes bm)
 
 	if (bm == BM_NONBLOCK)
 		flags |= O_NONBLOCK;
-	else
+
 		flags &= ~O_NONBLOCK;
 
 	if ((flags = fcntl(fd, F_SETFL, flags)) == -1)

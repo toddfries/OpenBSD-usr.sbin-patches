@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.30 2009/02/15 10:32:23 jacekm Exp $	*/
+/*	$OpenBSD: runner.c,v 1.34 2009/03/09 01:43:19 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -64,7 +64,6 @@ void		runner_process_queue(struct smtpd *);
 void		runner_process_runqueue(struct smtpd *);
 void		runner_process_batchqueue(struct smtpd *);
 
-int		runner_batch_resolved(struct smtpd *, struct batch *);
 void		runner_batch_dispatch(struct smtpd *, struct batch *, time_t);
 
 int		runner_message_schedule(struct message *, time_t);
@@ -76,6 +75,9 @@ int		runner_check_loop(struct message *);
 
 struct batch	*batch_record(struct smtpd *, struct message *);
 struct batch	*batch_lookup(struct smtpd *, struct message *);
+
+int		runner_force_envelope_schedule(char *);
+int		runner_force_message_schedule(char *);
 
 struct s_runner	 s_runner;
 
@@ -146,6 +148,20 @@ runner_dispatch_control(int sig, short event, void *p)
 			s = imsg.data;
 			s->u.runner = s_runner;
 			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
+			break;
+		}
+		case IMSG_RUNNER_SCHEDULE: {
+			struct sched *s;
+
+			s = imsg.data;
+
+			s->ret = 0;
+			if (valid_message_uid(s->mid))
+				s->ret = runner_force_envelope_schedule(s->mid);
+			else if (valid_message_id(s->mid))
+				s->ret = runner_force_message_schedule(s->mid);
+
+			imsg_compose(ibuf, IMSG_RUNNER_SCHEDULE, 0, 0, -1, s, sizeof(*s));
 			break;
 		}
 		default:
@@ -338,10 +354,6 @@ runner_dispatch_lka(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_LKA_MX: {
-			runner_batch_resolved(env, imsg.data);
-			break;
-		}
 		default:
 			log_debug("runner_dispatch_lka: unexpected imsg %d",
 			    imsg.hdr.type);
@@ -439,6 +451,7 @@ runner(struct smtpd *env)
 	config_pipes(env, peers, 5);
 	config_peers(env, peers, 5);
 
+	unlink(PATH_QUEUE "/envelope.tmp");
 	runner_reset_flags();
 
 	runner_setup_events(env);
@@ -518,6 +531,7 @@ runner_process_queue(struct smtpd *env)
 		runner_check_loop(&message);
 
 		message.flags |= F_MESSAGE_SCHEDULED;
+		message.flags &= ~F_MESSAGE_FORCESCHEDULE;
 		queue_update_envelope(&message);
 
 		if (! bsnprintf(rqpath, sizeof(rqpath), "%s/%s", PATH_RUNQUEUE,
@@ -594,10 +608,10 @@ runner_process_batchqueue(struct smtpd *env)
 	     batchp != NULL;
 	     batchp = nxt) {
 		nxt = SPLAY_NEXT(batchtree, &env->batch_queue, batchp);
-		if ((batchp->type & T_MTA_BATCH) &&
-		    (batchp->flags & F_BATCH_RESOLVED) == 0) {
-			continue;
-		}
+//		if ((batchp->type & T_MTA_BATCH) &&
+//		    (batchp->flags & F_BATCH_RESOLVED) == 0) {
+//			continue;
+//		}
 
 		runner_batch_dispatch(env, batchp, curtime);
 
@@ -605,71 +619,6 @@ runner_process_batchqueue(struct smtpd *env)
 		bzero(batchp, sizeof(struct batch));
 		free(batchp);
 	}
-}
-
-int
-runner_batch_resolved(struct smtpd *env, struct batch *lookup)
-{
-	u_int32_t i;
-	struct batch *batchp;
-
-	batchp = batch_by_id(env, lookup->id);
-	batchp->getaddrinfo_error = lookup->getaddrinfo_error;
-	batchp->mx_cnt = lookup->mx_cnt;
-
-/*
-           EAI_NODATA        no address associated with hostname
-           EAI_NONAME        hostname or servname not provided, or not known
-           EAI_PROTOCOL      resolved protocol is unknown
-           EAI_SERVICE       servname not supported for ai_socktype
-           EAI_SOCKTYPE      ai_socktype not supported
-           EAI_SYSTEM        system error returned in errno
-
-
- */
-
-	switch (batchp->getaddrinfo_error) {
-	case 0:
-		batchp->flags |= F_BATCH_RESOLVED;
-		for (i = 0; i < batchp->mx_cnt; ++i) {
-			batchp->mxarray[i].flags = lookup->mxarray[i].flags;
-			batchp->mxarray[i].ss = lookup->mxarray[i].ss;
-		}
-		break;
-	case EAI_ADDRFAMILY:
-	case EAI_BADFLAGS:
-	case EAI_BADHINTS:
-	case EAI_FAIL:
-	case EAI_FAMILY:
-	case EAI_NODATA:
-	case EAI_NONAME:
-	case EAI_SERVICE:
-	case EAI_SOCKTYPE:
-	case EAI_SYSTEM:
-		/* XXX */
-		/*
-		 * In the case of a DNS permanent error, do not generate a
-		 * daemon message if the error originates from one already
-		 * as this would cause a loop. Remove the initial batch as
-		 * it will never succeed.
-		 *
-		 */
-		return 0;
-
-	case EAI_AGAIN:
-	case EAI_MEMORY:
-		/* XXX */
-		/*
-		 * Do not generate a daemon message if this error happened
-		 * while processing a daemon message. Do NOT remove batch,
-		 * it may succeed later.
-		 */
-		return 0;
-
-	default:
-		fatalx("runner_batch_resolved: unknown getaddrinfo error.");
-	}
-	return 1;
 }
 
 void
@@ -708,6 +657,9 @@ runner_message_schedule(struct message *messagep, time_t tm)
 
 	if (messagep->flags & (F_MESSAGE_SCHEDULED|F_MESSAGE_PROCESSING))
 		return 0;
+
+	if (messagep->flags & F_MESSAGE_FORCESCHEDULE)
+		return 1;
 
 	/* Batch has been in the queue for too long and expired */
 	if (tm - messagep->creation >= SMTPD_QUEUE_EXPIRY) {
@@ -751,6 +703,49 @@ runner_message_schedule(struct message *messagep, time_t tm)
 	return 0;
 }
 
+int
+runner_force_envelope_schedule(char *mid)
+{
+	struct message message;
+
+	if (! queue_load_envelope(&message, mid))
+		return 0;
+
+	if (! message.flags & (F_MESSAGE_PROCESSING|F_MESSAGE_SCHEDULED))
+		return 1;
+
+	message.flags |= F_MESSAGE_FORCESCHEDULE;
+
+	if (! queue_update_envelope(&message))
+		return 0;
+
+	return 1;
+}
+
+int
+runner_force_message_schedule(char *mid)
+{
+	char path[MAXPATHLEN];
+	DIR *dirp;
+	struct dirent *dp;
+
+	if (! bsnprintf(path, MAXPATHLEN, "%s/%d/%s/envelopes",
+		PATH_QUEUE, queue_hash(mid), mid))
+		return 0;
+
+	dirp = opendir(path);
+	if (dirp == NULL)
+		return 0;
+
+	while ((dp = readdir(dirp)) != NULL) {
+		if (valid_message_uid(dp->d_name))
+			runner_force_envelope_schedule(dp->d_name);
+	}
+	closedir(dirp);
+
+	return 1;
+}
+
 void
 runner_purge_run(void)
 {
@@ -759,14 +754,8 @@ runner_purge_run(void)
 
 	q = qwalk_new(PATH_PURGE);
 
-	while (qwalk(q, path)) {
-		if (strcmp(basename(path), "envelope.tmp") == 0) {
-			if (unlink(path) == -1)
-				fatal("runner_purge_run: unlink");
-			continue;
-		}
+	while (qwalk(q, path))
 		runner_purge_message(basename(path));
-	}
 
 	qwalk_close(q);
 }
@@ -781,13 +770,14 @@ runner_purge_message(char *msgid)
 	DIR *dirp;
 	struct dirent *dp;
 	
-	if (! bsnprintf(rootdir, MAXPATHLEN, "%s/%s", PATH_PURGE, msgid))
+	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", PATH_PURGE, msgid))
 		fatal("queue_delete_incoming_message: snprintf");
 
-	if (! bsnprintf(evpdir, MAXPATHLEN, "%s%s", rootdir, PATH_ENVELOPES))
+	if (! bsnprintf(evpdir, sizeof(evpdir), "%s%s", rootdir,
+		PATH_ENVELOPES))
 		fatal("queue_delete_incoming_message: snprintf");
 	
-	if (! bsnprintf(msgpath, MAXPATHLEN, "%s/message", rootdir))
+	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/message", rootdir))
 		fatal("queue_delete_incoming_message: snprintf");
 
 	if (unlink(msgpath) == -1)
@@ -804,7 +794,7 @@ runner_purge_message(char *msgid)
 		if (strcmp(dp->d_name, ".") == 0 ||
 		    strcmp(dp->d_name, "..") == 0)
 			continue;
-		if (! bsnprintf(evppath, MAXPATHLEN, "%s/%s", evpdir,
+		if (! bsnprintf(evppath, sizeof(evppath), "%s/%s", evpdir,
 			dp->d_name))
 			fatal("queue_delete_incoming_message: snprintf");
 
@@ -867,8 +857,8 @@ batch_record(struct smtpd *env, struct message *messagep)
 		}
 		else {
 			batchp->type |= T_MTA_BATCH;
-			imsg_compose(env->sc_ibufs[PROC_LKA], IMSG_LKA_MX,
-			    0, 0, -1, batchp, sizeof(struct batch));
+//			imsg_compose(env->sc_ibufs[PROC_LKA], IMSG_LKA_MX,
+//			    0, 0, -1, batchp, sizeof(struct batch));
 		}
 	}
 

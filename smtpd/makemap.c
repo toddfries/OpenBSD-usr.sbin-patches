@@ -1,4 +1,4 @@
-/*	$OpenBSD: makemap.c,v 1.10 2009/02/17 23:50:58 jacekm Exp $	*/
+/*	$OpenBSD: makemap.c,v 1.14 2009/03/09 16:31:09 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -133,7 +133,7 @@ main(int argc, char *argv[])
 	if (oflag == NULL && asprintf(&oflag, "%s.db", source) == -1)
 		err(1, "asprintf");
 
-	if (! bsnprintf(dbname, MAXPATHLEN, "%s.XXXXXXXXXXX", oflag))
+	if (! bsnprintf(dbname, sizeof(dbname), "%s.XXXXXXXXXXX", oflag))
 		errx(1, "path too long");
 	if (mkstemp(dbname) == -1)
 		err(1, "mkstemp");
@@ -266,20 +266,11 @@ bad:
 int
 make_plain(DBT *val, char *text)
 {
-	struct alias	*a;
+	val->data = strdup(text);
+	if (val->data == NULL)
+		err(1, "malloc");
 
-	a = calloc(1, sizeof(struct alias));
-	if (a == NULL)
-		err(1, "calloc");
-
-	a->type = ALIAS_TEXT;
-	val->data = a;
-	val->size = strlcpy(a->u.text, text, sizeof(a->u.text));
-
-	if (val->size >= sizeof(a->u.text)) {
-		free(a);
-		return 0;
-	}
+	val->size = strlen(text) + 1;
 
 	return (val->size);
 }
