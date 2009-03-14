@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.90 2009/03/10 22:33:26 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.79 2009/03/01 21:58:53 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -34,6 +34,9 @@
 /* return and forward path size */
 #define MAX_PATH_SIZE		 256
 
+/* makemap mapped value text length */
+#define MAX_MAKEMAP_SIZE	 256
+
 /*#define SMTPD_CONNECT_TIMEOUT	 (60)*/
 #define SMTPD_CONNECT_TIMEOUT	 (10)
 #define SMTPD_QUEUE_INTERVAL	 (15 * 60)
@@ -44,8 +47,6 @@
 #define SMTPD_BANNER		 "220 %s ESMTP OpenSMTPD"
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
-
-#define	PATH_MAILLOCAL		"/usr/libexec/mail.local"
 
 #define	DIRHASH_BUCKETS		 4096
 
@@ -65,7 +66,6 @@
 
 /* number of MX records to lookup */
 #define MXARRAYSIZE	5
-#define MAX_MX_COUNT	10
 
 /* rfc5321 limits */
 #define	SMTP_TEXTLINE_MAX	1000
@@ -90,10 +90,8 @@ struct relayhost {
 };
 
 struct mxhost {
-	TAILQ_ENTRY(mxhost)	 entry;
 	u_int8_t flags;
 	struct sockaddr_storage ss;
-	char credentials[MAX_LINE_SIZE];
 };
 
 /* buffer specific headers */
@@ -170,7 +168,6 @@ enum imsg_type {
 	IMSG_LKA_MAIL,
 	IMSG_LKA_RCPT,
 	IMSG_LKA_MX,
-	IMSG_LKA_MX_END,
 	IMSG_LKA_HOST,
 	IMSG_MDA_MAILBOX_FILE,
 	IMSG_MDA_MESSAGE_FILE,
@@ -198,7 +195,6 @@ enum imsg_type {
 	IMSG_BATCH_APPEND,
 	IMSG_BATCH_CLOSE,
 
-	IMSG_PARENT_FORWARD_OPEN,
 	IMSG_PARENT_MAILBOX_OPEN,
 	IMSG_PARENT_MESSAGE_OPEN,
 	IMSG_PARENT_MAILBOX_RENAME,
@@ -227,20 +223,11 @@ enum blockmodes {
 	BM_NONBLOCK
 };
 
-enum ctl_state {
-	CS_NONE = 0,
-	CS_INIT,
-	CS_RCPT,
-	CS_FD,
-	CS_DONE
-};
-
 struct ctl_conn {
 	TAILQ_ENTRY(ctl_conn)	 entry;
 	u_int8_t		 flags;
 #define CTL_CONN_NOTIFY		 0x01
 	struct imsgbuf		 ibuf;
-	enum ctl_state		 state;
 };
 TAILQ_HEAD(ctl_connlist, ctl_conn);
 
@@ -390,7 +377,8 @@ enum alias_type {
 	ALIAS_FILENAME,
 	ALIAS_FILTER,
 	ALIAS_INCLUDE,
-	ALIAS_ADDRESS
+	ALIAS_ADDRESS,
+	ALIAS_TEXT
 };
 
 struct alias {
@@ -400,6 +388,7 @@ struct alias {
 		char username[MAXLOGNAME];
 		char filename[MAXPATHLEN];
 		char filter[MAXPATHLEN];
+		char text[MAX_MAKEMAP_SIZE];
 		struct path path;
 	}                                   u;
 };
@@ -432,6 +421,7 @@ enum message_flags {
 };
 
 struct message {
+	SPLAY_ENTRY(message)		 nodes;
 	TAILQ_ENTRY(message)		 entry;
 
 	enum message_type		 type;
@@ -451,13 +441,15 @@ struct message {
 
 	struct path			 sender;
 	struct path			 recipient;
+	TAILQ_HEAD(pathlist,path)	 recipients;
+
+	u_int16_t			 rcptcount;
 
 	time_t				 creation;
 	time_t				 lasttry;
 	u_int8_t			 retry;
 	enum message_flags		 flags;
 	enum message_status		 status;
-
 	FILE				*datafp;
 	int				 mboxfd;
 	int				 messagefd;
@@ -511,6 +503,11 @@ struct batch {
 	char				 session_helo[MAXHOSTNAMELEN];
 	char				 session_hostname[MAXHOSTNAMELEN];
 	struct sockaddr_storage		 session_ss;
+
+	int8_t				 getaddrinfo_error;
+	struct mxhost			 mxarray[MXARRAYSIZE*2];
+	u_int8_t			 mx_cnt;
+	u_int8_t			 mx_off;
 
 	time_t				 creation;
 	time_t				 lasttry;
@@ -587,8 +584,7 @@ enum session_flags {
 	F_SECURE	= 0x8,
 	F_AUTHENTICATED	= 0x10,
 	F_PEERHASTLS	= 0x20,
-	F_PEERHASAUTH	= 0x40,
-	F_EVLOCKED	= 0x80
+	F_EVLOCKED	= 0x40
 };
 
 struct session {
@@ -610,12 +606,15 @@ struct session {
 	int				 s_buflen;
 	struct timeval			 s_tv;
 	struct message			 s_msg;
-	size_t				 rcptcount;
 
 	struct session_auth_req		 s_auth;
 
+	struct mxhost			*mxarray;
+	u_int8_t			 mx_cnt;
+	u_int8_t			 mx_off;
+
 	struct batch			*batch;
-	TAILQ_HEAD(mxhostlist, mxhost) mxhosts;
+
 };
 
 struct smtpd {
@@ -647,7 +646,6 @@ struct smtpd {
 
 	SPLAY_HEAD(batchtree, batch)		batch_queue;
 	SPLAY_HEAD(mdaproctree, mdaproc)	mdaproc_queue;
-	SPLAY_HEAD(lkatree, lkasession)		lka_sessions;
 };
 
 struct s_parent {
@@ -713,39 +711,6 @@ struct message_recipient {
 	struct message			 msg;
 };
 
-struct forward_req {
-	u_int64_t			 id;
-	char				 pw_name[MAXLOGNAME];
-};
-
-struct mxreq {
-	u_int64_t id;
-	char hostname[MAXHOSTNAMELEN];
-	struct rule rule;
-};
-
-struct mxrep {
-	u_int64_t id;
-	int getaddrinfo_error;
-	struct mxhost mxhost;
-};
-
-enum lkasession_flags {
-	F_ERROR		= 0x1
-};
-
-struct lkasession {
-	SPLAY_ENTRY(lkasession)		 nodes;
-	u_int64_t			 id;
-
-	struct path			 path;
-	struct aliaseslist		 aliaseslist;
-	u_int8_t			 iterations;
-	u_int32_t			 pending;
-	enum lkasession_flags		 flags;
-	struct message			 message;
-	struct submit_status		 ss;
-};
 
 /* aliases.c */
 int aliases_exist(struct smtpd *, char *);
@@ -786,7 +751,7 @@ int		 getmxbyname(char *, char ***);
 
 
 /* forward.c */
-int forwards_get(int, struct aliaseslist *);
+int forwards_get(struct aliaseslist *, char *);
 
 
 /* imsg.c */
@@ -812,12 +777,11 @@ void	 imsg_clear(struct imsgbuf *);
 
 /* lka.c */
 pid_t		 lka(struct smtpd *);
-int		 lkasession_cmp(struct lkasession *, struct lkasession *);
-SPLAY_PROTOTYPE(lkatree, lkasession, nodes, lkasession_cmp);
 
 /* mfa.c */
 pid_t		 mfa(struct smtpd *);
 int		 msg_cmp(struct message *, struct message *);
+SPLAY_PROTOTYPE(msgtree, message, nodes, msg_cmp);
 
 /* queue.c */
 pid_t		 queue(struct smtpd *);
@@ -860,9 +824,6 @@ void		 qwalk_close(struct qwalk *);
 void		 show_queue(char *, int);
 
 u_int16_t	queue_hash(char *);
-
-/* map.c */
-char		*map_dblookup(struct smtpd *, char *, char *);
 
 /* mda.c */
 pid_t		 mda(struct smtpd *);
@@ -939,14 +900,6 @@ struct map	*map_find(struct smtpd *, objid_t);
 struct map	*map_findbyname(struct smtpd *, const char *);
 
 /* util.c */
-typedef struct arglist arglist;
-struct arglist {
-	char    **list;
-	u_int   num;
-	u_int   nalloc;
-};
-void		 addargs(arglist *, char *, ...)
-		     __attribute__((format(printf, 2, 3)));
 int		 bsnprintf(char *, size_t, const char *, ...)
     __attribute__ ((format (printf, 3, 4)));
 int		 safe_fclose(FILE *);

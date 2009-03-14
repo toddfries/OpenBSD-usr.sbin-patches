@@ -1,4 +1,4 @@
-/*	$OpenBSD: makemap.c,v 1.14 2009/03/09 16:31:09 jacekm Exp $	*/
+/*	$OpenBSD: makemap.c,v 1.11 2009/02/22 11:44:29 form Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -266,11 +266,20 @@ bad:
 int
 make_plain(DBT *val, char *text)
 {
-	val->data = strdup(text);
-	if (val->data == NULL)
-		err(1, "malloc");
+	struct alias	*a;
 
-	val->size = strlen(text) + 1;
+	a = calloc(1, sizeof(struct alias));
+	if (a == NULL)
+		err(1, "calloc");
+
+	a->type = ALIAS_TEXT;
+	val->data = a;
+	val->size = strlcpy(a->u.text, text, sizeof(a->u.text));
+
+	if (val->size >= sizeof(a->u.text)) {
+		free(a);
+		return 0;
+	}
 
 	return (val->size);
 }

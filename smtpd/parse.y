@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.27 2009/03/09 01:43:19 gilles Exp $	*/
+/*	$OpenBSD: parse.y,v 1.25 2009/02/22 11:44:29 form Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -39,7 +39,6 @@
 #include <event.h>
 #include <ifaddrs.h>
 #include <limits.h>
-#include <paths.h>
 #include <pwd.h>
 #include <netdb.h>
 #include <stdarg.h>
@@ -665,12 +664,13 @@ action		: DELIVER TO MAILDIR STRING	{
 				fatal("pathname too long");
 			free($4);
 		}
-		| DELIVER TO MBOX		{
+		| DELIVER TO MBOX STRING		{
 			rule->r_action = A_MBOX;
-			if (strlcpy(rule->r_value.path, _PATH_MAILDIR "/%u",
+			if (strlcpy(rule->r_value.path, $4,
 			    sizeof(rule->r_value.path))
 			    >= sizeof(rule->r_value.path))
 				fatal("pathname too long");
+			free($4);
 		}
 		| DELIVER TO MDA STRING		{
 			rule->r_action = A_EXT;
@@ -683,7 +683,7 @@ action		: DELIVER TO MAILDIR STRING	{
 		| RELAY				{
 			rule->r_action = A_RELAY;
 		}
-		| RELAY VIA ssl STRING port auth {
+		| RELAY VIA ssl STRING port {
 			rule->r_action = A_RELAYVIA;
 
 			if ($3)
@@ -698,12 +698,6 @@ action		: DELIVER TO MAILDIR STRING	{
 				rule->r_value.relayhost.port = 0;
 			else
 				rule->r_value.relayhost.port = $5;
-
-			if ($6) {
-				if (! $3)
-					fatalx("cannot auth over insecure channel");
-				rule->r_value.relayhost.flags |= F_AUTH;
-			}
 
 			free($4);
 		}

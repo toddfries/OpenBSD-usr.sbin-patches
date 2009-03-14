@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_srt.c,v 1.18 2009/03/06 18:39:13 michele Exp $ */
+/*	$OpenBSD: rde_srt.c,v 1.17 2009/02/03 16:21:19 michele Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -518,24 +518,9 @@ srt_delete_ds(struct rt_node *rn, struct ds_nbr *ds_nbr, struct iface *iface)
 	free(ds_nbr);
 	rn->ds_cnt[iface->ifindex]--;
 
-	/* We are not the designated forwarder for this source on this
-	   interface. Keep things as they currently are */
-	if (rn->adv_rtr[iface->ifindex].addr.s_addr != iface->addr.s_addr)
-		return;
-
-	/* There are still downstream dependent router for this source
-	   Keep things as they currently are */
-	if (rn->ds_cnt[iface->ifindex])
-		return;
-
-	/* There are still group members for this source on this iface
-	   Keep things as they currently are */
-	if (!mfc_check_members(rn, iface))
-		return;
-
-	/* Remove interface from the downstream list */
-	rn->ttls[iface->ifindex] = 0;
-	mfc_update_source(rn);
+	/* XXX */
+	if (!rn->ds_cnt[iface->ifindex])
+		rn->ttls[iface->ifindex] = 0;
 }
 
 void
@@ -543,20 +528,11 @@ srt_expire_nbr(struct in_addr addr, struct iface *iface)
 {
 	struct ds_nbr		*ds;
 	struct rt_node		*rn;
-	u_int32_t		 ifindex = iface->ifindex;
 
 	RB_FOREACH(rn, rt_tree, &rt) {
-		if (rn->adv_rtr[ifindex].addr.s_addr == addr.s_addr) {
-			rn->adv_rtr[ifindex].addr.s_addr =
-			    iface->addr.s_addr;
-			rn->adv_rtr[ifindex].metric = rn->cost;
-			/* XXX: delete all routes learned from this nbr */
-		} else if (rn->adv_rtr[ifindex].addr.s_addr ==
-		    iface->addr.s_addr) {
-			ds = srt_find_ds(rn, addr.s_addr);
-			if (ds)
-				srt_delete_ds(rn, ds, iface);
-		}
+		ds = srt_find_ds(rn, addr.s_addr);
+		if (ds)
+			srt_delete_ds(rn, ds, iface);
 	}
 }
 

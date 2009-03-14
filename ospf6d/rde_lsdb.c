@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.22 2009/03/10 17:36:39 stsp Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.18 2009/02/12 16:54:31 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -346,13 +346,26 @@ int
 lsa_self(struct rde_nbr *nbr, struct lsa *new, struct vertex *v)
 {
 	struct lsa	*dummy;
+#if 0
+	struct iface	*iface;
+#endif
 
 	if (nbr->self)
 		return (0);
 
-	if (rde_router_id() != new->hdr.adv_rtr)
-		return (0);
+	if (rde_router_id() == new->hdr.adv_rtr)
+		goto self;
 
+#if 0
+	/* TODO: Do we need something like this for *-prefix-LSAs? */
+	if (ntohs(new->hdr.type) == LSA_TYPE_NETWORK)
+		LIST_FOREACH(iface, &nbr->area->iface_list, entry)
+			if (iface->addr.s_addr == new->hdr.ls_id)
+				goto self;
+#endif
+
+	return (0);
+self:
 	if (v == NULL) {
 		/*
 		 * LSA is no longer announced, remove by premature aging.
@@ -494,35 +507,26 @@ struct vertex *
 lsa_find(struct iface *iface, u_int16_t type, u_int32_t ls_id,
     u_int32_t adv_rtr)
 {
+	struct vertex	 key;
+	struct vertex	*v;
 	struct lsa_tree	*tree;
 
-	if (LSA_IS_SCOPE_AS(ntohs(type)))
+	key.ls_id = ntohl(ls_id);
+	key.adv_rtr = ntohl(adv_rtr);
+	key.type = ntohs(type);
+
+	if (LSA_IS_SCOPE_AS(key.type))
 		tree = &asext_tree;
-	else if (LSA_IS_SCOPE_AREA(ntohs(type))) {
+	else if (LSA_IS_SCOPE_AREA(key.type)) {
 		struct area	*area;
 
 		if ((area = area_find(rdeconf, iface->area_id)) == NULL)
 			fatalx("interface lost area");
 		tree = &area->lsa_tree;
-	} else if (LSA_IS_SCOPE_LLOCAL(ntohs(type)))
+	} else if (LSA_IS_SCOPE_LLOCAL(key.type))
 		tree = &iface->lsa_tree;
 	else
 		fatalx("unknown scope type");
-
-	return lsa_find_tree(tree, type, ls_id, adv_rtr);
-
-}
-
-struct vertex *
-lsa_find_tree(struct lsa_tree *tree, u_int16_t type, u_int32_t ls_id,
-    u_int32_t adv_rtr)
-{
-	struct vertex	 key;
-	struct vertex	*v;
-
-	key.ls_id = ntohl(ls_id);
-	key.adv_rtr = ntohl(adv_rtr);
-	key.type = ntohs(type);
 
 	v = RB_FIND(lsa_tree, tree, &key);
 

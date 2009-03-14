@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.12 2009/03/07 12:47:17 michele Exp $ */
+/*	$OpenBSD: rde.h,v 1.10 2009/02/03 16:21:19 michele Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -61,6 +61,15 @@ struct mfc_node {
 	time_t			 uptime;
 };
 
+/* just the infos rde needs */
+struct rde_nbr {
+	LIST_ENTRY(rde_nbr)	 entry, hash;
+	struct in_addr		 addr;
+	u_int32_t		 peerid;
+
+	struct iface		*iface;
+};
+
 /* downstream neighbor per source */
 struct ds_nbr {
 	LIST_ENTRY(ds_nbr)	 entry;
@@ -71,10 +80,6 @@ struct ds_nbr {
 pid_t	rde(struct dvmrpd_conf *, int [2], int [2], int [2]);
 int	rde_imsg_compose_parent(int, pid_t, void *, u_int16_t);
 int	rde_imsg_compose_dvmrpe(int, u_int32_t, pid_t, void *, u_int16_t);
-
-void	rde_group_list_add(struct iface *, struct in_addr);
-int	rde_group_list_find(struct iface *, struct in_addr);
-void	rde_group_list_remove(struct iface *, struct in_addr);
 
 /* rde_mfc.c */
 void		 mfc_init(void);
@@ -87,7 +92,6 @@ void		 mfc_dump(pid_t);
 void		 mfc_update(struct mfc *);
 void		 mfc_delete(struct mfc *);
 void		 mfc_update_source(struct rt_node *);
-int		 mfc_check_members(struct rt_node *, struct iface *);
 
 /* rde_srt.c */
 void		 rt_init(void);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.61 2009/03/11 09:58:20 gilles Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.58 2009/02/22 11:59:12 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -384,8 +384,8 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 	}
 
 	session_cleanup(s);
-	s->rcptcount = 0;
 	s->s_state = S_MAILREQUEST;
+	s->s_msg.rcptcount = 0;
 	s->s_msg.id = s->s_id;
 	s->s_msg.session_id = s->s_id;
 	s->s_msg.session_ss = s->s_ss;
@@ -660,7 +660,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 		/* recipient was not accepted */
 		if (ss->code != 250) {
 			/* We do not have a valid recipient, downgrade state */
-			if (s->rcptcount == 0)
+			if (s->s_msg.rcptcount == 0)
 				s->s_state = S_MAIL;
 			else
 				s->s_state = S_RCPT;
@@ -669,7 +669,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 		}
 
 		s->s_state = S_RCPT;
-		s->rcptcount++;
+		s->s_msg.rcptcount++;
 		s->s_msg.recipient = ss->u.path;
 
 	case S_RCPT:
@@ -702,15 +702,6 @@ session_pickup(struct session *s, struct submit_status *ss)
 		s->s_state = S_HELO;
 		session_respond(s, "250 %s Message accepted for delivery",
 		    s->s_msg.message_id);
-		log_info("%s: from=<%s@%s>, nrcpts=%zd, proto=%s, relay=%s [%s]",
-		    s->s_msg.message_id,
-		    s->s_msg.sender.user,
-		    s->s_msg.sender.domain,
-		    s->rcptcount,
-		    s->s_flags & F_EHLO ? "ESMTP" : "SMTP",
-		    s->s_hostname,
-		    ss_to_text(&s->s_ss));
-
 		s->s_msg.message_id[0] = '\0';
 		s->s_msg.message_uid[0] = '\0';
 		break;
