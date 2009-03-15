@@ -1,4 +1,4 @@
-/*	$OpenBSD: buffer.c,v 1.40 2008/10/03 15:20:29 eric Exp $ */
+/*	$OpenBSD: buffer.c,v 1.42 2009/03/13 06:25:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -28,6 +28,7 @@
 
 #include "bgpd.h"
 
+int	buf_realloc(struct buf *, size_t);
 void	buf_enqueue(struct msgbuf *, struct buf *);
 void	buf_dequeue(struct msgbuf *, struct buf *);
 
@@ -42,35 +43,55 @@ buf_open(size_t len)
 		free(buf);
 		return (NULL);
 	}
-	buf->size = len;
+	buf->size = buf->max = len;
 	buf->fd = -1;
 
 	return (buf);
 }
 
 struct buf *
-buf_grow(struct buf *buf, size_t len)
+buf_dynamic(size_t len, size_t max)
 {
-	void	*p;
+	struct buf	*buf;
 
-	if ((p = realloc(buf->buf, buf->size + len)) == NULL) {
-		free(buf->buf);
-		buf->buf = NULL;
-		buf->size = 0;
+	if (max < len)
 		return (NULL);
-	}
 
-	buf->buf = p;
-	buf->size += len;
+	if ((buf = buf_open(len)) == NULL)
+		return (NULL);
+
+	if (max > 0)
+		buf->max = max;
 
 	return (buf);
+}
+
+int
+buf_realloc(struct buf *buf, size_t len)
+{
+	u_char	*b;
+
+	/* on static buffers max is eq size and so the following fails */
+	if (buf->wpos + len > buf->max) {
+		errno = ENOMEM;
+		return (-1);
+	}
+
+	b = realloc(buf->buf, buf->wpos + len);
+	if (b == NULL)
+		return (-1);
+	buf->buf = b;
+	buf->size = buf->wpos + len;
+
+	return (0);
 }
 
 int
 buf_add(struct buf *buf, const void *data, size_t len)
 {
 	if (buf->wpos + len > buf->size)
-		return (-1);
+		if (buf_realloc(buf, len) == -1)
+			return (-1);
 
 	memcpy(buf->buf + buf->wpos, data, len);
 	buf->wpos += len;
@@ -83,27 +104,63 @@ buf_reserve(struct buf *buf, size_t len)
 	void	*b;
 
 	if (buf->wpos + len > buf->size)
-		return (NULL);
+		if (buf_realloc(buf, len) == -1)
+			return (NULL);
 
 	b = buf->buf + buf->wpos;
 	buf->wpos += len;
 	return (b);
 }
 
+void *
+buf_seek(struct buf *buf, size_t pos, size_t len)
+{
+	/* only allowed to seek in already written parts */
+	if (pos + len > buf->wpos)
+		return (NULL);
+
+	return (buf->buf + pos);
+}
+
+size_t
+buf_size(struct buf *buf)
+{
+	return (buf->wpos);
+}
+
+size_t
+buf_left(struct buf *buf)
+{
+	return (buf->max - buf->wpos);
+}
+
 int
 buf_close(struct msgbuf *msgbuf, struct buf *buf)
 {
+	/* truncate buffer to the correct length before queuing */
+	buf->size = buf->wpos;
 	buf_enqueue(msgbuf, buf);
 	return (1);
 }
 
 int
-buf_write(int sock, struct buf *buf)
+buf_write(struct msgbuf *msgbuf)
 {
+	struct iovec	 iov[IOV_MAX];
+	struct buf	*buf, *next;
+	unsigned int	 i = 0;
 	ssize_t	n;
 
-	if ((n = write(sock, buf->buf + buf->rpos,
-	    buf->size - buf->rpos)) == -1) {
+	bzero(&iov, sizeof(iov));
+	TAILQ_FOREACH(buf, &msgbuf->bufs, entry) {
+		if (i >= IOV_MAX)
+			break;
+		iov[i].iov_base = buf->buf + buf->rpos;
+		iov[i].iov_len = buf->size - buf->rpos;
+		i++;
+	}
+
+	if ((n = writev(msgbuf->fd, iov, i)) == -1) {
 		if (errno == EAGAIN || errno == ENOBUFS ||
 		    errno == EINTR)	/* try later */
 			return (0);
@@ -116,11 +173,19 @@ buf_write(int sock, struct buf *buf)
 		return (-2);
 	}
 
-	if (buf->rpos + n < buf->size) {	/* not all data written yet */
-		buf->rpos += n;
-		return (0);
-	} else
-		return (1);
+	for (buf = TAILQ_FIRST(&msgbuf->bufs); buf != NULL && n > 0;
+	    buf = next) {
+		next = TAILQ_NEXT(buf, entry);
+		if (buf->rpos + n >= buf->size) {
+			n -= buf->size - buf->rpos;
+			buf_dequeue(msgbuf, buf);
+		} else {
+			buf->rpos += n;
+			n = 0;
+		}
+	}
+
+	return (0);
 }
 
 void

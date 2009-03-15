@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.235 2009/01/13 21:35:16 sthen Exp $ */
+/*	$OpenBSD: rde.c,v 1.239 2009/03/13 16:05:40 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -263,8 +263,8 @@ rde_main(struct bgpd_config *config, struct peer *peer_l,
 			timeout = 0;
 
 		i = 3;
-		if (mrt && mrt->queued) {
-			pfd[PFD_MRT_FILE].fd = mrt->fd;
+		if (mrt && mrt->wbuf.queued) {
+			pfd[PFD_MRT_FILE].fd = mrt->wbuf.fd;
 			pfd[PFD_MRT_FILE].events = POLLOUT;
 			i++;
 		}
@@ -300,11 +300,12 @@ rde_main(struct bgpd_config *config, struct peer *peer_l,
 			rde_dispatch_imsg_session(ibuf_se_ctl);
 
 		if (pfd[PFD_MRT_FILE].revents & POLLOUT) {
-			if (mrt_write(mrt) == -1) {
+			mrt_write(mrt);
+			if (mrt->wbuf.queued == 0) {
+				close(mrt->wbuf.fd);
 				free(mrt);
 				mrt = NULL;
-			} else if (mrt->queued == 0)
-				close(mrt->fd);
+			}
 		}
 
 		rde_update_queue_runner();
@@ -694,15 +695,14 @@ rde_dispatch_imsg_parent(struct imsgbuf *ibuf)
 			if (xmrt == NULL)
 				fatal("rde_dispatch_imsg_parent");
 			memcpy(xmrt, imsg.data, sizeof(struct mrt));
-			TAILQ_INIT(&xmrt->bufs);
+			TAILQ_INIT(&xmrt->wbuf.bufs);
 
-			if ((xmrt->fd = imsg_get_fd(ibuf)) == -1)
+			if ((xmrt->wbuf.fd = imsg_get_fd(ibuf)) == -1)
 				log_warnx("expected to receive fd for mrt dump "
 				    "but didn't receive any");
-
-			if (xmrt->type == MRT_TABLE_DUMP) {
+			else if (xmrt->type == MRT_TABLE_DUMP) {
 				/* do not dump if another is still running */
-				if (mrt == NULL || mrt->queued == 0) {
+				if (mrt == NULL || mrt->wbuf.queued == 0) {
 					free(mrt);
 					mrt = xmrt;
 					mrt_clear_seq();
@@ -711,7 +711,7 @@ rde_dispatch_imsg_parent(struct imsgbuf *ibuf)
 					break;
 				}
 			}
-			close(xmrt->fd);
+			close(xmrt->wbuf.fd);
 			free(xmrt);
 			break;
 		case IMSG_MRT_CLOSE:
@@ -856,8 +856,16 @@ rde_update_dispatch(struct imsg *imsg)
 		prefix_remove(peer, &prefix, prefixlen, F_ORIGINAL);
 	}
 
-	if (attrpath_len == 0) /* 0 = no NLRI information in this message */
+	if (attrpath_len == 0) {
+		/* 0 = no NLRI information in this message */
+		if (nlri_len != 0) {
+			/* crap at end of update which should not be there */
+			rde_update_err(peer, ERR_UPDATE,
+			    ERR_UPD_ATTRLIST, NULL, 0);
+			return (-1);
+		}
 		return (0);
+	}
 
 	/* withdraw MP_UNREACH_NLRI if available */
 	if (mpa.unreach_len != 0) {
@@ -2595,16 +2603,14 @@ peer_dump(u_int32_t id, u_int16_t afi, u_int8_t safi)
 
 	if (afi == AFI_ALL || afi == AFI_IPv4)
 		if (safi == SAFI_ALL || safi == SAFI_UNICAST) {
-			if (peer->conf.announce_type ==
-			    ANNOUNCE_DEFAULT_ROUTE)
+			if (peer->conf.announce_type == ANNOUNCE_DEFAULT_ROUTE)
 				up_generate_default(rules_l, peer, AF_INET);
 			else
 				pt_dump(rde_up_dump_upcall, peer, AF_INET);
 		}
 	if (afi == AFI_ALL || afi == AFI_IPv6)
 		if (safi == SAFI_ALL || safi == SAFI_UNICAST) {
-			if (peer->conf.announce_type ==
-			    ANNOUNCE_DEFAULT_ROUTE)
+			if (peer->conf.announce_type == ANNOUNCE_DEFAULT_ROUTE)
 				up_generate_default(rules_l, peer, AF_INET6);
 			else
 				pt_dump(rde_up_dump_upcall, peer, AF_INET6);

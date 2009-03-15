@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.284 2008/09/11 14:49:58 henning Exp $ */
+/*	$OpenBSD: session.c,v 1.286 2009/03/13 05:43:51 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -341,7 +341,7 @@ session_main(struct bgpd_config *config, struct peer *cpeers,
 
 		mrt_cnt = 0;
 		LIST_FOREACH(m, &mrthead, entry)
-			if (m->queued)
+			if (m->wbuf.queued)
 				mrt_cnt++;
 
 		if (mrt_cnt > mrt_l_elms) {
@@ -469,8 +469,8 @@ session_main(struct bgpd_config *config, struct peer *cpeers,
 		idx_peers = i;
 
 		LIST_FOREACH(m, &mrthead, entry)
-			if (m->queued) {
-				pfd[i].fd = m->fd;
+			if (m->wbuf.queued) {
+				pfd[i].fd = m->wbuf.fd;
 				pfd[i].events = POLLOUT;
 				mrt_l[i - idx_peers] = m;
 				i++;
@@ -1253,8 +1253,6 @@ session_capa_add(struct peer *p, struct buf *opb, u_int8_t capa_code,
 	op_type = OPT_PARAM_CAPABILITIES;
 	op_len = sizeof(capa_code) + sizeof(capa_len) + capa_len;
 	tot_len = sizeof(op_type) + sizeof(op_len) + op_len;
-	if (buf_grow(opb, tot_len) == NULL)
-		return (1);
 	errs += buf_add(opb, &op_type, sizeof(op_type));
 	errs += buf_add(opb, &op_len, sizeof(op_len));
 	errs += buf_add(opb, &capa_code, sizeof(capa_code));
@@ -1346,7 +1344,7 @@ session_open(struct peer *p)
 	u_int			 errs = 0;
 
 
-	if ((opb = buf_open(0)) == NULL) {
+	if ((opb = buf_dynamic(0, MAX_PKTSIZE - MSGSIZE_OPEN_MIN)) == NULL) {
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
 	}
@@ -2425,7 +2423,7 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 			}
 
 			memcpy(&xmrt, imsg.data, sizeof(struct mrt));
-			if ((xmrt.fd = imsg_get_fd(ibuf)) == -1)
+			if ((xmrt.wbuf.fd = imsg_get_fd(ibuf)) == -1)
 				log_warnx("expected to receive fd for mrt dump "
 				    "but didn't receive any");
 
@@ -2436,12 +2434,12 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 				if (mrt == NULL)
 					fatal("session_dispatch_imsg");
 				memcpy(mrt, &xmrt, sizeof(struct mrt));
-				TAILQ_INIT(&mrt->bufs);
+				TAILQ_INIT(&mrt->wbuf.bufs);
 				LIST_INSERT_HEAD(&mrthead, mrt, entry);
 			} else {
 				/* old dump reopened */
-				close(mrt->fd);
-				mrt->fd = xmrt.fd;
+				close(mrt->wbuf.fd);
+				mrt->wbuf.fd = xmrt.wbuf.fd;
 			}
 			break;
 		case IMSG_MRT_CLOSE:
