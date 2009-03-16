@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.29 2009/02/23 00:51:32 chl Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.31 2009/03/15 19:32:10 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -50,7 +50,7 @@ void		smtp_accept(int, short, void *);
 void		session_timeout(int, short, void *);
 void		session_auth_pickup(struct session *, char *, size_t);
 
-struct s_smtp	s_smtp;
+struct s_session	s_smtp;
 
 void
 smtp_sig_handler(int sig, short event, void *p)
@@ -423,8 +423,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			s->s_flags &= ~F_EVLOCKED;
 
 			if (fd != -1) {
-				s->s_msg.datafp = fdopen(fd, "w");
-				if (s->s_msg.datafp == NULL) {
+				s->datafp = fdopen(fd, "w");
+				if (s->datafp == NULL) {
 					/* no need to handle error, it will be
 					 * caught in session_pickup()
 					 */

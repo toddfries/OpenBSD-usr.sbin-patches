@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.61 2009/03/11 09:58:20 gilles Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.63 2009/03/15 19:32:10 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -73,7 +73,7 @@ int		session_set_path(struct path *, char *);
 void		session_timeout(int, short, void *);
 void		session_cleanup(struct session *);
 
-extern struct s_smtp	s_smtp;
+extern struct s_session	s_smtp;
 
 struct session_timeout {
 	enum session_state	state;
@@ -690,7 +690,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 	case S_DATA:
 		if (ss == NULL)
 			fatalx("bad ss at S_DATA");
-		if (s->s_msg.datafp == NULL)
+		if (s->datafp == NULL)
 			goto tempfail;
 
 		s->s_state = S_DATACONTENT;
@@ -812,9 +812,9 @@ session_read_data(struct session *s, char *line, size_t nread)
 	size_t i;
 
 	if (strcmp(line, ".") == 0) {
-		if (! safe_fclose(s->s_msg.datafp))
+		if (! safe_fclose(s->datafp))
 			s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
-		s->s_msg.datafp = NULL;
+		s->datafp = NULL;
 
 		if (s->s_msg.status & S_MESSAGE_PERMFAILURE) {
 			session_respond(s, "554 Transaction failed");
@@ -847,8 +847,8 @@ session_read_data(struct session *s, char *line, size_t nread)
 
 	len = strlen(line);
 
-	if (fwrite(line, len, 1, s->s_msg.datafp) != 1 ||
-	    fwrite("\n", 1, 1, s->s_msg.datafp) != 1) {
+	if (fwrite(line, len, 1, s->datafp) != 1 ||
+	    fwrite("\n", 1, 1, s->datafp) != 1) {
 		s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
 		return 0;
 	}
@@ -907,9 +907,9 @@ session_destroy(struct session *s)
 void
 session_cleanup(struct session *s)
 {
-	if (s->s_msg.datafp != NULL) {
-		fclose(s->s_msg.datafp);
-		s->s_msg.datafp = NULL;
+	if (s->datafp != NULL) {
+		fclose(s->datafp);
+		s->datafp = NULL;
 	}
 
 	if (s->s_msg.message_id[0] != '\0') {
