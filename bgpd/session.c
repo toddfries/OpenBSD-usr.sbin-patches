@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.286 2009/03/13 05:43:51 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.289 2009/03/19 07:00:07 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -959,13 +959,12 @@ change_state(struct peer *peer, enum session_state state,
 
 	log_statechange(peer, state, event);
 	LIST_FOREACH(mrt, &mrthead, entry) {
-		if (mrt->type != MRT_ALL_IN && mrt->type != MRT_ALL_OUT)
+		if (!(mrt->type == MRT_ALL_IN || mrt->type == MRT_ALL_OUT))
 			continue;
 		if ((mrt->peer_id == 0 && mrt->group_id == 0) ||
-		    mrt->peer_id == peer->conf.id ||
-		    mrt->group_id == peer->conf.groupid)
-			mrt_dump_state(mrt, peer->state, state,
-			    peer, conf);
+		    mrt->peer_id == peer->conf.id || (mrt->group_id != 0 &&
+		    mrt->group_id == peer->conf.groupid))
+			mrt_dump_state(mrt, peer->state, state, peer);
 	}
 	peer->prev_state = peer->state;
 	peer->state = state;
@@ -1313,13 +1312,13 @@ session_sendmsg(struct bgp_msg *msg, struct peer *p)
 	struct mrt		*mrt;
 
 	LIST_FOREACH(mrt, &mrthead, entry) {
-		if (mrt->type != MRT_ALL_OUT &&
-		    msg->type == UPDATE && mrt->type != MRT_UPDATE_OUT)
+		if (!(mrt->type == MRT_ALL_OUT || (msg->type == UPDATE &&
+		    mrt->type == MRT_UPDATE_OUT)))
 			continue;
 		if ((mrt->peer_id == 0 && mrt->group_id == 0) ||
-		    mrt->peer_id == p->conf.id ||
-		    mrt->group_id == p->conf.groupid)
-			mrt_dump_bgp_msg(mrt, msg->buf->buf, msg->len, p, conf);
+		    mrt->peer_id == p->conf.id || (mrt->group_id == 0 &&
+		    mrt->group_id == p->conf.groupid))
+			mrt_dump_bgp_msg(mrt, msg->buf->buf, msg->len, p);
 	}
 
 	if (buf_close(&p->wbuf, msg->buf) == -1) {
@@ -1390,10 +1389,7 @@ session_open(struct peer *p)
 	}
 
 	msg.version = 4;
-	if (conf->as > USHRT_MAX)
-		msg.myas = htons(conf->short_as);
-	else
-		msg.myas = htons(conf->as);
+	msg.myas = htons(conf->short_as);
 	if (p->conf.holdtime)
 		msg.holdtime = htons(p->conf.holdtime);
 	else
@@ -1805,13 +1801,13 @@ parse_header(struct peer *peer, u_char *data, u_int16_t *len, u_int8_t *type)
 		return (-1);
 	}
 	LIST_FOREACH(mrt, &mrthead, entry) {
-		if (mrt->type != MRT_ALL_IN && (mrt->type != MRT_UPDATE_IN ||
-		    *type != UPDATE))
+		if (!(mrt->type == MRT_ALL_IN || (*type == UPDATE &&
+		    mrt->type == MRT_UPDATE_IN)))
 			continue;
 		if ((mrt->peer_id == 0 && mrt->group_id == 0) ||
-		    mrt->peer_id == peer->conf.id ||
-		    mrt->group_id == peer->conf.groupid)
-			mrt_dump_bgp_msg(mrt, data, *len, peer, conf);
+		    mrt->peer_id == peer->conf.id || (mrt->group_id != 0 &&
+		    mrt->group_id == peer->conf.groupid))
+			mrt_dump_bgp_msg(mrt, data, *len, peer);
 	}
 	return (0);
 }

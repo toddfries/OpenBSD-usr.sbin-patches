@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.35 2009/03/15 19:15:25 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.38 2009/03/19 00:12:32 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -586,10 +586,14 @@ mta_write(int s, short event, void *arg)
 	struct mxhost *mxhost;
 	int ret;
 
+	mxhost = TAILQ_FIRST(&sessionp->mxhosts);
+
 	if (event == EV_TIMEOUT) {
 
-		TAILQ_REMOVE(&sessionp->mxhosts, mxhost, entry);
-		free(mxhost);
+		if (mxhost) {
+			TAILQ_REMOVE(&sessionp->mxhosts, mxhost, entry);
+			free(mxhost);
+		}
 		close(s);
 
 		if (sessionp->s_bev) {
@@ -620,8 +624,7 @@ mta_write(int s, short event, void *arg)
 		return;
 	}
 
-	mxhost = TAILQ_FIRST(&sessionp->mxhosts);
-	if (mxhost->flags & F_SSMTP) {
+	if (mxhost && mxhost->flags & F_SSMTP) {
 		ssl_client_init(sessionp);
 		return;
 	}
@@ -696,9 +699,12 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 
 		if (sessionp->s_state == S_GREETED &&
 		    (sessionp->s_flags & F_PEERHASAUTH) &&
-		    (sessionp->s_flags & F_SECURE)) {
+		    (sessionp->s_flags & F_SECURE) &&
+		    (mxhost->flags & F_AUTH) &&
+		    (mxhost->credentials[0] != '\0')) {
 			log_debug("AUTH PLAIN %s", mxhost->credentials);
-			session_respond(sessionp, "AUTH PLAIN %s", mxhost->credentials);
+			session_respond(sessionp, "AUTH PLAIN %s",
+			    mxhost->credentials);
 			sessionp->s_state = S_AUTH_INIT;
 			return 0;
 		}
@@ -890,8 +896,11 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 		session_respond(sessionp, "\t%s", time_to_text(batchp->creation));
 
 		if (sessionp->s_flags & F_SECURE) {
-			session_respond(sessionp, "X-OpenSMTPD-Cipher: %s",
-			    SSL_get_cipher(sessionp->s_ssl));
+			log_info("%s: version=%s cipher=%s bits=%d",
+			batchp->message_id,
+			SSL_get_cipher_version(sessionp->s_ssl),
+			SSL_get_cipher_name(sessionp->s_ssl),
+			SSL_get_cipher_bits(sessionp->s_ssl, NULL));
 		}
 
 		TAILQ_FOREACH(messagep, &batchp->messages, entry) {
