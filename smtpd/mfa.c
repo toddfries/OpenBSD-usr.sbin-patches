@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.14 2009/02/18 22:39:12 jacekm Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.17 2009/03/08 19:11:22 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <event.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -213,14 +214,12 @@ mfa_dispatch_lka(int sig, short event, void *p)
 			struct submit_status	 *ss;
 
 			ss = imsg.data;
-			if (ss->msg.flags & F_MESSAGE_ENQUEUED) {
+			if (ss->msg.flags & F_MESSAGE_ENQUEUED)
 				imsg_compose(env->sc_ibufs[PROC_CONTROL], IMSG_MFA_RCPT,
 				    0, 0, -1, ss, sizeof(*ss));
-			}
-			else {
+			else
 				imsg_compose(env->sc_ibufs[PROC_SMTP], IMSG_MFA_RCPT,
 				    0, 0, -1, ss, sizeof(*ss));
-			}
 			break;
 		}
 		default:
@@ -588,5 +587,3 @@ strip_source_route(char *buf, size_t len)
 
 	return 0;
 }
-
-SPLAY_GENERATE(msgtree, message, nodes, msg_cmp);

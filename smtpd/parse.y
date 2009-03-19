@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.24 2009/01/30 10:09:58 form Exp $	*/
+/*	$OpenBSD: parse.y,v 1.27 2009/03/09 01:43:19 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -39,6 +39,7 @@
 #include <event.h>
 #include <ifaddrs.h>
 #include <limits.h>
+#include <paths.h>
 #include <pwd.h>
 #include <netdb.h>
 #include <stdarg.h>
@@ -482,7 +483,8 @@ mapref		: STRING			{
 				free(m);
 				YYERROR;
 			}
-			if (! bsnprintf(m->m_name, MAX_LINE_SIZE, "<dynamic(%u)>", m->m_id))
+			if (! bsnprintf(m->m_name, sizeof(m->m_name),
+				"<dynamic(%u)>", m->m_id))
 				fatal("snprintf");
 			m->m_flags |= F_DYNAMIC|F_USED;
 			m->m_type = T_SINGLE;
@@ -555,7 +557,8 @@ mapref		: STRING			{
 				free(m);
 				YYERROR;
 			}
-			if (! bsnprintf(m->m_name, MAX_LINE_SIZE, "<dynamic(%u)>", m->m_id))
+			if (! bsnprintf(m->m_name, sizeof(m->m_name),
+				"<dynamic(%u)>", m->m_id))
 				fatal("snprintf");
 			m->m_flags |= F_DYNAMIC|F_USED;
 			m->m_type = T_LIST;
@@ -580,7 +583,8 @@ mapref		: STRING			{
 				free(m);
 				YYERROR;
 			}
-			if (! bsnprintf(m->m_name, MAX_LINE_SIZE, "<dynamic(%u)>", m->m_id))
+			if (! bsnprintf(m->m_name, sizeof(m->m_name),
+				"<dynamic(%u)>", m->m_id))
 				fatal("snprintf");
 			m->m_flags |= F_DYNAMIC|F_USED;
 			m->m_type = T_HASH;
@@ -661,13 +665,12 @@ action		: DELIVER TO MAILDIR STRING	{
 				fatal("pathname too long");
 			free($4);
 		}
-		| DELIVER TO MBOX STRING		{
+		| DELIVER TO MBOX		{
 			rule->r_action = A_MBOX;
-			if (strlcpy(rule->r_value.path, $4,
+			if (strlcpy(rule->r_value.path, _PATH_MAILDIR "/%u",
 			    sizeof(rule->r_value.path))
 			    >= sizeof(rule->r_value.path))
 				fatal("pathname too long");
-			free($4);
 		}
 		| DELIVER TO MDA STRING		{
 			rule->r_action = A_EXT;
@@ -680,7 +683,7 @@ action		: DELIVER TO MAILDIR STRING	{
 		| RELAY				{
 			rule->r_action = A_RELAY;
 		}
-		| RELAY VIA ssl STRING port {
+		| RELAY VIA ssl STRING port auth {
 			rule->r_action = A_RELAYVIA;
 
 			if ($3)
@@ -695,6 +698,12 @@ action		: DELIVER TO MAILDIR STRING	{
 				rule->r_value.relayhost.port = 0;
 			else
 				rule->r_value.relayhost.port = $5;
+
+			if ($6) {
+				if (! $3)
+					fatalx("cannot auth over insecure channel");
+				rule->r_value.relayhost.flags |= F_AUTH;
+			}
 
 			free($4);
 		}
@@ -717,7 +726,8 @@ from		: FROM mapref			{
 				free(m);
 				YYERROR;
 			}
-			if (! bsnprintf(m->m_name, MAX_LINE_SIZE, "<dynamic(%u)>", m->m_id))
+			if (! bsnprintf(m->m_name, sizeof(m->m_name),
+				"<dynamic(%u)>", m->m_id))
 				fatal("snprintf");
 			m->m_flags |= F_DYNAMIC|F_USED;
 			m->m_type = T_SINGLE;
@@ -765,7 +775,8 @@ from		: FROM mapref			{
 				free(m);
 				YYERROR;
 			}
-			if (! bsnprintf(m->m_name, MAX_LINE_SIZE, "<dynamic(%u)>", m->m_id))
+			if (! bsnprintf(m->m_name, sizeof(m->m_name),
+				"<dynamic(%u)>", m->m_id))
 				fatal("snprintf");
 			m->m_flags |= F_DYNAMIC|F_USED;
 			m->m_type = T_SINGLE;
