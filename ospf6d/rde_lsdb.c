@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.23 2009/03/12 01:21:49 stsp Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.26 2009/03/29 19:18:20 stsp Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -531,24 +531,36 @@ lsa_find_tree(struct lsa_tree *tree, u_int16_t type, u_int32_t ls_id,
 }
 
 struct vertex *
-lsa_find_net(struct area *area, u_int32_t ls_id)
+lsa_find_rtr(struct area *area, u_int32_t rtr_id)
 {
-	struct lsa_tree	*tree = &area->lsa_tree;
 	struct vertex	*v;
+	struct vertex	*r;
 
+	/* A router can originate multiple router LSAs,
+	 * differentiated by link state ID. Our job is
+	 * to find among those the LSA with the lowest
+	 * link state ID, because this is where the options
+	 * field and router-type bits come from. */
+
+	r = NULL;
 	/* XXX speed me up */
-	RB_FOREACH(v, lsa_tree, tree) {
-		if (v->lsa->hdr.type == LSA_TYPE_NETWORK &&
-		    v->lsa->hdr.ls_id == ls_id) {
-			/* LSA that are deleted are not findable */
-			if (v->deleted)
-				return (NULL);
-			lsa_age(v);
-			return (v);
+	RB_FOREACH(v, lsa_tree, &area->lsa_tree) {
+		if (v->deleted)
+			continue;
+
+		if (v->type == LSA_TYPE_ROUTER &&
+		    v->adv_rtr == ntohl(rtr_id)) {
+			if (r == NULL)
+				r = v;
+			else if (v->ls_id < r->ls_id)
+				r = v;
 		}
 	}
 
-	return (NULL);
+	if (r)
+		lsa_age(r);
+
+	return (r);
 }
 
 u_int16_t
@@ -556,11 +568,11 @@ lsa_num_links(struct vertex *v)
 {
 	switch (v->type) {
 	case LSA_TYPE_ROUTER:
-		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr)
-		    - sizeof(u_int32_t)) / sizeof(struct lsa_rtr_link));
+		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr) -
+		    sizeof(struct lsa_rtr)) / sizeof(struct lsa_rtr_link));
 	case LSA_TYPE_NETWORK:
-		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr)
-		    - sizeof(u_int32_t)) / sizeof(struct lsa_net_link));
+		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr) -
+		    sizeof(struct lsa_net)) / sizeof(struct lsa_net_link));
 	default:
 		fatalx("lsa_num_links: invalid LSA type");
 	}
