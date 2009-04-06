@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.127 2008/12/05 16:53:07 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.131 2009/04/02 14:30:51 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -127,7 +127,7 @@ typedef struct {
 
 %}
 
-%token	ALL APPEND BACKLOG BACKUP BUFFER CACHE CHANGE CHECK
+%token	ALL APPEND BACKLOG BACKUP BUFFER CA CACHE CHANGE CHECK
 %token	CIPHERS CODE COOKIE DEMOTE DIGEST DISABLE ERROR EXPECT
 %token	EXTERNAL FILENAME FILTER FORWARD FROM HASH HEADER HOST ICMP
 %token	INCLUDE INET INET6 INTERFACE INTERVAL IP LABEL LISTEN
@@ -136,12 +136,13 @@ typedef struct {
 %token	QUERYSTR REAL REDIRECT RELAY REMOVE REQUEST RESPONSE RETRY
 %token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET
 %token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO
-%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH 
+%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.string>	hostname interface table
-%type	<v.number>	http_type loglevel mark optssl parent sslcache
+%type	<v.number>	http_type loglevel mark parent
 %type	<v.number>	direction dstmode flag forwardmode proto_type retry
+%type	<v.number>	optssl optsslclient sslcache
 %type	<v.port>	port
 %type	<v.host>	host
 %type	<v.tv>		timeout
@@ -178,6 +179,10 @@ include		: INCLUDE STRING		{
 
 optssl		: /*empty*/	{ $$ = 0; }
 		| SSL		{ $$ = 1; }
+		;
+
+optsslclient	: /*empty*/	{ $$ = 0; }
+		| WITH SSL	{ $$ = 1; }
 		;
 
 http_type	: STRING	{
@@ -442,7 +447,7 @@ rdroptsl	: forwardmode TO tablespec interface	{
 			}
 			$3->conf.fwdmode = $1;
 			$3->conf.rdrid = rdr->conf.id;
-			$3->conf.flags |= F_USED | $1;
+			$3->conf.flags |= F_USED;
 		}
 		| LISTEN ON STRING port interface {
 			if (host($3, &rdr->virts,
@@ -573,7 +578,7 @@ tableopts_l	: tableopts tableopts_l
 		| tableopts
 		;
 
-tableopts	: CHECK tablecheck
+tableopts	: CHECK tablecheck 
 		| port			{
 			if ($1.op != PF_OP_EQ) {
 				yyerror("invalid port");
@@ -880,6 +885,14 @@ sslflags	: SESSION CACHE sslcache	{ proto->cache = $3; }
 				YYERROR;
 			}
 			free($2);
+		}
+		| CA FILENAME STRING		{
+			if (proto->sslca != NULL) {
+				yyerror("sslca already specified");
+				free($3);
+				YYERROR;
+			}
+			proto->sslca = $3;
 		}
 		| NO flag			{ proto->sslflags &= ~($2); }
 		| flag				{ proto->sslflags |= $1; }
@@ -1217,11 +1230,11 @@ relayoptsl	: LISTEN ON STRING port optssl {
 			}
 			tableport = h->port.val[0];
 		}
-		| forwardmode TO forwardspec interface dstaf	{
+		| forwardmode optsslclient TO forwardspec interface dstaf {
 			rlay->rl_conf.fwdmode = $1;
 			switch ($1) {
 			case FWD_NORMAL:
-				if ($4 == NULL)
+				if ($5 == NULL)
 					break;
 				yyerror("superfluous interface");
 				YYERROR;
@@ -1229,15 +1242,19 @@ relayoptsl	: LISTEN ON STRING port optssl {
 				yyerror("no route for redirections");
 				YYERROR;
 			case FWD_TRANS:
-				if ($4 != NULL)
+				if ($5 != NULL)
 					break;
 				yyerror("missing interface");
 				YYERROR;
 			}
-			if ($4 != NULL) {
-				strlcpy(rlay->rl_conf.ifname, $4,
+			if ($5 != NULL) {
+				strlcpy(rlay->rl_conf.ifname, $5,
 				    sizeof(rlay->rl_conf.ifname));
-				free($4);
+				free($5);
+			}
+			if ($2) {
+				rlay->rl_conf.flags |= F_SSLCLIENT;
+				conf->sc_flags |= F_SSLCLIENT;
 			}
 		}
 		| SESSION TIMEOUT NUMBER		{
@@ -1266,19 +1283,7 @@ relayoptsl	: LISTEN ON STRING port optssl {
 		| include
 		;
 
-forwardspec	: tablespec	{
-			if (rlay->rl_dsttable) {
-				yyerror("table already specified");
-				purge_table(conf->sc_tables, $1);
-				YYERROR;
-			}
-
-			rlay->rl_dsttable = $1;
-			rlay->rl_dsttable->conf.flags |= F_USED;
-			rlay->rl_conf.dsttable = $1->conf.id;
-			rlay->rl_conf.dstport = $1->conf.port;
-		}
-		| STRING port retry {
+forwardspec	: STRING port retry	{
 			struct addresslist	 al;
 			struct address		*h;
 
@@ -1307,10 +1312,22 @@ forwardspec	: tablespec	{
 			rlay->rl_conf.dstport = h->port.val[0];
 			rlay->rl_conf.dstretry = $3;
 		}
-		| NAT LOOKUP retry		{
+		| NAT LOOKUP retry	{
 			conf->sc_flags |= F_NEEDPF;
 			rlay->rl_conf.flags |= F_NATLOOK;
 			rlay->rl_conf.dstretry = $3;
+		}
+		| tablespec	{
+			if (rlay->rl_dsttable) {
+				yyerror("table already specified");
+				purge_table(conf->sc_tables, $1);
+				YYERROR;
+			}
+
+			rlay->rl_dsttable = $1;
+			rlay->rl_dsttable->conf.flags |= F_USED;
+			rlay->rl_conf.dsttable = $1->conf.id;
+			rlay->rl_conf.dstport = $1->conf.port;
 		}
 		;
 
@@ -1457,6 +1474,7 @@ lookup(char *s)
 		{ "backlog",		BACKLOG },
 		{ "backup",		BACKUP },
 		{ "buffer",		BUFFER },
+		{ "ca",			CA },
 		{ "cache",		CACHE },
 		{ "change",		CHANGE },
 		{ "check",		CHECK },
@@ -1807,9 +1825,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("malloc");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
@@ -1857,6 +1879,17 @@ parse_config(const char *filename, int opts)
 	    (conf->sc_relays = calloc(1, sizeof(*conf->sc_relays))) == NULL ||
 	    (conf->sc_protos = calloc(1, sizeof(*conf->sc_protos))) == NULL ||
 	    (conf->sc_rdrs = calloc(1, sizeof(*conf->sc_rdrs))) == NULL) {
+		if (conf != NULL) {
+			if (conf->sc_tables != NULL)
+				free(conf->sc_tables);
+			if (conf->sc_relays != NULL)
+				free(conf->sc_relays);
+			if (conf->sc_protos != NULL)
+				free(conf->sc_protos);
+			if (conf->sc_rdrs != NULL)
+				free(conf->sc_rdrs);
+			free(conf);
+		}
 		log_warn("cannot allocate memory");
 		return (NULL);
 	}

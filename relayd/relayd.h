@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.113 2008/12/05 16:37:56 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.115 2009/04/02 14:30:51 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -344,6 +344,7 @@ TAILQ_HEAD(addresslist, address);
 #define F_TRAP			0x00040000
 #define F_NEEDPF		0x00080000
 #define F_PORT			0x00100000
+#define F_SSLCLIENT		0x00200000
 
 enum forwardmode {
 	FWD_NORMAL		= 0,
@@ -600,6 +601,7 @@ struct protocol {
 	u_int8_t		 tcpipminttl;
 	u_int8_t		 sslflags;
 	char			 sslciphers[768];
+	char			*sslca;
 	char			 name[MAX_NAME_SIZE];
 	int			 cache;
 	enum prototype		 type;
@@ -663,6 +665,8 @@ struct relay {
 	off_t			 rl_ssl_cert_len;
 	char			*rl_ssl_key;
 	off_t			 rl_ssl_key_len;
+	char			*rl_ssl_ca;
+	off_t			 rl_ssl_ca_len;
 
 	struct ctl_stats	 rl_stats[RELAY_MAXPROC + 1];
 
@@ -883,6 +887,7 @@ void	 ssl_error(const char *, const char *);
 /* ssl_privsep.c */
 int	 ssl_ctx_use_private_key(SSL_CTX *, char *, off_t);
 int	 ssl_ctx_use_certificate_chain(SSL_CTX *, char *, off_t);
+int	 ssl_ctx_load_verify_memory(SSL_CTX *, char *, off_t);
 
 /* relayd.c */
 struct host	*host_find(struct relayd *, objid_t);
