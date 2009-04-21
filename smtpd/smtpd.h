@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.97 2009/04/09 19:49:34 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.101 2009/04/21 18:12:05 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -62,6 +62,8 @@
 #define PATH_RUNQUEUE		"/runqueue"
 #define PATH_RUNQUEUEHIGH	"/runqueue-high"
 #define PATH_RUNQUEUELOW	"/runqueue-low"
+
+#define PATH_OFFLINE		"/offline"
 
 /* number of MX records to lookup */
 #define MXARRAYSIZE	5
@@ -198,6 +200,7 @@ enum imsg_type {
 	IMSG_BATCH_APPEND,
 	IMSG_BATCH_CLOSE,
 
+	IMSG_PARENT_ENQUEUE_OFFLINE,
 	IMSG_PARENT_FORWARD_OPEN,
 	IMSG_PARENT_MAILBOX_OPEN,
 	IMSG_PARENT_MESSAGE_OPEN,
@@ -216,7 +219,9 @@ enum imsg_type {
 	IMSG_MTA_RESUME,
 	IMSG_SMTP_RESUME,
 
-	IMSG_STATS
+	IMSG_STATS,
+
+	IMSG_SMTP_ENQUEUE
 };
 
 #define IMSG_HEADER_SIZE	 sizeof(struct imsg_hdr)
@@ -227,20 +232,11 @@ enum blockmodes {
 	BM_NONBLOCK
 };
 
-enum ctl_state {
-	CS_NONE = 0,
-	CS_INIT,
-	CS_RCPT,
-	CS_FD,
-	CS_DONE
-};
-
 struct ctl_conn {
 	TAILQ_ENTRY(ctl_conn)	 entry;
 	u_int8_t		 flags;
 #define CTL_CONN_NOTIFY		 0x01
 	struct imsgbuf		 ibuf;
-	enum ctl_state		 state;
 };
 TAILQ_HEAD(ctl_connlist, ctl_conn);
 
@@ -483,10 +479,17 @@ enum batch_flags {
 	F_BATCH_EXPIRED		= 0x8,
 };
 
+enum child_type {
+	CHILD_INVALID,
+	CHILD_MDA,
+	CHILD_ENQUEUE_OFFLINE
+};
+
 struct mdaproc {
 	SPLAY_ENTRY(mdaproc)	mdaproc_nodes;
 
 	pid_t			pid;
+	enum child_type		type;
 };
 
 struct batch {
@@ -594,12 +597,12 @@ struct session {
 
 	enum session_flags		 s_flags;
 	enum session_state		 s_state;
-	time_t				 s_tm;
 	int				 s_fd;
 	struct sockaddr_storage		 s_ss;
 	char				 s_hostname[MAXHOSTNAMELEN];
 	struct event			 s_ev;
 	struct bufferevent		*s_bev;
+	struct event			 s_timeout;
 	struct listener			*s_l;
 	struct smtpd			*s_env;
 	void				*s_ssl;
@@ -668,13 +671,14 @@ struct s_session {
 	size_t		sessions;
 	size_t		sessions_active;
 
-	size_t		ssmtp;
-	size_t		ssmtp_active;
+	size_t		smtps;
+	size_t		smtps_active;
 
 	size_t		starttls;
 	size_t		starttls_active;
 
 	size_t		aborted;
+	size_t		timeout;
 };
 
 struct stats {
@@ -878,6 +882,10 @@ pid_t		 mta(struct smtpd *);
 /* control.c */
 pid_t		 control(struct smtpd *);
 void		 session_socket_blockmode(int, enum blockmodes);
+
+/* enqueue.c */
+int		 enqueue(int, char **);
+int		 enqueue_offline(int, char **);
 
 /* runner.c */
 pid_t		 runner(struct smtpd *);

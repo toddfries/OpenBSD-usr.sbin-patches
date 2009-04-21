@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_srt.c,v 1.20 2009/04/11 09:36:35 michele Exp $ */
+/*	$OpenBSD: rde_srt.c,v 1.22 2009/04/16 20:11:12 michele Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -518,6 +518,8 @@ srt_add_ds(struct rt_node *rn, u_int32_t nbr_report, u_int32_t ifindex)
 	LIST_INSERT_HEAD(&rn->ds_list, ds_nbr, entry);
 	rn->ds_cnt[ifindex]++;
 	rn->ttls[ifindex] = 1;
+
+	mfc_update_source(rn);
 }
 
 struct ds_nbr *
@@ -569,11 +571,15 @@ srt_check_downstream_ifaces(struct rt_node *rn, struct iface *iface)
 }
 
 void
-srt_expire_nbr(struct in_addr addr, struct iface *iface)
+srt_expire_nbr(struct in_addr addr, unsigned int ifindex)
 {
 	struct ds_nbr		*ds;
 	struct rt_node		*rn;
-	u_int32_t		 ifindex = iface->ifindex;
+	struct iface		*iface;
+
+	iface = if_find_index(ifindex);
+	if (iface == NULL)
+		fatal("srt_expire_nbr: interface not found");
 
 	RB_FOREACH(rn, rt_tree, &rt) {
 		if (rn->adv_rtr[ifindex].addr.s_addr == addr.s_addr) {
@@ -584,8 +590,10 @@ srt_expire_nbr(struct in_addr addr, struct iface *iface)
 		} else if (rn->adv_rtr[ifindex].addr.s_addr ==
 		    iface->addr.s_addr) {
 			ds = srt_find_ds(rn, addr.s_addr);
-			if (ds)
+			if (ds) {
 				srt_delete_ds(rn, ds, iface);
+				srt_check_downstream_ifaces(rn, iface);
+			}
 		}
 	}
 }

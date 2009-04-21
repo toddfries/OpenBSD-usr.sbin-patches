@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.39 2009/04/12 15:42:13 gilles Exp $	*/
+/*	$OpenBSD: runner.c,v 1.43 2009/04/21 18:39:00 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -48,6 +48,7 @@
 
 __dead void	runner_shutdown(void);
 void		runner_sig_handler(int, short, void *);
+void		runner_dispatch_parent(int, short, void *);
 void	        runner_dispatch_control(int, short, void *);
 void	        runner_dispatch_queue(int, short, void *);
 void	        runner_dispatch_mda(int, short, void *);
@@ -57,6 +58,7 @@ void		runner_setup_events(struct smtpd *);
 void		runner_disable_events(struct smtpd *);
 
 void		runner_reset_flags(void);
+void		runner_process_offline(struct smtpd *);
 
 void		runner_timeout(int, short, void *);
 
@@ -95,6 +97,55 @@ runner_sig_handler(int sig, short event, void *p)
 }
 
 void
+runner_dispatch_parent(int sig, short event, void *p)
+{
+	struct smtpd		*env = p;
+	struct imsgbuf		*ibuf;
+	struct imsg		 imsg;
+	ssize_t			 n;
+
+	ibuf = env->sc_ibufs[PROC_PARENT];
+	switch (event) {
+	case EV_READ:
+		if ((n = imsg_read(ibuf)) == -1)
+			fatal("imsg_read_error");
+		if (n == 0) {
+			/* this pipe is dead, so remove the event handler */
+			event_del(&ibuf->ev);
+			event_loopexit(NULL);
+			return;
+		}
+		break;
+	case EV_WRITE:
+		if (msgbuf_write(&ibuf->w) == -1)
+			fatal("msgbuf_write");
+		imsg_event_add(ibuf);
+		return;
+	default:
+		fatalx("unknown event");
+	}
+
+	for (;;) {
+		if ((n = imsg_get(ibuf, &imsg)) == -1)
+			fatalx("runner_dispatch_parent: imsg_get error");
+		if (n == 0)
+			break;
+
+		switch (imsg.hdr.type) {
+		case IMSG_PARENT_ENQUEUE_OFFLINE:
+			runner_process_offline(env);
+			break;
+		default:
+			log_warnx("runner_dispatch_parent: got imsg %d",
+			    imsg.hdr.type);
+			fatalx("runner_dispatch_parent: unexpected imsg");
+		}
+		imsg_free(&imsg);
+	}
+	imsg_event_add(ibuf);
+}
+
+void
 runner_dispatch_control(int sig, short event, void *p)
 {
 	struct smtpd		*env = p;
@@ -125,7 +176,7 @@ runner_dispatch_control(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("runner_dispatch_control: imsg_read error");
+			fatalx("runner_dispatch_control: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -205,7 +256,7 @@ runner_dispatch_queue(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("runner_dispatch_queue: imsg_read error");
+			fatalx("runner_dispatch_queue: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -256,7 +307,7 @@ runner_dispatch_mda(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("runner_dispatch_mda: imsg_read error");
+			fatalx("runner_dispatch_mda: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -302,7 +353,7 @@ runner_dispatch_mta(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("runner_dispatch_mta: imsg_read error");
+			fatalx("runner_dispatch_mta: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -349,7 +400,7 @@ runner_dispatch_lka(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("runner_dispatch_lka: imsg_read error");
+			fatalx("runner_dispatch_lka: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -398,6 +449,7 @@ runner(struct smtpd *env)
 	struct event	 ev_sigterm;
 
 	struct peer peers[] = {
+		{ PROC_PARENT,	runner_dispatch_parent },
 		{ PROC_CONTROL,	runner_dispatch_control },
 		{ PROC_MDA,	runner_dispatch_mda },
 		{ PROC_MTA,	runner_dispatch_mta },
@@ -448,17 +500,34 @@ runner(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
-	config_pipes(env, peers, 5);
-	config_peers(env, peers, 5);
+	config_pipes(env, peers, 6);
+	config_peers(env, peers, 6);
 
 	unlink(PATH_QUEUE "/envelope.tmp");
 	runner_reset_flags();
+	runner_process_offline(env);
 
 	runner_setup_events(env);
 	event_dispatch();
 	runner_shutdown();
 
 	return (0);
+}
+
+void
+runner_process_offline(struct smtpd *env)
+{
+	char		 path[MAXPATHLEN];
+	struct qwalk	*q;
+
+	q = qwalk_new(PATH_OFFLINE);
+
+	if (qwalk(q, path))
+		imsg_compose(env->sc_ibufs[PROC_PARENT],
+		    IMSG_PARENT_ENQUEUE_OFFLINE, 0, 0, -1, path,
+		    strlen(path) + 1);
+
+	qwalk_close(q);
 }
 
 void
@@ -771,24 +840,24 @@ runner_purge_message(char *msgid)
 	struct dirent *dp;
 	
 	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", PATH_PURGE, msgid))
-		fatal("queue_delete_incoming_message: snprintf");
+		fatal("runner_purge_message: snprintf");
 
 	if (! bsnprintf(evpdir, sizeof(evpdir), "%s%s", rootdir,
 		PATH_ENVELOPES))
-		fatal("queue_delete_incoming_message: snprintf");
+		fatal("runner_purge_message: snprintf");
 	
 	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/message", rootdir))
-		fatal("queue_delete_incoming_message: snprintf");
+		fatal("runner_purge_message: snprintf");
 
 	if (unlink(msgpath) == -1)
 		if (errno != ENOENT)
-			fatal("queue_delete_incoming_message: unlink");
+			fatal("runner_purge_message: unlink");
 
 	dirp = opendir(evpdir);
 	if (dirp == NULL) {
 		if (errno == ENOENT)
 			goto delroot;
-		fatal("queue_delete_incoming_message: opendir");
+		fatal("runner_purge_message: opendir");
 	}
 	while ((dp = readdir(dirp)) != NULL) {
 		if (strcmp(dp->d_name, ".") == 0 ||
@@ -796,22 +865,22 @@ runner_purge_message(char *msgid)
 			continue;
 		if (! bsnprintf(evppath, sizeof(evppath), "%s/%s", evpdir,
 			dp->d_name))
-			fatal("queue_delete_incoming_message: snprintf");
+			fatal("runner_purge_message: snprintf");
 
 		if (unlink(evppath) == -1)
 			if (errno != ENOENT)
-				fatal("queue_delete_incoming_message: unlink");
+				fatal("runner_purge_message: unlink");
 	}
 	closedir(dirp);
 
 	if (rmdir(evpdir) == -1)
 		if (errno != ENOENT)
-			fatal("queue_delete_incoming_message: rmdir");
+			fatal("runner_purge_message: rmdir");
 
 delroot:
 	if (rmdir(rootdir) == -1)
 		if (errno != ENOENT)
-			fatal("queue_delete_incoming_message: rmdir");
+			fatal("runner_purge_message: rmdir");
 }
 
 struct batch *

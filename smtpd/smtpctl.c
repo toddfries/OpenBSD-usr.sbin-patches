@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.19 2009/03/23 21:48:40 jmc Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.23 2009/04/21 18:12:05 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -45,7 +45,6 @@
 __dead void	usage(void);
 int		show_command_output(struct imsg*);
 int		show_stats_output(struct imsg *);
-int		enqueue(int, char **);
 
 /*
 struct imsgname {
@@ -76,7 +75,8 @@ usage(void)
 	extern char *__progname;
 
 	if (sendmail)
-		fprintf(stderr, "usage: %s [-i] rcpt [...]\n", __progname);
+		fprintf(stderr, "usage: %s [-tv] [-f from] [-F name] to ..\n",
+		    __progname);
 	else
 		fprintf(stderr, "usage: %s command [argument ...]\n", __progname);
 	exit(1);
@@ -132,8 +132,11 @@ connected:
 	bzero(&sun, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	strlcpy(sun.sun_path, SMTPD_SOCKET, sizeof(sun.sun_path));
-	if (connect(ctl_sock, (struct sockaddr *)&sun, sizeof(sun)) == -1)
+	if (connect(ctl_sock, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+		if (sendmail)
+			return enqueue_offline(argc, argv);
 		err(1, "connect: %s", SMTPD_SOCKET);
+	}
 
 	if ((ibuf = calloc(1, sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
@@ -293,9 +296,10 @@ show_stats_output(struct imsg *imsg)
 
 	printf("smtp.sessions=%zd\n", s_smtp.sessions);
 	printf("smtp.sessions.aborted=%zd\n", s_smtp.aborted);
+	printf("smtp.sessions.timeout=%zd\n", s_smtp.timeout);
 	printf("smtp.sessions.active=%zd\n", s_smtp.sessions_active);
-	printf("smtp.sessions.ssmtp=%zd\n", s_smtp.ssmtp);
-	printf("smtp.sessions.ssmtp.active=%zd\n", s_smtp.ssmtp_active);
+	printf("smtp.sessions.smtps=%zd\n", s_smtp.smtps);
+	printf("smtp.sessions.smtps.active=%zd\n", s_smtp.smtps_active);
 	printf("smtp.sessions.starttls=%zd\n", s_smtp.starttls);
 	printf("smtp.sessions.starttls.active=%zd\n", s_smtp.starttls_active);
 

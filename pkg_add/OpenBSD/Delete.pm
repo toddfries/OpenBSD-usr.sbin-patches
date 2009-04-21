@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.78 2008/10/20 10:25:16 espie Exp $
+# $OpenBSD: Delete.pm,v 1.81 2009/04/19 14:58:32 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -98,6 +98,14 @@ sub delete_package
 	if ($plist->pkgname ne $pkgname) {
 		Fatal "Package $pkgname real name does not match";
 	}
+	if ($plist->is_signed) {
+		if (!$state->{quick}) {
+			require OpenBSD::x509;
+			if (!OpenBSD::x509::check_signature($plist, $state)) {
+				Fatal "Package $pkgname is corrupted";
+			}
+		}
+	}
 
 	$state->{problems} = 0;
 	validate_plist($plist, $state);
@@ -171,11 +179,11 @@ sub rename_file_to_temp
 	close $fh;
 	if (rename($n, $j)) {
 		print "Renaming old file $n to $j\n";
-		if ($self->{name} !~ m/^\//o && $self->cwd ne '.') {
+		if ($self->name !~ m/^\//o && $self->cwd ne '.') {
 			my $c = $self->cwd;
 			$j =~ s|^\Q$c\E/||;
 		}
-		$self->{name} = $j;
+		$self->set_name($j);
 	} else {
 		print "Bad rename $n to $j: $!\n";
 	}
@@ -269,7 +277,7 @@ sub delete
 	my ($self, $state) = @_;
 
 	if ($state->{beverbose}) {
-		print "rmuser: $self->{name}\n";
+		print "rmuser: ", $self->name, "\n";
 	}
 
 	$self->record_shared($state->{recorder}, $state->{pkgname});
@@ -278,7 +286,7 @@ sub delete
 sub record_shared
 {
 	my ($self, $recorder, $pkgname) = @_;
-	$recorder->{users}->{$self->{name}} = $pkgname;
+	$recorder->{users}->{$self->name} = $pkgname;
 }
 
 package OpenBSD::PackingElement::NewGroup;
@@ -287,7 +295,7 @@ sub delete
 	my ($self, $state) = @_;
 
 	if ($state->{beverbose}) {
-		print "rmgroup: $self->{name}\n";
+		print "rmgroup: ", $self->name, "\n";
 	}
 
 	$self->record_shared($state->{recorder}, $state->{pkgname});
@@ -296,7 +304,7 @@ sub delete
 sub record_shared
 {
 	my ($self, $recorder, $pkgname) = @_;
-	$recorder->{groups}->{$self->{name}} = $pkgname;
+	$recorder->{groups}->{$self->name} = $pkgname;
 }
 
 package OpenBSD::PackingElement::DirBase;
@@ -468,6 +476,11 @@ sub copy_old_stuff
 {
 	my ($self, $plist, $state) = @_;
 	$self->add_object($plist);
+}
+
+package OpenBSD::PackingElement::DigitalSignature;
+sub copy_old_stuff
+{
 }
 
 package OpenBSD::PackingElement::FDESC;

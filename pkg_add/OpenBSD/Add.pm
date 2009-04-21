@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.86 2009/03/05 10:44:59 espie Exp $
+# $OpenBSD: Add.pm,v 1.88 2009/04/20 08:29:02 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -148,8 +148,10 @@ sub tweak_plist_status
 
 sub tag_user_packages
 {
-	for my $pkgname (@_) {
-		$user_tagged->{extract_pkgname($pkgname)} = 1;
+	for my $set (@_) {
+		for my $handle ($set->newer) {
+			$user_tagged->{$handle->{pkgname}} = 1;
+		}
 	}
 }
 
@@ -262,7 +264,7 @@ sub prepare_for_addition
 	my $ok = $self->check;
 	if (defined $ok) {
 		if ($ok == 0) {
-			Warn $self->type, " ",  $self->{name}, 
+			Warn $self->type, " ",  $self->name, 
 			    " does not match\n";
 			$state->{problems}++;
 		}
@@ -274,7 +276,7 @@ sub install
 {
 	my ($self, $state) = @_;
 	$self->SUPER::install($state);
-	my $auth = $self->{name};
+	my $auth = $self->name;
 	print "adding ", $self->type, " $auth\n" if $state->{verbose};
 	return if $state->{not};
 	return if defined $self->{okay};
@@ -319,7 +321,7 @@ sub install
 {
 	my ($self, $state) = @_;
 
-	my $name = $self->{name};
+	my $name = $self->name;
 	$self->SUPER::install($state);
 	open(my $pipe, '-|', OpenBSD::Paths->sysctl, '-n', $name);
 	my $actual = <$pipe>;
@@ -427,12 +429,12 @@ sub prepare_to_extract
 	}
 	$file->{cwd} = $self->cwd;
 	if (!$file->check_name($self)) {
-		Fatal "Error: archive does not match ", $file->{name}, "!=",
-		$self->{name}, "\n";
+		Fatal "Error: archive does not match ", $file->name, "!=",
+		$self->name, "\n";
 	}
 	if (defined $self->{symlink} || $file->isSymLink) {
 		unless (defined $self->{symlink} && $file->isSymLink) {
-			Fatal "Error: bogus symlink ", $self->{name}, "\n";
+			Fatal "Error: bogus symlink ", $self->name, "\n";
 		}
 		if (!$file->check_linkname($self->{symlink})) {
 			Fatal "Error: archive sl does not match ", $file->{linkname}, "!=",
@@ -440,7 +442,7 @@ sub prepare_to_extract
 		}
 	} elsif (defined $self->{link} || $file->isHardLink) {
 		unless (defined $self->{link} && $file->isHardLink) {
-			Fatal "Error: bogus hardlink ", $self->{name}, "\n";
+			Fatal "Error: bogus hardlink ", $self->name, "\n";
 		}
 		if (!$file->check_linkname($self->{link})) {
 			Fatal "Error: archive hl does not match ", $file->{linkname}, "!=",
@@ -451,7 +453,7 @@ sub prepare_to_extract
 		Fatal "Can't continue\n";
 	}
 
-	$file->{name} = $fullname;
+	$file->set_name($fullname);
 	$file->{destdir} = $destdir;
 	# faked installation are VERY weird
 	if (defined $self->{symlink} && $state->{do_faked}) {
@@ -661,7 +663,7 @@ sub prepare_for_addition
 {
 	my ($self, $state, $pkgname) = @_;
 
-	my $fname = installed_info($pkgname).$self->{name};
+	my $fname = installed_info($pkgname).$self->name;
 	my $cname = $self->fullname;
 	my $size = $self->{size};
 	if (!defined $size) {
