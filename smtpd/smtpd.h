@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.101 2009/04/21 18:12:05 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.104 2009/04/24 10:02:35 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -602,7 +602,6 @@ struct session {
 	char				 s_hostname[MAXHOSTNAMELEN];
 	struct event			 s_ev;
 	struct bufferevent		*s_bev;
-	struct event			 s_timeout;
 	struct listener			*s_l;
 	struct smtpd			*s_env;
 	void				*s_ssl;
@@ -708,14 +707,6 @@ struct submit_status {
 	}				 u;
 	enum message_flags		 flags;
 	struct sockaddr_storage		 ss;
-	struct message			 msg;
-};
-
-struct message_recipient {
-	u_int64_t			 id;
-	struct sockaddr_storage		 ss;
-	enum message_flags		 flags;
-	struct path			 path;
 	struct message			 msg;
 };
 
@@ -972,3 +963,4 @@ int		 valid_message_id(char *);
 int		 valid_message_uid(char *);
 char		*time_to_text(time_t);
 int		 secure_file(int, char *, struct passwd *);
+void		 lowercase(char *, char *, size_t);

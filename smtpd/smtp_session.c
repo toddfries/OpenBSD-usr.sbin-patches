@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.70 2009/04/20 18:48:23 jacekm Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.74 2009/04/24 15:26:59 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -40,8 +40,6 @@
 
 #include "smtpd.h"
 
-struct session_timeout;
-
 int		session_rfc5321_helo_handler(struct session *, char *);
 int		session_rfc5321_ehlo_handler(struct session *, char *);
 int		session_rfc5321_rset_handler(struct session *, char *);
@@ -72,30 +70,11 @@ void		session_error(struct bufferevent *, short, void *);
 void		session_msg_submit(struct session *);
 void		session_command(struct session *, char *, char *);
 int		session_set_path(struct path *, char *);
-void		session_set_timeout(struct session *, struct session_timeout *);
-void		smtp_timeout(int, short, void *);
 void		session_cleanup(struct session *);
 void		session_imsg(struct session *, enum smtp_proc_type,
 		    enum imsg_type, u_int32_t, pid_t, int, void *, u_int16_t);
 
 extern struct s_session	s_smtp;
-
-struct session_timeout {
-	enum session_state	state;
-	time_t			timeout;
-};
-
-struct session_timeout rfc5321_timeouttab[] = {
-	{ S_INIT,		300 },
-	{ S_GREETED,		300 },
-	{ S_HELO,		300 },
-	{ S_MAIL,		300 },
-	{ S_RCPT,		300 },
-	{ S_DATA,		120 },
-	{ S_DATACONTENT,	180 },
-	{ S_DONE,		600 },
-	{ 0,			0   }
-};
 
 struct session_cmd {
 	char	 *name;
@@ -418,7 +397,6 @@ int
 session_rfc5321_rcpt_handler(struct session *s, char *args)
 {
 	char buffer[MAX_PATH_SIZE];
-	struct message_recipient	mr;
 
 	if (s->s_state == S_GREETED) {
 		session_respond(s, "503 Polite people say HELO first");
@@ -430,33 +408,26 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	bzero(&mr, sizeof(mr));
-
 	if (strlcpy(buffer, args, sizeof(buffer)) >= sizeof(buffer)) {
 		session_respond(s, "553 Recipient address syntax error");
 		return 1;
 	}
 
-	if (! session_set_path(&mr.path, buffer)) {
+	if (! session_set_path(&s->s_msg.session_rcpt, buffer)) {
 		/* No need to even transmit to MFA, path is invalid */
 		session_respond(s, "553 Recipient address syntax error");
 		return 1;
 	}
 
-	s->s_msg.session_rcpt = mr.path;
-
-	mr.id = s->s_msg.id;
 	s->s_state = S_RCPTREQUEST;
-	mr.ss = s->s_ss;
-	mr.msg = s->s_msg;
 
 
 	if (s->s_flags & F_AUTHENTICATED) {
 		s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
-		mr.flags |= F_MESSAGE_AUTHENTICATED;
 	}
 
-	session_imsg(s, PROC_MFA, IMSG_MFA_RCPT, 0, 0, -1, &mr, sizeof(mr));
+	session_imsg(s, PROC_MFA, IMSG_MFA_RCPT, 0, 0, -1, &s->s_msg,
+	    sizeof(s->s_msg));
 	return 1;
 }
 
@@ -681,9 +652,6 @@ session_pickup(struct session *s, struct submit_status *ss)
 		s->rcptcount++;
 		s->s_msg.recipient = ss->u.path;
 
-	case S_RCPT:
-		if (ss == NULL)
-			fatalx("bad ss at S_RCPT");
 		session_respond(s, "%d Recipient ok", ss->code);
 		break;
 
@@ -739,12 +707,11 @@ session_init(struct listener *l, struct session *s)
 {
 	s->s_state = S_INIT;
 
-	evtimer_set(&s->s_timeout, smtp_timeout, s);
-	session_set_timeout(s, rfc5321_timeouttab);
-
 	if ((s->s_bev = bufferevent_new(s->s_fd, session_read, session_write,
 	    session_error, s)) == NULL)
 		fatalx("session_init: bufferevent_new failed");
+
+	bufferevent_settimeout(s->s_bev, SMTPD_SESSION_TIMEOUT, 0);
 
 	if (l->flags & F_SMTPS) {
 		log_debug("session_init: initializing ssl");
@@ -767,7 +734,6 @@ session_read(struct bufferevent *bev, void *p)
 	size_t		 nr;
 
 read:
-	session_set_timeout(s, rfc5321_timeouttab);
 	nr = EVBUFFER_LENGTH(bev->input);
 	line = evbuffer_readline(bev->input);
 	if (line == NULL) {
@@ -908,7 +874,6 @@ session_destroy(struct session *s)
 		bufferevent_free(s->s_bev);
 	}
 	ssl_session_destroy(s);
-	evtimer_del(&s->s_timeout);
 
 	SPLAY_REMOVE(sessiontree, &s->s_env->sc_sessions, s);
 	bzero(s, sizeof(*s));
@@ -923,7 +888,7 @@ session_cleanup(struct session *s)
 		s->datafp = NULL;
 	}
 
-	if (s->s_msg.message_id[0] != '\0') {
+	if (s->s_msg.message_id[0] != '\0' && s->s_state != S_DONE) {
 		/*
 		 * IMSG_QUEUE_REMOVE_MESSAGE must not be sent using session_imsg
 		 * since no reply for it is expected.
@@ -941,11 +906,15 @@ session_error(struct bufferevent *bev, short event, void *p)
 {
 	struct session	*s = p;
 
+	if (event & EVBUFFER_TIMEOUT)
+		s_smtp.timeout++;
+	else
+		s_smtp.aborted++;
+
 	/* If events are locked, do not destroy session
 	 * but set F_QUIT flag so that we destroy it as
 	 * soon as the event lock is removed.
 	 */
-	s_smtp.aborted++;
 	if (s->s_flags & F_EVLOCKED)
 		s->s_flags |= F_QUIT;
 	else
@@ -986,37 +955,6 @@ session_set_path(struct path *path, char *line)
 	line[len - 1] = '\0';
 
 	return recipient_to_path(path, line + 1);
-}
-
-void
-session_set_timeout(struct session *s, struct session_timeout *tab)
-{
-	struct timeval tv;
-
-	bzero(&tv, sizeof(tv));
-
-	for (; tab->timeout; tab++)
-		if (s->s_state == tab->state) {
-			tv.tv_sec = tab->timeout;
-			break;
-		}
-	if (! tab->timeout)
-		tv.tv_sec = SMTPD_SESSION_TIMEOUT;
-	evtimer_add(&s->s_timeout, &tv);
-}
-
-void
-smtp_timeout(int fd, short event, void *p)
-{
-	struct session *s = p;
-
-	log_debug("smtp_timeout: fd %d at state %d", s->s_fd, s->s_state);
-
-	s_smtp.timeout++;
-	if (s->s_flags & F_EVLOCKED)
-		s->s_flags |= F_QUIT;
-	else
-		session_destroy(s);
 }
 
 void
