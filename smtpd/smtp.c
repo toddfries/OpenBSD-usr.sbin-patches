@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.39 2009/04/27 16:22:17 jacekm Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.41 2009/04/28 22:38:22 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -378,17 +378,14 @@ smtp_dispatch_queue(int sig, short event, void *p)
 				break;
 			}
 
-			if (fd != -1) {
-				s->datafp = fdopen(fd, "w");
-				if (s->datafp == NULL) {
-					/* no need to handle error, it will be
-					 * caught in session_pickup()
-					 */
-					close(fd);
-				}
+			if ((s->datafp = fdopen(fd, "w")) == NULL) {
+				/* queue may have experienced tempfail. */
+				if (ss->code != 421)
+					fatal("smtp_dispatch_queue: fdopen");
+				close(fd);
 			}
-			session_pickup(s, ss);
 
+			session_pickup(s, ss);
 			break;
 		}
 		case IMSG_QUEUE_TEMPFAIL: {
@@ -719,9 +716,6 @@ smtp_accept(int fd, short event, void *p)
 	if (s_smtp.sessions_active == s->s_env->sc_maxconn)
 		event_del(&l->ev);
 
-	strlcpy(s->s_hostname, "<unknown>", sizeof(s->s_hostname));
-	strlcpy(s->s_msg.session_hostname, s->s_hostname,
-	    sizeof(s->s_msg.session_hostname));
 	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
 	    sizeof(struct session));
 

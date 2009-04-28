@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.76 2009/04/27 16:20:34 jacekm Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.79 2009/04/28 21:56:45 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -67,7 +67,6 @@ void		session_read(struct bufferevent *, void *);
 int		session_read_data(struct session *, char *, size_t);
 void		session_write(struct bufferevent *, void *);
 void		session_error(struct bufferevent *, short, void *);
-void		session_msg_submit(struct session *);
 void		session_command(struct session *, char *, char *);
 int		session_set_path(struct path *, char *);
 void		session_imsg(struct session *, enum smtp_proc_type,
@@ -355,8 +354,6 @@ session_rfc5321_noop_handler(struct session *s, char *args)
 int
 session_rfc5321_mail_handler(struct session *s, char *args)
 {
-	char buffer[MAX_PATH_SIZE];
-
 	if (s->s_state == S_GREETED) {
 		session_respond(s, "503 Polite people say HELO first");
 		return 1;
@@ -367,12 +364,7 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	if (strlcpy(buffer, args, sizeof(buffer)) >= sizeof(buffer)) {
-		session_respond(s, "553 Sender address syntax error");
-		return 1;
-	}
-
-	if (! session_set_path(&s->s_msg.sender, buffer)) {
+	if (! session_set_path(&s->s_msg.sender, args)) {
 		/* No need to even transmit to MFA, path is invalid */
 		session_respond(s, "553 Sender address syntax error");
 		return 1;
@@ -394,8 +386,6 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 int
 session_rfc5321_rcpt_handler(struct session *s, char *args)
 {
-	char buffer[MAX_PATH_SIZE];
-
 	if (s->s_state == S_GREETED) {
 		session_respond(s, "503 Polite people say HELO first");
 		return 1;
@@ -406,19 +396,13 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	if (strlcpy(buffer, args, sizeof(buffer)) >= sizeof(buffer)) {
-		session_respond(s, "553 Recipient address syntax error");
-		return 1;
-	}
-
-	if (! session_set_path(&s->s_msg.session_rcpt, buffer)) {
+	if (! session_set_path(&s->s_msg.session_rcpt, args)) {
 		/* No need to even transmit to MFA, path is invalid */
 		session_respond(s, "553 Recipient address syntax error");
 		return 1;
 	}
 
 	s->s_state = S_RCPTREQUEST;
-
 
 	if (s->s_flags & F_AUTHENTICATED) {
 		s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
@@ -459,7 +443,10 @@ session_rfc5321_data_handler(struct session *s, char *args)
 	}
 
 	s->s_state = S_DATAREQUEST;
-	session_pickup(s, NULL);
+
+	session_imsg(s, PROC_QUEUE, IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1,
+	    &s->s_msg, sizeof(s->s_msg));
+
 	return 1;
 }
 
@@ -589,8 +576,12 @@ session_pickup(struct session *s, struct submit_status *ss)
 	bufferevent_enable(s->s_bev, EV_READ);
 
 	if ((ss != NULL && ss->code == 421) ||
-	    (s->s_msg.status & S_MESSAGE_TEMPFAILURE))
-		goto tempfail;
+	    (s->s_msg.status & S_MESSAGE_TEMPFAILURE)) {
+		session_respond(s, "421 Service temporarily unavailable");
+		s->s_flags |= F_QUIT;
+		bufferevent_disable(s->s_bev, EV_READ);
+		return;
+	}
 
 	switch (s->s_state) {
 	case S_INIT:
@@ -655,17 +646,6 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_DATAREQUEST:
-		s->s_state = S_DATA;
-		session_imsg(s, PROC_QUEUE, IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1,
-		    &s->s_msg, sizeof(s->s_msg));
-		break;
-
-	case S_DATA:
-		if (ss == NULL)
-			fatalx("bad ss at S_DATA");
-		if (s->datafp == NULL)
-			goto tempfail;
-
 		s->s_state = S_DATACONTENT;
 		session_respond(s, "354 Enter mail, end with \".\" on a line by"
 		    " itself");
@@ -690,16 +670,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 
 	default:
 		fatal("session_pickup: unknown state");
-		break;
 	}
-
-	return;
-
-tempfail:
-	session_respond(s, "421 Service temporarily unavailable");
-	s->s_flags |= F_QUIT;
-	bufferevent_disable(s->s_bev, EV_READ);
-	return;
 }
 
 void
@@ -799,7 +770,8 @@ session_read_data(struct session *s, char *line, size_t nread)
 			session_respond(s, "421 Temporary failure");
 			s->s_state = S_HELO;
 		} else {
-			session_msg_submit(s);
+			session_imsg(s, PROC_QUEUE, IMSG_QUEUE_COMMIT_MESSAGE,
+			    0, 0, -1, &s->s_msg, sizeof(s->s_msg));
 			s->s_state = S_DONE;
 		}
 
@@ -914,14 +886,6 @@ session_error(struct bufferevent *bev, short event, void *p)
 		bufferevent_disable(s->s_bev, EV_READ);
 	} else
 		session_destroy(s);
-}
-
-void
-session_msg_submit(struct session *s)
-{
-	session_imsg(s, PROC_QUEUE, IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
-	    &s->s_msg, sizeof(s->s_msg));
-	s->s_state = S_DONE;
 }
 
 int
