@@ -1,8 +1,9 @@
-/*	$OpenBSD: smtp_session.c,v 1.79 2009/04/28 21:56:45 jacekm Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.86 2009/05/10 14:24:19 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
+ * Copyright (c) 2008-2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -122,6 +123,8 @@ session_rfc3207_stls_handler(struct session *s, char *args)
 	session_respond(s, "220 Ready to start TLS");
 
 	s->s_state = S_TLS;
+	bufferevent_disable(s->s_bev, EV_READ);
+	ssl_session_init(s);
 
 	return 1;
 }
@@ -163,7 +166,7 @@ int
 session_rfc4954_auth_plain(struct session *s, char *arg, size_t nr)
 {
 	if (arg == NULL) {
-		session_respond(s, "334");
+		session_respond(s, "334 ");
 		s->s_state = S_AUTH_INIT;
 		return 1;
 	}
@@ -371,12 +374,12 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 	}
 
 	s->rcptcount = 0;
-	s->s_state = S_MAILREQUEST;
+	s->s_state = S_MAIL_MFA;
 	s->s_msg.id = s->s_id;
 	s->s_msg.session_id = s->s_id;
 	s->s_msg.session_ss = s->s_ss;
 
-	log_debug("session_mail_handler: sending notification to mfa");
+	log_debug("session_rfc5321_mail_handler: sending notification to mfa");
 
 	session_imsg(s, PROC_MFA, IMSG_MFA_MAIL, 0, 0, -1, &s->s_msg,
 	    sizeof(s->s_msg));
@@ -402,7 +405,7 @@ session_rfc5321_rcpt_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	s->s_state = S_RCPTREQUEST;
+	s->s_state = S_RCPT_MFA;
 
 	if (s->s_flags & F_AUTHENTICATED) {
 		s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
@@ -442,7 +445,7 @@ session_rfc5321_data_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	s->s_state = S_DATAREQUEST;
+	s->s_state = S_DATA_QUEUE;
 
 	session_imsg(s, PROC_QUEUE, IMSG_QUEUE_MESSAGE_FILE, 0, 0, -1,
 	    &s->s_msg, sizeof(s->s_msg));
@@ -595,38 +598,35 @@ session_pickup(struct session *s, struct submit_status *ss)
 		break;
 
 	case S_TLS:
-		s->s_flags |= F_EVLOCKED;
-		bufferevent_disable(s->s_bev, EV_READ|EV_WRITE);
 		s->s_state = S_GREETED;
-		ssl_session_init(s);
 		break;
 
-	case S_MAILREQUEST:
+	case S_MAIL_MFA:
 		if (ss == NULL)
-			fatalx("bad ss at S_MAILREQUEST");
-		/* sender was not accepted, downgrade state */
+			fatalx("bad ss at S_MAIL_MFA");
 		if (ss->code != 250) {
 			s->s_state = S_HELO;
 			session_respond(s, "%d Sender rejected", ss->code);
 			return;
 		}
 
-		s->s_state = S_MAIL;
+		s->s_state = S_MAIL_QUEUE;
 		s->s_msg.sender = ss->u.path;
 
 		session_imsg(s, PROC_QUEUE, IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1,
 		    &s->s_msg, sizeof(s->s_msg));
 		break;
 
-	case S_MAIL:
+	case S_MAIL_QUEUE:
 		if (ss == NULL)
-			fatalx("bad ss at S_MAIL");
+			fatalx("bad ss at S_MAIL_QUEUE");
+		s->s_state = S_MAIL;
 		session_respond(s, "%d Sender ok", ss->code);
 		break;
 
-	case S_RCPTREQUEST:
+	case S_RCPT_MFA:
 		if (ss == NULL)
-			fatalx("bad ss at S_RCPTREQUEST");
+			fatalx("bad ss at S_RCPT_MFA");
 		/* recipient was not accepted */
 		if (ss->code != 250) {
 			/* We do not have a valid recipient, downgrade state */
@@ -645,7 +645,7 @@ session_pickup(struct session *s, struct submit_status *ss)
 		session_respond(s, "%d Recipient ok", ss->code);
 		break;
 
-	case S_DATAREQUEST:
+	case S_DATA_QUEUE:
 		s->s_state = S_DATACONTENT;
 		session_respond(s, "354 Enter mail, end with \".\" on a line by"
 		    " itself");
@@ -682,7 +682,8 @@ session_init(struct listener *l, struct session *s)
 	    session_error, s)) == NULL)
 		fatalx("session_init: bufferevent_new failed");
 
-	bufferevent_settimeout(s->s_bev, SMTPD_SESSION_TIMEOUT, 0);
+	bufferevent_settimeout(s->s_bev, SMTPD_SESSION_TIMEOUT,
+	    SMTPD_SESSION_TIMEOUT);
 
 	if (l->flags & F_SMTPS) {
 		log_debug("session_init: initializing ssl");
@@ -819,15 +820,8 @@ session_write(struct bufferevent *bev, void *p)
 {
 	struct session	*s = p;
 
-	if (!(s->s_flags & F_QUIT)) {
-		
-		if (s->s_state == S_TLS)
-			session_pickup(s, NULL);
-
-		return;
-	}
-
-	session_destroy(s);
+	if (s->s_flags & F_QUIT)
+		session_destroy(s);
 }
 
 void

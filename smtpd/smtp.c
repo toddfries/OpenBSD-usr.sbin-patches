@@ -1,8 +1,9 @@
-/*	$OpenBSD: smtp.c,v 1.41 2009/04/28 22:38:22 jacekm Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.44 2009/05/10 11:29:40 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
+ * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -283,21 +284,22 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_LKA_HOST: {
-			struct session		 key;
+		case IMSG_DNS_PTR: {
+			struct dns		*reply = imsg.data;
 			struct session		*s;
-			struct session		*ss;
+			struct session		 key;
 
-			ss = imsg.data;
-			key.s_id = ss->s_id;
+			key.s_id = reply->id;
 
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
 			if (s == NULL)
 				fatal("smtp_dispatch_lka: session is gone");
 
-			strlcpy(s->s_hostname, ss->s_hostname,
+			strlcpy(s->s_hostname,
+			    reply->error ? "<unknown>" : reply->host,
 			    sizeof(s->s_hostname));
-			strlcpy(s->s_msg.session_hostname, ss->s_hostname,
+
+			strlcpy(s->s_msg.session_hostname, s->s_hostname,
 			    sizeof(s->s_msg.session_hostname));
 
 			session_init(s->s_l, s);
@@ -666,7 +668,7 @@ smtp_disable_events(struct smtpd *env)
 void
 smtp_pause(struct smtpd *env)
 {
-	log_debug("smtp_pause_listeners: pausing listening sockets");
+	log_debug("smtp_pause: pausing listening sockets");
 	smtp_disable_events(env);
 	env->sc_opts |= SMTPD_SMTP_PAUSED;
 }
@@ -674,7 +676,7 @@ smtp_pause(struct smtpd *env)
 void
 smtp_resume(struct smtpd *env)
 {
-	log_debug("smtp_pause_listeners: resuming listening sockets");
+	log_debug("smtp_resume: resuming listening sockets");
 	imsg_compose(env->sc_ibufs[PROC_PARENT], IMSG_PARENT_SEND_CONFIG,
 	    0, 0, -1, NULL, 0);
 	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
@@ -716,8 +718,7 @@ smtp_accept(int fd, short event, void *p)
 	if (s_smtp.sessions_active == s->s_env->sc_maxconn)
 		event_del(&l->ev);
 
-	imsg_compose(s->s_env->sc_ibufs[PROC_LKA], IMSG_LKA_HOST, 0, 0, -1, s,
-	    sizeof(struct session));
+	dns_query_ptr(l->env, &s->s_ss, s->s_id);
 
 	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 }
