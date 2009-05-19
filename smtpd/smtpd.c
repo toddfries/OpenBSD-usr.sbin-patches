@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.58 2009/05/14 15:05:12 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.61 2009/05/19 22:54:46 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -61,7 +61,6 @@ void		parent_dispatch_runner(int, short, void *);
 void		parent_dispatch_control(int, short, void *);
 void		parent_sig_handler(int, short, void *);
 int		parent_open_message_file(struct batch *);
-int		parent_mailbox_init(struct passwd *, char *);
 int		parent_mailbox_open(char *, struct passwd *, struct batch *);
 int		parent_filename_open(char *, struct passwd *, struct batch *);
 int		parent_mailfile_rename(struct batch *, struct path *);
@@ -199,10 +198,11 @@ parent_dispatch_lka(int fd, short event, void *p)
 
 		switch (imsg.hdr.type) {
 		case IMSG_PARENT_FORWARD_OPEN: {
+			struct forward_req *fwreq = imsg.data;
 			int ret;
-			struct forward_req *fwreq;
 
-			fwreq = imsg.data;
+			IMSG_SIZE_CHECK(fwreq);
+
 			ret = parent_forward_open(fwreq->pw_name);
 			fwreq->status = 0;
 			if (ret == -1) {
@@ -305,7 +305,7 @@ parent_dispatch_mda(int fd, short event, void *p)
 
 		switch (imsg.hdr.type) {
 		case IMSG_PARENT_MAILBOX_OPEN: {
-			struct batch *batchp;
+			struct batch *batchp = imsg.data;
 			struct path *path;
 			struct passwd *pw;
 			char *pw_name;
@@ -322,7 +322,8 @@ parent_dispatch_mda(int fd, short event, void *p)
 				{ A_FILENAME,	parent_filename_open }
 			};
 
-			batchp = imsg.data;
+			IMSG_SIZE_CHECK(batchp);
+
 			path = &batchp->message.recipient;
 			if (batchp->type & T_DAEMON_BATCH) {
 				path = &batchp->message.sender;
@@ -366,10 +367,11 @@ parent_dispatch_mda(int fd, short event, void *p)
 			break;
 		}
 		case IMSG_PARENT_MESSAGE_OPEN: {
-			struct batch *batchp;
+			struct batch *batchp = imsg.data;
 			int desc;
 
-			batchp = imsg.data;
+			IMSG_SIZE_CHECK(batchp);
+
 			desc = parent_open_message_file(batchp);
 
 			imsg_compose(ibuf, IMSG_MDA_MESSAGE_FILE, 0, 0,
@@ -378,11 +380,12 @@ parent_dispatch_mda(int fd, short event, void *p)
 			break;
 		}
 		case IMSG_PARENT_MAILBOX_RENAME: {
-			struct batch *batchp;
+			struct batch *batchp = imsg.data;
 			struct path *path;
 			struct passwd *pw;
 
-			batchp = imsg.data;
+			IMSG_SIZE_CHECK(batchp);
+
 			path = &batchp->message.recipient;
 			if (batchp->type & T_DAEMON_BATCH) {
 				path = &batchp->message.sender;
@@ -453,14 +456,14 @@ parent_dispatch_smtp(int fd, short event, void *p)
 			break;
 		}
 		case IMSG_PARENT_AUTHENTICATE: {
-			struct session_auth_req *req;
+			struct session_auth_req *req = imsg.data;
 			struct session_auth_reply reply;
 			char buf[1024];
 			char *user;
 			char *pass;
 			int len;
 
-			req = (struct session_auth_req *)imsg.data;
+			IMSG_SIZE_CHECK(req);
 
 			reply.session_id = req->session_id;
 			reply.value = 0;
@@ -592,9 +595,10 @@ parent_dispatch_control(int sig, short event, void *p)
 
 		switch (imsg.hdr.type) {
 		case IMSG_STATS: {
-			struct stats *s;
+			struct stats *s = imsg.data;
 
-			s = imsg.data;
+			IMSG_SIZE_CHECK(s);
+
 			s->u.parent = s_parent;
 			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
 			break;
@@ -1043,37 +1047,6 @@ parent_open_message_file(struct batch *batchp)
 }
 
 int
-parent_mailbox_init(struct passwd *pw, char *pathname)
-{
-	int fd;
-	int ret = 1;
-	int mode = O_CREAT|O_EXCL;
-
-	/* user cannot create mailbox */
-	if (seteuid(0) == -1)
-		fatal("privraise failed");
-
-	errno = 0;
-	fd = open(pathname, mode, 0600);
-
-	if (fd == -1) {
-		if (errno != EEXIST)
-			ret = 0;
-	}
-
-	if (fd != -1) {
-		if (fchown(fd, pw->pw_uid, 0) == -1)
-			fatal("fchown");
-		close(fd);
-	}
-
-	if (seteuid(pw->pw_uid) == -1)
-		fatal("privdropfailed");
-		
-	return ret;
-}
-
-int
 parent_mailbox_open(char *path, struct passwd *pw, struct batch *batchp)
 {
 	pid_t pid;
@@ -1089,13 +1062,7 @@ parent_mailbox_open(char *path, struct passwd *pw, struct batch *batchp)
 		return -1;
 	}
 
-	if (! parent_mailbox_init(pw, path)) {
-		batchp->message.status |= S_MESSAGE_TEMPFAILURE;
-		return -1;
-	}
-
 	log_debug("executing mail.local");
-
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, pipefd) == -1) {
 		batchp->message.status |= S_MESSAGE_PERMFAILURE;
 		return -1;
@@ -1380,7 +1347,7 @@ parent_enqueue_offline(struct smtpd *env, char *runner_path)
 			_exit(1);
 		p[len - 1] = '\0';
 
-		addargs(&args, "%s", _PATH_SENDMAIL);
+		addargs(&args, "%s", "sendmail");
 
 		while ((tmp = strsep(&p, "|")) != NULL)
 			addargs(&args, "%s", tmp);
@@ -1392,7 +1359,7 @@ parent_enqueue_offline(struct smtpd *env, char *runner_path)
 		envp[1] = (char *)NULL;
 		environ = envp;
 
-		execvp(args.list[0], args.list);
+		execvp(PATH_SMTPCTL, args.list);
 		_exit(1);
 	}
 

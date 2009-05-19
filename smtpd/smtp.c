@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.45 2009/05/14 15:05:12 eric Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.47 2009/05/19 11:24:24 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -169,6 +169,8 @@ smtp_dispatch_parent(int sig, short event, void *p)
 
 			log_debug("smtp_dispatch_parent: parent handled authentication");
 
+			IMSG_SIZE_CHECK(reply);
+
 			if ((s = session_lookup(env, reply->session_id)) == NULL)
 				break;
 
@@ -232,6 +234,8 @@ smtp_dispatch_mfa(int sig, short event, void *p)
 
 			log_debug("smtp_dispatch_mfa: mfa handled return path");
 
+			IMSG_SIZE_CHECK(ss);
+
 			if ((s = session_lookup(env, ss->id)) == NULL)
 				break;
 
@@ -288,6 +292,8 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			struct dns		*reply = imsg.data;
 			struct session		*s;
 			struct session		 key;
+
+			IMSG_SIZE_CHECK(reply);
 
 			key.s_id = reply->id;
 
@@ -358,6 +364,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 
 			log_debug("smtp_dispatch_queue: queue handled message creation");
 
+			IMSG_SIZE_CHECK(ss);
+
 			if ((s = session_lookup(env, ss->id)) == NULL)
 				break;
 
@@ -372,6 +380,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			int			 fd;
 
 			log_debug("smtp_dispatch_queue: queue handled message creation");
+
+			IMSG_SIZE_CHECK(ss);
 
 			fd = imsg_get_fd(ibuf, &imsg);
 
@@ -397,22 +407,20 @@ smtp_dispatch_queue(int sig, short event, void *p)
 
 			log_debug("smtp_dispatch_queue: tempfail in queue");
 
-			/*
-			 * IMSG_QUEUE_TEMPFAIL is not the final reply to
-			 * IMSG_MFA_RCPT - IMSG_QUEUE_COMMIT_ENVELOPES is.
-			 * Therefore, nothing more but updating the flags
-			 * is allowed here. If session_lookup were to be
-			 * called, then subsequent session_lookup in the
-			 * IMSG_QUEUE_COMMIT_ENVELOPES handler would fatal for
-			 * either of two reasons: missing session, or missing
-			 * EVLOCKED flag.
-			 */
+			IMSG_SIZE_CHECK(ss);
+
 			key.s_id = ss->id;
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &key);
 			if (s == NULL)
 				fatalx("smtp_dispatch_queue: session is gone");
 
-			s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+			if (s->s_flags & F_WRITEONLY) {
+				/*
+				 * Session is write-only, can't destroy it.
+				 */
+				s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+			} else
+				fatalx("smtp_dispatch_queue: corrupt session");
 			break;
 		}
 
@@ -422,6 +430,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			struct session		*s;
 
 			log_debug("smtp_dispatch_queue: queue acknowledged message submission");
+
+			IMSG_SIZE_CHECK(ss);
 
 			if ((s = session_lookup(env, ss->id)) == NULL)
 				break;
@@ -540,6 +550,7 @@ smtp_dispatch_control(int sig, short event, void *p)
 			struct stats *s;
 
 			s = imsg.data;
+			IMSG_SIZE_CHECK(s);
 			s->u.smtp = s_smtp;
 			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
 			break;
@@ -752,9 +763,9 @@ session_lookup(struct smtpd *env, u_int64_t id)
 	if (s == NULL)
 		fatalx("session_lookup: session is gone");
 
-	if (!(s->s_flags & F_EVLOCKED))
+	if (!(s->s_flags & F_WRITEONLY))
 		fatalx("session_lookup: corrupt session");
-	s->s_flags &= ~F_EVLOCKED;
+	s->s_flags &= ~F_WRITEONLY;
 
 	if (s->s_flags & F_QUIT) {
 		session_destroy(s);

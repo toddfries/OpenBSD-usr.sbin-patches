@@ -1,4 +1,4 @@
-/*	$OpenBSD: ssl.c,v 1.13 2009/04/15 20:34:59 jacekm Exp $	*/
+/*	$OpenBSD: ssl.c,v 1.15 2009/05/19 22:41:35 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -384,9 +384,6 @@ ssl_load_certfile(struct smtpd *env, const char *name)
 		return (-1);
 	}
 
-	if (s->ssl_cert == NULL || s->ssl_key == NULL)
-		fatal("invalid certificates");
-
 	SPLAY_INSERT(ssltree, &env->sc_ssl, s);
 
 	return (0);
@@ -503,8 +500,6 @@ ssl_session_accept(int fd, short event, void *p)
 		}
 	}
 
-	event_set(&s->s_bev->ev_read, s->s_fd, EV_READ, ssl_read, s->s_bev);
-	event_set(&s->s_bev->ev_write, s->s_fd, EV_WRITE, ssl_write, s->s_bev);
 
 	log_info("ssl_session_accept: accepted ssl client");
 	s->s_flags |= F_SECURE;
@@ -518,7 +513,11 @@ ssl_session_accept(int fd, short event, void *p)
 		s_smtp.starttls_active++;
 	}
 
+	session_bufferevent_new(s);
+	event_set(&s->s_bev->ev_read, s->s_fd, EV_READ, ssl_read, s->s_bev);
+	event_set(&s->s_bev->ev_write, s->s_fd, EV_WRITE, ssl_write, s->s_bev);
 	session_pickup(s, NULL);
+
 	return;
 retry:
 	event_add(&s->s_ev, &s->s_tv);
