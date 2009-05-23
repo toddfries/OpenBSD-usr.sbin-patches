@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.47 2009/05/19 11:24:24 jacekm Exp $	*/
+/*	$OpenBSD: lka.c,v 1.50 2009/05/20 16:07:26 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -129,6 +129,127 @@ lka_dispatch_parent(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_CONF_START:
+			if ((env->sc_rules_reload = calloc(1, sizeof(*env->sc_rules))) == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			if ((env->sc_maps_reload = calloc(1, sizeof(*env->sc_maps))) == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			TAILQ_INIT(env->sc_rules_reload);
+			TAILQ_INIT(env->sc_maps_reload);
+			break;
+		case IMSG_CONF_RULE: {
+			struct rule *rule = imsg.data;
+
+			IMSG_SIZE_CHECK(rule);
+
+			rule = calloc(1, sizeof(*rule));
+			if (rule == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			*rule = *(struct rule *)imsg.data;
+
+			TAILQ_INIT(&rule->r_conditions);
+			TAILQ_INSERT_TAIL(env->sc_rules_reload, rule, r_entry);
+			break;
+		}
+		case IMSG_CONF_CONDITION: {
+			struct rule *r = TAILQ_LAST(env->sc_rules_reload, rulelist);
+			struct cond *cond = imsg.data;
+
+			IMSG_SIZE_CHECK(cond);
+
+			cond = calloc(1, sizeof(*cond));
+			if (cond == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			*cond = *(struct cond *)imsg.data;
+
+			TAILQ_INSERT_TAIL(&r->r_conditions, cond, c_entry);
+			break;
+		}
+		case IMSG_CONF_MAP: {
+			struct map *m = imsg.data;
+
+			IMSG_SIZE_CHECK(m);
+
+			m = calloc(1, sizeof(*m));
+			if (m == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			*m = *(struct map *)imsg.data;
+
+			TAILQ_INIT(&m->m_contents);
+			TAILQ_INSERT_TAIL(env->sc_maps_reload, m, m_entry);
+			break;
+		}
+		case IMSG_CONF_RULE_SOURCE: {
+			struct rule *rule = TAILQ_LAST(env->sc_rules_reload, rulelist);
+			char *sourcemap = imsg.data;
+			void *temp = env->sc_maps;
+
+			/* map lookup must be done in the reloaded conf */
+			env->sc_maps = env->sc_maps_reload;
+			rule->r_sources = map_findbyname(env, sourcemap);
+			if (rule->r_sources == NULL)
+				fatalx("maps inconsistency");
+			env->sc_maps = temp;
+			break;
+		}
+		case IMSG_CONF_MAP_CONTENT: {
+			struct map *m = TAILQ_LAST(env->sc_maps_reload, maplist);
+			struct mapel *mapel = imsg.data;
+			
+			IMSG_SIZE_CHECK(mapel);
+			
+			mapel = calloc(1, sizeof(*mapel));
+			if (mapel == NULL)
+				fatal("mfa_dispatch_parent: calloc");
+			*mapel = *(struct mapel *)imsg.data;
+
+			TAILQ_INSERT_TAIL(&m->m_contents, mapel, me_entry);
+			break;
+		}
+		case IMSG_CONF_END: {
+			void *temp;
+			struct rule *r;
+			struct cond *cond;
+			struct map *m;
+			struct mapel *mapel;
+			
+			/* switch and destroy old ruleset */
+			temp = env->sc_rules;
+			env->sc_rules = env->sc_rules_reload;
+			env->sc_rules_reload = temp;
+
+			temp = env->sc_maps;
+			env->sc_maps = env->sc_maps_reload;
+			env->sc_maps_reload = temp;
+			
+			if (env->sc_rules_reload) {
+				while ((r = TAILQ_FIRST(env->sc_rules_reload))) {
+					TAILQ_REMOVE(env->sc_rules_reload, r, r_entry);
+					while ((cond = TAILQ_FIRST(&r->r_conditions))) {
+						TAILQ_REMOVE(&r->r_conditions, cond, c_entry);
+						free(cond);
+					}
+					free(r);
+				}
+				free(env->sc_rules_reload);
+				env->sc_rules_reload = NULL;
+			}
+
+			if (env->sc_maps_reload) {
+				while ((m = TAILQ_FIRST(env->sc_maps_reload))) {
+					TAILQ_REMOVE(env->sc_maps_reload, m, m_entry);
+					while ((mapel = TAILQ_FIRST(&m->m_contents))) {
+						TAILQ_REMOVE(&m->m_contents, mapel, me_entry);
+						free(mapel);
+					}
+					free(m);
+				}
+				free(env->sc_maps_reload);
+				env->sc_maps_reload = NULL;
+			}
+
+			break;
+		}
 		case IMSG_PARENT_FORWARD_OPEN: {
 			int fd;
 			struct forward_req	*fwreq = imsg.data;
@@ -600,7 +721,7 @@ lka(struct smtpd *env)
 		return (pid);
 	}
 
-//	purge_config(env, PURGE_EVERYTHING);
+	purge_config(env, PURGE_EVERYTHING);
 
 	pw = env->sc_pw;
 
