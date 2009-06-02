@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.112 2009/05/20 14:29:44 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.121 2009/06/01 18:24:01 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -67,7 +67,13 @@
 #define PATH_OFFLINE		"/offline"
 
 /* number of MX records to lookup */
-#define MAX_MX_COUNT	10
+#define MAX_MX_COUNT		10
+
+/* max response delay under flood conditions */
+#define MAX_RESPONSE_DELAY	60
+
+/* how many responses per state are undelayed */
+#define FAST_RESPONSES		2
 
 /* rfc5321 limits */
 #define	SMTP_TEXTLINE_MAX	1000
@@ -79,11 +85,15 @@
 #define F_AUTH			 0x04
 #define F_SSL			(F_SMTPS|F_STARTTLS)
 
+#define F_SCERT			0x01
+#define F_CCERT			0x02
+
 #define ADVERTISE_TLS(s) \
 	((s)->s_l->flags & F_STARTTLS && !((s)->s_flags & F_SECURE))
 
 #define ADVERTISE_AUTH(s) \
-	((s)->s_l->flags & F_AUTH && ((s)->s_flags & F_SECURE))
+	((s)->s_l->flags & F_AUTH && (s)->s_flags & F_SECURE && \
+	 !((s)->s_flags & F_AUTHENTICATED))
 
 struct netaddr {
 	struct sockaddr_storage ss;
@@ -94,6 +104,7 @@ struct relayhost {
 	u_int8_t flags;
 	char hostname[MAXHOSTNAMELEN];
 	u_int16_t port;
+	char cert[PATH_MAX];
 };
 
 struct mxhost {
@@ -496,15 +507,17 @@ enum batch_flags {
 
 enum child_type {
 	CHILD_INVALID,
+	CHILD_DAEMON,
 	CHILD_MDA,
 	CHILD_ENQUEUE_OFFLINE
 };
 
-struct mdaproc {
-	SPLAY_ENTRY(mdaproc)	mdaproc_nodes;
+struct child {
+	SPLAY_ENTRY(child)	entry;
 
 	pid_t			pid;
 	enum child_type		type;
+	enum smtp_proc_type	title;
 };
 
 struct batch {
@@ -561,6 +574,7 @@ enum session_state {
 	S_DONE,
 	S_QUIT
 };
+#define STATE_COUNT	18
 
 struct ssl {
 	SPLAY_ENTRY(ssl)	 ssl_nodes;
@@ -569,6 +583,7 @@ struct ssl {
 	off_t			 ssl_cert_len;
 	char			*ssl_key;
 	off_t			 ssl_key_len;
+	u_int8_t		 flags;
 };
 
 struct listener {
@@ -585,14 +600,11 @@ struct listener {
 	TAILQ_ENTRY(listener)	 entry;
 };
 
-struct session_auth_req {
-	u_int64_t	session_id;
-	char		buffer[MAX_LINE_SIZE];
-};
-
-struct session_auth_reply {
-	u_int64_t	session_id;
-	u_int8_t	value;
+struct auth {
+	u_int64_t	 id;
+	char		 user[MAXLOGNAME];
+	char		 pass[MAX_LINE_SIZE];
+	int		 success;
 };
 
 enum session_flags {
@@ -624,9 +636,11 @@ struct session {
 	int				 s_buflen;
 	struct timeval			 s_tv;
 	struct message			 s_msg;
+	short				 s_nresp[STATE_COUNT];
 	size_t				 rcptcount;
+	long				 s_datalen;
 
-	struct session_auth_req		 s_auth;
+	struct auth			 s_auth;
 
 	char				 credentials[MAX_LINE_SIZE];
 
@@ -658,6 +672,7 @@ struct smtpd {
 	struct imsgbuf				*sc_ibufs[PROC_COUNT];
 	int					 sc_instances[PROC_COUNT];
 	int					 sc_instance;
+	char					*sc_title[PROC_COUNT];
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
 	TAILQ_HEAD(listenerlist, listener)	 sc_listeners;
@@ -667,9 +682,11 @@ struct smtpd {
 	SPLAY_HEAD(msgtree, message)		 sc_messages;
 	SPLAY_HEAD(ssltree, ssl)		 sc_ssl;
 
-	SPLAY_HEAD(batchtree, batch)		batch_queue;
-	SPLAY_HEAD(mdaproctree, mdaproc)	mdaproc_queue;
-	SPLAY_HEAD(lkatree, lkasession)		lka_sessions;
+	SPLAY_HEAD(batchtree, batch)		 batch_queue;
+	SPLAY_HEAD(childtree, child)		 children;
+	SPLAY_HEAD(lkatree, lkasession)		 lka_sessions;
+
+	struct stats				*stats;
 };
 
 struct s_parent {
@@ -704,17 +721,15 @@ struct s_session {
 	size_t		toofast;
 	size_t		tempfail;
 	size_t		linetoolong;
+	size_t		delays;
 };
 
 struct stats {
-	int			fd;
-	union u_stats {
-		struct s_parent	parent;
-		struct s_queue	queue;
-		struct s_runner	runner;
-		struct s_session smtp;
-		struct s_session mta;
-	}			u;
+	struct s_parent		 parent;
+	struct s_queue		 queue;
+	struct s_runner		 runner;
+	struct s_session	 mta;
+	struct s_session	 smtp;
 };
 
 struct sched {
@@ -848,6 +863,10 @@ int	 imsg_get_fd(struct imsgbuf *, struct imsg *);
 int	 imsg_flush(struct imsgbuf *);
 void	 imsg_clear(struct imsgbuf *);
 
+/* smtpd.c */
+int	 child_cmp(struct child *, struct child *);
+SPLAY_PROTOTYPE(childtree, child, entry, child_cmp);
+
 /* lka.c */
 pid_t		 lka(struct smtpd *);
 int		 lkasession_cmp(struct lkasession *, struct lkasession *);
@@ -904,8 +923,6 @@ char		*map_dblookup(struct smtpd *, char *, char *);
 
 /* mda.c */
 pid_t		 mda(struct smtpd *);
-int		 mdaproc_cmp(struct mdaproc *, struct mdaproc *);
-SPLAY_PROTOTYPE(mdaproctree, mdaproc, mdaproc_nodes, mdaproc_cmp);
 
 /* mta.c */
 pid_t		 mta(struct smtpd *);
@@ -925,7 +942,6 @@ SPLAY_PROTOTYPE(batchtree, batch, b_nodes, batch_cmp);
 
 /* smtp.c */
 pid_t		 smtp(struct smtpd *);
-void		 smtp_listener_setup(struct smtpd *, struct listener *);
 
 /* smtp_session.c */
 void		 session_init(struct listener *, struct session *);
@@ -954,7 +970,7 @@ int store_message(struct batch *, struct message *,
 void		 purge_config(struct smtpd *, u_int8_t);
 void		 unconfigure(struct smtpd *);
 void		 configure(struct smtpd *);
-void		 init_peers(struct smtpd *);
+void		 init_pipes(struct smtpd *);
 void		 config_pipes(struct smtpd *, struct peer *, u_int);
 void		 config_peers(struct smtpd *, struct peer *, u_int);
 
@@ -968,7 +984,7 @@ void	 ssl_transaction(struct session *);
 
 void	 ssl_session_init(struct session *);
 void	 ssl_session_destroy(struct session *);
-int	 ssl_load_certfile(struct smtpd *, const char *);
+int	 ssl_load_certfile(struct smtpd *, const char *, u_int8_t);
 void	 ssl_setup(struct smtpd *, struct listener *);
 int	 ssl_cmp(struct ssl *, struct ssl *);
 SPLAY_PROTOTYPE(ssltree, ssl, ssl_nodes, ssl_cmp);
@@ -977,7 +993,7 @@ SPLAY_PROTOTYPE(ssltree, ssl, ssl_nodes, ssl_cmp);
 int	 ssl_ctx_use_private_key(void *, char *, off_t);
 int	 ssl_ctx_use_certificate_chain(void *, char *, off_t);
 
-/* smtpd.c */
+/* map.c */
 struct map	*map_find(struct smtpd *, objid_t);
 struct map	*map_findbyname(struct smtpd *, const char *);
 
@@ -993,8 +1009,6 @@ void		 addargs(arglist *, char *, ...)
 int		 bsnprintf(char *, size_t, const char *, ...)
     __attribute__ ((format (printf, 3, 4)));
 int		 safe_fclose(FILE *);
-struct passwd 	*safe_getpwnam(const char *);
-struct passwd 	*safe_getpwuid(uid_t);
 int		 hostname_match(char *, char *);
 int		 recipient_to_path(struct path *, char *);
 int		 valid_localpart(char *);

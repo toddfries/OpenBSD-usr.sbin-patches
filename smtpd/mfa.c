@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.30 2009/05/21 01:07:13 gilles Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.34 2009/06/01 23:15:48 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -23,9 +23,6 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 #include <ctype.h>
 #include <event.h>
 #include <pwd.h>
@@ -48,11 +45,10 @@ void		mfa_disable_events(struct smtpd *);
 
 void		mfa_test_mail(struct smtpd *, struct message *);
 void		mfa_test_rcpt(struct smtpd *, struct message *);
-int		mfa_ruletest_rcpt(struct smtpd *, struct path *, struct sockaddr_storage *);
-int		mfa_check_source(struct map *, struct sockaddr_storage *);
-int		mfa_match_mask(struct sockaddr_storage *, struct netaddr *);
 
 int		strip_source_route(char *, size_t);
+
+struct rule    *ruleset_match(struct smtpd *, struct path *, struct sockaddr_storage *);
 
 void
 mfa_sig_handler(int sig, short event, void *p)
@@ -76,8 +72,8 @@ mfa_dispatch_parent(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_PARENT];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -86,14 +82,11 @@ mfa_dispatch_parent(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -181,47 +174,13 @@ mfa_dispatch_parent(int sig, short event, void *p)
 			break;
 		}
 		case IMSG_CONF_END: {
-			void *temp;
-			struct rule *r;
-			struct cond *cond;
-			struct map *m;
-			struct mapel *mapel;
-			
 			/* switch and destroy old ruleset */
-			temp = env->sc_rules;
+			if (env->sc_rules)
+				purge_config(env, PURGE_RULES);
+			if (env->sc_maps)
+				purge_config(env, PURGE_MAPS);
 			env->sc_rules = env->sc_rules_reload;
-			env->sc_rules_reload = temp;
-
-			temp = env->sc_maps;
 			env->sc_maps = env->sc_maps_reload;
-			env->sc_maps_reload = temp;
-			
-			if (env->sc_rules_reload) {
-				while ((r = TAILQ_FIRST(env->sc_rules_reload))) {
-					TAILQ_REMOVE(env->sc_rules_reload, r, r_entry);
-					while ((cond = TAILQ_FIRST(&r->r_conditions))) {
-						TAILQ_REMOVE(&r->r_conditions, cond, c_entry);
-						free(cond);
-					}
-					free(r);
-				}
-				free(env->sc_rules_reload);
-				env->sc_rules_reload = NULL;
-			}
-
-			if (env->sc_maps_reload) {
-				while ((m = TAILQ_FIRST(env->sc_maps_reload))) {
-					TAILQ_REMOVE(env->sc_maps_reload, m, m_entry);
-					while ((mapel = TAILQ_FIRST(&m->m_contents))) {
-						TAILQ_REMOVE(&m->m_contents, mapel, me_entry);
-						free(mapel);
-					}
-					free(m);
-				}
-				free(env->sc_maps_reload);
-				env->sc_maps_reload = NULL;
-			}
-
 			break;
 		}
 		default:
@@ -243,8 +202,8 @@ mfa_dispatch_smtp(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_SMTP];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -253,14 +212,11 @@ mfa_dispatch_smtp(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -307,8 +263,8 @@ mfa_dispatch_lka(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_LKA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -317,14 +273,11 @@ mfa_dispatch_lka(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -371,8 +324,8 @@ mfa_dispatch_control(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_CONTROL];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -381,14 +334,11 @@ mfa_dispatch_control(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -463,8 +413,8 @@ mfa(struct smtpd *env)
 #warning disabling privilege revocation and chroot in DEBUG MODE
 #endif
 
-	setproctitle("mail filter agent");
 	smtpd_process = PROC_MFA;
+	setproctitle("%s", env->sc_title[smtpd_process]);
 
 #ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
@@ -510,6 +460,7 @@ void
 mfa_test_mail(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
+	struct rule *r;
 
 	ss.id = m->id;
 	ss.code = 530;
@@ -528,6 +479,11 @@ mfa_test_mail(struct smtpd *env, struct message *m)
 	}
 
 	/* Current policy is to allow all well-formed addresses. */
+	r = ruleset_match(env, &ss.u.path, NULL);
+	if (r == NULL)
+		ss.u.path.rule.r_action = A_RELAY;
+	else
+		ss.u.path.rule = *r;
 	goto accept;
 
 refuse:
@@ -545,6 +501,7 @@ void
 mfa_test_rcpt(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
+	struct rule *r;
 
 	if (! valid_message_id(m->message_id))
 		fatalx("mfa_test_rcpt: received corrupted message_id");
@@ -565,8 +522,12 @@ mfa_test_rcpt(struct smtpd *env, struct message *m)
 	if (ss.flags & F_MESSAGE_AUTHENTICATED)
 		ss.u.path.flags |= F_PATH_AUTHENTICATED;
 
-	if (mfa_ruletest_rcpt(env, &ss.u.path, &ss.ss))
-		goto accept;
+	r = ruleset_match(env, &ss.u.path, &ss.ss);
+	if (r == NULL)
+		goto refuse;
+
+	ss.u.path.rule = *r;
+	goto accept;
 		
 refuse:
 	imsg_compose(env->sc_ibufs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, &ss,
@@ -577,112 +538,6 @@ accept:
 	ss.code = 250;
 	imsg_compose(env->sc_ibufs[PROC_LKA], IMSG_LKA_RCPT, 0, 0, -1,
 	    &ss, sizeof(ss));
-}
-
-int
-mfa_ruletest_rcpt(struct smtpd *env, struct path *path, struct sockaddr_storage *ss)
-{
-	struct rule *r;
-	struct cond *cond;
-	struct map *map;
-	struct mapel *me;
-
-	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
-		if (!(path->flags & F_PATH_AUTHENTICATED) &&
-		    ! mfa_check_source(r->r_sources, ss))
-			continue;
-
-		TAILQ_FOREACH(cond, &r->r_conditions, c_entry) {
-			if (cond->c_type == C_ALL) {
-				path->rule = *r;
-				return 1;
-			}
-
-			if (cond->c_type == C_DOM) {
-				cond->c_match = map_find(env, cond->c_map);
-				if (cond->c_match == NULL)
-					fatal("mfa failed to lookup map.");
-
-				map = cond->c_match;
-				TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-					log_debug("matching: %s to %s",
-					    path->domain, me->me_key.med_string);
-					if (hostname_match(path->domain, me->me_key.med_string)) {
-						path->rule = *r;
-						return 1;
-					}
-				}
-			}
-		}
-	}
-	return 0;
-}
-
-int
-mfa_check_source(struct map *map, struct sockaddr_storage *ss)
-{
-	struct mapel *me;
-
-	if (ss == NULL) {
-		/* This happens when caller is part of an internal
-		 * lookup (ie: alias resolved to a remote address)
-		 */
-		return 1;
-	}
-
-	TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-
-		if (ss->ss_family != me->me_key.med_addr.ss.ss_family)
-			continue;
-
-		if (ss->ss_len != me->me_key.med_addr.ss.ss_len)
-			continue;
-
-		if (mfa_match_mask(ss, &me->me_key.med_addr))
-			return 1;
-	}
-
-	return 0;
-}
-
-int
-mfa_match_mask(struct sockaddr_storage *ss, struct netaddr *ssmask)
-{
-	if (ss->ss_family == AF_INET) {
-		struct sockaddr_in *ssin = (struct sockaddr_in *)ss;
-		struct sockaddr_in *ssinmask = (struct sockaddr_in *)&ssmask->ss;
-
-		if ((ssin->sin_addr.s_addr & ssinmask->sin_addr.s_addr) ==
-		    ssinmask->sin_addr.s_addr)
-			return (1);
-		return (0);
-	}
-
-	if (ss->ss_family == AF_INET6) {
-		struct in6_addr	*in;
-		struct in6_addr	*inmask;
-		struct in6_addr	 mask;
-		int		 i;
-
-		bzero(&mask, sizeof(mask));
-		for (i = 0; i < (128 - ssmask->bits) / 8; i++)
-			mask.s6_addr[i] = 0xff;
-		i = ssmask->bits % 8;
-		if (i)
-			mask.s6_addr[ssmask->bits / 8] = 0xff00 >> i;
-
-		in = &((struct sockaddr_in6 *)ss)->sin6_addr;
-		inmask = &((struct sockaddr_in6 *)&ssmask->ss)->sin6_addr;
-
-		for (i = 0; i < 16; i++) {
-			if ((in->s6_addr[i] & mask.s6_addr[i]) !=
-			    inmask->s6_addr[i])
-				return (0);
-		}
-		return (1);
-	}
-
-	return (0);
 }
 
 int

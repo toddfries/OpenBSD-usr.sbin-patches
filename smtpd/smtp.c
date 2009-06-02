@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.48 2009/05/20 14:29:44 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.54 2009/06/01 14:38:45 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -52,8 +52,6 @@ void		smtp_accept(int, short, void *);
 void		session_auth_pickup(struct session *, char *, size_t);
 struct session *session_lookup(struct smtpd *, u_int64_t);
 
-struct s_session	s_smtp;
-
 void
 smtp_sig_handler(int sig, short event, void *p)
 {
@@ -76,8 +74,8 @@ smtp_dispatch_parent(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_PARENT];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -86,14 +84,11 @@ smtp_dispatch_parent(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -181,21 +176,25 @@ smtp_dispatch_parent(int sig, short event, void *p)
 			env->sc_flags &= ~SMTPD_CONFIGURING;
 			break;
 		case IMSG_PARENT_AUTHENTICATE: {
-			struct session			*s;
-			struct session_auth_reply	*reply = imsg.data;
+			struct auth	*reply = imsg.data;
+			struct session	*s;
 
-			log_debug("smtp_dispatch_parent: parent handled authentication");
+			log_debug("smtp_dispatch_parent: got auth reply");
 
 			IMSG_SIZE_CHECK(reply);
 
-			if ((s = session_lookup(env, reply->session_id)) == NULL)
+			if ((s = session_lookup(env, reply->id)) == NULL)
 				break;
 
-			if (reply->value)
+			if (reply->success) {
 				s->s_flags |= F_AUTHENTICATED;
+				s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
+			} else {
+				s->s_flags &= ~F_AUTHENTICATED;
+				s->s_msg.flags &= ~F_MESSAGE_AUTHENTICATED;
+			}
 
-			session_auth_pickup(s, NULL, 0);
-
+			session_pickup(s, NULL);
 			break;
 		}
 		default:
@@ -217,8 +216,8 @@ smtp_dispatch_mfa(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_MFA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -227,14 +226,11 @@ smtp_dispatch_mfa(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -278,8 +274,8 @@ smtp_dispatch_lka(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_LKA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -288,14 +284,11 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -348,8 +341,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_QUEUE];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -358,14 +351,11 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -475,8 +465,8 @@ smtp_dispatch_control(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_CONTROL];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -485,14 +475,11 @@ smtp_dispatch_control(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -511,7 +498,8 @@ smtp_dispatch_control(int sig, short event, void *p)
 			bzero(&l, sizeof(l));
 			l.env = env;
 
-			if (s_smtp.sessions_active >= env->sc_maxconn) {
+			if (env->stats->smtp.sessions_active >=
+			    env->sc_maxconn) {
 				log_warnx("denying local connection, too many"
 				    " sessions active");
 				imsg_compose(ibuf, IMSG_SMTP_ENQUEUE, 0, 0, -1,
@@ -541,8 +529,8 @@ smtp_dispatch_control(int sig, short event, void *p)
 
 			memcpy(&s->s_ss, res->ai_addr, res->ai_addrlen);
 
-			s_smtp.sessions++;
-			s_smtp.sessions_active++;
+			env->stats->smtp.sessions++;
+			env->stats->smtp.sessions_active++;
 
 			strlcpy(s->s_hostname, "localhost",
 			    sizeof(s->s_hostname));
@@ -563,15 +551,6 @@ smtp_dispatch_control(int sig, short event, void *p)
 		case IMSG_SMTP_RESUME:
 			smtp_resume(env);
 			break;
-		case IMSG_STATS: {
-			struct stats *s;
-
-			s = imsg.data;
-			IMSG_SIZE_CHECK(s);
-			s->u.smtp = s_smtp;
-			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
-			break;
-		}
 		default:
 			log_warnx("smtp_dispatch_control: got imsg %d",
 			    imsg.hdr.type);
@@ -629,8 +608,8 @@ smtp(struct smtpd *env)
 #warning disabling privilege revocation and chroot in DEBUG MODE
 #endif
 
-	setproctitle("smtp server");
 	smtpd_process = PROC_SMTP;
+	setproctitle("%s", env->sc_title[smtpd_process]);
 
 #ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
@@ -696,18 +675,25 @@ smtp_disable_events(struct smtpd *env)
 void
 smtp_pause(struct smtpd *env)
 {
+	struct listener *l;
+
 	log_debug("smtp_pause: pausing listening sockets");
-	smtp_disable_events(env);
 	env->sc_opts |= SMTPD_SMTP_PAUSED;
+
+	TAILQ_FOREACH(l, &env->sc_listeners, entry)
+		event_del(&l->ev);
 }
 
 void
 smtp_resume(struct smtpd *env)
 {
+	struct listener *l;
+
 	log_debug("smtp_resume: resuming listening sockets");
-	imsg_compose(env->sc_ibufs[PROC_PARENT], IMSG_PARENT_SEND_CONFIG,
-	    0, 0, -1, NULL, 0);
 	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
+
+	TAILQ_FOREACH(l, &env->sc_listeners, entry)
+		event_add(&l->ev, NULL);
 }
 
 void
@@ -740,30 +726,15 @@ smtp_accept(int fd, short event, void *p)
 
 	event_add(&l->ev, NULL);
 
-	s_smtp.sessions++;
-	s_smtp.sessions_active++;
+	s->s_env->stats->smtp.sessions++;
+	s->s_env->stats->smtp.sessions_active++;
 
-	if (s_smtp.sessions_active == s->s_env->sc_maxconn)
+	if (s->s_env->stats->smtp.sessions_active == s->s_env->sc_maxconn)
 		event_del(&l->ev);
 
 	dns_query_ptr(l->env, &s->s_ss, s->s_id);
 
 	SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
-}
-
-void
-smtp_listener_setup(struct smtpd *env, struct listener *l)
-{
-	int opt;
-
-	if ((l->fd = socket(l->ss.ss_family, SOCK_STREAM, 0)) == -1)
-		fatal("socket");
-
-	opt = 1;
-	setsockopt(l->fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-	if (bind(l->fd, (struct sockaddr *)&l->ss, l->ss.ss_len) == -1)
-		fatal("bind");
 }
 
 /*

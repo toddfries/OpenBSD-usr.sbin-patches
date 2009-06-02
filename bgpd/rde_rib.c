@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.102 2009/05/21 15:47:03 claudio Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.108 2009/06/02 00:09:02 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -36,6 +36,8 @@
 u_int16_t rib_size;
 struct rib *ribs;
 
+LIST_HEAD(, rib_context) rib_dump_h = LIST_HEAD_INITIALIZER(rib_dump_h);
+
 struct rib_entry *rib_add(struct rib *, struct bgpd_addr *, int);
 int rib_compare(const struct rib_entry *, const struct rib_entry *);
 void rib_remove(struct rib_entry *);
@@ -60,7 +62,7 @@ rib_init(void)
 	ribs[0].state = RIB_ACTIVE;
 	ribs[0].id = 0;
 	strlcpy(ribs[0].name, "Adj-RIB-In", sizeof("Adj-RIB-In"));
-	ribs[0].noevaluate = 1;
+	ribs[0].flags = F_RIB_NOEVALUATE;
 }
 
 u_int16_t
@@ -160,7 +162,8 @@ rib_add(struct rib *rib, struct bgpd_addr *prefix, int prefixlen)
 
 	LIST_INIT(&re->prefix_h);
 	re->prefix = pte;
-	re->rib = rib;
+	re->flags = rib->flags;
+	re->ribid = rib->id;
 
         if (RB_INSERT(rib_tree, &rib->rib, re) != NULL) {
 		log_warnx("rib_add: insert failed");
@@ -180,11 +183,15 @@ rib_remove(struct rib_entry *re)
 	if (!rib_empty(re))
 		fatalx("rib_remove: entry not empty");
 
+	if (re->flags & F_RIB_ENTRYLOCK)
+		/* entry is locked, don't free it. */
+		return;
+
 	pt_unref(re->prefix);
 	if (pt_empty(re->prefix))
 		pt_remove(re->prefix);
 
-	if (RB_REMOVE(rib_tree, &re->rib->rib, re) == NULL)
+	if (RB_REMOVE(rib_tree, &ribs[re->ribid].rib, re) == NULL)
 		log_warnx("rib_remove: remove failed.");
 
 	free(re);
@@ -217,19 +224,20 @@ rib_dump_r(struct rib_context *ctx)
 	struct rib_entry	*re;
 	unsigned int		 i;
 
-	if (ctx->ctx_p == NULL) {
+	if (ctx->ctx_re == NULL) {
 		re = RB_MIN(rib_tree, &ctx->ctx_rib->rib);
-		LIST_INSERT_HEAD(&ctx->ctx_rib->ctxts, ctx, entry);
+		LIST_INSERT_HEAD(&rib_dump_h, ctx, entry);
 	} else
 		re = rib_restart(ctx);
 
 	for (i = 0; re != NULL; re = RB_NEXT(rib_tree, unused, re)) {
 		if (ctx->ctx_af != AF_UNSPEC && ctx->ctx_af != re->prefix->af)
 			continue;
-		if (ctx->ctx_count && i++ >= ctx->ctx_count) {
-			/* store next start point */
-			ctx->ctx_p = re->prefix;
-			pt_ref(ctx->ctx_p);
+		if (ctx->ctx_count && i++ >= ctx->ctx_count &&
+		    (re->flags & F_RIB_ENTRYLOCK) == 0) {
+			/* store and lock last element */
+			ctx->ctx_re = re;
+			re->flags |= F_RIB_ENTRYLOCK;
 			return;
 		}
 		ctx->ctx_upcall(re, ctx->ctx_arg);
@@ -243,61 +251,43 @@ rib_dump_r(struct rib_context *ctx)
 struct rib_entry *
 rib_restart(struct rib_context *ctx)
 {
-	struct rib_entry *tmp, *prev = NULL;
-	int comp;
+	struct rib_entry *re;
 
-	/* frist check if the table is still around */
-	if (ctx->ctx_rib == NULL)
-		goto done;
+	re = ctx->ctx_re;
+	re->flags &= ~F_RIB_ENTRYLOCK;
 
-	/* then try to find the element */
-	tmp = RB_ROOT(&ctx->ctx_rib->rib);
-	while (tmp) {
-		prev = tmp;
-		comp = pt_prefix_cmp(ctx->ctx_p, tmp->prefix);
-		if (comp < 0)
-			tmp = RB_LEFT(tmp, rib_e);
-		else if (comp > 0)
-			tmp = RB_RIGHT(tmp, rib_e);
-		else
-			goto done;
+	/* find first non empty element */
+	while (rib_empty(re))
+		re = RB_NEXT(rib_tree, unused, re);
+
+	/* free the previously locked rib element if empty */
+	if (rib_empty(ctx->ctx_re))
+		rib_remove(ctx->ctx_re);
+	ctx->ctx_re = NULL;
+	return (re);
+}
+
+void
+rib_dump_runner(void)
+{
+	struct rib_context	*ctx, *next;
+
+	for (ctx = LIST_FIRST(&rib_dump_h); ctx != NULL; ctx = next) {
+		next = LIST_NEXT(ctx, entry);
+		rib_dump_r(ctx);
 	}
+}
 
-	/* no match, empty tree */
-	if (prev == NULL)
-		goto done;
-
-	/*
-	 * no perfect match
-	 * if last element was bigger use that as new start point
-	 */
-	if (comp < 0)
-		goto done;
-
-	/* backtrack until parent is bigger */
-	do {
-		prev = RB_PARENT(prev, rib_e);
-		if (prev == NULL)
-			/* all elements in the tree are smaller */
-			goto done;
-		comp = pt_prefix_cmp(ctx->ctx_p, prev->prefix);
-	} while (comp > 0);
-
-done:
-	/* unref the prefix and cleanup if needed. */
-	pt_unref(ctx->ctx_p);
-	if (pt_empty(ctx->ctx_p))
-		pt_remove(ctx->ctx_p);
-	return (prev);
+int
+rib_dump_pending(void)
+{
+	return (!LIST_EMPTY(&rib_dump_h));
 }
 
 /* used to bump correct prefix counters */
-#define PREFIX_COUNT(x, id, op)				\
-	do {						\
-		if (id == 1)				\
-			(x)->prefix_cnt += (op);	\
-		else					\
-			(x)->rib_cnt += (op);		\
+#define PREFIX_COUNT(x, op)			\
+	do {					\
+		(x)->prefix_cnt += (op);	\
 	} while (0)
 
 /* path specific functions */
@@ -340,7 +330,7 @@ path_shutdown(void)
 	free(pathtable.path_hashtbl);
 }
 
-void
+int
 path_update(struct rib *rib, struct rde_peer *peer, struct rde_aspath *nasp,
     struct bgpd_addr *prefix, int prefixlen)
 {
@@ -359,7 +349,7 @@ path_update(struct rib *rib, struct rde_peer *peer, struct rde_aspath *nasp,
 		if (path_compare(nasp, p->aspath) == 0) {
 			/* no change, update last change */
 			p->lastchange = time(NULL);
-			return;
+			return (0);
 		}
 	}
 
@@ -378,7 +368,8 @@ path_update(struct rib *rib, struct rde_peer *peer, struct rde_aspath *nasp,
 	if (p != NULL)
 		prefix_move(asp, p);
 	else
-		prefix_add(rib, asp, prefix, prefixlen);
+		return (prefix_add(rib, asp, prefix, prefixlen));
+	return (0);
 }
 
 int
@@ -466,8 +457,7 @@ void
 path_destroy(struct rde_aspath *asp)
 {
 	/* path_destroy can only unlink and free empty rde_aspath */
-	if (asp->prefix_cnt != 0 || asp->active_cnt != 0 ||
-	    asp->rib_cnt != 0)
+	if (asp->prefix_cnt != 0 || asp->active_cnt != 0)
 		log_warnx("path_destroy: prefix count out of sync");
 
 	nexthop_unlink(asp);
@@ -644,7 +634,7 @@ prefix_get(struct rib *rib, struct rde_peer *peer, struct bgpd_addr *prefix,
 /*
  * Adds or updates a prefix.
  */
-void
+int
 prefix_add(struct rib *rib, struct rde_aspath *asp, struct bgpd_addr *prefix,
     int prefixlen)
 
@@ -660,13 +650,14 @@ prefix_add(struct rib *rib, struct rde_aspath *asp, struct bgpd_addr *prefix,
 	if (p == NULL) {
 		p = prefix_alloc();
 		prefix_link(p, re, asp);
+		return (1);
 	} else {
 		if (p->aspath != asp) {
 			/* prefix belongs to a different aspath so move */
 			prefix_move(asp, p);
-			return;
-		}
-		p->lastchange = time(NULL);
+		} else
+			p->lastchange = time(NULL);
+		return (0);
 	}
 }
 
@@ -692,7 +683,7 @@ prefix_move(struct rde_aspath *asp, struct prefix *p)
 
 	/* add to new as path */
 	LIST_INSERT_HEAD(&asp->prefix_h, np, path_l);
-	PREFIX_COUNT(asp, p->rib->rib->id, 1);
+	PREFIX_COUNT(asp, 1);
 	/*
 	 * no need to update the peer prefix count because we are only moving
 	 * the prefix without changing the peer.
@@ -712,7 +703,7 @@ prefix_move(struct rde_aspath *asp, struct prefix *p)
 	/* remove old prefix node */
 	oasp = p->aspath;
 	LIST_REMOVE(p, path_l);
-	PREFIX_COUNT(oasp, p->rib->rib->id, -1);
+	PREFIX_COUNT(oasp, -1);
 	/* as before peer count needs no update because of move */
 
 	/* destroy all references to other objects and free the old prefix */
@@ -730,7 +721,7 @@ prefix_move(struct rde_aspath *asp, struct prefix *p)
  * Removes a prefix from all lists. If the parent objects -- path or
  * pt_entry -- become empty remove them too.
  */
-void
+int
 prefix_remove(struct rib *rib, struct rde_peer *peer, struct bgpd_addr *prefix,
     int prefixlen, u_int32_t flags)
 {
@@ -740,11 +731,11 @@ prefix_remove(struct rib *rib, struct rde_peer *peer, struct bgpd_addr *prefix,
 
 	re = rib_get(rib, prefix, prefixlen);
 	if (re == NULL)	/* Got a dummy withdrawn request */
-		return;
+		return (0);
 
 	p = prefix_bypeer(re, peer, flags);
 	if (p == NULL)		/* Got a dummy withdrawn request. */
-		return;
+		return (0);
 
 	asp = p->aspath;
 
@@ -761,6 +752,8 @@ prefix_remove(struct rib *rib, struct rde_peer *peer, struct bgpd_addr *prefix,
 		rib_remove(re);
 	if (path_empty(asp))
 		path_destroy(asp);
+
+	return (1);
 }
 
 /* dump a prefix into specified buffer */
@@ -813,7 +806,7 @@ prefix_updateall(struct rde_aspath *asp, enum nexthop_state state,
 		/*
 		 * skip non local-RIBs or RIBs that are flagged as noeval.
 		 */
-		if (p->rib->rib->noevaluate)
+		if (p->rib->flags & F_RIB_NOEVALUATE)
 			continue;
 
 		if (oldstate == state && state == NEXTHOP_REACH) {
@@ -895,8 +888,7 @@ static void
 prefix_link(struct prefix *pref, struct rib_entry *re, struct rde_aspath *asp)
 {
 	LIST_INSERT_HEAD(&asp->prefix_h, pref, path_l);
-	PREFIX_COUNT(asp, re->rib->id, 1);
-	PREFIX_COUNT(asp->peer, re->rib->id, 1);
+	PREFIX_COUNT(asp, 1);
 
 	pref->aspath = asp;
 	pref->rib = re;
@@ -921,8 +913,7 @@ prefix_unlink(struct prefix *pref)
 	}
 
 	LIST_REMOVE(pref, path_l);
-	PREFIX_COUNT(pref->aspath, pref->rib->rib->id, -1);
-	PREFIX_COUNT(pref->aspath->peer, pref->rib->rib->id, -1);
+	PREFIX_COUNT(pref->aspath, -1);
 
 	pt_unref(pref->prefix);
 	if (pt_empty(pref->prefix))

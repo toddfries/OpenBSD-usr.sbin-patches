@@ -1,4 +1,4 @@
-/*	$OpenBSD: ssl.c,v 1.15 2009/05/19 22:41:35 gilles Exp $	*/
+/*	$OpenBSD: ssl.c,v 1.18 2009/06/01 18:02:41 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -55,8 +55,6 @@ void	 ssl_client_init(struct session *);
 extern void	bufferevent_read_pressure_cb(struct evbuffer *, size_t,
 		    size_t, void *);
 
-extern struct s_session	s_smtp;
-
 void
 ssl_connect(int fd, short event, void *p)
 {
@@ -66,7 +64,7 @@ ssl_connect(int fd, short event, void *p)
 	int		 ssl_err;
 
 	if (event == EV_TIMEOUT) {
-		log_debug("ssl_session_accept: session timed out");
+		log_debug("ssl_connect: session timed out");
 		session_destroy(s);
 		return;
 	}
@@ -339,7 +337,7 @@ ssl_ctx_create(void)
 }
 
 int
-ssl_load_certfile(struct smtpd *env, const char *name)
+ssl_load_certfile(struct smtpd *env, const char *name, u_int8_t flags)
 {
 	struct ssl	*s;
 	struct ssl	 key;
@@ -352,12 +350,15 @@ ssl_load_certfile(struct smtpd *env, const char *name)
 	}
 
 	s = SPLAY_FIND(ssltree, &env->sc_ssl, &key);
-	if (s != NULL)
+	if (s != NULL) {
+		s->flags |= flags;
 		return 0;
+	}
 
 	if ((s = calloc(1, sizeof(*s))) == NULL)
 		fatal(NULL);
 
+	s->flags = flags;
 	(void)strlcpy(s->ssl_name, key.ssl_name, sizeof(s->ssl_name));
 
 	if (! bsnprintf(certfile, sizeof(certfile),
@@ -505,12 +506,12 @@ ssl_session_accept(int fd, short event, void *p)
 	s->s_flags |= F_SECURE;
 
 	if (s->s_l->flags & F_SMTPS) {
-		s_smtp.smtps++;
-		s_smtp.smtps_active++;
+		s->s_env->stats->smtp.smtps++;
+		s->s_env->stats->smtp.smtps_active++;
 	}
 	if (s->s_l->flags & F_STARTTLS) {
-		s_smtp.starttls++;
-		s_smtp.starttls_active++;
+		s->s_env->stats->smtp.starttls++;
+		s->s_env->stats->smtp.starttls_active++;
 	}
 
 	session_bufferevent_new(s);
@@ -563,9 +564,31 @@ void
 ssl_client_init(struct session *s)
 {
 	SSL_CTX		*ctx;
+	struct ssl	 key;
+	struct ssl	*ssl;
 
 	log_debug("ssl_client_init: preparing SSL");
 	ctx = ssl_ctx_create();
+
+	if (s->batch->rule.r_value.relayhost.cert[0] != '\0') {
+		if (strlcpy(key.ssl_name,
+			s->batch->rule.r_value.relayhost.cert,
+			sizeof(key.ssl_name)) >= sizeof(key.ssl_name))
+			log_warnx("warning: certificate name too long: %s",
+			    s->batch->rule.r_value.relayhost.cert);
+		else if ((ssl = SPLAY_FIND(ssltree, &s->s_env->sc_ssl,
+			    &key)) == NULL)
+			log_warnx("warning: failed to find client "
+			    "certificate: %s", key.ssl_name);
+		else if (!ssl_ctx_use_certificate_chain(ctx, ssl->ssl_cert,
+			ssl->ssl_cert_len))
+			ssl_error("ssl_client_init");
+		else if (!ssl_ctx_use_private_key(ctx, ssl->ssl_key,
+			ssl->ssl_key_len))
+			ssl_error("ssl_client_init");
+		else if (!SSL_CTX_check_private_key(ctx))
+			ssl_error("ssl_client_init");
+	}
 
 	s->s_ssl = SSL_new(ctx);
 	if (s->s_ssl == NULL)
@@ -602,10 +625,10 @@ ssl_session_destroy(struct session *s)
 
 	if (s->s_l->flags & F_SMTPS) {
 		if (s->s_flags & F_SECURE)
-			s_smtp.smtps_active--;
+			s->s_env->stats->smtp.smtps_active--;
 	}
 	if (s->s_l->flags & F_STARTTLS) {
 		if (s->s_flags & F_SECURE)
-			s_smtp.starttls_active--;
+			s->s_env->stats->smtp.starttls_active--;
 	}
 }

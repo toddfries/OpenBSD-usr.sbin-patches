@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.34 2009/05/21 01:27:48 gilles Exp $	*/
+/*	$OpenBSD: parse.y,v 1.36 2009/05/30 23:53:41 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -266,7 +266,7 @@ main		: QUEUE INTERVAL interval	{
 			if ($7)
 				flags |= F_AUTH;
 
-			if (ssl_load_certfile(conf, cert) < 0) {
+			if (ssl_load_certfile(conf, cert, F_SCERT) < 0) {
 				log_warnx("warning: could not load cert: %s, "
 				    "no SSL/TLS/AUTH support", cert);
 				if ($5) {
@@ -429,6 +429,7 @@ stringel	: STRING			{
 					ssin.sin_family = AF_INET;
 					me->me_key.med_addr.bits = bits;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in);
 				}
 				else {
 					bzero(&ssin6, sizeof(struct sockaddr_in6));
@@ -438,6 +439,7 @@ stringel	: STRING			{
 					ssin6.sin6_family = AF_INET6;
 					me->me_key.med_addr.bits = bits;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin6;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in6);
 				}
 			}
 			else {
@@ -446,11 +448,13 @@ stringel	: STRING			{
 					ssin.sin_family = AF_INET;
 					me->me_key.med_addr.bits = 0;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in);
 				}
 				else if (inet_pton(AF_INET6, $1, &ssin6.sin6_addr) == 1) {
 					ssin6.sin6_family = AF_INET6;
 					me->me_key.med_addr.bits = 0;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin6;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in6);
 				}
 				else {
 					/* either a hostname or a value unrelated to network */
@@ -508,6 +512,7 @@ mapref		: STRING			{
 					ssin.sin_family = AF_INET;
 					me->me_key.med_addr.bits = bits;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in);
 				}
 				else {
 					bzero(&ssin6, sizeof(struct sockaddr_in6));
@@ -517,6 +522,7 @@ mapref		: STRING			{
 					ssin6.sin6_family = AF_INET6;
 					me->me_key.med_addr.bits = bits;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin6;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in6);
 				}
 			}
 			else {
@@ -525,11 +531,13 @@ mapref		: STRING			{
 					ssin.sin_family = AF_INET;
 					me->me_key.med_addr.bits = 0;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in);
 				}
 				else if (inet_pton(AF_INET6, $1, &ssin6.sin6_addr) == 1) {
 					ssin6.sin6_family = AF_INET6;
 					me->me_key.med_addr.bits = 0;
 					me->me_key.med_addr.ss = *(struct sockaddr_storage *)&ssin6;
+					me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in6);
 				}
 				else {
 					/* either a hostname or a value unrelated to network */
@@ -737,11 +745,12 @@ action		: DELIVER TO MAILDIR STRING	{
 		| RELAY				{
 			rule->r_action = A_RELAY;
 		}
-		| RELAY VIA STRING port ssl auth {
+		| RELAY VIA STRING port ssl certname auth {
 			rule->r_action = A_RELAYVIA;
 
-			if ($5 == 0 && $6) {
-				yyerror("error: auth over insecure channel");
+			if ($5 == 0 && ($6 != NULL || $7)) {
+				yyerror("error: must specify tls, smtps, or ssl");
+				free($6);
 				free($3);
 				YYERROR;
 			}
@@ -754,10 +763,25 @@ action		: DELIVER TO MAILDIR STRING	{
 			rule->r_value.relayhost.port = $4;
 			rule->r_value.relayhost.flags |= $5;
 
-			if ($6)
+			if ($7)
 				rule->r_value.relayhost.flags |= F_AUTH;
 
+			if ($6 != NULL) {
+				if (ssl_load_certfile(conf, $6, F_CCERT) < 0) {
+					yyerror("cannot load certificate: %s",
+					    $6);
+					free($6);
+					free($3);
+					YYERROR;
+				}
+				if (strlcpy(rule->r_value.relayhost.cert, $6,
+					sizeof(rule->r_value.relayhost.cert))
+				    >= sizeof(rule->r_value.relayhost.cert))
+					fatal("certificate path too long");
+			}
+
 			free($3);
+			free($6);
 		}
 		;
 
@@ -789,6 +813,7 @@ from		: FROM mapref			{
 			if ((me = calloc(1, sizeof(*me))) == NULL)
 				fatal("out of memory");
 			me->me_key.med_addr.bits = 32;
+			me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in);
 			ssin = (struct sockaddr_in *)&me->me_key.med_addr.ss;
 			ssin->sin_family = AF_INET;
 			if (inet_pton(AF_INET, "0.0.0.0", &ssin->sin_addr) != 1) {
@@ -801,6 +826,7 @@ from		: FROM mapref			{
 			if ((me = calloc(1, sizeof(*me))) == NULL)
 				fatal("out of memory");
 			me->me_key.med_addr.bits = 128;
+			me->me_key.med_addr.ss.ss_len = sizeof(struct sockaddr_in6);
 			ssin6 = (struct sockaddr_in6 *)&me->me_key.med_addr.ss;
 			ssin6->sin6_family = AF_INET6;
 			if (inet_pton(AF_INET6, "::", &ssin6->sin6_addr) != 1) {

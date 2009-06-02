@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.109 2009/05/21 15:47:03 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.114 2009/06/02 00:09:02 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -67,7 +67,6 @@ struct rde_peer {
 	u_int64_t			 prefix_sent_update;
 	u_int64_t			 prefix_sent_withdraw;
 	u_int32_t			 prefix_cnt; /* # of prefixes */
-	u_int32_t			 rib_cnt;    /* # of p. in Adj-RIB-In */
 	u_int32_t			 remote_bgpid; /* host byte order! */
 	u_int32_t			 up_pcnt;
 	u_int32_t			 up_acnt;
@@ -184,7 +183,6 @@ struct rde_aspath {
 	u_int32_t			 weight;	/* low prio lpref */
 	u_int32_t			 prefix_cnt; /* # of prefixes */
 	u_int32_t			 active_cnt; /* # of active prefixes */
-	u_int32_t			 rib_cnt;    /* # of p. in Adj-RIB-In */
 	u_int32_t			 flags;		/* internally used */
 	u_int16_t			 rtlabelid;	/* route label id */
 	u_int16_t			 pftableid;	/* pf table id */
@@ -243,14 +241,14 @@ struct pt_entry6 {
 };
 
 struct rib_context {
-	LIST_ENTRY(rib_context)	 entry;
-	struct pt_entry		*ctx_p;
-	struct rib		*ctx_rib;
+	LIST_ENTRY(rib_context)		 entry;
+	struct rib_entry		*ctx_re;
+	struct rib			*ctx_rib;
 	void		(*ctx_upcall)(struct rib_entry *, void *);
 	void		(*ctx_done)(void *);
-	void			*ctx_arg;
-	unsigned int		 ctx_count;
-	sa_family_t		 ctx_af;
+	void				*ctx_arg;
+	unsigned int			 ctx_count;
+	sa_family_t			 ctx_af;
 };
 
 struct rib_entry {
@@ -258,7 +256,8 @@ struct rib_entry {
 	struct prefix_head	 prefix_h;
 	struct prefix		*active; /* for fast access */
 	struct pt_entry		*prefix;
-	struct rib		*rib;
+	u_int16_t		 ribid;
+	u_int16_t		 flags;
 };
 
 enum rib_state {
@@ -270,11 +269,13 @@ enum rib_state {
 struct rib {
 	char			name[PEER_DESCR_LEN];
 	struct rib_tree		rib;
-	LIST_HEAD(, rib_context)	ctxts;
 	enum rib_state		state;
+	u_int16_t		flags;
 	u_int16_t		id;
-	u_char			noevaluate;
 };
+
+#define F_RIB_ENTRYLOCK		0x0001
+#define F_RIB_NOEVALUATE	0x0002
 
 struct prefix {
 	LIST_ENTRY(prefix)		 rib_l, path_l;
@@ -352,10 +353,12 @@ struct rib_entry *rib_lookup(struct rib *, struct bgpd_addr *);
 void		 rib_dump(struct rib *, void (*)(struct rib_entry *, void *),
 		     void *, sa_family_t);
 void		 rib_dump_r(struct rib_context *);
+void		 rib_dump_runner(void);
+int		 rib_dump_pending(void);
 
 void		 path_init(u_int32_t);
 void		 path_shutdown(void);
-void		 path_update(struct rib *, struct rde_peer *,
+int		 path_update(struct rib *, struct rde_peer *,
 		     struct rde_aspath *, struct bgpd_addr *, int);
 int		 path_compare(struct rde_aspath *, struct rde_aspath *);
 struct rde_aspath *path_lookup(struct rde_aspath *, struct rde_peer *);
@@ -371,10 +374,10 @@ int		 prefix_compare(const struct bgpd_addr *,
 		    const struct bgpd_addr *, int);
 struct prefix	*prefix_get(struct rib *, struct rde_peer *,
 		    struct bgpd_addr *, int, u_int32_t);
-void		 prefix_add(struct rib *, struct rde_aspath *,
+int		 prefix_add(struct rib *, struct rde_aspath *,
 		    struct bgpd_addr *, int);
 void		 prefix_move(struct rde_aspath *, struct prefix *);
-void		 prefix_remove(struct rib *, struct rde_peer *,
+int		 prefix_remove(struct rib *, struct rde_peer *,
 		    struct bgpd_addr *, int, u_int32_t);
 int		 prefix_write(u_char *, int, struct bgpd_addr *, u_int8_t);
 struct prefix	*prefix_bypeer(struct rib_entry *, struct rde_peer *,

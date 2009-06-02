@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.48 2009/05/19 11:24:24 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.55 2009/06/01 13:20:56 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -79,8 +79,8 @@ mta_dispatch_parent(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_PARENT];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -89,14 +89,11 @@ mta_dispatch_parent(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -106,6 +103,40 @@ mta_dispatch_parent(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_CONF_START:
+			if (env->sc_flags & SMTPD_CONFIGURING)
+				break;
+			env->sc_flags |= SMTPD_CONFIGURING;
+			break;
+		case IMSG_CONF_SSL: {
+			struct ssl	*s;
+			struct ssl	*x_ssl;
+
+			if (!(env->sc_flags & SMTPD_CONFIGURING))
+				break;
+
+			if ((s = calloc(1, sizeof(*s))) == NULL)
+				fatal(NULL);
+			x_ssl = imsg.data;
+			(void)strlcpy(s->ssl_name, x_ssl->ssl_name,
+			    sizeof(s->ssl_name));
+			s->ssl_cert_len = x_ssl->ssl_cert_len;
+			if ((s->ssl_cert =
+			    strdup((char *)imsg.data + sizeof(*s))) == NULL)
+				fatal(NULL);
+			s->ssl_key_len = x_ssl->ssl_key_len;
+			if ((s->ssl_key = strdup((char *)imsg.data +
+			    (sizeof(*s) + s->ssl_cert_len))) == NULL)
+				fatal(NULL);
+
+			SPLAY_INSERT(ssltree, &env->sc_ssl, s);
+			break;
+		}
+		case IMSG_CONF_END:
+			if (!(env->sc_flags & SMTPD_CONFIGURING))
+				break;
+			env->sc_flags &= ~SMTPD_CONFIGURING;
+			break;
 		default:
 			log_warnx("mta_dispatch_parent: got imsg %d",
 			    imsg.hdr.type);
@@ -125,8 +156,8 @@ mta_dispatch_lka(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_LKA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -135,14 +166,11 @@ mta_dispatch_lka(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -244,8 +272,8 @@ mta_dispatch_queue(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_QUEUE];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -254,14 +282,11 @@ mta_dispatch_queue(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -312,8 +337,8 @@ mta_dispatch_runner(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_RUNNER];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -322,14 +347,11 @@ mta_dispatch_runner(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -370,6 +392,9 @@ mta_dispatch_runner(int sig, short event, void *p)
 
 			TAILQ_INIT(&batchp->messages);
 			SPLAY_INSERT(batchtree, &env->batch_queue, batchp);
+
+			env->stats->mta.sessions++;
+			env->stats->mta.sessions_active++;
 
 			break;
 		}
@@ -473,6 +498,7 @@ mta(struct smtpd *env)
 	struct event	 ev_sigterm;
 
 	struct peer peers[] = {
+		{ PROC_PARENT,	mta_dispatch_parent },
 		{ PROC_QUEUE,	mta_dispatch_queue },
 		{ PROC_RUNNER,	mta_dispatch_runner },
 		{ PROC_LKA,	mta_dispatch_lka }
@@ -500,8 +526,8 @@ mta(struct smtpd *env)
 #warning disabling privilege revocation and chroot in DEBUG MODE
 #endif
 
-	setproctitle("mail transfer agent");
 	smtpd_process = PROC_MTA;
+	setproctitle("%s", env->sc_title[smtpd_process]);
 
 #ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
@@ -567,6 +593,8 @@ mta_connect(struct session *sessionp)
 	struct linger lng;
 	struct mxhost *mxhost;
 
+	sessionp->s_fd = -1;
+
 	mxhost = TAILQ_FIRST(&sessionp->mxhosts);
 	if (mxhost == NULL)
 		return -1;
@@ -622,6 +650,7 @@ mta_write(int s, short event, void *arg)
 			free(mxhost);
 		}
 		close(s);
+		sessionp->s_fd = -1;
 
 		if (sessionp->s_bev) {
 			bufferevent_free(sessionp->s_bev);
@@ -813,6 +842,8 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 
 	case 535:
 		/* Authentication failed*/
+	case 554:
+		/* Relaying denied */
 	case 552:
 	case 553:
 		flags |= F_ISPROTOERROR;
@@ -913,15 +944,6 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 	}
 
 	case S_DATA: {
-		session_respond(sessionp, "Received: from %s (%s [%s])",
-		    batchp->session_helo, batchp->session_hostname,
-		    ss_to_text(&batchp->session_ss));
-
-		session_respond(sessionp, "\tby %s with ESMTP id %s;",
-		    batchp->env->sc_hostname, batchp->message_id);
-
-		session_respond(sessionp, "\t%s", time_to_text(batchp->creation));
-
 		if (sessionp->s_flags & F_SECURE) {
 			log_info("%s: version=%s cipher=%s bits=%d",
 			batchp->message_id,

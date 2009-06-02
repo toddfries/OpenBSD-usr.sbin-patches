@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.50 2009/05/20 16:07:26 gilles Exp $	*/
+/*	$OpenBSD: lka.c,v 1.56 2009/06/01 23:15:48 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -71,6 +71,7 @@ int		lka_expand_rcpt_iteration(struct smtpd *, struct aliaseslist *, struct lkas
 void		lka_rcpt_action(struct smtpd *, struct path *);
 void		lka_clear_aliaseslist(struct aliaseslist *);
 int		lka_encode_credentials(char *, char *);
+struct rule    *ruleset_match(struct smtpd *, struct path *, struct sockaddr_storage *);
 
 void
 lka_sig_handler(int sig, short event, void *p)
@@ -102,8 +103,8 @@ lka_dispatch_parent(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_PARENT];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -112,14 +113,11 @@ lka_dispatch_parent(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -206,48 +204,14 @@ lka_dispatch_parent(int sig, short event, void *p)
 			TAILQ_INSERT_TAIL(&m->m_contents, mapel, me_entry);
 			break;
 		}
-		case IMSG_CONF_END: {
-			void *temp;
-			struct rule *r;
-			struct cond *cond;
-			struct map *m;
-			struct mapel *mapel;
-			
+		case IMSG_CONF_END: {			
 			/* switch and destroy old ruleset */
-			temp = env->sc_rules;
+			if (env->sc_rules)
+				purge_config(env, PURGE_RULES);
+			if (env->sc_maps)
+				purge_config(env, PURGE_MAPS);
 			env->sc_rules = env->sc_rules_reload;
-			env->sc_rules_reload = temp;
-
-			temp = env->sc_maps;
 			env->sc_maps = env->sc_maps_reload;
-			env->sc_maps_reload = temp;
-			
-			if (env->sc_rules_reload) {
-				while ((r = TAILQ_FIRST(env->sc_rules_reload))) {
-					TAILQ_REMOVE(env->sc_rules_reload, r, r_entry);
-					while ((cond = TAILQ_FIRST(&r->r_conditions))) {
-						TAILQ_REMOVE(&r->r_conditions, cond, c_entry);
-						free(cond);
-					}
-					free(r);
-				}
-				free(env->sc_rules_reload);
-				env->sc_rules_reload = NULL;
-			}
-
-			if (env->sc_maps_reload) {
-				while ((m = TAILQ_FIRST(env->sc_maps_reload))) {
-					TAILQ_REMOVE(env->sc_maps_reload, m, m_entry);
-					while ((mapel = TAILQ_FIRST(&m->m_contents))) {
-						TAILQ_REMOVE(&m->m_contents, mapel, me_entry);
-						free(mapel);
-					}
-					free(m);
-				}
-				free(env->sc_maps_reload);
-				env->sc_maps_reload = NULL;
-			}
-
 			break;
 		}
 		case IMSG_PARENT_FORWARD_OPEN: {
@@ -281,9 +245,20 @@ lka_dispatch_parent(int sig, short event, void *p)
 					alias_parse(alias, fwreq->pw_name);
 
 					message = lkasession->message;
-					bzero(&message.recipient, sizeof(struct path));			
+
+					bzero(&message.recipient, sizeof(struct path));
+					strlcpy(message.recipient.domain, lkasession->path.domain,
+					    sizeof(message.recipient.domain));
+
 					lka_resolve_alias(env, &message.recipient, alias);
 					lka_rcpt_action(env, &message.recipient);
+
+					if (lka_expand(message.recipient.rule.r_value.path,
+						sizeof(message.recipient.rule.r_value.path),
+						&message.recipient) >=
+					    sizeof(message.recipient.rule.r_value.path)) {
+						log_debug("expansion failed...");
+					}
 
 					imsg_compose(env->sc_ibufs[PROC_QUEUE],
 					    IMSG_QUEUE_SUBMIT_ENVELOPE, 0, 0, -1,
@@ -325,8 +300,8 @@ lka_dispatch_mfa(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_MFA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -335,14 +310,11 @@ lka_dispatch_mfa(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -463,8 +435,8 @@ lka_dispatch_mta(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_MTA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -473,14 +445,11 @@ lka_dispatch_mta(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -540,8 +509,8 @@ lka_dispatch_smtp(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_SMTP];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -550,14 +519,11 @@ lka_dispatch_smtp(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -593,8 +559,8 @@ lka_dispatch_queue(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_QUEUE];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -603,14 +569,11 @@ lka_dispatch_queue(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -639,8 +602,8 @@ lka_dispatch_runner(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_RUNNER];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -649,14 +612,11 @@ lka_dispatch_runner(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -725,8 +685,8 @@ lka(struct smtpd *env)
 
 	pw = env->sc_pw;
 
-	setproctitle("lookup agent");
 	smtpd_process = PROC_LKA;
+	setproctitle("%s", env->sc_title[smtpd_process]);
 
 #ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
@@ -761,42 +721,21 @@ int
 lka_verify_mail(struct smtpd *env, struct path *path)
 {
 	struct rule *r;
-	struct cond *cond;
-	struct map *map;
-	struct mapel *me;
 
-	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
-		TAILQ_FOREACH(cond, &r->r_conditions, c_entry) {
-			if (cond->c_type == C_ALL) {
-				path->rule = *r;
-				if (r->r_action == A_MBOX ||
-				    r->r_action == A_MAILDIR) {
-					return lka_resolve_mail(env, r, path);
-				}
-				return 1;
-			}
-
-			if (cond->c_type == C_DOM) {
-				cond->c_match = map_find(env, cond->c_map);
-				if (cond->c_match == NULL)
-					fatal("lka failed to lookup map.");
-
-				map = cond->c_match;
-				TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-					if (hostname_match(path->domain, me->me_key.med_string)) {
-						path->rule = *r;
-						if (r->r_action == A_MBOX ||
-						    r->r_action == A_MAILDIR ||
-						    r->r_action == A_EXT) {
-							return lka_resolve_mail(env, r, path);
-						}
-						return 1;
-					}
-				}
-			}
-		}
+	r = ruleset_match(env, path, NULL);
+	if (r == NULL) {
+		path->rule.r_action = A_RELAY;
+		return 1;
 	}
-	path->rule.r_action = A_RELAY;
+
+	path->rule = *r;
+	if (r->r_action == A_MBOX ||
+	    r->r_action == A_MAILDIR ||
+	    r->r_action == A_EXT) {
+		lka_resolve_mail(env, r, path);
+		return 1;
+	}
+
 	return 1;
 }
 
@@ -818,7 +757,7 @@ lka_resolve_mail(struct smtpd *env, struct rule *rule, struct path *path)
 	else if (aliases_exist(env, username))
 		path->flags |= F_PATH_ALIAS;
 	else {
-		pw = safe_getpwnam(username);
+		pw = getpwnam(username);
 		if (pw == NULL)
 			return 0;
 		(void)strlcpy(path->pw_name, pw->pw_name,
@@ -847,7 +786,7 @@ lka_expand(char *buf, size_t len, struct path *path)
 	for (p = path->rule.r_value.path; *p != '\0'; ++p) {
 		if (p == path->rule.r_value.path && *p == '~') {
 			if (*(p + 1) == '/' || *(p + 1) == '\0') {
-				pw = safe_getpwnam(path->pw_name);
+				pw = getpwnam(path->pw_name);
 				if (pw == NULL)
 					continue;
 
@@ -873,7 +812,7 @@ lka_expand(char *buf, size_t len, struct path *path)
 					*delim = '\0';
 				}
 
-				pw = safe_getpwnam(username);
+				pw = getpwnam(username);
 				if (pw == NULL)
 					continue;
 
@@ -1132,7 +1071,7 @@ lka_resolve_path(struct smtpd *env, struct path *path)
 		path->flags |= F_PATH_ALIAS;
 	else {
 		path->flags |= F_PATH_ACCOUNT;
-		pw = safe_getpwnam(username);
+		pw = getpwnam(username);
 		if (pw == NULL)
 			return 0;
 		(void)strlcpy(path->pw_name, pw->pw_name,
@@ -1150,40 +1089,18 @@ void
 lka_rcpt_action(struct smtpd *env, struct path *path)
 {
 	struct rule *r;
-	struct cond *cond;
-	struct map *map;
-	struct mapel *me;
 
 	if (path->domain[0] == '\0')
-		(void)strlcpy(path->domain, "localhost", sizeof (path->domain));
+		(void)strlcpy(path->domain, env->sc_hostname,
+		    sizeof (path->domain));
 
-	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
-
-		TAILQ_FOREACH(cond, &r->r_conditions, c_entry) {
-			if (cond->c_type == C_ALL) {
-				path->rule = *r;
-				return;
-			}
-
-			if (cond->c_type == C_DOM) {
-				cond->c_match = map_find(env, cond->c_map);
-				if (cond->c_match == NULL)
-					fatal("mfa failed to lookup map.");
-
-				map = cond->c_match;
-				TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-					log_debug("trying to match [%s] with [%s]",
-					    path->domain, me->me_key.med_string);
-					if (hostname_match(path->domain, me->me_key.med_string)) {
-						path->rule = *r;
-						return;
-					}
-				}
-			}
-		}
+	r = ruleset_match(env, path, NULL);
+	if (r == NULL) {
+		path->rule.r_action = A_RELAY;
+		return;
 	}
-	path->rule.r_action = A_RELAY;
-	return;
+
+	path->rule = *r;
 }
 
 int

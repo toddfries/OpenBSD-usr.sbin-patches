@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.46 2009/05/19 11:24:24 jacekm Exp $	*/
+/*	$OpenBSD: runner.c,v 1.49 2009/06/01 13:20:56 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -82,8 +82,6 @@ struct batch	*batch_lookup(struct smtpd *, struct message *);
 int		runner_force_envelope_schedule(char *);
 int		runner_force_message_schedule(char *);
 
-struct s_runner	 s_runner;
-
 void
 runner_sig_handler(int sig, short event, void *p)
 {
@@ -106,8 +104,8 @@ runner_dispatch_parent(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_PARENT];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -116,14 +114,11 @@ runner_dispatch_parent(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -155,8 +150,8 @@ runner_dispatch_control(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_CONTROL];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -165,14 +160,11 @@ runner_dispatch_control(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -194,15 +186,6 @@ runner_dispatch_control(int sig, short event, void *p)
 		case IMSG_MTA_RESUME:
 			env->sc_opts &= ~SMTPD_MTA_PAUSED;
 			break;
-		case IMSG_STATS: {
-			struct stats *s = imsg.data;
-
-			IMSG_SIZE_CHECK(s);
-
-			s->u.runner = s_runner;
-			imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, s, sizeof(*s));
-			break;
-		}
 		case IMSG_RUNNER_SCHEDULE: {
 			struct sched *s = imsg.data;
 
@@ -236,8 +219,8 @@ runner_dispatch_queue(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_QUEUE];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -246,14 +229,11 @@ runner_dispatch_queue(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -268,7 +248,7 @@ runner_dispatch_queue(int sig, short event, void *p)
 
 			IMSG_SIZE_CHECK(m);
 
-			s_runner.active--;
+			env->stats->runner.active--;
 			queue_message_update(m);
 			break;
 		}
@@ -291,8 +271,8 @@ runner_dispatch_mda(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_MDA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -301,14 +281,11 @@ runner_dispatch_mda(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -337,8 +314,8 @@ runner_dispatch_mta(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_MTA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -347,14 +324,11 @@ runner_dispatch_mta(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -384,8 +358,8 @@ runner_dispatch_lka(int sig, short event, void *p)
 	ssize_t			 n;
 
 	ibuf = env->sc_ibufs[PROC_LKA];
-	switch (event) {
-	case EV_READ:
+
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read_error");
 		if (n == 0) {
@@ -394,14 +368,11 @@ runner_dispatch_lka(int sig, short event, void *p)
 			event_loopexit(NULL);
 			return;
 		}
-		break;
-	case EV_WRITE:
+	}
+
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -485,8 +456,8 @@ runner(struct smtpd *env)
 #warning disabling privilege revocation and chroot in DEBUG MODE
 #endif
 
-	setproctitle("runner");
 	smtpd_process = PROC_RUNNER;
+	setproctitle("%s", env->sc_title[smtpd_process]);
 
 #ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
@@ -936,7 +907,7 @@ batch_record(struct smtpd *env, struct message *messagep)
 	}
 
 	TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
-	s_runner.active++;
+	env->stats->runner.active++;
 	return batchp;
 }
 

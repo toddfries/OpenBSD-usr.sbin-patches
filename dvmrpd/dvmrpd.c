@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpd.c,v 1.6 2008/05/12 19:15:02 pyr Exp $ */
+/*	$OpenBSD: dvmrpd.c,v 1.9 2009/06/01 23:22:58 henning Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -194,8 +194,6 @@ main(int argc, char *argv[])
 	if (getpwnam(DVMRPD_USER) == NULL)
 		errx(1, "unknown user %s", DVMRPD_USER);
 
-	endpwent();
-
 	/* start logging */
 	log_init(1);
 
@@ -352,22 +350,17 @@ main_dispatch_dvmrpe(int fd, short event, void *bula)
 {
 	struct imsgbuf  *ibuf = bula;
 	struct imsg	 imsg;
-	int		 n;
+	ssize_t		 n;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -404,22 +397,17 @@ main_dispatch_rde(int fd, short event, void *bula)
 	struct mfc	 mfc;
 	struct imsgbuf  *ibuf = bula;
 	struct imsg	 imsg;
-	int		 n;
+	ssize_t		 n;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
