@@ -1,4 +1,4 @@
-/*	$OpenBSD: buffer.c,v 1.14 2008/10/03 15:20:29 eric Exp $	*/
+/*	$OpenBSD: buffer.c,v 1.17 2009/06/03 05:35:06 eric Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -94,7 +94,7 @@ buf_realloc(struct buf *buf, size_t len)
 }
 
 int
-buf_add(struct buf *buf, void *data, size_t len)
+buf_add(struct buf *buf, const void *data, size_t len)
 {
 	if (buf->wpos + len > buf->size)
 		if (buf_realloc(buf, len) == -1)
@@ -119,11 +119,32 @@ buf_reserve(struct buf *buf, size_t len)
 	return (b);
 }
 
-int
+void *
+buf_seek(struct buf *buf, size_t pos, size_t len)
+{
+	/* only allowed to seek in already written parts */
+	if (pos + len > buf->wpos)
+		return (NULL);
+
+	return (buf->buf + pos);
+}
+
+size_t
+buf_size(struct buf *buf)
+{
+	return (buf->wpos);
+}
+
+size_t
+buf_left(struct buf *buf)
+{
+	return (buf->max - buf->wpos);
+}
+
+void
 buf_close(struct msgbuf *msgbuf, struct buf *buf)
 {
 	buf_enqueue(msgbuf, buf);
-	return (1);
 }
 
 void

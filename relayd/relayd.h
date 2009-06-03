@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.116 2009/04/24 14:20:24 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.119 2009/06/03 05:35:06 eric Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -787,9 +787,12 @@ const char *print_httperror(u_int);
 /* buffer.c */
 struct buf	*buf_open(size_t);
 struct buf	*buf_dynamic(size_t, size_t);
-int		 buf_add(struct buf *, void *, size_t);
+int		 buf_add(struct buf *, const void *, size_t);
 void		*buf_reserve(struct buf *, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
+void		*buf_seek(struct buf *, size_t, size_t);
+size_t		 buf_size(struct buf *);
+size_t		 buf_left(struct buf *);
+void		 buf_close(struct msgbuf *, struct buf *);
 void		 buf_free(struct buf *);
 void		 msgbuf_init(struct msgbuf *);
 void		 msgbuf_clear(struct msgbuf *);
