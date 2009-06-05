@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.c,v 1.145 2008/05/12 19:15:02 pyr Exp $ */
+/*	$OpenBSD: bgpd.c,v 1.147 2009/06/05 20:26:38 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -58,6 +58,7 @@ volatile sig_atomic_t	 reconfig = 0;
 pid_t			 reconfpid = 0;
 struct imsgbuf		*ibuf_se;
 struct imsgbuf		*ibuf_rde;
+struct rib_names	 ribnames = SIMPLEQ_HEAD_INITIALIZER(ribnames);
 
 void
 sighdlr(int sig)
@@ -108,6 +109,7 @@ main(int argc, char *argv[])
 	struct filter_rule	*r;
 	struct mrt		*m;
 	struct listen_addr	*la;
+	struct rde_rib		*rr;
 	struct pollfd		 pfd[POLL_MAX];
 	pid_t			 io_pid = 0, rde_pid = 0, pid;
 	char			*conffile;
@@ -181,7 +183,8 @@ main(int argc, char *argv[])
 
 	if (conf.opts & BGPD_OPT_NOACTION) {
 		if (conf.opts & BGPD_OPT_VERBOSE)
-			print_config(&conf, &net_l, peer_l, rules_l, &mrt_l);
+			print_config(&conf, &ribnames, &net_l, peer_l, rules_l,
+			    &mrt_l);
 		else
 			fprintf(stderr, "configuration OK\n");
 		exit(0);
@@ -225,9 +228,9 @@ main(int argc, char *argv[])
 	prepare_listeners(&conf);
 
 	/* fork children */
-	rde_pid = rde_main(&conf, peer_l, &net_l, rules_l, &mrt_l,
+	rde_pid = rde_main(&conf, peer_l, &net_l, rules_l, &mrt_l, &ribnames,
 	    pipe_m2r, pipe_s2r, pipe_m2s, pipe_s2r_c, debug);
-	io_pid = session_main(&conf, peer_l, &net_l, rules_l, &mrt_l,
+	io_pid = session_main(&conf, peer_l, &net_l, rules_l, &mrt_l, &ribnames,
 	    pipe_m2s, pipe_s2r, pipe_m2r, pipe_s2r_c);
 
 	setproctitle("parent");
@@ -270,6 +273,10 @@ main(int argc, char *argv[])
 	TAILQ_FOREACH(la, conf.listen_addrs, entry) {
 		close(la->fd);
 		la->fd = -1;
+	}
+	while ((rr = SIMPLEQ_FIRST(&ribnames))) {
+		SIMPLEQ_REMOVE_HEAD(&ribnames, entry);
+		free(rr);
 	}
 
 	mrt_reconfigure(&mrt_l);

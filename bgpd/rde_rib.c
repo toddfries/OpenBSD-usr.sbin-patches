@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.108 2009/06/02 00:09:02 claudio Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.114 2009/06/04 21:53:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -49,30 +49,21 @@ RB_GENERATE(rib_tree, rib_entry, rib_e, rib_compare);
 
 
 /* RIB specific functions */
-void
-rib_init(void)
-{
-	if ((ribs = calloc(1, sizeof(struct rib))) == NULL)
-		fatal("rib_init");
-	rib_new("DEFAULT");
-
-	/* XXX we need to create Adj-RIB-In by hand */
-	bzero(&ribs[0], sizeof(struct rib));
-	RB_INIT(&ribs[0].rib);
-	ribs[0].state = RIB_ACTIVE;
-	ribs[0].id = 0;
-	strlcpy(ribs[0].name, "Adj-RIB-In", sizeof("Adj-RIB-In"));
-	ribs[0].flags = F_RIB_NOEVALUATE;
-}
-
 u_int16_t
-rib_new(char *name)
+rib_new(int id, char *name, u_int16_t flags)
 {
 	struct rib	*xribs;
 	size_t		newsize;
-	u_int16_t	id;
 
-	id = rib_name2id(name);
+	if (id < 0) {
+		for (id = 0; id < rib_size; id++) {
+			if (*ribs[id].name == '\0')
+				break;
+		}
+	}
+
+	if (id == RIB_FAILED)
+		fatalx("rib_new: trying to use reserved id");
 
 	if (id >= rib_size) {
 		newsize = sizeof(struct rib) * (id + 1);
@@ -89,15 +80,62 @@ rib_new(char *name)
 	RB_INIT(&ribs[id].rib);
 	ribs[id].state = RIB_ACTIVE;
 	ribs[id].id = id;
+	ribs[id].flags = flags;
 
 	return (id);
+}
+
+u_int16_t
+rib_find(char *name)
+{
+	u_int16_t id;
+
+	if (name == NULL || *name == '\0')
+		return (1);	/* XXX */
+
+	for (id = 0; id < rib_size; id++) {
+		if (!strcmp(ribs[id].name, name))
+			return (id);
+	}
+
+	return (RIB_FAILED);
 }
 
 void
 rib_free(struct rib *rib)
 {
-	/* XXX */
-	//bzero(rib, sizeof(struct rib));
+	struct rib_context *ctx, *next;
+	struct rib_entry *re, *xre;
+	struct prefix *p, *np;
+
+	for (ctx = LIST_FIRST(&rib_dump_h); ctx != NULL; ctx = next) {
+		next = LIST_NEXT(ctx, entry);
+		if (ctx->ctx_rib == rib) {
+			LIST_REMOVE(ctx, entry);
+			if (ctx->ctx_done)
+				ctx->ctx_done(ctx->ctx_arg);
+			else
+				free(ctx);
+		}
+	}
+
+	for (re = RB_MIN(rib_tree, &rib->rib); re != NULL; re = xre) {
+		xre = RB_NEXT(rib_tree,  &rib->rib, re);
+
+		for (p = LIST_FIRST(&re->prefix_h); p != NULL; p = np) {
+			np = LIST_NEXT(p, path_l);
+			if (p->aspath->pftableid) {
+				struct bgpd_addr addr;
+
+				pt_getaddr(p->prefix, &addr);
+				/* Commit is done in peer_down() */
+				rde_send_pftable(p->aspath->pftableid, &addr,
+				    p->prefix->prefixlen, 1);
+			}
+			prefix_destroy(p);
+		}
+	}
+	bzero(rib, sizeof(struct rib));
 }
 
 int
@@ -208,14 +246,15 @@ void
 rib_dump(struct rib *rib, void (*upcall)(struct rib_entry *, void *),
     void *arg, sa_family_t af)
 {
-	struct rib_context	ctx;
+	struct rib_context	*ctx;
 
-	bzero(&ctx, sizeof(ctx));
-	ctx.ctx_rib = rib;
-	ctx.ctx_upcall = upcall;
-	ctx.ctx_arg = arg;
-	ctx.ctx_af = af;
-	rib_dump_r(&ctx);
+	if ((ctx = calloc(1, sizeof(*ctx))) == NULL)
+		fatal("rib_dump");
+	ctx->ctx_rib = rib;
+	ctx->ctx_upcall = upcall;
+	ctx->ctx_arg = arg;
+	ctx->ctx_af = af;
+	rib_dump_r(ctx);
 }
 
 void
@@ -246,6 +285,8 @@ rib_dump_r(struct rib_context *ctx)
 	LIST_REMOVE(ctx, entry);
 	if (ctx->ctx_done)
 		ctx->ctx_done(ctx->ctx_arg);
+	else
+		free(ctx);
 }
 
 struct rib_entry *
@@ -435,9 +476,10 @@ path_lookup(struct rde_aspath *aspath, struct rde_peer *peer)
 void
 path_remove(struct rde_aspath *asp)
 {
-	struct prefix	*p;
+	struct prefix	*p, *np;
 
-	while ((p = LIST_FIRST(&asp->prefix_h)) != NULL) {
+	for (p = LIST_FIRST(&asp->prefix_h); p != NULL; p = np) {
+		np = LIST_NEXT(p, path_l);
 		if (asp->pftableid) {
 			struct bgpd_addr addr;
 
@@ -446,10 +488,8 @@ path_remove(struct rde_aspath *asp)
 			rde_send_pftable(p->aspath->pftableid, &addr,
 			    p->prefix->prefixlen, 1);
 		}
-
 		prefix_destroy(p);
 	}
-	path_destroy(asp);
 }
 
 /* this function is only called by prefix_remove and path_remove */
@@ -745,13 +785,7 @@ prefix_remove(struct rib *rib, struct rde_peer *peer, struct bgpd_addr *prefix,
 		rde_send_pftable_commit();
 	}
 
-	prefix_unlink(p);
-	prefix_free(p);
-
-	if (rib_empty(re))
-		rib_remove(re);
-	if (path_empty(asp))
-		path_destroy(asp);
+	prefix_destroy(p);
 
 	return (1);
 }
@@ -837,18 +871,22 @@ prefix_updateall(struct rde_aspath *asp, enum nexthop_state state,
 	}
 }
 
-/* kill a prefix. Only called by path_remove and path_update. */
+/* kill a prefix. */
 void
 prefix_destroy(struct prefix *p)
 {
 	struct rib_entry	*re;
+	struct rde_aspath	*asp;
 
 	re = p->rib;
+	asp = p->aspath;
 	prefix_unlink(p);
 	prefix_free(p);
 
 	if (rib_empty(re))
 		rib_remove(re);
+	if (path_empty(asp))
+		path_destroy(asp);
 }
 
 /*

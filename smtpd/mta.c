@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.56 2009/06/02 22:23:35 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.58 2009/06/05 20:43:57 pyr Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -219,8 +219,6 @@ mta_dispatch_lka(int sig, short event, void *p)
 			if (s == NULL)
 				fatal("smtp_dispatch_parent: session is gone");
 
-			s->batch->flags |= F_BATCH_RESOLVED;
-
 			do {
 				ret = mta_connect(s);
 			} while (ret == 0);
@@ -303,7 +301,7 @@ mta_dispatch_queue(int sig, short event, void *p)
 
 			IMSG_SIZE_CHECK(batchp);
 
-			if ((fd = imsg_get_fd(ibuf, &imsg)) == -1) {
+			if ((fd = imsg_get_fd(ibuf)) == -1) {
 				/* NEEDS_FIX - unsure yet how it must be handled */
 				fatalx("mta_dispatch_queue: imsg_get_fd");
 			}
@@ -383,9 +381,7 @@ mta_dispatch_runner(int sig, short event, void *p)
 				fatal("mta_dispatch_runner: calloc");
 
 			*batchp = *request;
-			batchp->session_id = s->s_id;
 			batchp->env = env;
-			batchp->flags = 0;
 			batchp->sessionp = s;
 
 			s->batch = batchp;
@@ -415,13 +411,6 @@ mta_dispatch_runner(int sig, short event, void *p)
 			if (batchp == NULL)
 				fatalx("mta_dispatch_runner: internal inconsistency.");
 
-			batchp->session_ss = messagep->session_ss;
-			strlcpy(batchp->session_hostname,
-			    messagep->session_hostname,
-			    sizeof(batchp->session_hostname));
-			strlcpy(batchp->session_helo, messagep->session_helo,
-			    sizeof(batchp->session_helo));
-
  			TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
 			break;
 		}
@@ -434,8 +423,6 @@ mta_dispatch_runner(int sig, short event, void *p)
 			batchp = batch_by_id(env, batchp->id);
 			if (batchp == NULL)
 				fatalx("mta_dispatch_runner: internal inconsistency.");
-
-			batchp->flags |= F_BATCH_COMPLETE;
 
 			/* assume temporary failure by default, safest choice */
 			batchp->status = S_BATCH_TEMPFAILURE;
@@ -453,7 +440,7 @@ mta_dispatch_runner(int sig, short event, void *p)
 				    batchp->rule.r_value.relayhost.hostname,
 				    sizeof(query.host));
 
-				imsg_compose(env->sc_ibufs[PROC_LKA],
+				imsg_compose_event(env->sc_ibufs[PROC_LKA],
 				    IMSG_LKA_SECRET, 0, 0, -1, &query,
 				    sizeof(query));
 			} else
@@ -936,7 +923,7 @@ mta_reply_handler(struct bufferevent *bev, void *arg)
 				}
 			}
 
-			imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FD,
+			imsg_compose_event(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FD,
 			    0, 0, -1, batchp, sizeof(*batchp));
 			bufferevent_disable(sessionp->s_bev, EV_READ);
 		}
@@ -1125,7 +1112,7 @@ mta_batch_update_queue(struct batch *batchp)
 			    time(NULL) - messagep->creation);
 		}
 
-		imsg_compose(env->sc_ibufs[PROC_QUEUE],
+		imsg_compose_event(env->sc_ibufs[PROC_QUEUE],
 		    IMSG_QUEUE_MESSAGE_UPDATE, 0, 0, -1, messagep,
 		    sizeof(struct message));
 		TAILQ_REMOVE(&batchp->messages, messagep, entry);

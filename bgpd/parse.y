@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.225 2009/05/27 04:18:21 reyk Exp $ */
+/*	$OpenBSD: parse.y,v 1.229 2009/06/05 20:46:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2002, 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -39,6 +39,7 @@
 #include "bgpd.h"
 #include "mrt.h"
 #include "session.h"
+#include "rde.h"
 
 TAILQ_HEAD(files, file)		 files = TAILQ_HEAD_INITIALIZER(files);
 static struct file {
@@ -110,7 +111,10 @@ struct filter_match_l {
 struct peer	*alloc_peer(void);
 struct peer	*new_peer(void);
 struct peer	*new_group(void);
-int		 add_mrtconfig(enum mrt_type, char *, time_t, struct peer *);
+int		 add_mrtconfig(enum mrt_type, char *, time_t, struct peer *,
+		    char *);
+int		 add_rib(char *, int);
+int		 find_rib(char *);
 int		 get_id(struct peer *);
 int		 expand_rule(struct filter_rule *, struct filter_peers_l *,
 		    struct filter_match_l *, struct filter_set_head *);
@@ -155,7 +159,7 @@ typedef struct {
 %}
 
 %token	AS ROUTERID HOLDTIME YMIN LISTEN ON FIBUPDATE RTABLE
-%token	RDE EVALUATE IGNORE COMPARE
+%token	RDE RIB EVALUATE IGNORE COMPARE
 %token	GROUP NEIGHBOR NETWORK
 %token	REMOTEAS DESCR LOCALADDR MULTIHOP PASSIVE MAXPREFIX RESTART
 %token	ANNOUNCE DEMOTE CONNECTRETRY
@@ -381,6 +385,24 @@ conf_main	: AS as4number		{
 			else
 				conf->flags &= ~BGPD_FLAG_NO_EVALUATE;
 		}
+		| RDE RIB STRING {
+			if (add_rib($3, 0)) {
+				free($3);
+				YYERROR;
+			}
+			free($3);
+		}
+		| RDE RIB STRING yesno EVALUATE {
+			if ($4) {
+				free($3);
+				YYERROR;
+			}
+			if (!add_rib($3, 1)) {
+				free($3);
+				YYERROR;
+			}
+			free($3);
+		}
 		| TRANSPARENT yesno	{
 			if ($2 == 1)
 				conf->flags |= BGPD_FLAG_DECISION_TRANS_AS;
@@ -469,11 +491,41 @@ conf_main	: AS as4number		{
 				YYERROR;
 			}
 			free($2);
-			if (add_mrtconfig(action, $3, $4, NULL) == -1) {
+			if (add_mrtconfig(action, $3, $4, NULL, NULL) == -1) {
 				free($3);
 				YYERROR;
 			}
 			free($3);
+		}
+		| DUMP RIB STRING STRING STRING optnumber		{
+			int action;
+
+			if ($6 < 0 || $6 > UINT_MAX) {
+				yyerror("bad timeout");
+				free($3);
+				free($4);
+				free($5);
+				YYERROR;
+			}
+			if (!strcmp($4, "table"))
+				action = MRT_TABLE_DUMP;
+			else if (!strcmp($4, "table-mp"))
+				action = MRT_TABLE_DUMP_MP;
+			else {
+				yyerror("unknown mrt dump type");
+				free($3);
+				free($4);
+				free($5);
+				YYERROR;
+			}
+			free($4);
+			if (add_mrtconfig(action, $5, $6, NULL, $3) == -1) {
+				free($3);
+				free($5);
+				YYERROR;
+			}
+			free($3);
+			free($5);
 		}
 		| mrtdump
 		| RDE STRING EVALUATE		{
@@ -557,7 +609,8 @@ mrtdump		: DUMP STRING inout STRING optnumber	{
 				free($4);
 				YYERROR;
 			}
-			if (add_mrtconfig(action, $4, $5, curpeer) == -1) {
+			if (add_mrtconfig(action, $4, $5, curpeer, NULL) ==
+			    -1) {
 				free($2);
 				free($4);
 				YYERROR;
@@ -765,6 +818,21 @@ peeropts	: REMOTEAS as4number	{
 		}
 		| DOWN		{
 			curpeer->conf.down = 1;
+		}
+		| RIB STRING	{
+			if (!find_rib($2)) {
+				yyerror("rib \"%s\" does not exist.", $2);
+				free($2);
+			}
+			if (strlcpy(curpeer->conf.rib, $2,
+			    sizeof(curpeer->conf.rib)) >=
+			    sizeof(curpeer->conf.rib)) {
+				yyerror("rib name \"%s\" too long: max %u",
+				   $2, sizeof(curpeer->conf.rib) - 1);
+				free($2);
+				YYERROR;
+			}
+			free($2);
 		}
 		| HOLDTIME NUMBER	{
 			if ($2 < MIN_HOLDTIME || $2 > USHRT_MAX) {
@@ -1840,6 +1908,7 @@ lookup(char *s)
 		{ "reject",		REJECT},
 		{ "remote-as",		REMOTEAS},
 		{ "restart",		RESTART},
+		{ "rib",		RIB},
 		{ "route-collector",	ROUTECOLL},
 		{ "route-reflector",	REFLECTOR},
 		{ "router-id",		ROUTERID},
@@ -2227,6 +2296,9 @@ parse_config(char *filename, struct bgpd_config *xconf,
 	/* init the empty filter list for later */
 	TAILQ_INIT(xfilter_l);
 
+	add_rib("Adj-RIB-In", 1);
+	add_rib("Loc-RIB", 0);
+
 	yyparse();
 	errors = file->errors;
 	popfile();
@@ -2512,11 +2584,15 @@ new_group(void)
 }
 
 int
-add_mrtconfig(enum mrt_type type, char *name, time_t timeout, struct peer *p)
+add_mrtconfig(enum mrt_type type, char *name, time_t timeout, struct peer *p,
+    char *rib)
 {
 	struct mrt	*m, *n;
 
 	LIST_FOREACH(m, mrtconf, entry) {
+		if ((rib && strcmp(rib, m->rib)) ||
+		    (!rib && *m->rib))
+			continue;
 		if (p == NULL) {
 			if (m->peer_id != 0 || m->group_id != 0)
 				continue;
@@ -2552,9 +2628,60 @@ add_mrtconfig(enum mrt_type type, char *name, time_t timeout, struct peer *p)
 			n->group_id = 0;
 		}
 	}
+	if (rib) {
+		if (!find_rib(rib)) {
+			yyerror("rib \"%s\" does not exist.", rib);
+			free(n);
+			return (-1);
+		}
+		if (strlcpy(n->rib, rib, sizeof(n->rib)) >=
+		    sizeof(n->rib)) {
+			yyerror("rib name \"%s\" too long: max %u",
+			    name, sizeof(n->rib) - 1);
+			free(n);
+			return (-1);
+		}
+	}
 
 	LIST_INSERT_HEAD(mrtconf, n, entry);
 
+	return (0);
+}
+
+int
+add_rib(char *name, int noeval)
+{
+	struct rde_rib	*rr;
+
+	if (find_rib(name)) {
+		yyerror("rib \"%s\" allready exists.", name);
+		return (-1);
+	}
+
+	if ((rr = calloc(1, sizeof(*rr))) == NULL) {
+		log_warn("add_rib");
+		return (-1);
+	}
+	if (strlcpy(rr->name, name, sizeof(rr->name)) >= sizeof(rr->name)) {
+		yyerror("rib name \"%s\" too long: max %u",
+		   name, sizeof(rr->name) - 1);
+		return (-1);
+	}
+	if (noeval)
+		rr->flags |= F_RIB_NOEVALUATE;
+	SIMPLEQ_INSERT_TAIL(&ribnames, rr, entry);
+	return (0);
+}
+
+int
+find_rib(char *name)
+{
+	struct rde_rib	*rr;
+
+	SIMPLEQ_FOREACH(rr, &ribnames, entry) {
+		if (!strcmp(rr->name, name))
+			return (1);
+	}
 	return (0);
 }
 

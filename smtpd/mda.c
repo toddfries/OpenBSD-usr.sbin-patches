@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.19 2009/06/01 13:20:56 jacekm Exp $	*/
+/*	$OpenBSD: mda.c,v 1.21 2009/06/05 20:43:57 pyr Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -109,14 +109,14 @@ mda_dispatch_parent(int sig, short event, void *p)
 				fatalx("mda_dispatch_parent: internal inconsistency.");
 			messagep->status = status;
 
-			s->mboxfd = imsg_get_fd(ibuf, &imsg);
+			s->mboxfd = imsg_get_fd(ibuf);
 			if (s->mboxfd == -1) {
 				mda_remove_message(env, batchp, messagep);
 				break;
 			}
 
 			batchp->message = *messagep;
-			imsg_compose(env->sc_ibufs[PROC_PARENT],
+			imsg_compose_event(env->sc_ibufs[PROC_PARENT],
 			    IMSG_PARENT_MESSAGE_OPEN, 0, 0, -1, batchp,
 			    sizeof(struct batch));
 			break;
@@ -144,7 +144,7 @@ mda_dispatch_parent(int sig, short event, void *p)
 				fatalx("mda_dispatch_parent: internal inconsistency.");
 			messagep->status = status;
 
-			s->messagefd = imsg_get_fd(ibuf, &imsg);
+			s->messagefd = imsg_get_fd(ibuf);
 			if (s->messagefd == -1) {
 				if (s->mboxfd != -1)
 					close(s->mboxfd);
@@ -159,7 +159,7 @@ mda_dispatch_parent(int sig, short event, void *p)
 
 			if (store_message(batchp, messagep, store)) {
 				if (batchp->message.recipient.rule.r_action == A_MAILDIR)
-					imsg_compose(env->sc_ibufs[PROC_PARENT],
+					imsg_compose_event(env->sc_ibufs[PROC_PARENT],
 					    IMSG_PARENT_MAILBOX_RENAME, 0, 0, -1, batchp,
 					    sizeof(struct batch));
 			}
@@ -279,9 +279,7 @@ mda_dispatch_runner(int sig, short event, void *p)
 				fatal("mda_dispatch_runner: calloc");
 
 			*batchp = *request;
-			batchp->session_id = s->s_id;
 			batchp->env = env;
-			batchp->flags = 0;
 			batchp->sessionp = s;
 
 			s->batch = batchp;
@@ -308,13 +306,6 @@ mda_dispatch_runner(int sig, short event, void *p)
 			if (batchp == NULL)
 				fatalx("mda_dispatch_runner: internal inconsistency.");
 
-			batchp->session_ss = messagep->session_ss;
-			strlcpy(batchp->session_hostname,
-			    messagep->session_hostname,
-			    sizeof(batchp->session_hostname));
-			strlcpy(batchp->session_helo, messagep->session_helo,
-			    sizeof(batchp->session_helo));
-
  			TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
 			break;
 		}
@@ -331,13 +322,12 @@ mda_dispatch_runner(int sig, short event, void *p)
 			if (batchp == NULL)
 				fatalx("mda_dispatch_runner: internal inconsistency.");
 
-			batchp->flags |= F_BATCH_COMPLETE;
 			s = batchp->sessionp;
 
 			lookup = *batchp;
 			TAILQ_FOREACH(messagep, &batchp->messages, entry) {
 				lookup.message = *messagep;
-				imsg_compose(env->sc_ibufs[PROC_PARENT],
+				imsg_compose_event(env->sc_ibufs[PROC_PARENT],
 				    IMSG_PARENT_MAILBOX_OPEN, 0, 0, -1, &lookup,
 				    sizeof(struct batch));
 			}
@@ -442,7 +432,7 @@ mda(struct smtpd *env)
 void
 mda_remove_message(struct smtpd *env, struct batch *batchp, struct message *messagep)
 {
-	imsg_compose(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_UPDATE, 0, 0,
+	imsg_compose_event(env->sc_ibufs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_UPDATE, 0, 0,
 	    -1, messagep, sizeof (struct message));
 
 	if ((batchp->message.status & S_MESSAGE_TEMPFAILURE) == 0 &&

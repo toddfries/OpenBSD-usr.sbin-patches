@@ -1,4 +1,4 @@
-/*	$OpenBSD: mrt.h,v 1.20 2009/05/17 12:25:15 claudio Exp $ */
+/*	$OpenBSD: mrt.h,v 1.22 2009/06/05 17:36:49 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -271,11 +271,13 @@ enum mrt_state {
 };
 
 struct mrt {
+	char			rib[PEER_DESCR_LEN];
 	struct msgbuf		wbuf;
 	LIST_ENTRY(mrt)		entry;
 	u_int32_t		peer_id;
 	u_int32_t		group_id;
 	enum mrt_type		type;
+	u_int16_t		seqnum;
 };
 
 struct mrt_config {
@@ -301,6 +303,7 @@ void		 mrt_dump_state(struct mrt *, u_int16_t, u_int16_t,
 		     struct peer *);
 void		 mrt_clear_seq(void);
 void		 mrt_dump_upcall(struct rib_entry *, void *);
+void		 mrt_dump_done(void *);
 void		 mrt_write(struct mrt *);
 void		 mrt_clean(struct mrt *);
 void		 mrt_init(struct imsgbuf *, struct imsgbuf *);

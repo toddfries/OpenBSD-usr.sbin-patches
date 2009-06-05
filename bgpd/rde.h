@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.114 2009/06/02 00:09:02 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.117 2009/06/04 21:53:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -73,6 +73,7 @@ struct rde_peer {
 	u_int32_t			 up_nlricnt;
 	u_int32_t			 up_wcnt;
 	enum peer_state			 state;
+	u_int16_t			 ribid;
 	u_int16_t			 short_as;
 	u_int8_t			 reconf_in;	/* in filter changed */
 	u_int8_t			 reconf_out;	/* out filter changed */
@@ -246,6 +247,7 @@ struct rib_context {
 	struct rib			*ctx_rib;
 	void		(*ctx_upcall)(struct rib_entry *, void *);
 	void		(*ctx_done)(void *);
+	void		(*ctx_wait)(void *);
 	void				*ctx_arg;
 	unsigned int			 ctx_count;
 	sa_family_t			 ctx_af;
@@ -276,6 +278,7 @@ struct rib {
 
 #define F_RIB_ENTRYLOCK		0x0001
 #define F_RIB_NOEVALUATE	0x0002
+#define RIB_FAILED		0xffff
 
 struct prefix {
 	LIST_ENTRY(prefix)		 rib_l, path_l;
@@ -345,8 +348,8 @@ void		 community_delete(struct rde_aspath *, int, int);
 extern u_int16_t	 rib_size;
 extern struct rib	*ribs;
 
-void		 rib_init(void);
-u_int16_t	 rib_new(char *);
+u_int16_t	 rib_new(int, char *, u_int16_t);
+u_int16_t	 rib_find(char *);
 void		 rib_free(struct rib *);
 struct rib_entry *rib_get(struct rib *, struct bgpd_addr *, int);
 struct rib_entry *rib_lookup(struct rib *, struct bgpd_addr *);
