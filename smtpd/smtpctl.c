@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.29 2009/05/30 16:30:33 gilles Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.31 2009/06/06 04:14:21 pyr Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -82,13 +82,6 @@ usage(void)
 	exit(1);
 }
 
-/* dummy function so that smtpctl does not need libevent */
-void
-imsg_event_add(struct imsgbuf *i)
-{
-	/* nothing */
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -102,7 +95,7 @@ main(int argc, char *argv[])
 	/* parse options */
 	if (strcmp(__progname, "sendmail") == 0 || strcmp(__progname, "send-mail") == 0)
 		sendmail = 1;
-	else {
+	else if (strcmp(__progname, "smtpctl") == 0) {
 		/* check for root privileges */
 		if (geteuid())
 			errx(1, "need root privileges");
@@ -122,7 +115,8 @@ main(int argc, char *argv[])
 			goto connected;
 		}
 		return 0;
-	}
+	} else
+		errx(1, "unsupported mode");
 
 connected:
 	/* connect to relayd control socket */
@@ -140,7 +134,7 @@ connected:
 
 	if ((ibuf = calloc(1, sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
-	imsg_init(ibuf, ctl_sock, NULL);
+	imsg_init(ibuf, ctl_sock);
 
 	if (sendmail)
 		return enqueue(argc, argv);

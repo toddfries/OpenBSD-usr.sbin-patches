@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.229 2009/06/05 20:46:43 claudio Exp $ */
+/*	$OpenBSD: parse.y,v 1.231 2009/06/06 01:10:29 claudio Exp $ */
 
 /*
  * Copyright (c) 2002, 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -113,7 +113,7 @@ struct peer	*new_peer(void);
 struct peer	*new_group(void);
 int		 add_mrtconfig(enum mrt_type, char *, time_t, struct peer *,
 		    char *);
-int		 add_rib(char *, int);
+int		 add_rib(char *, u_int16_t);
 int		 find_rib(char *);
 int		 get_id(struct peer *);
 int		 expand_rule(struct filter_rule *, struct filter_peers_l *,
@@ -182,7 +182,7 @@ typedef struct {
 %token	<v.number>		NUMBER
 %type	<v.number>		asnumber as4number optnumber yesno inout
 %type	<v.number>		espah family restart
-%type	<v.string>		string
+%type	<v.string>		string filter_rib
 %type	<v.addr>		address
 %type	<v.prefix>		prefix addrspec
 %type	<v.u8>			action quick direction delete
@@ -386,7 +386,7 @@ conf_main	: AS as4number		{
 				conf->flags &= ~BGPD_FLAG_NO_EVALUATE;
 		}
 		| RDE RIB STRING {
-			if (add_rib($3, 0)) {
+			if (add_rib($3, F_RIB_NOFIB)) {
 				free($3);
 				YYERROR;
 			}
@@ -397,7 +397,7 @@ conf_main	: AS as4number		{
 				free($3);
 				YYERROR;
 			}
-			if (!add_rib($3, 1)) {
+			if (!add_rib($3, F_RIB_NOEVALUATE)) {
 				free($3);
 				YYERROR;
 			}
@@ -823,6 +823,7 @@ peeropts	: REMOTEAS as4number	{
 			if (!find_rib($2)) {
 				yyerror("rib \"%s\" does not exist.", $2);
 				free($2);
+				YYERROR;
 			}
 			if (strlcpy(curpeer->conf.rib, $2,
 			    sizeof(curpeer->conf.rib)) >=
@@ -1196,16 +1197,37 @@ encspec		: /* nada */	{
 		}
 		;
 
-filterrule	: action quick direction filter_peer_h filter_match_h filter_set
+filterrule	: action quick filter_rib direction filter_peer_h filter_match_h filter_set
 		{
 			struct filter_rule	 r;
 
 			bzero(&r, sizeof(r));
 			r.action = $1;
 			r.quick = $2;
-			r.dir = $3;
-
-			if (expand_rule(&r, $4, &$5, $6) == -1)
+			r.dir = $4;
+			if ($3) {
+				if (r.dir != DIR_IN) {
+					yyerror("rib only allowed on \"from\" "
+					    "rules.");
+					free($3);
+					YYERROR;
+				}
+				if (!find_rib($3)) {
+					yyerror("rib \"%s\" does not exist.",
+					    $3);
+					free($3);
+					YYERROR;
+				}
+				if (strlcpy(r.rib, $3, sizeof(r.rib)) >=
+				    sizeof(r.rib)) {
+					yyerror("rib name \"%s\" too long: "
+					    "max %u", $3, sizeof(r.rib) - 1);
+					free($3);
+					YYERROR;
+				}
+				free($3);
+			}
+			if (expand_rule(&r, $5, &$6, $7) == -1)
 				YYERROR;
 		}
 		;
@@ -1222,6 +1244,9 @@ quick		: /* empty */	{ $$ = 0; }
 direction	: FROM		{ $$ = DIR_IN; }
 		| TO		{ $$ = DIR_OUT; }
 		;
+
+filter_rib	: /* empty */	{ $$ = NULL; }
+		| RIB STRING	{ $$ = $2; }
 
 filter_peer_h	: filter_peer
 		| '{' filter_peer_l '}'		{ $$ = $2; }
@@ -2296,7 +2321,7 @@ parse_config(char *filename, struct bgpd_config *xconf,
 	/* init the empty filter list for later */
 	TAILQ_INIT(xfilter_l);
 
-	add_rib("Adj-RIB-In", 1);
+	add_rib("Adj-RIB-In", F_RIB_NOEVALUATE);
 	add_rib("Loc-RIB", 0);
 
 	yyparse();
@@ -2649,7 +2674,7 @@ add_mrtconfig(enum mrt_type type, char *name, time_t timeout, struct peer *p,
 }
 
 int
-add_rib(char *name, int noeval)
+add_rib(char *name, u_int16_t flags)
 {
 	struct rde_rib	*rr;
 
@@ -2667,8 +2692,7 @@ add_rib(char *name, int noeval)
 		   name, sizeof(rr->name) - 1);
 		return (-1);
 	}
-	if (noeval)
-		rr->flags |= F_RIB_NOEVALUATE;
+	rr->flags |= flags;
 	SIMPLEQ_INSERT_TAIL(&ribnames, rr, entry);
 	return (0);
 }

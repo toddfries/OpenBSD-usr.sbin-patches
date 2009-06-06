@@ -1,4 +1,4 @@
-/*	$OpenBSD: imsg.h,v 1.3 2009/06/06 04:14:21 pyr Exp $	*/
+/*	$OpenBSD: imsg.h,v 1.1 2009/06/06 08:20:55 eric Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.117 2009/06/04 21:53:43 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.120 2009/06/06 01:10:29 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -278,6 +278,7 @@ struct rib {
 
 #define F_RIB_ENTRYLOCK		0x0001
 #define F_RIB_NOEVALUATE	0x0002
+#define F_RIB_NOFIB		0x0004
 #define RIB_FAILED		0xffff
 
 struct prefix {
@@ -298,7 +299,8 @@ void		 rde_send_pftable(u_int16_t, struct bgpd_addr *,
 		     u_int8_t, int);
 void		 rde_send_pftable_commit(void);
 
-void		 rde_generate_updates(struct prefix *, struct prefix *);
+void		 rde_generate_updates(u_int16_t, struct prefix *,
+		     struct prefix *);
 u_int32_t	 rde_local_as(void);
 int		 rde_noevaluate(void);
 int		 rde_decisionflags(void);
@@ -445,10 +447,10 @@ int	 pt_prefix_cmp(const struct pt_entry *, const struct pt_entry *);
 
 
 /* rde_filter.c */
-enum filter_actions rde_filter(struct rde_aspath **, struct filter_head *,
-		     struct rde_peer *, struct rde_aspath *,
-		     struct bgpd_addr *, u_int8_t, struct rde_peer *,
-		     enum directions);
+enum filter_actions rde_filter(u_int16_t, struct rde_aspath **,
+		     struct filter_head *, struct rde_peer *,
+		     struct rde_aspath *, struct bgpd_addr *, u_int8_t,
+		     struct rde_peer *, enum directions);
 void		 rde_apply_set(struct rde_aspath *, struct filter_set_head *,
 		     sa_family_t, struct rde_peer *, struct rde_peer *);
 int		 rde_filter_community(struct rde_aspath *, int, int);
