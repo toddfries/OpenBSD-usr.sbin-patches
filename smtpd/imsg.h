@@ -1,4 +1,4 @@
-/*	$OpenBSD: imsg.h,v 1.3 2009/06/06 04:14:21 pyr Exp $	*/
+/*	$OpenBSD: imsg.h,v 1.5 2009/06/07 05:56:25 eric Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -59,15 +59,19 @@ struct imsgbuf {
 	pid_t			 pid;
 };
 
+#define IMSGF_HASFD	1
+
 struct imsg_hdr {
-	u_int16_t	 type;
+	u_int32_t	 type;
 	u_int16_t	 len;
+	u_int16_t	 flags;
 	u_int32_t	 peerid;
-	pid_t		 pid;
+	u_int32_t	 pid;
 };
 
 struct imsg {
 	struct imsg_hdr	 hdr;
+	int		 fd;
 	void		*data;
 };
 
@@ -91,15 +95,14 @@ int		 msgbuf_write(struct msgbuf *);
 void	 imsg_init(struct imsgbuf *, int);
 ssize_t	 imsg_read(struct imsgbuf *);
 ssize_t	 imsg_get(struct imsgbuf *, struct imsg *);
-int	 imsg_compose(struct imsgbuf *, u_int16_t, u_int32_t, pid_t,
+int	 imsg_compose(struct imsgbuf *, u_int32_t, u_int32_t, pid_t,
 	    int, void *, u_int16_t);
-int	 imsg_composev(struct imsgbuf *, u_int16_t, u_int32_t,  pid_t,
+int	 imsg_composev(struct imsgbuf *, u_int32_t, u_int32_t,  pid_t,
 	    int, const struct iovec *, int);
-struct buf *imsg_create(struct imsgbuf *, u_int16_t, u_int32_t, pid_t,
+struct buf *imsg_create(struct imsgbuf *, u_int32_t, u_int32_t, pid_t,
 	    u_int16_t);
 int	 imsg_add(struct buf *, void *, u_int16_t);
 void	 imsg_close(struct imsgbuf *, struct buf *);
 void	 imsg_free(struct imsg *);
-int	 imsg_get_fd(struct imsgbuf *);
 int	 imsg_flush(struct imsgbuf *);
 void	 imsg_clear(struct imsgbuf *);
