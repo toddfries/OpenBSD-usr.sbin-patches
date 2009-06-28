@@ -1,6 +1,6 @@
 #!/bin/sh -
 #
-# $OpenBSD: sysmerge.sh,v 1.44 2009/06/14 06:54:40 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.47 2009/06/28 21:08:06 ajacoutot Exp $
 #
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
 # Copyright (c) 2008, 2009 Antoine Jacoutot <ajacoutot@openbsd.org>
@@ -172,7 +172,7 @@ do_populate() {
 			awk '{ print $3 }' ${DESTDIR}/${DBDIR}/${i} > ${WRKDIR}/new
 			awk '{ print $3 }' ${WRKDIR}/${i} > ${WRKDIR}/old
 			if [ -n "`diff -q ${WRKDIR}/old ${WRKDIR}/new`" ]; then
-				OBSOLETE_FILES="${OBSOLETE_FILES} `diff -C 0 ${WRKDIR}/new ${WRKDIR}/old | grep -E '^- .' | sed -e 's,^- .,,g'`"
+				OBSOLETE_FILES="`diff -C 0 ${WRKDIR}/new ${WRKDIR}/old | grep -E '^- .' | sed -e 's,^- .,,g'`"
 			fi
 			rm ${WRKDIR}/new ${WRKDIR}/old
 			
@@ -267,6 +267,13 @@ mm_install() {
 	esac
 }
 
+mm_install_link() {
+	_LINKT=`readlink ${COMPFILE}`
+	_LINKF=`dirname ${DESTDIR}${COMPFILE#.}`
+	rm -f ${COMPFILE}
+	(cd ${_LINKF} && ln -sf ${_LINKT} .)
+	return
+}
 
 merge_loop() {
 	if [ "`expr "${MERGE_CMD}" : ^sdiff.*`" -gt 0 ]; then
@@ -369,7 +376,7 @@ diff_loop() {
 		if [ "${HANDLE_COMPFILE}" = "v" ]; then
 			echo "\n========================================================================\n"
 		fi
-		if [ -f "${DESTDIR}${COMPFILE#.}" -a -f "${COMPFILE}" ]; then
+		if [ -f "${DESTDIR}${COMPFILE#.}" -a -f "${COMPFILE}" -a -z "${IS_LINK}" ]; then
 			if [ "${AUTOMODE}" ]; then
 				# automatically install files if current != new and current = old
 				for i in "${AUTO_UPG[@]}"; do
@@ -397,7 +404,21 @@ diff_loop() {
 				echo ""
 			fi
 		else
-			echo "===> ${COMPFILE} was not found on the target system"
+			echo "===> ${COMPFILE#.} was not found on the target system"
+			if [ "${IS_LINK}" ]; then
+				if [ -z "${AUTOMODE}" ]; then
+					echo ""
+					NO_INSTALLED=1
+				else
+					if mm_install_link; then
+						echo "===> ${COMPFILE#.} link created successfully"
+						AUTO_INSTALLED_FILES="${AUTO_INSTALLED_FILES}${DESTDIR}${COMPFILE#.}\n"
+					else
+						echo " *** Warning: problem creating ${COMPFILE#.} link, manual intervention will be needed"
+					fi
+					return
+				fi
+			fi
 			if [ -z "${AUTOMODE}" ]; then
 				echo ""
 				NO_INSTALLED=1
@@ -418,7 +439,7 @@ diff_loop() {
 				CAN_INSTALL=1
 				echo "  Use 'i' to install the temporary ${COMPFILE}"
 			fi
-			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" ]; then
+			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" -a -z "${IS_LINK}" ]; then
 				echo "  Use 'm' to merge the temporary and installed versions"
 				echo "  Use 'v' to view the diff results again"
 			fi
@@ -439,10 +460,19 @@ diff_loop() {
 		[iI])
 			if [ -n "${CAN_INSTALL}" ]; then
 				echo ""
-				if mm_install "${COMPFILE}"; then
-					echo "===> ${COMPFILE} installed successfully"
+				if [ -n "${IS_LINK}" ]; then
+					if mm_install_link; then
+						echo "===> ${COMPFILE#.} link created successfully"
+						AUTO_INSTALLED_FILES="${AUTO_INSTALLED_FILES}${DESTDIR}${COMPFILE#.}\n"
+					else
+						echo " *** Warning: problem creating ${COMPFILE#.} link, manual intervention will be needed"
+					fi
 				else
-					echo " *** Warning: problem installing ${COMPFILE}, it will remain to merge by hand"
+					if mm_install "${COMPFILE}"; then
+						echo "===> ${COMPFILE} installed successfully"
+					else
+						echo " *** Warning: problem installing ${COMPFILE}, it will remain to merge by hand"
+					fi
 				fi
 			else
 				echo "invalid choice: ${HANDLE_COMPFILE}\n"
@@ -451,7 +481,7 @@ diff_loop() {
 				
 			;;
 		[mM])
-			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" ]; then
+			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" -a -z "${IS_LINK}" ]; then
 				merge_loop || HANDLE_COMPFILE="todo"
 			else
 				echo "invalid choice: ${HANDLE_COMPFILE}\n"
@@ -459,7 +489,7 @@ diff_loop() {
 			fi
 			;;
 		[vV])
-			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" ]; then
+			if [ -z "${NO_INSTALLED}" -a -z "${IS_BINFILE}" -a -z "${IS_LINK}" ]; then
 				HANDLE_COMPFILE="v"
 			else
 				echo "invalid choice: ${HANDLE_COMPFILE}\n"
@@ -484,8 +514,15 @@ do_compare() {
 
 	cd ${TEMPROOT} || error_rm_wrkdir
 
-	# use -size +0 to avoid comparing empty log files and device nodes
-	for COMPFILE in `find . -type f -size +0`; do
+	# use -size +0 to avoid comparing empty log files and device nodes;
+	# however, we want to keep the symlinks
+	for COMPFILE in `find . -type f -size +0 -or -type l`; do
+		unset IS_BINFILE
+		unset IS_LINK
+		# links need to be treated in a different way
+		if [ -h "${COMPFILE}" ]; then
+			IS_LINK=1
+		fi
 		if [ ! -e "${DESTDIR}${COMPFILE#.}" ]; then
 			diff_loop
 			continue
@@ -498,13 +535,13 @@ do_compare() {
 		if [ "${AUTOMODE}" -a "${COMPFILE}" != "./etc/fbtab" \
 		    -a "${COMPFILE}" != "./etc/login.conf" \
 		    -a "${COMPFILE}" != "./etc/sysctl.conf" \
-		    -a "${COMPFILE}" != "./etc/ttys" ]; then
+		    -a "${COMPFILE}" != "./etc/ttys" -a -z "${IS_LINK}" ]; then
 			CVSID1=`grep "[$]OpenBSD:" ${DESTDIR}${COMPFILE#.} 2> /dev/null`
 			CVSID2=`grep "[$]OpenBSD:" ${COMPFILE} 2> /dev/null` || CVSID2=none
 			if [ "${CVSID2}" = "${CVSID1}" ]; then rm "${COMPFILE}"; fi
 		fi
 
-		if [ -f "${COMPFILE}" ]; then
+		if [ -f "${COMPFILE}" -a -z "${IS_LINK}" ]; then
 			# make sure files are different; if not, delete the one in temproot
 			if diff -q "${DESTDIR}${COMPFILE#.}" "${COMPFILE}" > /dev/null 2>&1; then
 				rm "${COMPFILE}"
@@ -513,7 +550,6 @@ do_compare() {
 				IS_BINFILE=1
 				diff_loop
 			else
-				unset IS_BINFILE
 				diff_loop
 			fi
 		fi
