@@ -62,4 +62,3 @@ extern int iface_Show(struct cmdargs const *);
 extern int iface_SetFlags(const char *, int);
 extern int iface_ClearFlags(const char *, int);
 extern void iface_Destroy(struct iface *);
-extern void iface_ParseHdr(struct ifa_msghdr *, struct sockaddr *[RTAX_MAX]);
