@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	$OpenBSD: iface.c,v 1.28 2009/06/25 15:59:28 claudio Exp $
+ *	$OpenBSD: iface.c,v 1.29 2009/07/02 16:08:29 claudio Exp $
  */
 
 #include <sys/param.h>

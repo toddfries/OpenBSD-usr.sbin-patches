@@ -25,7 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $OpenBSD: route.c,v 1.37 2009/06/25 15:59:28 claudio Exp $
+ * $OpenBSD: route.c,v 1.38 2009/07/02 16:08:29 claudio Exp $
  */
 
 #include <sys/param.h>
@@ -204,12 +204,23 @@ static int route_nifs = -1;
 const char *
 Index2Nam(int idx)
 {
+<<<<<<< route.c
+  static char ifname[IF_NAMESIZE];
+  char *ifn;
+=======
   static char ifname[IF_NAMESIZE];
   char *ifn;
 
   ifn = if_indextoname(idx, ifname);
+>>>>>>> 1.38
+
+<<<<<<< route.c
+  ifn = if_indextoname(idx, ifname);
 
   if (idx < 1 || ifn == NULL)
+=======
+  if (idx < 1 || ifn == NULL)
+>>>>>>> 1.38
     return NumStr(idx, NULL, 0);
 
   return ifn;
