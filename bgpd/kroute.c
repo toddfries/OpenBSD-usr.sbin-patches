@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.169 2009/06/25 15:54:22 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.172 2009/07/23 14:53:20 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -587,11 +587,17 @@ kr_show_route(struct imsg *imsg)
 				case AF_INET:
 					kr = h->kroute;
 					snh.valid = kroute_validate(&kr->r);
+					snh.krvalid = 1;
+					memcpy(&snh.kr.kr4, &kr->r,
+					    sizeof(snh.kr.kr4));
 					ifindex = kr->r.ifindex;
 					break;
 				case AF_INET6:
 					kr6 = h->kroute;
 					snh.valid = kroute6_validate(&kr6->r);
+					snh.krvalid = 1;
+					memcpy(&snh.kr.kr6, &kr6->r,
+					    sizeof(snh.kr.kr6));
 					ifindex = kr6->r.ifindex;
 					break;
 				}
@@ -846,26 +852,28 @@ kroute6_compare(struct kroute6_node *a, struct kroute6_node *b)
 int
 knexthop_compare(struct knexthop_node *a, struct knexthop_node *b)
 {
-	u_int32_t	r;
+	int	i;
 
 	if (a->nexthop.af != b->nexthop.af)
 		return (b->nexthop.af - a->nexthop.af);
 
 	switch (a->nexthop.af) {
 	case AF_INET:
-		if ((r = b->nexthop.addr32[0] - a->nexthop.addr32[0]) != 0)
-			return (r);
+		if (ntohl(a->nexthop.v4.s_addr) < ntohl(b->nexthop.v4.s_addr))
+			return (-1);
+		if (ntohl(a->nexthop.v4.s_addr) > ntohl(b->nexthop.v4.s_addr))
+			return (1);
 		break;
 	case AF_INET6:
-		if ((r = b->nexthop.addr32[3] - a->nexthop.addr32[3]) != 0)
-			return (r);
-		if ((r = b->nexthop.addr32[2] - a->nexthop.addr32[2]) != 0)
-			return (r);
-		if ((r = b->nexthop.addr32[1] - a->nexthop.addr32[1]) != 0)
-			return (r);
-		if ((r = b->nexthop.addr32[0] - a->nexthop.addr32[0]) != 0)
-			return (r);
+		for (i = 0; i < 16; i++) {
+			if (a->nexthop.v6.s6_addr[i] < b->nexthop.v6.s6_addr[i])
+				return (-1);
+			if (a->nexthop.v6.s6_addr[i] > b->nexthop.v6.s6_addr[i])
+				return (1);
+		}
 		break;
+	default:
+		fatalx("knexthop_compare: unknown AF");
 	}
 
 	return (0);
@@ -1184,6 +1192,7 @@ knexthop_find(struct bgpd_addr *addr)
 {
 	struct knexthop_node	s;
 
+	bzero(&s, sizeof(s));
 	memcpy(&s.nexthop, addr, sizeof(s.nexthop));
 
 	return (RB_FIND(knexthop_tree, &knt, &s));

@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.75 2009/06/06 04:14:21 pyr Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.78 2009/07/28 22:03:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -1011,7 +1011,7 @@ setup_spool(uid_t uid, gid_t gid)
 	char		*paths[] = { PATH_INCOMING, PATH_ENQUEUE, PATH_QUEUE,
 				     PATH_RUNQUEUE, PATH_RUNQUEUELOW,
 				     PATH_RUNQUEUEHIGH, PATH_PURGE,
-				     PATH_OFFLINE };
+				     PATH_OFFLINE, PATH_DAEMON };
 	char		 pathname[MAXPATHLEN];
 	struct stat	 sb;
 	int		 ret;
@@ -1065,7 +1065,7 @@ setup_spool(uid_t uid, gid_t gid)
 		uid_t	owner;
 		gid_t	group;
 
-		if (paths[n] == PATH_OFFLINE) {
+		if (!strcmp(paths[n], PATH_OFFLINE)) {
 			mode = 01777;
 			owner = 0;
 			group = 0;
@@ -1226,7 +1226,8 @@ parent_mailbox_open(char *path, struct passwd *pw, struct batch *batchp)
 		close(STDERR_FILENO);
 		dup2(pipefd[1], 0);
 
-		execlp(PATH_MAILLOCAL, "mail.local", "-f", sender, pw->pw_name, (void *)NULL);
+		execlp(PATH_MAILLOCAL, "mail.local", "-f", sender, pw->pw_name,
+		    (void *)NULL);
 		_exit(1);
 	}
 

@@ -1,0 +1,56 @@
+# On branch master
+# Changed but not updated:
+#   (use "git add <file>..." to update what will be committed)
+#   (use "git checkout -- <file>..." to discard changes in working directory)
+#
+#	modified:   bgpctl/bgpctl.c
+#	modified:   bgpd/bgpd.c
+#	modified:   bgpd/bgpd.h
+#	modified:   bgpd/buffer.c
+#	modified:   bgpd/kroute.c
+#	modified:   bgpd/parse.y
+#	modified:   bgpd/session.c
+#	modified:   bind/bin/named/update.c
+#	modified:   bind/lib/isc/unix/privsep.c
+#	modified:   crunchgen/crunchide.c
+#	modified:   dvmrpd/buffer.c
+#	modified:   ldpd/buffer.c
+#	modified:   ntpd/buffer.c
+#	modified:   ospf6ctl/ospf6ctl.c
+#	modified:   ospf6d/buffer.c
+#	modified:   ospf6d/rde.c
+#	modified:   ospf6d/rde_spf.c
+#	modified:   ospfd/buffer.c
+#	modified:   ospfd/kroute.c
+#	modified:   ospfd/ospfd.conf.5
+#	modified:   pppd/chat/chat.c
+#	modified:   relayd/buffer.c
+#	modified:   ripctl/ripctl.c
+#	modified:   ripd/buffer.c
+#	modified:   ripd/parse.y
+#	modified:   ripd/printconf.c
+#	modified:   ripd/ripd.conf.5
+#	modified:   smtpd/buffer.c
+#	modified:   smtpd/makemap.c
+#	modified:   smtpd/queue_shared.c
+#	modified:   smtpd/runner.c
+#	modified:   smtpd/smtp_session.c
+#	modified:   smtpd/smtpd.c
+#	modified:   smtpd/smtpd.h
+#	modified:   smtpd/store.c
+#	modified:   snmpd/buffer.c
+#	modified:   tcpdump/print-tftp.c
+#	modified:   ypldap/buffer.c
+#	modified:   ypldap/yp.c
+#
+# Untracked files:
+#   (use "git add <file>..." to include in what will be committed)
+#
+#	ppp/ppp/arp.c.orig
+#	ppp/ppp/iface.c.orig
+#	ppp/ppp/iface.h.orig
+#	ppp/ppp/route.c.orig
+#	smtpd/smtp_session.c.orig
+#	status.log
+#	up.log
+no changes added to commit (use "git add" and/or "git commit -a")
