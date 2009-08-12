@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.133 2009/04/24 14:20:24 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.140 2009/08/07 11:10:23 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -93,6 +93,8 @@ objid_t			 last_proto_id = 0;
 static struct rdr	*rdr = NULL;
 static struct table	*table = NULL;
 static struct relay	*rlay = NULL;
+static struct host	*hst = NULL;
+struct relaylist	 relays;
 static struct protocol	*proto = NULL;
 static struct protonode	 node;
 static u_int16_t	 label = 0;
@@ -107,20 +109,25 @@ int		 host(const char *, struct addresslist *,
 		    int, struct portrange *, const char *, int);
 
 struct table	*table_inherit(struct table *);
+struct relay	*relay_inherit(struct relay *, struct relay *);
 int		 getservice(char *);
 
 typedef struct {
 	union {
-		int64_t		 number;
-		char		*string;
-		struct host	*host;
-		struct timeval	 tv;
-		struct table	*table;
-		struct portrange port;
+		int64_t			 number;
+		char			*string;
+		struct host		*host;
+		struct timeval		 tv;
+		struct table		*table;
+		struct portrange	 port;
 		struct {
-			enum digest_type	 type;
-			char			*digest;
-		}		 digest;
+			struct sockaddr_storage	 ss;
+			char			 name[MAXHOSTNAMELEN];
+		}			 addr;
+		struct {
+			enum digest_type type;
+			char		*digest;
+		}			 digest;
 	} v;
 	int lineno;
 } YYSTYPE;
@@ -136,16 +143,17 @@ typedef struct {
 %token	QUERYSTR REAL REDIRECT RELAY REMOVE REQUEST RESPONSE RETRY
 %token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET
 %token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO
-%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH
+%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH TTL
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.string>	hostname interface table
-%type	<v.number>	http_type loglevel mark parent
+%type	<v.number>	http_type loglevel mark
 %type	<v.number>	direction dstmode flag forwardmode retry
 %type	<v.number>	optssl optsslclient sslcache
 %type	<v.number>	redirect_proto relay_proto
 %type	<v.port>	port
 %type	<v.host>	host
+%type	<v.addr>	address
 %type	<v.tv>		timeout
 %type	<v.digest>	digest
 %type	<v.table>	tablespec
@@ -509,7 +517,6 @@ forwardmode	: FORWARD		{ $$ = FWD_NORMAL; }
 		;
 
 table		: '<' STRING '>'	{
-			conf->sc_flags |= F_NEEDPF;
 			if (strlen($2) >= TABLE_NAME_SIZE) {
 				yyerror("invalid table name");
 				free($2);
@@ -1159,6 +1166,8 @@ relay		: RELAY STRING	{
 				free($2);
 				YYERROR;
 			}
+			TAILQ_INIT(&relays);
+
 			if ((r = calloc(1, sizeof (*r))) == NULL)
 				fatal("out of memory");
 
@@ -1183,6 +1192,8 @@ relay		: RELAY STRING	{
 			}
 			rlay = r;
 		} '{' optnl relayopts_l '}'	{
+			struct relay	*r;
+
 			if (rlay->rl_conf.ss.ss_family == AF_UNSPEC) {
 				yyerror("relay %s has no listener",
 				    rlay->rl_conf.name);
@@ -1208,6 +1219,13 @@ relay		: RELAY STRING	{
 			SPLAY_INIT(&rlay->rl_sessions);
 			TAILQ_INSERT_TAIL(conf->sc_relays, rlay, rl_entry);
 			tableport = 0;
+
+			while ((r = TAILQ_FIRST(&relays)) != NULL) {
+				TAILQ_REMOVE(&relays, r, rl_entry);
+				if (relay_inherit(rlay, r) == NULL) {
+					YYERROR;
+				}
+			}
 			rlay = NULL;
 		}
 		;
@@ -1219,13 +1237,14 @@ relayopts_l	: relayopts_l relayoptsl nl
 relayoptsl	: LISTEN ON STRING port optssl {
 			struct addresslist	 al;
 			struct address		*h;
+			struct relay		*r;
 
 			if (rlay->rl_conf.ss.ss_family != AF_UNSPEC) {
-				yyerror("relay %s listener already specified",
-				    rlay->rl_conf.name);
-				free($3);
-				YYERROR;
-			}
+				if ((r = calloc(1, sizeof (*r))) == NULL)
+					fatal("out of memory");
+				TAILQ_INSERT_TAIL(&relays, r, rl_entry);
+			} else
+				r = rlay;
 			if ($4.op != PF_OP_EQ) {
 				yyerror("invalid port");
 				free($3);
@@ -1240,10 +1259,10 @@ relayoptsl	: LISTEN ON STRING port optssl {
 			}
 			free($3);
 			h = TAILQ_FIRST(&al);
-			bcopy(&h->ss, &rlay->rl_conf.ss, sizeof(rlay->rl_conf.ss));
-			rlay->rl_conf.port = h->port.val[0];
+			bcopy(&h->ss, &r->rl_conf.ss, sizeof(r->rl_conf.ss));
+			r->rl_conf.port = h->port.val[0];
 			if ($5) {
-				rlay->rl_conf.flags |= F_SSL;
+				r->rl_conf.flags |= F_SSL;
 				conf->sc_flags |= F_SSL;
 			}
 			tableport = h->port.val[0];
@@ -1381,52 +1400,96 @@ interface	: /*empty*/		{ $$ = NULL; }
 		| INTERFACE STRING	{ $$ = $2; }
 		;
 
-host		: STRING retry parent	{
-			struct address *a;
-			struct addresslist al;
-
-			if (($$ = calloc(1, sizeof(*($$)))) == NULL)
+host		: address	{
+			if ((hst = calloc(1, sizeof(*(hst)))) == NULL)
 				fatal("out of memory");
 
-			TAILQ_INIT(&al);
-			if (host($1, &al, 1, NULL, NULL, -1) <= 0) {
-				yyerror("invalid host %s", $2);
-				free($1);
-				free($$);
-				YYERROR;
-			}
-			a = TAILQ_FIRST(&al);
-			memcpy(&$$->conf.ss, &a->ss, sizeof($$->conf.ss));
-			free(a);
-
-			if (strlcpy($$->conf.name, $1, sizeof($$->conf.name)) >=
-			    sizeof($$->conf.name)) {
+			if (strlcpy(hst->conf.name, $1.name,
+			    sizeof(hst->conf.name)) >= sizeof(hst->conf.name)) {
 				yyerror("host name truncated");
-				free($1);
-				free($$);
+				free(hst);
 				YYERROR;
 			}
-			free($1);
-			$$->conf.id = 0; /* will be set later */
-			$$->conf.retry = $2;
-			$$->conf.parentid = $3;
-			SLIST_INIT(&$$->children);
+			bcopy(&$1.ss, &hst->conf.ss, sizeof($1.ss));
+			hst->conf.id = 0; /* will be set later */
+			SLIST_INIT(&hst->children);
+		} opthostflags {
+			$$ = hst;
+			hst = NULL;
 		}
 		;
 
-retry		: /* nothing */		{ $$ = 0; }
-		| RETRY NUMBER		{
-			if (($$ = $2) < 0) {
+opthostflags	: /* empty */
+		| hostflags_l
+		;
+
+hostflags_l	: hostflags hostflags_l
+		| hostflags
+		;
+
+hostflags	: RETRY NUMBER		{
+			if (hst->conf.retry) {
+				yyerror("retry value already set");
+				YYERROR;
+			}
+			if ($2 < 0) {
 				yyerror("invalid retry value: %d\n", $2);
 				YYERROR;
 			}
+			hst->conf.retry = $2;
+		}
+		| PARENT NUMBER		{
+			if (hst->conf.parentid) {
+				yyerror("parent value already set");
+				YYERROR;
+			}
+			if ($2 < 0) {
+				yyerror("invalid parent value: %d\n", $2);
+				YYERROR;
+			}
+			hst->conf.parentid = $2;
+		}
+		| IP TTL NUMBER		{
+			if (hst->conf.ttl) {
+				yyerror("ttl value already set");
+				YYERROR;
+			}
+			if ($3 < 0) {
+				yyerror("invalid ttl value: %d\n", $3);
+				YYERROR;
+			}
+			hst->conf.ttl = $3;
 		}
 		;
 
-parent		: /* nothing */		{ $$ = 0; }
-		| PARENT NUMBER		{
+address		: STRING	{
+			struct address *a;
+			struct addresslist al;
+
+			if (strlcpy($$.name, $1,
+			    sizeof($$.name)) >= sizeof($$.name)) {
+				yyerror("host name truncated");
+				free($1);
+				YYERROR;
+			}
+
+			TAILQ_INIT(&al);
+			if (host($1, &al, 1, NULL, NULL, -1) <= 0) {
+				yyerror("invalid host %s", $1);
+				free($1);
+				YYERROR;
+			}
+			free($1);
+			a = TAILQ_FIRST(&al);
+			memcpy(&$$.ss, &a->ss, sizeof($$.ss));
+			free(a);
+		}
+		;
+
+retry		: /* empty */		{ $$ = 0; }
+		| RETRY NUMBER		{
 			if (($$ = $2) < 0) {
-				yyerror("invalid parent value: %d\n", $2);
+				yyerror("invalid retry value: %d\n", $2);
 				YYERROR;
 			}
 		}
@@ -1563,6 +1626,7 @@ lookup(char *s)
 		{ "to",			TO },
 		{ "transparent",	TRANSPARENT },
 		{ "trap",		TRAP },
+		{ "ttl",		TTL },
 		{ "updates",		UPDATES },
 		{ "url",		URL },
 		{ "virtual",		VIRTUAL },
@@ -1986,6 +2050,12 @@ parse_config(const char *filename, int opts)
 	if (TAILQ_EMPTY(conf->sc_relays))
 		conf->sc_prefork_relay = 0;
 
+	/* Cleanup relay list to inherit */
+	while ((rlay = TAILQ_FIRST(&relays)) != NULL) {
+		TAILQ_REMOVE(&relays, rlay, rl_entry);
+		free(rlay);
+	}
+
 	if (timercmp(&conf->sc_timeout, &conf->sc_interval, >=)) {
 		log_warnx("global timeout exceeds interval");
 		errors++;
@@ -2343,6 +2413,54 @@ table_inherit(struct table *tb)
 	TAILQ_INSERT_TAIL(conf->sc_tables, tb, entry);
 
 	return (tb);
+}
+
+struct relay *
+relay_inherit(struct relay *ra, struct relay *rb)
+{
+	struct relay_config	 rc;
+
+	bcopy(&rb->rl_conf, &rc, sizeof(rc));
+	bcopy(ra, rb, sizeof(*rb));
+
+	bcopy(&rc.ss, &rb->rl_conf.ss, sizeof(rb->rl_conf.ss));
+	rb->rl_conf.port = rc.port;
+	rb->rl_conf.flags =
+	    (ra->rl_conf.flags & ~F_SSL) | (rc.flags & F_SSL);
+
+	rb->rl_conf.id = ++last_relay_id;
+	if (last_relay_id == INT_MAX) {
+		yyerror("too many relays defined");
+		goto err;
+	}
+
+	if (snprintf(rb->rl_conf.name, sizeof(rb->rl_conf.name), "%s%u:%u",
+	    ra->rl_conf.name, rb->rl_conf.id, ntohs(rc.port)) >=
+	    (int)sizeof(rb->rl_conf.name)) {
+		yyerror("invalid relay name");
+		goto err;
+	}
+
+	if (relay_findbyname(conf, rb->rl_conf.name) != NULL ||
+	    relay_findbyaddr(conf, &rb->rl_conf) != NULL) {
+		yyerror("relay %s defined twice", rb->rl_conf.name);
+		goto err;
+	}
+	if (relay_load_certfiles(rb) == -1) {
+		yyerror("cannot load certificates for relay %s",
+		    rb->rl_conf.name);
+		goto err;
+	}
+
+	conf->sc_relaycount++;
+	SPLAY_INIT(&rlay->rl_sessions);
+	TAILQ_INSERT_TAIL(conf->sc_relays, rb, rl_entry);
+
+	return (rb);
+
+ err:
+	free(rb);
+	return (NULL);
 }
 
 int

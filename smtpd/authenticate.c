@@ -1,7 +1,7 @@
-/*	$OpenBSD: parser.h,v 1.8 2009/08/08 00:02:22 gilles Exp $	*/
+/*	$OpenBSD: authenticate.c,v 1.1 2009/08/07 19:02:55 gilles Exp $	*/
 
 /*
- * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
+ * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,29 +16,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-enum actions {
-	NONE,
-	SHUTDOWN,
-	RELOAD,
-	MONITOR,
-	SCHEDULE,
-	SHOW_QUEUE,
-	SHOW_RUNQUEUE,
-	SHOW_STATS,
-	PAUSE_MDA,
-	PAUSE_MTA,
-	PAUSE_SMTP,
-	RESUME_MDA,
-	RESUME_MTA,
-	RESUME_SMTP,
-};
+#include <sys/types.h>
+#include <sys/queue.h>
+#include <sys/tree.h>
+#include <sys/param.h>
+#include <sys/socket.h>
 
-struct parse_result {
-	struct ctl_id	id;
-	enum actions	action;
-	const char     *data;
-};
+#include <bsd_auth.h>
+#include <err.h>
+#include <event.h>
+#include <pwd.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-struct parse_result	*parse(int, char *[]);
-const struct token      *match_token(const char *, const struct token *);
-void                     show_valid_args(const struct token *);
+#include "smtpd.h"
+
+int
+authenticate_user(char *username, char *password)
+{
+	return auth_userokay(username, NULL, "auth-smtp", password);
+}

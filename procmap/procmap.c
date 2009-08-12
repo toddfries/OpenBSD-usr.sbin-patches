@@ -1,4 +1,4 @@
-/*	$OpenBSD: procmap.c,v 1.32 2009/06/04 22:38:53 miod Exp $ */
+/*	$OpenBSD: procmap.c,v 1.34 2009/08/12 20:13:12 miod Exp $ */
 /*	$NetBSD: pmap.c,v 1.1 2002/09/01 20:32:44 atatat Exp $ */
 
 /*
@@ -87,9 +87,8 @@ struct cache_entry {
 };
 
 LIST_HEAD(cache_head, cache_entry) lcache;
-LIST_HEAD(nchashhead, namecache) *nchashtbl = NULL;
 void *uvm_vnodeops, *uvm_deviceops, *aobj_pager;
-u_long nchash_addr, nchashtbl_addr, kernel_map_addr;
+u_long nchash_addr, kernel_map_addr;
 int debug, verbose;
 int print_all, print_map, print_maps, print_solaris, print_ddb, print_amap;
 int rwx = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE;
@@ -165,10 +164,8 @@ struct nlist nl[] = {
 #define NL_AOBJ_PAGER		3
 	{ "_kernel_map" },
 #define NL_KERNEL_MAP		4
-	{ "_nchashtbl" },
-#define NL_NCHASHTBL		5
 	{ "_nchash" },
-#define NL_NCHASH		6
+#define NL_NCHASH		5
 	{ NULL }
 };
 
@@ -179,8 +176,10 @@ size_t dump_vm_map_entry(kvm_t *, struct kbit *, struct kbit *, int,
 char *findname(kvm_t *, struct kbit *, struct kbit *, struct kbit *,
 	    struct kbit *, struct kbit *);
 int search_cache(kvm_t *, struct kbit *, char **, char *, size_t);
+#if 0
 void load_name_cache(kvm_t *);
 void cache_enter(struct namecache *);
+#endif
 static void __dead usage(void);
 static pid_t strtopid(const char *);
 void print_sum(struct sum *, struct sum *);
@@ -528,8 +527,6 @@ load_symbols(kvm_t *kd)
 
 	_KDEREF(kd, nl[NL_MAXSSIZ].n_value, &maxssiz,
 	    sizeof(maxssiz));
-	_KDEREF(kd, nl[NL_NCHASHTBL].n_value, &nchashtbl_addr,
-	    sizeof(nchashtbl_addr));
 	_KDEREF(kd, nl[NL_KERNEL_MAP].n_value, &kernel_map_addr,
 	    sizeof(kernel_map_addr));
 }
@@ -858,8 +855,10 @@ search_cache(kvm_t *kd, struct kbit *vp, char **name, char *buf, size_t blen)
 	char *o, *e;
 	u_long cid;
 
+#if 0
 	if (nchashtbl == NULL)
 		load_name_cache(kd);
+#endif
 
 	P(&svp) = P(vp);
 	S(&svp) = sizeof(struct vnode);
@@ -893,6 +892,7 @@ search_cache(kvm_t *kd, struct kbit *vp, char **name, char *buf, size_t blen)
 	return (D(&svp, vnode)->v_flag & VROOT);
 }
 
+#if 0
 void
 load_name_cache(kvm_t *kd)
 {
@@ -958,6 +958,7 @@ cache_enter(struct namecache *ncp)
 
 	LIST_INSERT_HEAD(&lcache, ce, ce_next);
 }
+#endif
 
 static void __dead
 usage(void)

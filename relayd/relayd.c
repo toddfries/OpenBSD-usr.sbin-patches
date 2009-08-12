@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.c,v 1.89 2009/06/05 23:39:51 pyr Exp $	*/
+/*	$OpenBSD: relayd.c,v 1.91 2009/08/07 11:21:53 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -471,7 +471,7 @@ purge_config(struct relayd *env, u_int8_t what)
 	struct address		*virt;
 	struct protocol		*proto;
 	struct relay		*rlay;
-	struct session		*sess;
+	struct rsession		*sess;
 
 	if (what & PURGE_TABLES && env->sc_tables != NULL) {
 		while ((table = TAILQ_FIRST(env->sc_tables)) != NULL)
@@ -836,11 +836,11 @@ relay_find(struct relayd *env, objid_t id)
 	return (NULL);
 }
 
-struct session *
+struct rsession *
 session_find(struct relayd *env, objid_t id)
 {
 	struct relay		*rlay;
-	struct session		*con;
+	struct rsession		*con;
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry)
 		SPLAY_FOREACH(con, session_tree, &rlay->rl_sessions)
@@ -919,6 +919,18 @@ relay_findbyname(struct relayd *env, const char *name)
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry)
 		if (strcmp(rlay->rl_conf.name, name) == 0)
+			return (rlay);
+	return (NULL);
+}
+
+struct relay *
+relay_findbyaddr(struct relayd *env, struct relay_config *rc)
+{
+	struct relay	*rlay;
+
+	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry)
+		if (bcmp(&rlay->rl_conf.ss, &rc->ss, sizeof(rc->ss)) == 0 &&
+		    rlay->rl_conf.port == rc->port)
 			return (rlay);
 	return (NULL);
 }

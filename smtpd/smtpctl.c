@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.31 2009/06/06 04:14:21 pyr Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.33 2009/08/08 19:16:41 ian Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -24,6 +24,7 @@
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <sys/un.h>
+#include <sys/param.h>
 
 #include <net/if.h>
 #include <net/if_media.h>
@@ -95,7 +96,12 @@ main(int argc, char *argv[])
 	/* parse options */
 	if (strcmp(__progname, "sendmail") == 0 || strcmp(__progname, "send-mail") == 0)
 		sendmail = 1;
-	else if (strcmp(__progname, "smtpctl") == 0) {
+	else if (strcmp(__progname, "mailq") == 0) {
+		if (geteuid())
+			errx(1, "need root privileges");
+		show_queue(PATH_QUEUE, 0);
+		return 0;
+	} else if (strcmp(__progname, "smtpctl") == 0) {
 		/* check for root privileges */
 		if (geteuid())
 			errx(1, "need root privileges");

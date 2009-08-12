@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.108 2009/07/19 19:06:02 jacekm Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.114 2009/08/12 13:32:19 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -27,19 +27,18 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include <ssl/ssl.h>
+#include <openssl/ssl.h>
 
 #include <ctype.h>
 #include <errno.h>
 #include <event.h>
 #include <pwd.h>
 #include <regex.h>
+#include <resolv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#include <keynote.h>
 
 #include "smtpd.h"
 
@@ -195,7 +194,7 @@ session_rfc4954_auth_plain(struct session *s, char *arg)
 
 	case S_AUTH_INIT:
 		/* String is not NUL terminated, leave room. */
-		if ((len = kn_decode_base64(arg, buf, sizeof(buf) - 1)) == -1)
+		if ((len = __b64_pton(arg, (unsigned char *)buf, sizeof(buf) - 1)) == -1)
 			goto abort;
 		/* buf is a byte string, NUL terminate. */
 		buf[len] = '\0';
@@ -248,7 +247,7 @@ session_rfc4954_auth_login(struct session *s, char *arg)
 
 	case S_AUTH_USERNAME:
 		bzero(a->user, sizeof(a->user));
-		if (kn_decode_base64(arg, a->user, sizeof(a->user) - 1) == -1)
+		if (__b64_pton(arg, (unsigned char *)a->user, sizeof(a->user) - 1) == -1)
 			goto abort;
 
 		s->s_state = S_AUTH_PASSWORD;
@@ -257,7 +256,7 @@ session_rfc4954_auth_login(struct session *s, char *arg)
 
 	case S_AUTH_PASSWORD:
 		bzero(a->pass, sizeof(a->pass));
-		if (kn_decode_base64(arg, a->pass, sizeof(a->pass) - 1) == -1)
+		if (__b64_pton(arg, (unsigned char *)a->pass, sizeof(a->pass) - 1) == -1)
 			goto abort;
 
 		s->s_state = S_AUTH_FINALIZE;
@@ -288,23 +287,31 @@ session_rfc1652_mail_handler(struct session *s, char *args)
 		return 1;
 	}
 
-	body = strrchr(args, ' ');
-	if (body != NULL) {
+	for (body = strrchr(args, ' '); body != NULL;
+		body = strrchr(args, ' ')) {
 		*body++ = '\0';
 
-		if (strcasecmp("body=7bit", body) == 0) {
-			s->s_flags &= ~F_8BITMIME;
+		if (strncasecmp(body, "AUTH=", 5) == 0) {
+			log_debug("AUTH in MAIL FROM command, skipping");
+			continue;		
 		}
 
-		else if (strcasecmp("body=8bitmime", body) != 0) {
-			session_respond(s, "503 Invalid BODY");
-			return 1;
-		}
+		if (strncasecmp(body, "BODY=", 5) == 0) {
+			log_debug("BODY in MAIL FROM command");
 
-		return session_rfc5321_mail_handler(s, args);
+			if (strncasecmp("body=7bit", body, 9) == 0) {
+				s->s_flags &= ~F_8BITMIME;
+				continue;
+			}
+
+			else if (strncasecmp("body=8bitmime", body, 13) != 0) {
+				session_respond(s, "503 Invalid BODY");
+				return 1;
+			}
+		}
 	}
-
-	return 0;
+	
+	return session_rfc5321_mail_handler(s, args);
 }
 
 int
@@ -687,10 +694,11 @@ session_pickup(struct session *s, struct submit_status *ss)
 	case S_DONE:
 		session_respond(s, "250 %s Message accepted for delivery",
 		    s->s_msg.message_id);
-		log_info("%s: from=<%s@%s>, size=%ld, nrcpts=%zd, proto=%s, "
+		log_info("%s: from=<%s%s%s>, size=%ld, nrcpts=%zd, proto=%s, "
 		    "relay=%s [%s]",
 		    s->s_msg.message_id,
 		    s->s_msg.sender.user,
+		    s->s_msg.sender.user[0] == '\0' ? "" : "@",
 		    s->s_msg.sender.domain,
 		    s->s_datalen,
 		    s->rcptcount,
@@ -850,11 +858,7 @@ session_read_data(struct session *s, char *line, size_t nread)
 	if (! (s->s_flags & F_8BITMIME)) {
 		for (i = 0; i < len; ++i)
 			if (line[i] & 0x80)
-				break;
-		if (i != len) {
-			s->s_msg.status |= S_MESSAGE_PERMFAILURE;
-			return;
-		}
+				line[i] = line[i] & 0x7f;
 	}
 }
 

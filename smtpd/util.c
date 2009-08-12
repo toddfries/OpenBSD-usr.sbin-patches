@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.22 2009/06/01 18:24:01 deraadt Exp $	*/
+/*	$OpenBSD: util.c,v 1.25 2009/08/08 00:18:38 gilles Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -25,12 +25,14 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <err.h>
 #include <ctype.h>
 #include <errno.h>
 #include <event.h>
 #include <libgen.h>
 #include <netdb.h>
 #include <pwd.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,12 +86,12 @@ hostname_match(char *hostname, char *pattern)
 			while (*pattern == '*')
 				pattern++;
 			while (*hostname != '\0' &&
-			    tolower(*hostname) != tolower(*pattern))
+			    tolower((int)*hostname) != tolower((int)*pattern))
 				hostname++;
 			continue;
 		}
 
-		if (tolower(*pattern) != tolower(*hostname))
+		if (tolower((int)*pattern) != tolower((int)*hostname))
 			return 0;
 		pattern++;
 		hostname++;
@@ -135,7 +137,7 @@ recipient_to_path(struct path *path, char *recipient)
 int
 valid_localpart(char *s)
 {
-#define IS_ATEXT(c)     (isalnum(c) || strchr("!#$%&'*+-/=?^_`{|}~", (c)))
+#define IS_ATEXT(c)     (isalnum((int)(c)) || strchr("!#$%&'*+-/=?^_`{|}~", (c)))
 nextatom:
         if (! IS_ATEXT(*s) || *s == '\0')
                 return 0;
@@ -157,12 +159,12 @@ int
 valid_domainpart(char *s)
 {
 nextsub:
-        if (!isalnum(*s))
+        if (!isalnum((int)*s))
                 return 0;
         while (*(++s) != '\0') {
                 if (*s == '.')
                         break;
-                if (isalnum(*s) || *s == '-')
+                if (isalnum((int)*s) || *s == '-')
                         continue;
                 return 0;
         }
@@ -237,7 +239,7 @@ valid_message_uid(char *muid)
 		return 0;
 
 	for (cnt = 0; *muid != '\0'; ++cnt, ++muid)
-		if (! isdigit(*muid))
+		if (! isdigit((int)*muid))
 			return 0;
 
 	return (cnt != 0);
@@ -361,7 +363,32 @@ lowercase(char *buf, char *s, size_t len)
 		fatalx("lowercase: truncation");
 
 	while (*buf != '\0') {
-		*buf = tolower(*buf);
+		*buf = tolower((int)*buf);
 		buf++;
 	}
+}
+
+void
+message_set_errormsg(struct message *messagep, char *fmt, ...)
+{
+	int ret;
+	va_list ap;
+
+	va_start(ap, fmt);
+
+	ret = vsnprintf(messagep->session_errorline, MAX_LINE_SIZE, fmt, ap);
+	if (ret >= MAX_LINE_SIZE)
+		strlcpy(messagep->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
+
+	/* this should not happen */
+	if (ret == -1)
+		err(1, "vsnprintf");
+
+	va_end(ap);
+}
+
+char *
+message_get_errormsg(struct message *messagep)
+{
+	return messagep->session_errorline;
 }

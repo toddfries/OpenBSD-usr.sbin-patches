@@ -1,4 +1,4 @@
-/*	$OpenBSD: store.c,v 1.20 2009/07/28 13:53:51 gilles Exp $	*/
+/*	$OpenBSD: store.c,v 1.25 2009/08/08 00:02:22 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -38,10 +38,8 @@
 
 #include "smtpd.h"
 
-int file_copy(FILE *, FILE *, struct path *, enum action_type);
-
 int
-file_copy(FILE *dest, FILE *src, struct path *path, enum action_type type)
+file_copy(FILE *dest, FILE *src, struct path *path, enum action_type type, int session)
 {
 	char *buf, *lbuf;
 	size_t len;
@@ -65,17 +63,17 @@ file_copy(FILE *dest, FILE *src, struct path *path, enum action_type type)
 
 		/* If we are NOT dealing with a mailer daemon copy, we have
 		 * path set to the original recipient. In that case, we can
-		 * add the X-OpenSMTPD-Loop header to help loop detection.
+		 * add the Delivered-To header to help loop detection.
 		 */
-		if (path != NULL && inheaders &&
-		    strchr(buf, ':') == NULL && !isspace(*buf)) {
-			if (fprintf(dest, "X-OpenSMTPD-Loop: %s@%s\n",
+		if (!session && path != NULL && inheaders &&
+		    strchr(buf, ':') == NULL && !isspace((int)*buf)) {
+			if (fprintf(dest, "Delivered-To: %s@%s\n",
 				path->user, path->domain) == -1)
 				return 0;
 			inheaders = 0;
 		}
 
-		if (type == A_MBOX) {
+		if (!session && type == A_MBOX) {
 			escape = buf;
 			while (*escape == '>')
 				++escape;
@@ -85,113 +83,26 @@ file_copy(FILE *dest, FILE *src, struct path *path, enum action_type type)
 			}
 		}
 
-		if (fprintf(dest, "%s\n", buf) != (int)len + 1)
+		/* "If first character of the line is a period, one
+		 *  additional period is inserted at the beginning."
+		 * [4.5.2]
+		 */
+		if (session && *buf == '.')
+			if (fprintf(dest, ".") != 1)
+				return 0;
+
+		if (fprintf(dest, "%s%s", buf, session ? "\r\n" : "\n") !=
+			(int)len + (session ? 2 : 1))
 			return 0;
 	}
 	free(lbuf);
 
-	if (type == A_MBOX) {
+	if (!session && type == A_MBOX) {
 		if (fprintf(dest, "\n") != 1)
 			return 0;
 	}
 
 	return 1;
-}
-
-int
-store_write_daemon(struct batch *batchp, struct message *messagep)
-{
-	u_int32_t i;
-	struct message *recipient;
-	FILE *mboxfp;
-	FILE *messagefp;
-
-	mboxfp = fdopen(batchp->sessionp->mboxfd, "a");
-	if (mboxfp == NULL)
-		return 0;
-
-	messagefp = fdopen(batchp->sessionp->messagefd, "r");
-	if (messagefp == NULL)
-		goto bad;
-
-	if (fprintf(mboxfp, "Hi !\n\n"
-		"This is the MAILER-DAEMON, please DO NOT REPLY to this e-mail it is\n"
-		"just a notification to let you know that an error has occurred.\n\n") == -1)
-		goto bad;
-
-	if ((batchp->status & S_BATCH_PERMFAILURE) && fprintf(mboxfp,
-		"You ran into a PERMANENT FAILURE, which means that the e-mail can't\n"
-		"be delivered to the remote host no matter how much I try.\n\n"
-		"Diagnostic:\n"
-		"%s\n\n", batchp->errorline) == -1)
-		goto bad;
-
-	if ((batchp->status & S_BATCH_TEMPFAILURE) && fprintf(mboxfp,
-		"You ran into a TEMPORARY FAILURE, which means that the e-mail can't\n"
-		"be delivered right now, but could be deliverable at a later time. I\n"
-		"will attempt until it succeeds for the next four days, then let you\n"
-		"know if it didn't work out.\n\n"
-		"Diagnostic:\n"
-		"%s\n\n", batchp->errorline) == -1)
-		goto bad;
-
-	if (! (batchp->status & S_BATCH_TEMPFAILURE)) {
-		/* First list the temporary failures */
-		i = 0;
-		TAILQ_FOREACH(recipient, &batchp->messages, entry) {
-			if (recipient->status & S_MESSAGE_TEMPFAILURE) {
-				if (i == 0) {
-					if (fprintf(mboxfp,
-						"The following recipients caused a temporary failure:\n") == -1)
-						goto bad;
-					++i;
-				}
-				if (fprintf(mboxfp,
-					"\t<%s@%s>:\n%s\n\n", recipient->recipient.user, recipient->recipient.domain,
-					recipient->session_errorline) == -1)
-					goto bad;
-			}
-		}
-
-		/* Then list the permanent failures */
-		i = 0;
-		TAILQ_FOREACH(recipient, &batchp->messages, entry) {
-			if (recipient->status & S_MESSAGE_PERMFAILURE) {
-				if (i == 0) {
-					if (fprintf(mboxfp,
-						"The following recipients caused a permanent failure:\n") == -1)
-						goto bad;
-					++i;
-				}
-				if (fprintf(mboxfp,
-					"\t<%s@%s>:\n%s\n\n", recipient->recipient.user, recipient->recipient.domain,
-					recipient->session_errorline) == -1)
-					goto bad;
-			}
-		}
-	}
-
-	if (fprintf(mboxfp, "Below is a copy of the original message:\n\n") == -1)
-		goto bad;
-
-	if (! file_copy(mboxfp, messagefp, NULL,
-		messagep->recipient.rule.r_action))
-		goto bad;
-
-	fflush(mboxfp);
-	fsync(fileno(mboxfp));
-	fclose(mboxfp);
-	fclose(messagefp);
-	return 1;
-
-bad:
-	if (mboxfp != NULL)
-		fclose(mboxfp);
-
-	if (messagefp != NULL)
-		fclose(messagefp);
-
-	return 0;
 }
 
 int
@@ -209,7 +120,7 @@ store_write_message(struct batch *batchp, struct message *messagep)
 		goto bad;
 
 	if (! file_copy(mboxfp, messagefp, &messagep->session_rcpt,
-		messagep->recipient.rule.r_action))
+		messagep->recipient.rule.r_action, 0))
 		goto bad;
 
 	fflush(mboxfp);
@@ -229,15 +140,14 @@ bad:
 }
 
 int
-store_message(struct batch *batchp, struct message *messagep,
-    int (*writer)(struct batch *, struct message *))
+store_message(struct batch *batchp, struct message *messagep)
 {
 	struct stat sb;
 
 	if (fstat(batchp->sessionp->mboxfd, &sb) == -1)
 		return 0;
 
-	if (! writer(batchp, messagep)) {
+	if (! store_write_message(batchp, messagep)) {
 		if (S_ISREG(sb.st_mode)) {
 			ftruncate(batchp->sessionp->mboxfd, sb.st_size);
 			return 0;

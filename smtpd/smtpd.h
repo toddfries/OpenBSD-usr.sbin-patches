@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.130 2009/07/28 22:03:55 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.135 2009/08/07 19:02:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -76,7 +76,7 @@
 #define PATH_RUNQUEUELOW	"/runqueue-low"
 
 #define PATH_OFFLINE		"/offline"
-#define PATH_DAEMON		"/daemon"
+#define PATH_BOUNCE		"/bounce"
 
 /* number of MX records to lookup */
 #define MAX_MX_COUNT		10
@@ -387,7 +387,7 @@ TAILQ_HEAD(aliaseslist, alias);
 enum message_type {
 	T_MDA_MESSAGE		= 0x1,
 	T_MTA_MESSAGE		= 0x2,
-	T_DAEMON_MESSAGE	= 0x4
+	T_BOUNCE_MESSAGE	= 0x4
 };
 
 enum message_status {
@@ -407,7 +407,8 @@ enum message_flags {
 	F_MESSAGE_PROCESSING	= 0x4,
 	F_MESSAGE_AUTHENTICATED	= 0x8,
 	F_MESSAGE_ENQUEUED	= 0x10,
-	F_MESSAGE_FORCESCHEDULE	= 0x20
+	F_MESSAGE_FORCESCHEDULE	= 0x20,
+	F_MESSAGE_BOUNCE	= 0x40
 };
 
 struct message {
@@ -451,7 +452,7 @@ enum batch_status {
 enum batch_type {
 	T_MDA_BATCH		= 0x1,
 	T_MTA_BATCH		= 0x2,
-	T_DAEMON_BATCH		= 0x4
+	T_BOUNCE_BATCH		= 0x4
 };
 
 enum child_type {
@@ -606,7 +607,7 @@ struct smtpd {
 	u_int32_t				 sc_maxconn;
 	struct event				 sc_ev;
 	int					 *sc_pipes[PROC_COUNT]
-						     [PROC_COUNT];
+							[PROC_COUNT];
 	struct imsgev				*sc_ievs[PROC_COUNT];
 	int					 sc_instances[PROC_COUNT];
 	int					 sc_instance;
@@ -740,6 +741,14 @@ int aliases_virtual_exist(struct smtpd *, struct path *);
 int aliases_virtual_get(struct smtpd *, struct aliaseslist *, struct path *);
 int alias_parse(struct alias *, char *);
 
+/* authenticate.c */
+int authenticate_user(char *, char *);
+
+/* bounce.c */
+void bounce_process(struct smtpd *, struct message *);
+int bounce_session(struct smtpd *, int, struct message *);
+int bounce_session_switch(struct smtpd *, FILE *, enum session_state *, char *,
+	struct message *);
 
 /* log.c */
 void		log_init(int);
@@ -809,12 +818,12 @@ int		 enqueue_record_envelope(struct message *);
 int		 enqueue_remove_envelope(struct message *);
 int		 enqueue_commit_message(struct message *);
 int		 enqueue_open_messagefile(struct message *);
-int		 daemon_create_layout(char *, struct message *);
-void		 daemon_delete_message(char *);
-int		 daemon_record_envelope(struct message *);
-int		 daemon_remove_envelope(struct message *);
-int		 daemon_commit_message(struct message *);
-int		 daemon_record_message(struct message *);
+int		 bounce_create_layout(char *, struct message *);
+void		 bounce_delete_message(char *);
+int		 bounce_record_envelope(struct message *);
+int		 bounce_remove_envelope(struct message *);
+int		 bounce_commit_message(struct message *);
+int		 bounce_record_message(struct message *);
 int		 queue_create_incoming_layout(char *);
 void		 queue_delete_incoming_message(char *);
 int		 queue_record_incoming_envelope(struct message *);
@@ -868,11 +877,11 @@ void		 session_bufferevent_new(struct session *);
 SPLAY_PROTOTYPE(sessiontree, session, s_nodes, session_cmp);
 
 /* store.c */
+int file_copy(FILE *, FILE *, struct path *, enum action_type, int);
 int store_write_header(struct batch *, struct message *, FILE *, int);
 int store_write_message(struct batch *, struct message *);
 int store_write_daemon(struct batch *, struct message *);
-int store_message(struct batch *, struct message *,
-    int (*)(struct batch *, struct message *));
+int store_message(struct batch *, struct message *);
 
 /* config.c */
 #define		 PURGE_LISTENERS	0x01
@@ -932,3 +941,5 @@ int		 valid_message_uid(char *);
 char		*time_to_text(time_t);
 int		 secure_file(int, char *, struct passwd *);
 void		 lowercase(char *, char *, size_t);
+void		 message_set_errormsg(struct message *, char *, ...);
+char		*message_get_errormsg(struct message *);

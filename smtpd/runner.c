@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.54 2009/07/28 22:03:55 gilles Exp $	*/
+/*	$OpenBSD: runner.c,v 1.62 2009/08/11 14:46:58 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -55,6 +55,7 @@ void	        runner_dispatch_queue(int, short, void *);
 void	        runner_dispatch_mda(int, short, void *);
 void		runner_dispatch_mta(int, short, void *);
 void		runner_dispatch_lka(int, short, void *);
+void		runner_dispatch_smtp(int, short, void *);
 void		runner_setup_events(struct smtpd *);
 void		runner_disable_events(struct smtpd *);
 
@@ -81,6 +82,8 @@ struct batch	*batch_lookup(struct smtpd *, struct message *);
 
 int		runner_force_envelope_schedule(char *);
 int		runner_force_message_schedule(char *);
+
+void		reset_flags(struct message *);
 
 void
 runner_sig_handler(int sig, short event, void *p)
@@ -405,6 +408,65 @@ runner_dispatch_lka(int sig, short event, void *p)
 }
 
 void
+runner_dispatch_smtp(int sig, short event, void *p)
+{
+	struct smtpd		*env = p;
+	struct imsgev		*iev;
+	struct imsgbuf		*ibuf;
+	struct imsg		 imsg;
+	ssize_t			 n;
+
+	iev = env->sc_ievs[PROC_SMTP];
+	ibuf = &iev->ibuf;
+
+	if (event & EV_READ) {
+		if ((n = imsg_read(ibuf)) == -1)
+			fatal("imsg_read_error");
+		if (n == 0) {
+			/* this pipe is dead, so remove the event handler */
+			event_del(&iev->ev);
+			event_loopexit(NULL);
+			return;
+		}
+	}
+
+	if (event & EV_WRITE) {
+		if (msgbuf_write(&ibuf->w) == -1)
+			fatal("msgbuf_write");
+	}
+
+	for (;;) {
+		if ((n = imsg_get(ibuf, &imsg)) == -1)
+			fatalx("runner_dispatch_smtp: imsg_get error");
+		if (n == 0)
+			break;
+
+		switch (imsg.hdr.type) {
+		case IMSG_SMTP_ENQUEUE: {
+			struct message *messagep = imsg.data;
+			if (imsg.fd == -1) {
+				reset_flags(messagep);
+				break;
+			}
+
+			if (bounce_session(env, imsg.fd, messagep))
+				queue_remove_envelope(messagep);
+			else
+				reset_flags(messagep);
+
+			break;
+		}
+		default:
+			log_warnx("runner_dispatch_smtp: got imsg %d",
+			    imsg.hdr.type);
+			fatalx("runner_dispatch_smtp: unexpected imsg");
+		}
+		imsg_free(&imsg);
+	}
+	imsg_event_add(iev);
+}
+
+void
 runner_shutdown(void)
 {
 	log_info("runner handler");
@@ -444,6 +506,7 @@ runner(struct smtpd *env)
 		{ PROC_MTA,	runner_dispatch_mta },
 		{ PROC_QUEUE,	runner_dispatch_queue },
 		{ PROC_LKA,	runner_dispatch_lka },
+		{ PROC_SMTP,	runner_dispatch_smtp }
 	};
 
 	switch (pid = fork()) {
@@ -531,12 +594,7 @@ runner_reset_flags(void)
 	while (qwalk(q, path)) {
 		while (! queue_load_envelope(&message, basename(path)))
 			sleep(1);
-
-		message.flags &= ~F_MESSAGE_SCHEDULED;
-		message.flags &= ~F_MESSAGE_PROCESSING;
-
-		while (! queue_update_envelope(&message))
-			sleep(1);
+		reset_flags(&message);
 	}
 
 	qwalk_close(q);
@@ -587,7 +645,8 @@ runner_process_queue(struct smtpd *env)
 			continue;
 
 		if (runner_check_loop(&message)) {
-			/*daemon_record_message(&message);*/
+			message_set_errormsg(&message, "loop has been detected");
+			bounce_record_message(&message);
 			queue_remove_envelope(&message);
 			continue;
 		}
@@ -685,8 +744,21 @@ runner_batch_dispatch(struct smtpd *env, struct batch *batchp, time_t curtime)
 	u_int8_t proctype;
 	struct message *messagep;
 
-	if ((batchp->type & (T_MDA_BATCH|T_MTA_BATCH)) == 0)
+	if ((batchp->type & (T_BOUNCE_BATCH|T_MDA_BATCH|T_MTA_BATCH)) == 0)
 		fatal("runner_batch_dispatch: unknown batch type");
+
+	log_debug("in batch dispatch");
+	if (batchp->type == T_BOUNCE_BATCH) {
+		while ((messagep = TAILQ_FIRST(&batchp->messages))) {
+			log_debug("starting");
+			bounce_process(env, messagep);
+			TAILQ_REMOVE(&batchp->messages, messagep, entry);
+			log_debug("ending");
+			bzero(messagep, sizeof(*messagep));
+			free(messagep);
+		}
+		return;
+	}
 
 	if (batchp->type & T_MDA_BATCH)
 		proctype = PROC_MDA;
@@ -713,6 +785,9 @@ runner_message_schedule(struct message *messagep, time_t tm)
 {
 	time_t delay;
 
+	if (messagep->type == T_BOUNCE_MESSAGE)
+		return 1;
+
 	if (messagep->flags & (F_MESSAGE_SCHEDULED|F_MESSAGE_PROCESSING))
 		return 0;
 
@@ -721,6 +796,9 @@ runner_message_schedule(struct message *messagep, time_t tm)
 
 	/* Batch has been in the queue for too long and expired */
 	if (tm - messagep->creation >= SMTPD_QUEUE_EXPIRY) {
+		message_set_errormsg(messagep, "message expired after sitting in queue for %d days",
+			SMTPD_QUEUE_EXPIRY / 60 / 60 / 24);
+		bounce_record_message(messagep);
 		queue_remove_envelope(messagep);
 		return 0;
 	}
@@ -896,8 +974,8 @@ batch_record(struct smtpd *env, struct message *messagep)
 		TAILQ_INIT(&batchp->messages);
 		SPLAY_INSERT(batchtree, &env->batch_queue, batchp);
 
-		if (messagep->type & T_DAEMON_MESSAGE) {
-			batchp->type = T_DAEMON_BATCH;
+		if (messagep->type & T_BOUNCE_MESSAGE) {
+			batchp->type = T_BOUNCE_BATCH;
 			path = &messagep->sender;
 		}
 		else {
@@ -908,12 +986,14 @@ batch_record(struct smtpd *env, struct message *messagep)
 		(void)strlcpy(batchp->hostname, path->domain,
 		    sizeof(batchp->hostname));
 
-		if (IS_MAILBOX(path->rule.r_action) ||
-		    IS_EXT(path->rule.r_action)) {
-			batchp->type |= T_MDA_BATCH;
-		}
-		else {
-			batchp->type |= T_MTA_BATCH;
+		if (batchp->type != T_BOUNCE_BATCH) {
+			if (IS_MAILBOX(path->rule.r_action) ||
+			    IS_EXT(path->rule.r_action)) {
+				batchp->type = T_MDA_BATCH;
+			}
+			else {
+				batchp->type = T_MTA_BATCH;
+			}
 		}
 	}
 
@@ -928,8 +1008,10 @@ batch_lookup(struct smtpd *env, struct message *message)
 	struct batch *batchp;
 	struct batch lookup;
 
-	/* We only support delivery of one message at a time, in MDA */
-	if (message->type & T_MDA_MESSAGE)
+	/* We only support delivery of one message at a time, in MDA
+	 * and bounces messages.
+	 */
+	if (message->type & (T_BOUNCE_MESSAGE|T_MDA_MESSAGE))
 		return NULL;
 
 	/* If message->batch_id != 0, we can retrieve batch by id */
@@ -1003,27 +1085,30 @@ runner_check_loop(struct message *messagep)
 			buf = lbuf;
 		}
 
-		if (strchr(buf, ':') == NULL && !isspace(*buf))
+		if (strchr(buf, ':') == NULL && !isspace((int)*buf))
 			break;
 
 		if (strncasecmp("Received: ", buf, 10) == 0) {
 			rcvcount++;
 			if (rcvcount == MAX_HOPS_COUNT) {
-				log_debug("LOOP DETECTED THROUGH RECEIVED LINES COUNT");
 				ret = 1;
 				break;
 			}
 		}
 
-		else if (strncasecmp("X-OpenSMTPD-Loop: ", buf, 18) == 0) {
+		else if (strncasecmp("Delivered-To: ", buf, 14) == 0) {
+			struct path rcpt;
+
 			bzero(&chkpath, sizeof (struct path));
-			if (! recipient_to_path(&chkpath, buf + 18))
+			if (! recipient_to_path(&chkpath, buf + 14))
 				continue;
 
-			if (strcasecmp(chkpath.user, messagep->recipient.user) == 0 &&
-			    strcasecmp(chkpath.domain, messagep->recipient.domain) == 0) {
-				log_debug("LOOP DETECTED THROUGH X-OPENSMTPD-LOOP HEADER: %s@%s",
-				    chkpath.user, chkpath.domain);
+			rcpt = messagep->recipient;
+			if (messagep->type == T_BOUNCE_MESSAGE)
+				rcpt = messagep->sender;
+
+			if (strcasecmp(chkpath.user, rcpt.user) == 0 &&
+			    strcasecmp(chkpath.domain, rcpt.domain) == 0) {
 				ret = 1;
 				break;
 			}
@@ -1033,6 +1118,16 @@ runner_check_loop(struct message *messagep)
 
 	fclose(fp);
 	return ret;
+}
+
+void
+reset_flags(struct message *m)
+{
+	m->flags &= ~F_MESSAGE_SCHEDULED;
+	m->flags &= ~F_MESSAGE_PROCESSING;
+
+	while (! queue_update_envelope(m))
+		sleep(1);
 }
 
 SPLAY_GENERATE(batchtree, batch, b_nodes, batch_cmp);

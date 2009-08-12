@@ -3,54 +3,82 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   bgpctl/bgpctl.c
-#	modified:   bgpd/bgpd.c
-#	modified:   bgpd/bgpd.h
-#	modified:   bgpd/buffer.c
-#	modified:   bgpd/kroute.c
+#	modified:   acpidump/acpi.c
+#	modified:   amd/amd/amd.8
+#	modified:   amd/amd/amd.c
+#	modified:   amd/amd/get_args.c
+#	modified:   amd/amd/xutil.c
+#	modified:   apmd/apmd.8
+#	modified:   apmd/apmd.c
+#	modified:   bgpd/bgpd.8
+#	modified:   bgpd/imsg.c
 #	modified:   bgpd/parse.y
-#	modified:   bgpd/session.c
-#	modified:   bind/bin/named/update.c
-#	modified:   bind/lib/isc/unix/privsep.c
-#	modified:   crunchgen/crunchide.c
-#	modified:   dvmrpd/buffer.c
-#	modified:   ldpd/buffer.c
-#	modified:   ntpd/buffer.c
-#	modified:   ospf6ctl/ospf6ctl.c
-#	modified:   ospf6d/buffer.c
-#	modified:   ospf6d/rde.c
-#	modified:   ospf6d/rde_spf.c
-#	modified:   ospfd/buffer.c
-#	modified:   ospfd/kroute.c
-#	modified:   ospfd/ospfd.conf.5
+#	modified:   bgpd/rde.c
+#	modified:   bgpd/rde.h
+#	modified:   bgpd/rde_decide.c
+#	modified:   bgpd/rde_filter.c
+#	modified:   bgpd/rde_update.c
+#	modified:   dhcpd/dhcpd.conf.5
+#	modified:   dvmrpd/imsg.c
+#	modified:   gpioctl/Makefile
+#	modified:   ldpctl/ldpctl.c
+#	modified:   ldpd/imsg.c
+#	modified:   ldpd/kroute.c
+#	modified:   ldpd/lde.c
+#	modified:   ldpd/lde_lib.c
+#	modified:   ldpd/ldpd.h
+#	modified:   ldpd/neighbor.c
+#	modified:   mailwrapper/mailer.conf.5
+#	modified:   ntpd/imsg.c
+#	modified:   ospf6d/imsg.c
+#	modified:   ospfd/imsg.c
+#	modified:   ospfd/interface.c
+#	modified:   ospfd/ospfe.c
+#	modified:   ospfd/ospfe.h
+#	modified:   pppd/chat/chat.8
 #	modified:   pppd/chat/chat.c
-#	modified:   relayd/buffer.c
-#	modified:   ripctl/ripctl.c
-#	modified:   ripd/buffer.c
-#	modified:   ripd/parse.y
-#	modified:   ripd/printconf.c
-#	modified:   ripd/ripd.conf.5
-#	modified:   smtpd/buffer.c
+#	modified:   procmap/procmap.c
+#	modified:   relayctl/relayctl.c
+#	modified:   relayd/check_icmp.c
+#	modified:   relayd/check_tcp.c
+#	modified:   relayd/imsg.c
+#	modified:   relayd/parse.y
+#	modified:   relayd/pfe.c
+#	modified:   relayd/relay.c
+#	modified:   relayd/relay_udp.c
+#	modified:   relayd/relayd.c
+#	modified:   relayd/relayd.conf.5
+#	modified:   relayd/relayd.h
+#	modified:   ripd/imsg.c
+#	modified:   smtpd/aliases.c
+#	modified:   smtpd/dns.c
+#	modified:   smtpd/enqueue.c
+#	modified:   smtpd/forward.c
+#	modified:   smtpd/imsg.c
+#	modified:   smtpd/lka.c
 #	modified:   smtpd/makemap.c
+#	modified:   smtpd/mda.c
+#	modified:   smtpd/mta.c
+#	modified:   smtpd/parser.c
+#	modified:   smtpd/parser.h
 #	modified:   smtpd/queue_shared.c
 #	modified:   smtpd/runner.c
+#	modified:   smtpd/smtp.c
 #	modified:   smtpd/smtp_session.c
+#	modified:   smtpd/smtpctl.c
 #	modified:   smtpd/smtpd.c
 #	modified:   smtpd/smtpd.h
+#	modified:   smtpd/smtpd/Makefile
 #	modified:   smtpd/store.c
-#	modified:   snmpd/buffer.c
-#	modified:   tcpdump/print-tftp.c
-#	modified:   ypldap/buffer.c
-#	modified:   ypldap/yp.c
+#	modified:   smtpd/util.c
+#	modified:   snmpd/imsg.c
+#	modified:   status.log
+#	modified:   up.log
+#	modified:   ypldap/imsg.c
 #
 # Untracked files:
 #   (use "git add <file>..." to include in what will be committed)
 #
-#	ppp/ppp/arp.c.orig
-#	ppp/ppp/iface.c.orig
-#	ppp/ppp/iface.h.orig
-#	ppp/ppp/route.c.orig
-#	smtpd/smtp_session.c.orig
-#	status.log
-#	up.log
+#	smtpd/authenticate.c
+#	smtpd/bounce.c
 no changes added to commit (use "git add" and/or "git commit -a")

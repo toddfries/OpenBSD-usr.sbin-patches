@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpctl.c,v 1.2 2009/06/13 16:47:32 michele Exp $
+/*	$OpenBSD: ldpctl.c,v 1.4 2009/08/02 16:19:17 michele Exp $
  *
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -112,7 +112,7 @@ main(int argc, char *argv[])
 		    &ifidx, sizeof(ifidx));
 		break;
 	case SHOW_NBR:
-		printf("%-15s %-15s %-15s %-9s %-10s\n", "ID",
+		printf("%-15s %-18s %-15s %-9s %-10s\n", "ID",
 		    "State", "Address", "Iface", "Uptime");
 		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, -1, NULL, 0);
 		break;
@@ -308,7 +308,7 @@ int
 show_lib_msg(struct imsg *imsg)
 {
 	struct ctl_rt	*rt;
-	char		*dstnet;
+	char		*dstnet, *remote;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CTL_SHOW_LIB:
@@ -317,10 +317,19 @@ show_lib_msg(struct imsg *imsg)
 		    rt->prefixlen) == -1)
 			err(1, NULL);
 
-		printf("%-20s %-17s %-17u %u\n", dstnet,
+		if (rt->connected) {
+			if (asprintf(&remote, "-") == -1)
+				err(1, NULL);
+		} else {
+			if (asprintf(&remote, "%u", (ntohl(rt->remote_label) >> MPLS_LABEL_OFFSET)) == -1)
+				err(1, NULL);
+		}
+
+		printf("%-20s %-17s %-17u %s\n", dstnet,
 		    inet_ntoa(rt->nexthop),
 		    (ntohl(rt->local_label) >> MPLS_LABEL_OFFSET),
-		    (ntohl(rt->remote_label) >> MPLS_LABEL_OFFSET));
+		    remote);
+		free(remote);
 		free(dstnet);
 
 		break;
@@ -346,7 +355,7 @@ show_nbr_msg(struct imsg *imsg)
 		if (asprintf(&state, "%s/%s", nbr_state_name(nbr->nbr_state),
 		    if_state_name(nbr->iface_state)) == -1)
 			err(1, NULL);
-		printf("%-15s %-16s", inet_ntoa(nbr->id),
+		printf("%-15s %-19s", inet_ntoa(nbr->id),
 		    state);
 		printf("%-15s %-10s", inet_ntoa(nbr->addr), nbr->name);
 		printf("%-15s\n", nbr->uptime == 0 ? "-" :

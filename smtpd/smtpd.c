@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.78 2009/07/28 22:03:55 gilles Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.82 2009/08/07 20:21:48 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -29,7 +29,6 @@
 #include <sys/resource.h>
 #include <sys/mman.h>
 
-#include <bsd_auth.h>
 #include <err.h>
 #include <errno.h>
 #include <event.h>
@@ -46,8 +45,6 @@
 #include <sysexits.h>
 #include <time.h>
 #include <unistd.h>
-
-#include <keynote.h>
 
 #include "smtpd.h"
 
@@ -440,7 +437,7 @@ parent_dispatch_mda(int fd, short event, void *p)
 			IMSG_SIZE_CHECK(batchp);
 
 			path = &batchp->message.recipient;
-			if (batchp->type & T_DAEMON_BATCH) {
+			if (batchp->type & T_BOUNCE_BATCH) {
 				path = &batchp->message.sender;
 			}
 			
@@ -502,7 +499,7 @@ parent_dispatch_mda(int fd, short event, void *p)
 			IMSG_SIZE_CHECK(batchp);
 
 			path = &batchp->message.recipient;
-			if (batchp->type & T_DAEMON_BATCH) {
+			if (batchp->type & T_BOUNCE_BATCH) {
 				path = &batchp->message.sender;
 			}
 
@@ -574,8 +571,7 @@ parent_dispatch_smtp(int fd, short event, void *p)
 
 			IMSG_SIZE_CHECK(req);
 
-			req->success = auth_userokay(req->user, NULL,
-			    "auth-smtp", req->pass);
+			req->success = authenticate_user(req->user, req->pass);
 
 			imsg_compose_event(iev, IMSG_PARENT_AUTHENTICATE, 0, 0,
 			    -1, req, sizeof(*req));
@@ -1011,7 +1007,7 @@ setup_spool(uid_t uid, gid_t gid)
 	char		*paths[] = { PATH_INCOMING, PATH_ENQUEUE, PATH_QUEUE,
 				     PATH_RUNQUEUE, PATH_RUNQUEUELOW,
 				     PATH_RUNQUEUEHIGH, PATH_PURGE,
-				     PATH_OFFLINE, PATH_DAEMON };
+				     PATH_OFFLINE, PATH_BOUNCE };
 	char		 pathname[MAXPATHLEN];
 	struct stat	 sb;
 	int		 ret;
