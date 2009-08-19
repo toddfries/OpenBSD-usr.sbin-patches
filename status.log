@@ -1,84 +1,49 @@
 # On branch master
+# Changes to be committed:
+#   (use "git reset HEAD <file>..." to unstage)
+#
+#	deleted:    ppp/ppp/arp.c.orig
+#	deleted:    ppp/ppp/iface.c.orig
+#	deleted:    ppp/ppp/iface.h.orig
+#	deleted:    ppp/ppp/route.c.orig
+#	deleted:    smtpd/smtp_session.c.orig
+#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   acpidump/acpi.c
-#	modified:   amd/amd/amd.8
-#	modified:   amd/amd/amd.c
-#	modified:   amd/amd/get_args.c
-#	modified:   amd/amd/xutil.c
-#	modified:   apmd/apmd.8
-#	modified:   apmd/apmd.c
-#	modified:   bgpd/bgpd.8
-#	modified:   bgpd/imsg.c
-#	modified:   bgpd/parse.y
-#	modified:   bgpd/rde.c
-#	modified:   bgpd/rde.h
-#	modified:   bgpd/rde_decide.c
-#	modified:   bgpd/rde_filter.c
-#	modified:   bgpd/rde_update.c
-#	modified:   dhcpd/dhcpd.conf.5
-#	modified:   dvmrpd/imsg.c
-#	modified:   gpioctl/Makefile
-#	modified:   ldpctl/ldpctl.c
-#	modified:   ldpd/imsg.c
-#	modified:   ldpd/kroute.c
-#	modified:   ldpd/lde.c
-#	modified:   ldpd/lde_lib.c
-#	modified:   ldpd/ldpd.h
-#	modified:   ldpd/neighbor.c
-#	modified:   mailwrapper/mailer.conf.5
-#	modified:   ntpd/imsg.c
-#	modified:   ospf6d/imsg.c
-#	modified:   ospfd/imsg.c
-#	modified:   ospfd/interface.c
-#	modified:   ospfd/ospfe.c
-#	modified:   ospfd/ospfe.h
-#	modified:   pppd/chat/chat.8
-#	modified:   pppd/chat/chat.c
-#	modified:   procmap/procmap.c
+#	modified:   afs/usr.sbin/bos/Makefile
+#	modified:   afs/usr.sbin/fs/Makefile
+#	modified:   afs/usr.sbin/pts/Makefile
+#	modified:   afs/usr.sbin/vos/Makefile
+#	modified:   bind/README.OpenBSD
+#	modified:   bind/bin/dig/dig.c
+#	modified:   bind/bin/dig/dighost.c
+#	modified:   bind/bin/dig/include/dig/dig.h
+#	modified:   bind/lib/lwres/include/lwres/lwres.h
+#	modified:   bind/lib/lwres/lwconfig.c
+#	modified:   openssl/openssl.1
+#	modified:   relayctl/parser.c
+#	modified:   relayctl/parser.h
+#	modified:   relayctl/relayctl.8
 #	modified:   relayctl/relayctl.c
+#	modified:   relayd/Makefile
 #	modified:   relayd/check_icmp.c
-#	modified:   relayd/check_tcp.c
-#	modified:   relayd/imsg.c
 #	modified:   relayd/parse.y
 #	modified:   relayd/pfe.c
-#	modified:   relayd/relay.c
-#	modified:   relayd/relay_udp.c
 #	modified:   relayd/relayd.c
 #	modified:   relayd/relayd.conf.5
 #	modified:   relayd/relayd.h
-#	modified:   ripd/imsg.c
-#	modified:   smtpd/aliases.c
-#	modified:   smtpd/dns.c
-#	modified:   smtpd/enqueue.c
-#	modified:   smtpd/forward.c
-#	modified:   smtpd/imsg.c
-#	modified:   smtpd/lka.c
-#	modified:   smtpd/makemap.c
-#	modified:   smtpd/mda.c
-#	modified:   smtpd/mta.c
-#	modified:   smtpd/parser.c
-#	modified:   smtpd/parser.h
-#	modified:   smtpd/queue_shared.c
-#	modified:   smtpd/runner.c
-#	modified:   smtpd/smtp.c
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpctl.c
-#	modified:   smtpd/smtpd.c
-#	modified:   smtpd/smtpd.h
-#	modified:   smtpd/smtpd/Makefile
+#	modified:   sensorsd/sensorsd.c
 #	modified:   smtpd/store.c
-#	modified:   smtpd/util.c
-#	modified:   snmpd/imsg.c
+#	modified:   snmpd/mib.c
 #	modified:   status.log
+#	modified:   sysmerge/sysmerge.8
+#	modified:   sysmerge/sysmerge.sh
+#	modified:   timed/SMM.doc/timed/unused
 #	modified:   up.log
-#	modified:   ypldap/imsg.c
 #
 # Untracked files:
 #   (use "git add <file>..." to include in what will be committed)
 #
-#	smtpd/authenticate.c
-#	smtpd/bounce.c
-no changes added to commit (use "git add" and/or "git commit -a")
+#	relayd/pfe_route.c
