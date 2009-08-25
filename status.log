@@ -1,49 +1,14 @@
 # On branch master
-# Changes to be committed:
-#   (use "git reset HEAD <file>..." to unstage)
-#
-#	deleted:    ppp/ppp/arp.c.orig
-#	deleted:    ppp/ppp/iface.c.orig
-#	deleted:    ppp/ppp/iface.h.orig
-#	deleted:    ppp/ppp/route.c.orig
-#	deleted:    smtpd/smtp_session.c.orig
-#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   afs/usr.sbin/bos/Makefile
-#	modified:   afs/usr.sbin/fs/Makefile
-#	modified:   afs/usr.sbin/pts/Makefile
-#	modified:   afs/usr.sbin/vos/Makefile
-#	modified:   bind/README.OpenBSD
-#	modified:   bind/bin/dig/dig.c
-#	modified:   bind/bin/dig/dighost.c
-#	modified:   bind/bin/dig/include/dig/dig.h
-#	modified:   bind/lib/lwres/include/lwres/lwres.h
-#	modified:   bind/lib/lwres/lwconfig.c
-#	modified:   openssl/openssl.1
-#	modified:   relayctl/parser.c
-#	modified:   relayctl/parser.h
-#	modified:   relayctl/relayctl.8
-#	modified:   relayctl/relayctl.c
-#	modified:   relayd/Makefile
-#	modified:   relayd/check_icmp.c
-#	modified:   relayd/parse.y
-#	modified:   relayd/pfe.c
-#	modified:   relayd/relayd.c
-#	modified:   relayd/relayd.conf.5
-#	modified:   relayd/relayd.h
-#	modified:   sensorsd/sensorsd.c
-#	modified:   smtpd/store.c
-#	modified:   snmpd/mib.c
+#	modified:   bgpd/session.c
+#	modified:   pkg_add/OpenBSD/PackageRepository.pm
 #	modified:   status.log
 #	modified:   sysmerge/sysmerge.8
 #	modified:   sysmerge/sysmerge.sh
-#	modified:   timed/SMM.doc/timed/unused
+#	modified:   tcpdump/privsep.h
 #	modified:   up.log
 #
-# Untracked files:
-#   (use "git add <file>..." to include in what will be committed)
-#
-#	relayd/pfe_route.c
+no changes added to commit (use "git add" and/or "git commit -a")
