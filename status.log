@@ -3,12 +3,28 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   bgpd/session.c
-#	modified:   pkg_add/OpenBSD/PackageRepository.pm
+#	modified:   .gitignore
+#	modified:   httpd/conf/mime.types
+#	modified:   httpd/htdocs/manual/mod/mod_proxy.html
+#	modified:   httpd/src/modules/proxy/mod_proxy.c
+#	modified:   relayd/parse.y
+#	modified:   relayd/relayd.conf.5
+#	modified:   smtpd/bounce.c
+#	modified:   smtpd/enqueue.c
+#	modified:   smtpd/mta.c
+#	modified:   smtpd/runner.c
+#	modified:   smtpd/smtpctl.c
+#	modified:   smtpd/smtpctl/Makefile
+#	modified:   smtpd/smtpd.c
+#	modified:   smtpd/smtpd.h
+#	modified:   smtpd/smtpd/Makefile
+#	modified:   smtpd/util.c
 #	modified:   status.log
-#	modified:   sysmerge/sysmerge.8
-#	modified:   sysmerge/sysmerge.sh
-#	modified:   tcpdump/privsep.h
 #	modified:   up.log
 #
+# Untracked files:
+#   (use "git add <file>..." to include in what will be committed)
+#
+#	smtpd/client.c
+#	smtpd/client.h
 no changes added to commit (use "git add" and/or "git commit -a")

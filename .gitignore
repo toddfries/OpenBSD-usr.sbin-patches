@@ -3,3 +3,5 @@ CVS
 .cvsignore
 obj
 *diff
+*.orig
+*.log
