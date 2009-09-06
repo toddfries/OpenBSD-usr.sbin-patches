@@ -1,24 +1,74 @@
+Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
++--[ RSA 1024]----+
+|          oo++oo.|
+|         .   ==..|
+|          . .. =+|
+|         .    =.+|
+|        S .  E ..|
+|         o  o o .|
+|          o    . |
+|           .     |
+|                 |
++-----------------+
+
 ? .git
 ? .gitignore
 ? status.log
 ? up.log
 ? ppp/ppp/obj
 ? ppp/pppctl/obj
-P httpd/conf/mime.types
-P httpd/htdocs/manual/mod/mod_proxy.html
-P httpd/src/modules/proxy/mod_proxy.c
+P bgpctl/parser.c
+P bgpd/bgpd.8
+P bgpd/bgpd.conf.5
+P bgpd/bgpd.h
+P bgpd/control.c
+P bgpd/parse.y
+P bgpd/session.c
+P bgpd/session.h
+P dhcpd/conflex.c
+P dhcpd/dhcp.c
+P dhcpd/dhcp.h
+P dhcpd/dhcpd.conf.5
+P dhcpd/dhctoken.h
+P dhcpd/parse.c
+P dhcpd/tables.c
+P dhcrelay/bpf.c
+P dhcrelay/dhcp.h
+P dhcrelay/dhcpd.h
+P dhcrelay/dhcrelay.8
+P dhcrelay/dhcrelay.c
+P dhcrelay/dispatch.c
+P dhcrelay/packet.c
+P dvmrpd/parse.y
+P dvmrpd/rde.c
+P dvmrpd/rde.h
+P dvmrpd/rde_mfc.c
+P dvmrpd/rde_srt.c
+P ftp-proxy/filter.c
+P ftp-proxy/filter.h
+P ftp-proxy/ftp-proxy.8
+P ftp-proxy/ftp-proxy.c
+P ppp/ppp/nat_cmd.c
+P ppp/ppp/ppp.8.m4
 C ppp/ppp/route.c
-P relayd/parse.y
+P relayctl/relayctl.c
+P relayd/pfe_filter.c
+P relayd/relayd.8
 P relayd/relayd.conf.5
 P smtpd/bounce.c
-U smtpd/client.c
-U smtpd/client.h
-P smtpd/enqueue.c
+P smtpd/control.c
+P smtpd/dns.c
+P smtpd/lka.c
+P smtpd/mda.c
+P smtpd/mfa.c
 P smtpd/mta.c
+P smtpd/queue.c
+P smtpd/queue_shared.c
 P smtpd/runner.c
+P smtpd/smtp.c
+P smtpd/smtp_session.c
 P smtpd/smtpctl.c
 P smtpd/smtpd.c
 P smtpd/smtpd.h
-P smtpd/util.c
-P smtpd/smtpctl/Makefile
+cvs server: smtpd/store.c is no longer in the repository
 P smtpd/smtpd/Makefile

@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_shared.c,v 1.22 2009/08/08 23:02:43 gilles Exp $	*/
+/*	$OpenBSD: queue_shared.c,v 1.24 2009/09/04 13:33:00 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -299,6 +299,8 @@ bounce_delete_message(char *msgid)
 int
 bounce_record_envelope(struct message *message)
 {
+	message->lasttry = 0;
+	message->retry = 0;
 	return queue_record_layout_envelope(PATH_BOUNCE, message);
 }
 
@@ -494,6 +496,10 @@ queue_update_envelope(struct message *messagep)
 	char temp[MAXPATHLEN];
 	char dest[MAXPATHLEN];
 	FILE *fp;
+	u_int64_t batch_id;
+
+	batch_id = messagep->batch_id;
+	messagep->batch_id = 0;
 
 	if (! bsnprintf(temp, sizeof(temp), "%s/envelope.tmp", PATH_QUEUE))
 		fatalx("queue_update_envelope");
@@ -523,6 +529,7 @@ queue_update_envelope(struct message *messagep)
 		fatal("queue_update_envelope: rename");
 	}
 
+	messagep->batch_id = batch_id;
 	return 1;
 
 tempfail:
@@ -531,6 +538,7 @@ tempfail:
 	if (fp)
 		fclose(fp);
 
+	messagep->batch_id = batch_id;
 	return 0;
 }
 

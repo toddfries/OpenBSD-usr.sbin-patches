@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.63 2009/08/27 11:37:30 jacekm Exp $	*/
+/*	$OpenBSD: runner.c,v 1.67 2009/09/04 19:11:32 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -126,7 +126,7 @@ runner_dispatch_parent(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_parent: imsg_get error");
+			fatal("runner_dispatch_parent: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -174,7 +174,7 @@ runner_dispatch_control(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_control: imsg_get error");
+			fatal("runner_dispatch_control: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -245,7 +245,7 @@ runner_dispatch_queue(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_queue: imsg_get error");
+			fatal("runner_dispatch_queue: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -299,7 +299,7 @@ runner_dispatch_mda(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_mda: imsg_get error");
+			fatal("runner_dispatch_mda: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -344,7 +344,7 @@ runner_dispatch_mta(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_mta: imsg_get error");
+			fatal("runner_dispatch_mta: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -390,7 +390,7 @@ runner_dispatch_lka(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_lka: imsg_get error");
+			fatal("runner_dispatch_lka: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -435,16 +435,23 @@ runner_dispatch_smtp(int sig, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatalx("runner_dispatch_smtp: imsg_get error");
+			fatal("runner_dispatch_smtp: imsg_get error");
 		if (n == 0)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_SMTP_ENQUEUE:
-			if (imsg.fd == -1 || ! bounce_session(env, imsg.fd,
-			    imsg.data))
-				message_reset_flags(imsg.data);
+		case IMSG_SMTP_ENQUEUE: {
+			struct message	*m = imsg.data;
+
+			IMSG_SIZE_CHECK(m);
+
+			if (imsg.fd < 0 || ! bounce_session(env, imsg.fd, m)) {
+				m->status = S_MESSAGE_TEMPFAILURE;
+				queue_message_update(m);
+			}
 			break;
+		}
+
 		default:
 			log_warnx("runner_dispatch_smtp: got imsg %d",
 			    imsg.hdr.type);
@@ -695,6 +702,7 @@ runner_process_runqueue(struct smtpd *env)
 			fatal("runner_process_runqueue: calloc");
 		*messagep = message;
 
+		messagep->batch_id = 0;
 		batchp = batch_lookup(env, messagep);
 		if (batchp != NULL)
 			messagep->batch_id = batchp->id;
@@ -774,9 +782,6 @@ runner_message_schedule(struct message *messagep, time_t tm)
 {
 	time_t delay;
 
-	if (messagep->type == T_BOUNCE_MESSAGE)
-		return 1;
-
 	if (messagep->flags & (F_MESSAGE_SCHEDULED|F_MESSAGE_PROCESSING))
 		return 0;
 
@@ -797,7 +802,8 @@ runner_message_schedule(struct message *messagep, time_t tm)
 
 	delay = SMTPD_QUEUE_MAXINTERVAL;
 
-	if (messagep->type & T_MDA_MESSAGE) {
+	if (messagep->type == T_MDA_MESSAGE ||
+		messagep->type == T_BOUNCE_MESSAGE) {
 		if (messagep->status & S_MESSAGE_LOCKFAILURE) {
 			if (messagep->retry < 128)
 				return 1;
@@ -812,7 +818,7 @@ runner_message_schedule(struct message *messagep, time_t tm)
 		}
 	}
 
-	if (messagep->type & T_MTA_MESSAGE) {
+	if (messagep->type == T_MTA_MESSAGE) {
 		if (messagep->retry < 3)
 			delay = SMTPD_QUEUE_INTERVAL;
 		else if (messagep->retry <= 7) {
@@ -1000,7 +1006,7 @@ batch_lookup(struct smtpd *env, struct message *message)
 	/* We only support delivery of one message at a time, in MDA
 	 * and bounces messages.
 	 */
-	if (message->type & (T_BOUNCE_MESSAGE|T_MDA_MESSAGE))
+	if (message->type == T_BOUNCE_MESSAGE || message->type == T_MDA_MESSAGE)
 		return NULL;
 
 	/* If message->batch_id != 0, we can retrieve batch by id */
