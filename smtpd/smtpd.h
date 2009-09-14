@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.139 2009/09/04 11:49:23 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.142 2009/09/12 12:24:51 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -87,10 +87,8 @@
 /* how many responses per state are undelayed */
 #define FAST_RESPONSES		2
 
-/* rfc5321 limits */
-#define	SMTP_TEXTLINE_MAX	1000
-#define	SMTP_CMDLINE_MAX	512
-#define	SMTP_ANYLINE_MAX	SMTP_TEXTLINE_MAX
+/* max len of any smtp line */
+#define	SMTP_LINE_MAX		16384
 
 #define F_STARTTLS		 0x01
 #define F_SMTPS			 0x02

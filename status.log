@@ -1,64 +1,27 @@
 # On branch master
 # Changed but not updated:
-#   (use "git add/rm <file>..." to update what will be committed)
+#   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   .gitignore
+#	modified:   authpf/authpf.8
+#	modified:   bgpctl/bgpctl.8
+#	modified:   bgpctl/irr_parser.c
+#	modified:   bgpctl/irr_prefix.c
+#	modified:   bgpctl/irrfilter.h
 #	modified:   bgpctl/parser.c
-#	modified:   bgpd/bgpd.8
-#	modified:   bgpd/bgpd.conf.5
-#	modified:   bgpd/bgpd.h
-#	modified:   bgpd/control.c
-#	modified:   bgpd/parse.y
-#	modified:   bgpd/session.c
-#	modified:   bgpd/session.h
-#	modified:   dhcpd/conflex.c
-#	modified:   dhcpd/dhcp.c
-#	modified:   dhcpd/dhcp.h
-#	modified:   dhcpd/dhcpd.conf.5
-#	modified:   dhcpd/dhctoken.h
-#	modified:   dhcpd/parse.c
-#	modified:   dhcpd/tables.c
-#	modified:   dhcrelay/bpf.c
-#	modified:   dhcrelay/dhcp.h
-#	modified:   dhcrelay/dhcpd.h
-#	modified:   dhcrelay/dhcrelay.8
-#	modified:   dhcrelay/dhcrelay.c
-#	modified:   dhcrelay/dispatch.c
-#	modified:   dhcrelay/packet.c
-#	modified:   dvmrpd/parse.y
-#	modified:   dvmrpd/rde.c
-#	modified:   dvmrpd/rde.h
-#	modified:   dvmrpd/rde_mfc.c
-#	modified:   dvmrpd/rde_srt.c
-#	modified:   ftp-proxy/filter.c
-#	modified:   ftp-proxy/filter.h
+#	modified:   bgpctl/whois.c
+#	modified:   dhcpd/dhcpd.8
 #	modified:   ftp-proxy/ftp-proxy.8
-#	modified:   ftp-proxy/ftp-proxy.c
-#	modified:   ppp/ppp/nat_cmd.c
-#	modified:   ppp/ppp/ppp.8.m4
-#	modified:   relayctl/relayctl.c
-#	modified:   relayd/pfe_filter.c
-#	modified:   relayd/relayd.8
-#	modified:   relayd/relayd.conf.5
-#	modified:   smtpd/bounce.c
-#	modified:   smtpd/control.c
-#	modified:   smtpd/dns.c
-#	modified:   smtpd/lka.c
-#	modified:   smtpd/mda.c
-#	modified:   smtpd/mfa.c
+#	modified:   hotplugd/Makefile
+#	modified:   pkg_add/pkg_info
 #	modified:   smtpd/mta.c
-#	modified:   smtpd/queue.c
-#	modified:   smtpd/queue_shared.c
-#	modified:   smtpd/runner.c
-#	modified:   smtpd/smtp.c
 #	modified:   smtpd/smtp_session.c
 #	modified:   smtpd/smtpctl.c
-#	modified:   smtpd/smtpd.c
 #	modified:   smtpd/smtpd.h
-#	modified:   smtpd/smtpd/Makefile
-#	deleted:    smtpd/store.c
 #	modified:   status.log
+#	modified:   tcpdump/print-bgp.c
 #	modified:   up.log
+#	modified:   wsconscfg/Makefile
+#	modified:   wsfontload/Makefile
 #
 no changes added to commit (use "git add" and/or "git commit -a")
