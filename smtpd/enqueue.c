@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.20 2009/08/27 11:37:30 jacekm Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.24 2009/09/21 20:35:26 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -122,7 +122,7 @@ int
 enqueue(int argc, char *argv[])
 {
 	int			 i, ch, tflag = 0, noheader, ret;
-	char			*fake_from = NULL, *ep;
+	char			*fake_from = NULL;
 	struct passwd		*pw;
 	struct smtp_client	*sp;
 	struct buf		*body;
@@ -130,7 +130,8 @@ enqueue(int argc, char *argv[])
 	bzero(&msg, sizeof(msg));
 	time(&timestamp);
 
-	while ((ch = getopt(argc, argv, "46B:b:E::e:F:f:iJ::mo:p:tvx")) != -1) {
+	while ((ch = getopt(argc, argv,
+	    "A:B:b:E::e:F:f:iJ::L:mo:p:qtvx")) != -1) {
 		switch (ch) {
 		case 'f':
 			fake_from = optarg;
@@ -145,16 +146,21 @@ enqueue(int argc, char *argv[])
 			verbose = 1;
 			break;
 		/* all remaining: ignored, sendmail compat */
+		case 'A':
 		case 'B':
 		case 'b':
 		case 'E':
 		case 'e':
 		case 'i':
+		case 'L':
 		case 'm':
 		case 'o':
 		case 'p':
 		case 'x':
 			break;
+		case 'q':
+			/* XXX: implement "process all now" */
+			return (0);
 		default:
 			usage();
 		}
@@ -187,7 +193,7 @@ enqueue(int argc, char *argv[])
 	if ((sp = client_init(msg.fd, "localhost")) == NULL)
 		err(1, "client_init failed");
 	if (verbose)
-		client_verbose(sp, STDOUT_FILENO);
+		client_verbose(sp, stdout);
 
 	/* parse message */
 	if ((body = buf_dynamic(0, SIZE_T_MAX)) < 0)
@@ -204,16 +210,6 @@ enqueue(int argc, char *argv[])
 	for (i = 0; i < msg.rcpt_cnt; i++)
 		if (client_rcpt(sp, "%s", msg.rcpts[i]) < 0)
 			err(1, "client_rcpt failed");
-
-	/* prepend Received header */
-	if (client_data_printf(sp,
-	    "Received: (from %s@localhost, uid %lu)\n"
-	    "\tby %s\n"
-	    "\t%s\n",
-	    user, (u_long)getuid(),
-	    host,
-	    time_to_text(timestamp)) < 0)
-		err(1, "client_data_printf failed");
 
 	/* add From */
 	if (!msg.saw_from) {
@@ -251,16 +247,18 @@ enqueue(int argc, char *argv[])
 
 	/* run the protocol engine */
 	for (;;) {
-		while ((ret = client_read(sp, &ep)) == CLIENT_WANT_READ)
+		while ((ret = client_read(sp)) == CLIENT_WANT_READ)
 			;
-		if (ep)
-			errx(1, "read error: %s", ep);
+		if (ret == CLIENT_ERROR)
+			errx(1, "read error: %s", client_strerror(sp));
+		if (ret == CLIENT_RCPT_FAIL)
+			errx(1, "recipient refused: %s", client_reply(sp));
 		if (ret == CLIENT_DONE)
 			break;
-		while (client_write(sp, &ep) == CLIENT_WANT_WRITE)
+		while ((ret = client_write(sp)) == CLIENT_WANT_WRITE)
 			;
-		if (ep)
-			errx(1, "write error: %s", ep);
+		if (ret == CLIENT_ERROR)
+			errx(1, "write error: %s", client_strerror(sp));
 	}
 
 	client_close(sp);
@@ -292,13 +290,22 @@ build_from(char *fake_from, struct passwd *pw)
 	}
 
 	if (msg.fromname == NULL && fake_from == NULL && pw != NULL) {
-		size_t		 len;
+		int	 len, apos;
 
 		len = strcspn(pw->pw_gecos, ",");
-		len++;	/* null termination */
-		if ((msg.fromname = malloc(len)) == NULL)
-			err(1, NULL);
-		strlcpy(msg.fromname, pw->pw_gecos, len);
+		if ((p = memchr(pw->pw_gecos, '&', len))) {
+			apos = p - pw->pw_gecos;
+			if (asprintf(&msg.fromname, "%.*s%s%.*s",
+			    apos, pw->pw_gecos,
+			    pw->pw_name,
+			    len - apos - 1, p + 1) == -1)
+				err(1, NULL);
+			msg.fromname[apos] = toupper(msg.fromname[apos]);
+		} else {
+			if (asprintf(&msg.fromname, "%.*s", len,
+			    pw->pw_gecos) == -1)
+				err(1, NULL);
+		}
 	}
 }
 

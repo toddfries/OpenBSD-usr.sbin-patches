@@ -1,4 +1,4 @@
-/*	$OpenBSD: ripd.h,v 1.16 2009/07/07 12:07:23 michele Exp $ */
+/*	$OpenBSD: ripd.h,v 1.20 2009/09/26 18:24:58 michele Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -50,16 +50,13 @@
 
 #define	F_RIPD_INSERTED		0x0001
 #define	F_KERNEL		0x0002
-#define	F_BGPD_INSERTED		0x0004
 #define	F_CONNECTED		0x0008
 #define	F_DOWN			0x0010
 #define	F_STATIC		0x0020
 #define	F_DYNAMIC		0x0040
-#define	F_OSPFD_INSERTED	0x0080
 #define	F_REDISTRIBUTED		0x0100
 #define	F_REJECT		0x0200
 #define	F_BLACKHOLE		0x0400
-#define	F_LDPD_INSERTED		0x0800
 
 #define REDISTRIBUTE_ON		0x01
 
@@ -83,7 +80,6 @@ enum imsg_type {
 	IMSG_CTL_SHOW_RIB,
 	IMSG_KROUTE_CHANGE,
 	IMSG_KROUTE_DELETE,
-	IMSG_KROUTE_GET,
 	IMSG_NETWORK_ADD,
 	IMSG_NETWORK_DEL,
 	IMSG_ROUTE_FEED,
@@ -241,6 +237,7 @@ struct ripd_conf {
 	int			 options;
 	int			 rip_socket;
 	int			 redistribute;
+	u_int			 rdomain;
 };
 
 /* kroute */
@@ -252,6 +249,7 @@ struct kroute {
 	u_int16_t	rtlabel;
 	u_short		ifindex;
 	u_int8_t	metric;
+	u_int8_t	priority;
 };
 
 struct kif {
@@ -313,7 +311,7 @@ struct demote_msg {
 };
 
 int		 kif_init(void);
-int		 kr_init(int);
+int		 kr_init(int, u_int);
 int		 kr_change(struct kroute *);
 int		 kr_delete(struct kroute *);
 void		 kr_shutdown(void);
@@ -332,7 +330,7 @@ void		 main_imsg_compose_ripe(int, pid_t, void *, u_int16_t);
 void		 main_imsg_compose_rde(int, pid_t, void *, u_int16_t);
 int		 rip_redistribute(struct kroute *);
 void		 imsg_event_add(struct imsgev *);
-int	 	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+int		 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
 		    pid_t, int, void *, u_int16_t);
 
 /* parse.y */

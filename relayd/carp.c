@@ -1,4 +1,4 @@
-/*	$OpenBSD: carp.c,v 1.5 2007/12/07 17:17:00 reyk Exp $ */
+/*	$OpenBSD: carp.c,v 1.7 2009/09/30 12:22:03 claudio Exp $ */
 
 /*
  * Copyright (c) 2006 Henning Brauer <henning@openbsd.org>
@@ -69,14 +69,17 @@ carp_demote_init(char *group, int force)
 			return (-1);
 		}
 		if ((c->group = strdup(group)) == NULL) {
-			log_warn("carp_demote_init calloc");
+			log_warn("carp_demote_init strdup");
 			free(c);
 			return (-1);
 		}
 
 		/* only demote if this group already is demoted */
-		if ((level = carp_demote_get(group)) == -1)
+		if ((level = carp_demote_get(group)) == -1) {
+			free(c->group);
+			free(c);
 			return (-1);
+		}
 		if (level > 0 || force)
 			c->do_demote = 1;
 
@@ -93,9 +96,8 @@ carp_demote_shutdown(void)
 
 	while ((c = TAILQ_FIRST(&carpgroups)) != NULL) {
 		TAILQ_REMOVE(&carpgroups, c, entry);
-		for (; c->changed_by > 0; c->changed_by--)
-			if (c->do_demote)
-				carp_demote_ioctl(c->group, -1);
+		if (c->do_demote && c->changed_by > 0)
+			carp_demote_ioctl(c->group, -c->changed_by);
 
 		free(c->group);
 		free(c);

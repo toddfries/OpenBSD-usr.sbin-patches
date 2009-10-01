@@ -1,4 +1,4 @@
-/*	$OpenBSD: neighbor.c,v 1.37 2008/02/11 12:37:37 norby Exp $ */
+/*	$OpenBSD: neighbor.c,v 1.39 2009/09/30 14:39:07 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>

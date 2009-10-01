@@ -1,4 +1,4 @@
-.\"	$OpenBSD: smtpd.8,v 1.5 2009/03/23 21:48:40 jmc Exp $
+.\"	$OpenBSD: smtpd.8,v 1.8 2009/09/20 19:28:52 jacekm Exp $
 .\"
 .\" Copyright (c) 2008, Gilles Chehade <gilles@openbsd.org>
 .\" Copyright (c) 2008, Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -15,7 +15,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: March 23 2009 $
+.Dd $Mdocdate: September 20 2009 $
 .Dt SMTPD 8
 .Os
 .Sh NAME
@@ -71,6 +71,37 @@ Only check the configuration file for validity.
 .It Fl v
 Produce more verbose output.
 .El
+.Pp
+.Nm
+is not enabled by default.
+In order to use it as the system mailer,
+ensure the mail queue is empty,
+then stop
+.Xr sendmail 8 :
+.Bd -literal -offset indent
+# pkill sendmail
+.Ed
+.Pp
+Modify the current
+.Xr mailwrapper 8
+settings by editing
+.Pa /etc/mailer.conf :
+.Bd -literal -offset indent
+sendmail	/usr/sbin/smtpctl
+send-mail	/usr/sbin/smtpctl
+mailq		/usr/sbin/smtpctl
+makemap		/usr/libexec/smtpd/makemap
+newaliases	/usr/libexec/smtpd/makemap
+.Ed
+.Pp
+Rebuild the aliases database,
+and enable the daemon:
+.Bd -literal -offset indent
+# newaliases
+# echo "sendmail_flags=NO" \*(Gt\*(Gt /etc/rc.conf.local
+# echo "smtpd_flags=" \*(Gt\*(Gt /etc/rc.conf.local
+# smtpd
+.Ed
 .Sh FILES
 .Bl -tag -width "/var/run/smtpd.sockXXX" -compact
 .It /etc/mail/smtpd.conf
@@ -83,6 +114,7 @@ Unix-domain socket used for communication with
 .El
 .Sh SEE ALSO
 .Xr smtpd.conf 5 ,
+.Xr mailwrapper 8 ,
 .Xr smtpctl 8
 .Rs
 .%R RFC 5321
