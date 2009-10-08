@@ -1,9 +1,29 @@
 # On branch master
+# Your branch is ahead of 'origin/master' by 1 commit.
+#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
+#	modified:   bgpd/bgpd.conf.5
+#	modified:   bgpd/parse.y
+#	modified:   bgpd/printconf.c
+#	modified:   bgpd/rde.c
+#	modified:   bgpd/rde.h
+#	modified:   bgpd/rde_rib.c
+#	modified:   crunchgen/crunchgen.c
+#	modified:   ospfd/rde.c
+#	modified:   pwd_mkdb/pwd_mkdb.c
+#	modified:   smtpd/client.c
+#	modified:   smtpd/lka.c
+#	modified:   smtpd/mfa.c
+#	modified:   smtpd/ruleset.c
+#	modified:   smtpd/smtp_session.c
+#	modified:   smtpd/smtpd.c
+#	modified:   smtpd/smtpd.h
+#	modified:   smtpd/ssl.c
 #	modified:   status.log
+#	modified:   sysmerge/sysmerge.sh
 #	modified:   up.log
 #
 no changes added to commit (use "git add" and/or "git commit -a")

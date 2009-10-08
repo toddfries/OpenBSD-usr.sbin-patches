@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.37 2009/09/03 08:19:13 jacekm Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.40 2009/10/07 18:19:39 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -45,6 +45,7 @@ void		mfa_disable_events(struct smtpd *);
 
 void		mfa_test_mail(struct smtpd *, struct message *);
 void		mfa_test_rcpt(struct smtpd *, struct message *);
+void		mfa_test_rcpt_resume(struct smtpd *, struct submit_status *);
 
 int		strip_source_route(char *, size_t);
 
@@ -98,93 +99,6 @@ mfa_dispatch_parent(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_CONF_START:
-			if ((env->sc_rules_reload = calloc(1, sizeof(*env->sc_rules))) == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			if ((env->sc_maps_reload = calloc(1, sizeof(*env->sc_maps))) == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			TAILQ_INIT(env->sc_rules_reload);
-			TAILQ_INIT(env->sc_maps_reload);
-			break;
-		case IMSG_CONF_RULE: {
-			struct rule *rule = imsg.data;
-
-			IMSG_SIZE_CHECK(rule);
-
-			rule = calloc(1, sizeof(*rule));
-			if (rule == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			*rule = *(struct rule *)imsg.data;
-
-			TAILQ_INIT(&rule->r_conditions);
-			TAILQ_INSERT_TAIL(env->sc_rules_reload, rule, r_entry);
-			break;
-		}
-		case IMSG_CONF_CONDITION: {
-			struct rule *r = TAILQ_LAST(env->sc_rules_reload, rulelist);
-			struct cond *cond = imsg.data;
-
-			IMSG_SIZE_CHECK(cond);
-
-			cond = calloc(1, sizeof(*cond));
-			if (cond == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			*cond = *(struct cond *)imsg.data;
-
-			TAILQ_INSERT_TAIL(&r->r_conditions, cond, c_entry);
-			break;
-		}
-		case IMSG_CONF_MAP: {
-			struct map *m = imsg.data;
-
-			IMSG_SIZE_CHECK(m);
-
-			m = calloc(1, sizeof(*m));
-			if (m == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			*m = *(struct map *)imsg.data;
-
-			TAILQ_INIT(&m->m_contents);
-			TAILQ_INSERT_TAIL(env->sc_maps_reload, m, m_entry);
-			break;
-		}
-		case IMSG_CONF_RULE_SOURCE: {
-			struct rule *rule = TAILQ_LAST(env->sc_rules_reload, rulelist);
-			char *sourcemap = imsg.data;
-			void *temp = env->sc_maps;
-
-			/* map lookup must be done in the reloaded conf */
-			env->sc_maps = env->sc_maps_reload;
-			rule->r_sources = map_findbyname(env, sourcemap);
-			if (rule->r_sources == NULL)
-				fatalx("maps inconsistency");
-			env->sc_maps = temp;
-			break;
-		}
-		case IMSG_CONF_MAP_CONTENT: {
-			struct map *m = TAILQ_LAST(env->sc_maps_reload, maplist);
-			struct mapel *mapel = imsg.data;
-			
-			IMSG_SIZE_CHECK(mapel);
-			
-			mapel = calloc(1, sizeof(*mapel));
-			if (mapel == NULL)
-				fatal("mfa_dispatch_parent: calloc");
-			*mapel = *(struct mapel *)imsg.data;
-
-			TAILQ_INSERT_TAIL(&m->m_contents, mapel, me_entry);
-			break;
-		}
-		case IMSG_CONF_END: {
-			/* switch and destroy old ruleset */
-			if (env->sc_rules)
-				purge_config(env, PURGE_RULES);
-			if (env->sc_maps)
-				purge_config(env, PURGE_MAPS);
-			env->sc_rules = env->sc_rules_reload;
-			env->sc_maps = env->sc_maps_reload;
-			break;
-		}
 		default:
 			log_warnx("mfa_dispatch_parent: got imsg %d",
 			    imsg.hdr.type);
@@ -309,6 +223,14 @@ mfa_dispatch_lka(int sig, short event, void *p)
 
 			imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT,
 			    0, 0, -1, ss, sizeof(*ss));
+			break;
+		}
+		case IMSG_LKA_RULEMATCH: {
+			struct submit_status	 *ss = imsg.data;
+
+			IMSG_SIZE_CHECK(ss);
+
+			mfa_test_rcpt_resume(env, ss);
 			break;
 		}
 		default:
@@ -468,7 +390,6 @@ void
 mfa_test_mail(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
-	struct rule *r;
 
 	ss.id = m->id;
 	ss.code = 530;
@@ -487,11 +408,6 @@ mfa_test_mail(struct smtpd *env, struct message *m)
 	}
 
 	/* Current policy is to allow all well-formed addresses. */
-	r = ruleset_match(env, &ss.u.path, NULL);
-	if (r == NULL)
-		ss.u.path.rule.r_action = A_RELAY;
-	else
-		ss.u.path.rule = *r;
 	goto accept;
 
 refuse:
@@ -509,7 +425,6 @@ void
 mfa_test_rcpt(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
-	struct rule *r;
 
 	if (! valid_message_id(m->message_id))
 		fatalx("mfa_test_rcpt: received corrupted message_id");
@@ -530,22 +445,25 @@ mfa_test_rcpt(struct smtpd *env, struct message *m)
 	if (ss.flags & F_MESSAGE_AUTHENTICATED)
 		ss.u.path.flags |= F_PATH_AUTHENTICATED;
 
-	r = ruleset_match(env, &ss.u.path, &ss.ss);
-	if (r == NULL)
-		goto refuse;
+	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RULEMATCH, 0, 0, -1,
+	    &ss, sizeof(ss));
 
-	ss.u.path.rule = *r;
-	goto accept;
-		
+	return;
 refuse:
 	imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, &ss,
 	    sizeof(ss));
-	return;
+}
 
-accept:
-	ss.code = 250;
+void
+mfa_test_rcpt_resume(struct smtpd *env, struct submit_status *ss) {
+	if (ss->code != 250) {
+		imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, ss,
+		    sizeof(*ss));
+		return;
+	}
+
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RCPT, 0, 0, -1,
-	    &ss, sizeof(ss));
+	    ss, sizeof(*ss));
 }
 
 int
