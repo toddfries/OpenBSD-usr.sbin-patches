@@ -1,29 +1,27 @@
 # On branch master
-# Your branch is ahead of 'origin/master' by 1 commit.
-#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   bgpd/bgpd.conf.5
-#	modified:   bgpd/parse.y
-#	modified:   bgpd/printconf.c
-#	modified:   bgpd/rde.c
-#	modified:   bgpd/rde.h
-#	modified:   bgpd/rde_rib.c
-#	modified:   crunchgen/crunchgen.c
-#	modified:   ospfd/rde.c
-#	modified:   pwd_mkdb/pwd_mkdb.c
-#	modified:   smtpd/client.c
+#	modified:   pkg_add/OpenBSD/Add.pm
+#	modified:   pkg_add/OpenBSD/Delete.pm
+#	modified:   pkg_add/OpenBSD/Dependencies.pm
+#	modified:   pkg_add/OpenBSD/PkgSpec.pm
+#	modified:   pkg_add/OpenBSD/Replace.pm
+#	modified:   pkg_add/OpenBSD/Search.pm
+#	modified:   pkg_add/OpenBSD/UpdateSet.pm
+#	modified:   pkg_add/pkg_add
+#	modified:   pkg_add/pkg_add.1
+#	modified:   pkg_add/pkg_info
+#	modified:   pkg_add/pkg_info.1
+#	modified:   smtpd/aliases.c
 #	modified:   smtpd/lka.c
-#	modified:   smtpd/mfa.c
+#	modified:   smtpd/makemap.8
+#	modified:   smtpd/parse.y
 #	modified:   smtpd/ruleset.c
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpd.c
 #	modified:   smtpd/smtpd.h
-#	modified:   smtpd/ssl.c
 #	modified:   status.log
-#	modified:   sysmerge/sysmerge.sh
 #	modified:   up.log
+#	modified:   ypldap/yp.c
 #
 no changes added to commit (use "git add" and/or "git commit -a")

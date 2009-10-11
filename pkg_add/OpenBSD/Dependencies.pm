@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.65 2009/04/19 14:58:32 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.68 2009/10/11 16:46:37 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -85,7 +85,7 @@ sub find_in_already_done
 	my ($self, $solver, $state, $obj) = @_;
 
 
-	my $r = $solver->check_lib_spec($solver->{plist}->localbase, $obj, 
+	my $r = $solver->check_lib_spec($solver->{localbase}, $obj, 
 	    $self->{known});
 	if ($r) {
 		print "found libspec $obj in package $r\n" if $state->{verbose};
@@ -114,7 +114,7 @@ sub find_in_new_source
 {
 	my ($self, $solver, $state, $obj, $dep) = @_;
 	OpenBSD::SharedLibs::add_libs_from_installed_package($dep);
-	if ($solver->check_lib_spec($solver->{plist}->localbase, $obj, 
+	if ($solver->check_lib_spec($solver->{localbase}, $obj, 
 	    {$dep => 1})) {
 		print "found libspec $obj in package $dep\n" if $state->{verbose};
 		return $dep;
@@ -124,11 +124,11 @@ sub find_in_new_source
 
 sub find_elsewhere
 {
-	my ($self, $state, $solver, $obj) = @_;
+	my ($self, $solver, $state, $obj) = @_;
 
 	for my $dep (@{$solver->{plist}->{depend}}) {
 		my $r = $solver->find_old_lib($state, 
-		    $solver->{plist}->localbase, $dep->{pattern}, $obj);
+		    $solver->{localbase}, $dep->{pattern}, $obj);
 		if ($r) {
 			print "found libspec $obj in old package $r\n" if $state->{verbose};
 			return $r;
@@ -198,7 +198,7 @@ sub new
 {
 	my ($class, $set) = @_;
 	bless {set => $set, plist => $set->handle->{plist}, 
-	    to_install => {}, deplist => [], to_register => {} }, $class;
+	    to_install => {}, to_update => {}, deplist => [], to_register => {} }, $class;
 }
 
 sub dependencies
@@ -230,9 +230,12 @@ sub add_todo
 	require OpenBSD::PackageName;
 
 	for my $set (@extra) {
-		my $fullname = $set->handle->{pkgname};
-		$self->{to_install}->
-		    {OpenBSD::PackageName::url2pkgname($fullname)} = $set;
+		for my $n ($set->newer) {
+			$self->{to_install}->{OpenBSD::PackageName::url2pkgname($n->{pkgname})} = $set;
+		}
+		for my $n ($set->older) {
+			$self->{to_update}->{OpenBSD::PackageName::url2pkgname($n->{pkgname})} = $set;
+		}
 	}
 }
 
@@ -453,6 +456,7 @@ sub solve_wantlibs
 	my $lib_finder = OpenBSD::lookup::library->new($solver);
 	for my $h ($solver->{set}->newer) {
 		for my $lib (@{$h->{plist}->{wantlib}}) {
+			$solver->{localbase} = $h->{plist}->localbase;
 			next if $lib_finder->lookup($solver, $state, 
 			    $lib->{name});
 			OpenBSD::Error::Warn "Can't install ", 
