@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.68 2009/10/11 16:46:37 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.74 2009/10/15 20:51:28 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -126,14 +126,16 @@ sub find_elsewhere
 {
 	my ($self, $solver, $state, $obj) = @_;
 
-	for my $dep (@{$solver->{plist}->{depend}}) {
-		my $r = $solver->find_old_lib($state, 
-		    $solver->{localbase}, $dep->{pattern}, $obj);
-		if ($r) {
-			print "found libspec $obj in old package $r\n" if $state->{verbose};
-			return $r;
+	for my $n ($solver->{set}->newer) {
+		for my $dep (@{$n->{plist}->{depend}}) {
+			my $r = $solver->find_old_lib($state, 
+			    $solver->{localbase}, $dep->{pattern}, $obj);
+			if ($r) {
+				print "found libspec $obj in old package $r\n" if $state->{verbose};
+				return $r;
+			}
 		}
-    	}
+	}
 	return undef;
 }
 
@@ -198,7 +200,7 @@ sub new
 {
 	my ($class, $set) = @_;
 	bless {set => $set, plist => $set->handle->{plist}, 
-	    to_install => {}, to_update => {}, deplist => [], to_register => {} }, $class;
+	    deplist => [], to_register => {} }, $class;
 }
 
 sub dependencies
@@ -215,28 +217,6 @@ sub has_dep
 {
 	my ($self, $dep) = @_;
 	return $self->{to_register}->{$dep};
-}
-
-sub pkgname
-{
-	my $self = shift;
-	return $self->{plist}->pkgname;
-}
-
-sub add_todo
-{
-	my ($self, @extra) = @_;
-
-	require OpenBSD::PackageName;
-
-	for my $set (@extra) {
-		for my $n ($set->newer) {
-			$self->{to_install}->{OpenBSD::PackageName::url2pkgname($n->{pkgname})} = $set;
-		}
-		for my $n ($set->older) {
-			$self->{to_update}->{OpenBSD::PackageName::url2pkgname($n->{pkgname})} = $set;
-		}
-	}
 }
 
 sub find_dep_in_repositories
@@ -262,7 +242,7 @@ sub find_dep_in_repositories
 		@pkgs = ((grep {$_ eq $dep->{def}} @pkgs),
 		    (sort (grep {$_ ne $dep->{def}} @pkgs)));
 		my $good =  OpenBSD::Interactive::ask_list(
-		    'Ambiguous: choose dependency for '.$self->pkgname.': ',
+		    'Ambiguous: choose dependency for '.$self->{set}->short_print.': ',
 		    $state->{interactive}, @pkgs);
 		return $c{$good};
 	} else {
@@ -274,7 +254,7 @@ sub find_dep_in_stuff_to_install
 {
 	my ($self, $state, $dep) = @_;
 
-	return find_candidate($dep->spec, keys %{$self->{to_install}});
+	return find_candidate($dep->spec, keys %{$state->{tracker}->{to_install}});
 }
 
 sub solve_dependency
@@ -286,19 +266,23 @@ sub solve_dependency
 	if ($state->{allow_replacing}) {
 		$v = $self->find_dep_in_stuff_to_install($state, $dep);
 		if ($v) {
-			push(@{$self->{deplist}}, $self->{to_install}->{$v});
+			push(@{$self->{deplist}}, $state->{tracker}->{to_install}->{$v});
 			return $v;
 		}
 	}
 
-	$v = find_candidate($dep->spec, installed_packages());
+	my @l = installed_packages();
+	for my $o ($self->{set}->older_names) {
+		@l = grep {$_ ne $o} @l;
+	}
+	$v = find_candidate($dep->spec, @l);
 	if ($v) {
 		return $v;
 	}
 	if (!$state->{allow_replacing}) {
 		$v = $self->find_dep_in_stuff_to_install($state, $dep);
 		if ($v) {
-			push(@{$self->{deplist}}, $self->{to_install}->{$v});
+			push(@{$self->{deplist}}, $state->{tracker}->{to_install}->{$v});
 			return $v;
 		}
 	}
@@ -318,13 +302,13 @@ sub solve_dependency
 
 sub solve_depends
 {
-	my ($self, $state, @extra) = @_;
+	my ($self, $state) = @_;
 
-	$self->add_todo(@extra);
-
-	for my $dep (@{$self->{plist}->{depend}}) {
-		my $v = $self->solve_dependency($state, $dep);
-		$self->{to_register}->{$v} = $dep;
+	for my $package ($self->{set}->newer) {
+		for my $dep (@{$package->{plist}->{depend}}) {
+			my $v = $self->solve_dependency($state, $dep);
+			$self->{to_register}->{$v} = $dep;
+		}
 	}
 
 	return @{$self->{deplist}};
@@ -345,10 +329,10 @@ sub dump
 {
 	my $self = shift;
 	if ($self->dependencies) {
-	    print "Dependencies for ", $self->pkgname, " resolve to: ", 
-	    	join(', ',  $self->dependencies);
+	    print "Dependencies for ", $self->{set}->short_print, 
+	    	" resolve to: ", join(', ',  $self->dependencies);
 	    print " (todo: ", 
-	    	join(',', (map {$_->handle->{pkgname}} @{$self->{deplist}})), 
+	    	join(',', (map {$_->handle->pkgname} @{$self->{deplist}})), 
 		")" 
 	    	if @{$self->{deplist}} > 0;
 	    print "\n";
@@ -360,7 +344,7 @@ sub register_dependencies
 	my ($self, $state) = @_;
 
 	require OpenBSD::RequiredBy;
-	my $pkgname = $self->pkgname;
+	my $pkgname = $self->{set}->handle->pkgname;
 	my @l = $self->dependencies;
 
 	OpenBSD::Requiring->new($pkgname)->add(@l);
@@ -376,7 +360,7 @@ sub record_old_dependencies
 	my ($self, $state) = @_;
 	for my $o ($self->{set}->older_to_do) {
 		require OpenBSD::RequiredBy;
-		my @wantlist = OpenBSD::RequiredBy->new($o->{pkgname})->list;
+		my @wantlist = OpenBSD::RequiredBy->new($o->pkgname)->list;
 		$o->{wantlist} = \@wantlist;
 	}
 }
@@ -384,13 +368,13 @@ sub record_old_dependencies
 sub adjust_old_dependencies
 {
 	my ($self, $state) = @_;
-	my $pkgname = $self->{set}->handle->{pkgname};
+	my $pkgname = $self->{set}->handle->pkgname;
 	for my $o ($self->{set}->older) {
 		next unless defined $o->{wantlist};
 		require OpenBSD::Replace;
 		require OpenBSD::RequiredBy;
 
-		my $oldname = $o->{pkgname};
+		my $oldname = $o->pkgname;
 
 		print "Adjusting dependencies for $pkgname/$oldname\n" 
 		    if $state->{beverbose};
@@ -410,7 +394,7 @@ sub adjust_old_dependencies
 sub repair_dependencies
 {
 	my ($self, $state) = @_;
-	my $pkgname = $self->{set}->handle->{pkgname};
+	my $pkgname = $self->{set}->handle->pkgname;
 	for my $pkg (installed_packages(1)) {
 		my $plist = OpenBSD::PackingList->from_installation($pkg, 
 		    \&OpenBSD::PackingList::DependOnly);
@@ -460,7 +444,7 @@ sub solve_wantlibs
 			next if $lib_finder->lookup($solver, $state, 
 			    $lib->{name});
 			OpenBSD::Error::Warn "Can't install ", 
-			    $h->{pkgname}, ": lib not found ", 
+			    $h->pkgname, ": lib not found ", 
 			    $lib->{name}, "\n";
 			if ($okay) {
 				$solver->dump;
@@ -484,7 +468,7 @@ sub solve_tags
 		for my $tag (keys %{$h->{plist}->{tags}}) {
 			next if $tag_finder->lookup($solver, $state, $tag);
 			OpenBSD::Error::Warn "Can't install ", 
-			    $h->{pkgname}, ": tag definition not found ", 
+			    $h->pkgname, ": tag definition not found ", 
 			    $tag, "\n";
 			if ($okay) {
 				$solver->dump;

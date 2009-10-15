@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.6 2009/10/11 10:53:39 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.9 2009/10/15 10:45:47 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -71,6 +71,31 @@ sub check_root
 	}
 }
 
+sub choose_location
+{
+	my ($state, $name, $list) = @_;
+	if (@$list == 0) {
+		$state->progress->print("Can't find $name\n");
+		return undef;
+	} elsif (@$list == 1) {
+		return $list->[0];
+	}
+
+	my %h = map {($_->name, $_)} @$list;
+	if ($state->{interactive}) {
+		require OpenBSD::Interactive;
+
+		$h{'<None>'} = undef;
+		$state->progress->clear;
+		my $result = OpenBSD::Interactive::ask_list("Ambiguous: choose package for $name", 1, sort keys %h);
+		return $h{$result};
+	} else {
+		$state->progress->print("Ambiguous: $name could be ", 
+		    join(' ', keys %h), "\n");
+		return undef;
+	}
+}
+
 package OpenBSD::StubProgress;
 sub clear {}
 
@@ -82,82 +107,10 @@ sub next {}
 
 sub set_header {}
 
-# fairly non-descriptive name. Used to store various package information
-# during installs and updates.
-package OpenBSD::Handle;
-
-use constant {
-	BAD_PACKAGE => 1,
-	CANT_INSTALL => 2,
-	ALREADY_INSTALLED => 3,
-	NOT_FOUND => 4
-};
-
-sub new
+sub print
 {
-	my $class = shift;
-	return bless {}, $class;
-}
-
-sub set_error
-{
-	my ($self, $error) = @_;
-	$self->{error} = $error;
-}
-
-sub has_error
-{
-	my ($self, $error) = @_;
-	if (!defined $self->{error}) {
-		return undef;
-	}
-	if (defined $error) {
-		return $self->{error} eq $error;
-	}
-	return $self->{error};
-}
-
-sub create_old
-{
-
-	my ($class, $pkgname, $state) = @_;
-	my $self= $class->new;
-	$self->{pkgname} = $pkgname;
-
-	require OpenBSD::PackageRepository::Installed;
-
-	my $location = OpenBSD::PackageRepository::Installed->new->find($pkgname, $state->{arch});
-	if (!defined $location) {
-		$self->set_error(NOT_FOUND);
-    	} else {
-		$self->{location} = $location;
-		my $plist = $location->plist;
-		if (!defined $plist) {
-			$self->set_error(BAD_PACKAGE);
-		} else {
-			$self->{plist} = $plist;
-		}
-	}
-	return $self;
-}
-
-sub create_new
-{
-	my ($class, $pkg) = @_;
-	my $handle = $class->new;
-	$handle->{pkgname} = $pkg;
-	$handle->{tweaked} = 0;
-	return $handle;
-}
-
-sub from_location
-{
-	my ($class, $location) = @_;
-	my $handle = $class->new;
-	$handle->{pkgname} = $location->name;
-	$handle->{location} = $location;
-	$handle->{tweaked} = 0;
-	return $handle;
+	shift;
+	print STDERR @_;
 }
 
 package OpenBSD::UpdateSet;
@@ -178,7 +131,7 @@ sub add_older
 {
 	my $self = shift;
 	for my $h (@_) {
-		$self->{older}->{$h->{pkgname}} = $h;
+		$self->{older}->{$h->pkgname} = $h;
 	}
 	return $self;
 }
@@ -204,7 +157,7 @@ sub older_names
 sub newer_names
 {
 	my $self =shift;
-	return map {$_->{pkgname}} $self->newer;
+	return map {$_->pkgname} $self->newer;
 }
 
 sub older_to_do
@@ -216,7 +169,7 @@ sub older_to_do
 	require OpenBSD::PackageInfo;
 	my @l = ();
 	for my $h ($self->older) {
-		if (OpenBSD::PackageInfo::is_installed($h->{pkgname})) {
+		if (OpenBSD::PackageInfo::is_installed($h->pkgname)) {
 			push(@l, $h);
 		}
 	}

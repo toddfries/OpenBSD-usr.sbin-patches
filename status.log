@@ -1,27 +1,40 @@
 # On branch master
+# Your branch is ahead of 'origin/master' by 1 commit.
+#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   pkg_add/OpenBSD/Add.pm
-#	modified:   pkg_add/OpenBSD/Delete.pm
+#	modified:   bgpd/bgpd.conf.5
+#	modified:   bgpd/parse.y
+#	modified:   bgpd/printconf.c
+#	modified:   bgpd/rde.c
+#	modified:   pkg_add/Makefile
 #	modified:   pkg_add/OpenBSD/Dependencies.pm
-#	modified:   pkg_add/OpenBSD/PkgSpec.pm
+#	modified:   pkg_add/OpenBSD/PackageRepository.pm
+#	modified:   pkg_add/OpenBSD/ProgressMeter.pm
 #	modified:   pkg_add/OpenBSD/Replace.pm
-#	modified:   pkg_add/OpenBSD/Search.pm
+#	modified:   pkg_add/OpenBSD/Update.pm
 #	modified:   pkg_add/OpenBSD/UpdateSet.pm
+#	modified:   pkg_add/OpenBSD/x509.pm
 #	modified:   pkg_add/pkg_add
 #	modified:   pkg_add/pkg_add.1
 #	modified:   pkg_add/pkg_info
-#	modified:   pkg_add/pkg_info.1
 #	modified:   smtpd/aliases.c
 #	modified:   smtpd/lka.c
-#	modified:   smtpd/makemap.8
-#	modified:   smtpd/parse.y
+#	modified:   smtpd/makemap.c
+#	modified:   smtpd/mfa.c
+#	modified:   smtpd/queue.c
 #	modified:   smtpd/ruleset.c
+#	modified:   smtpd/runner.c
+#	modified:   smtpd/smtpd.conf.5
 #	modified:   smtpd/smtpd.h
 #	modified:   status.log
 #	modified:   up.log
-#	modified:   ypldap/yp.c
 #
+# Untracked files:
+#   (use "git add <file>..." to include in what will be committed)
+#
+#	pkg_add/OpenBSD/Handle.pm
+#	pkg_add/OpenBSD/Tracker.pm
 no changes added to commit (use "git add" and/or "git commit -a")
