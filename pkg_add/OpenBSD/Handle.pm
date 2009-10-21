@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Handle.pm,v 1.4 2009/10/15 23:22:55 espie Exp $
+# $OpenBSD: Handle.pm,v 1.6 2009/10/19 14:00:10 espie Exp $
 #
 # Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
 #
@@ -29,6 +29,21 @@ use constant {
 	NOT_FOUND => 4
 };
 
+sub cleanup
+{
+	my ($self, $error) = @_;
+	$self->{error} //= $error;
+	if (defined $self->location) {
+		if ($self->{error} == ALREADY_INSTALLED) {
+			$self->location->close_now;
+		} elsif ($self->{error} == CANT_INSTALL) {
+			$self->location->close_with_client_error;
+		}
+		$self->location->wipe_info;
+	}
+	delete $self->{plist};
+}
+
 sub new
 {
 	my $class = shift;
@@ -52,6 +67,16 @@ sub pkgname
 	}
 
 	return $self->{pkgname};
+}
+
+sub location
+{
+	return shift->{location};
+}
+
+sub plist
+{
+	return shift->{plist};
 }
 
 sub set_error
