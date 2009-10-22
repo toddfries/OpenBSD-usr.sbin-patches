@@ -3,26 +3,26 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   config/mkmakefile.c
-#	modified:   pkg_add/OpenBSD/Dependencies.pm
-#	modified:   pkg_add/OpenBSD/Handle.pm
-#	modified:   pkg_add/OpenBSD/Tracker.pm
-#	modified:   pkg_add/OpenBSD/UpdateSet.pm
-#	modified:   pkg_add/pkg_add
-#	modified:   smtpd/client.c
-#	modified:   smtpd/lka.c
-#	modified:   smtpd/makemap.8
-#	modified:   smtpd/parse.y
-#	modified:   smtpd/ruleset.c
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpd.c
-#	modified:   smtpd/smtpd.conf.5
-#	modified:   smtpd/smtpd.h
+#	modified:   adduser/rmgroup.8
+#	modified:   apm/apm.8
+#	modified:   apmd/apmd.8
+#	modified:   dvmrpctl/dvmrpctl.8
+#	modified:   dvmrpd/dvmrpd.8
+#	modified:   ospf6ctl/ospf6ctl.8
+#	modified:   ospf6d/ospf6d.8
+#	modified:   ospfctl/ospfctl.8
+#	modified:   ospfd/ospfd.8
+#	modified:   pkg_add/pkg_merge.1
+#	modified:   relayctl/relayctl.8
+#	modified:   relayd/relayd.8
+#	modified:   ripctl/ripctl.8
+#	modified:   ripd/ripd.8
+#	modified:   smtpd/smtpctl.8
+#	modified:   smtpd/smtpd.8
+#	modified:   snmpctl/snmpctl.8
 #	modified:   status.log
+#	modified:   syslogd/syslogd.8
+#	modified:   tokeninit/tokeninit.8
 #	modified:   up.log
-#	modified:   ypserv/mkalias/mkalias.8
-#	modified:   ypserv/mkalias/mkalias.c
-#	modified:   ypserv/revnetgroup/revnetgroup.8
-#	modified:   ypserv/revnetgroup/revnetgroup.c
 #
 no changes added to commit (use "git add" and/or "git commit -a")
