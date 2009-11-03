@@ -1,4 +1,4 @@
-/*	$OpenBSD: aliases.c,v 1.22 2009/10/12 23:57:44 gilles Exp $	*/
+/*	$OpenBSD: aliases.c,v 1.25 2009/11/03 20:55:23 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -42,7 +42,7 @@ int alias_is_filename(struct alias *, char *, size_t);
 int alias_is_include(struct alias *, char *, size_t);
 
 int
-aliases_exist(struct smtpd *env, char *username)
+aliases_exist(struct smtpd *env, objid_t mapid, char *username)
 {
 	char buf[MAXLOGNAME];
 	int ret;
@@ -51,13 +51,13 @@ aliases_exist(struct smtpd *env, char *username)
 	DB *aliasesdb;
 	struct map *map;
 
-	map = map_findbyname(env, "aliases");
+	map = map_find(env, mapid);
 	if (map == NULL)
 		return 0;
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL) {
-		log_warn("aliases_exist: dbopen");
+		log_warn("aliases_exist: dbopen: %s", map->m_config);
 		return 0;
 	}
 
@@ -75,7 +75,7 @@ aliases_exist(struct smtpd *env, char *username)
 }
 
 int
-aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
+aliases_get(struct smtpd *env, objid_t mapid, struct aliaseslist *aliases, char *username)
 {
 	char buf[MAXLOGNAME];
 	int ret;
@@ -88,13 +88,13 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 	struct alias *nextalias;
 	struct map *map;
 
-	map = map_findbyname(env, "aliases");
+	map = map_find(env, mapid);
 	if (map == NULL)
 		return 0;
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL) {
-		log_warn("aliases_get: dbopen");
+		log_warn("aliases_get: dbopen: %s", map->m_config);
 		return 0;
 	}
 
@@ -136,20 +136,22 @@ aliases_get(struct smtpd *env, struct aliaseslist *aliases, char *username)
 }
 
 int
-aliases_vdomain_exists(struct smtpd *env, struct map *map, char *hostname)
+aliases_vdomain_exists(struct smtpd *env, objid_t mapid, char *hostname)
 {
 	int	ret;
 	DBT	key;
 	DBT	val;
 	DB     *vtable;
+	struct map *map;
 	char	strkey[MAX_LINE_SIZE];
 
+	map = map_find(env, mapid);
 	if (map == NULL)
 		return 0;
 
 	vtable = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (vtable == NULL) {
-		log_warn("aliases_vdomain_exists: dbopen");
+		log_warn("aliases_vdomain_exists: dbopen: %s", map->m_config);
 		return 0;
 	}
 
@@ -172,20 +174,22 @@ aliases_vdomain_exists(struct smtpd *env, struct map *map, char *hostname)
 }
 
 int
-aliases_virtual_exist(struct smtpd *env, struct map *map, struct path *path)
+aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct path *path)
 {
 	int ret;
 	DBT key;
 	DBT val;
 	DB *aliasesdb;
+	struct map *map;
 	char	strkey[MAX_LINE_SIZE];
 
+	map = map_find(env, mapid);
 	if (map == NULL)
 		return 0;
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL) {
-		log_warn("aliases_virtual_exist: dbopen");
+		log_warn("aliases_virtual_exist: dbopen: %s", map->m_config);
 		return 0;
 	}
 
@@ -224,7 +228,7 @@ aliases_virtual_exist(struct smtpd *env, struct map *map, struct path *path)
 }
 
 int
-aliases_virtual_get(struct smtpd *env, struct map *map,
+aliases_virtual_get(struct smtpd *env, objid_t mapid,
     struct aliaseslist *aliases, struct path *path)
 {
 	int ret;
@@ -235,14 +239,16 @@ aliases_virtual_get(struct smtpd *env, struct map *map,
 	struct alias alias;
 	struct alias *aliasp;
 	struct alias *nextalias;
+	struct map *map;
 	char	strkey[MAX_LINE_SIZE];
 
+	map = map_find(env, mapid);
 	if (map == NULL)
 		return 0;
 
 	aliasesdb = dbopen(map->m_config, O_RDONLY, 0600, DB_HASH, NULL);
 	if (aliasesdb == NULL) {
-		log_warn("aliases_virtual_get: dbopen");
+		log_warn("aliases_virtual_get: dbopen: %s", map->m_config);
 		return 0;
 	}
 

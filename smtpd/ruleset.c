@@ -1,4 +1,4 @@
-/*	$OpenBSD: ruleset.c,v 1.5 2009/10/19 20:48:13 gilles Exp $ */
+/*	$OpenBSD: ruleset.c,v 1.7 2009/11/03 19:13:34 gilles Exp $ */
 
 /*
  * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
@@ -48,9 +48,6 @@ ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_s
 	struct map *map;
 	struct mapel *me;
 
-	if (tag)
-		log_debug("tag: %s", tag);
-
 	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
 
 		if (r->r_tag[0] != '\0' && strcmp(r->r_tag, tag) != 0)
@@ -68,11 +65,10 @@ ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_s
 			}
 
 			if (cond->c_type == C_DOM) {
-				cond->c_match = map_find(env, cond->c_map);
-				if (cond->c_match == NULL)
+				map = map_find(env, cond->c_map);
+				if (map == NULL)
 					fatal("failed to lookup map.");
 
-				map = cond->c_match;
 				TAILQ_FOREACH(me, &map->m_contents, me_entry) {
 					if (hostname_match(path->domain, me->me_key.med_string)) {
 						path->cond = cond;
@@ -82,12 +78,7 @@ ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_s
 			}
 
 			if (cond->c_type == C_VDOM) {
-				cond->c_match = map_find(env, cond->c_map);
-				if (cond->c_match == NULL)
-					fatal("failed to lookup map.");
-
-				map = cond->c_match;
-				if (aliases_vdomain_exists(env, map, path->domain)) {
+				if (aliases_vdomain_exists(env, cond->c_map, path->domain)) {
 					path->cond = cond;
 					return r;
 				}
