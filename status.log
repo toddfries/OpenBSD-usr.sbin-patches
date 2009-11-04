@@ -3,27 +3,14 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   bgpctl/bgpctl.8
-#	modified:   dhcrelay/dhcrelay.c
-#	modified:   dvmrpctl/dvmrpctl.8
-#	modified:   ldpctl/ldpctl.8
-#	modified:   ospf6ctl/ospf6ctl.8
-#	modified:   ospfctl/ospfctl.8
-#	modified:   pkg_add/OpenBSD/PackingElement.pm
-#	modified:   pkg_add/OpenBSD/PackingList.pm
-#	modified:   pkg_add/pkg_add
-#	modified:   pkg_add/pkg_delete
-#	modified:   relayd/relayd.h
-#	modified:   ripctl/ripctl.8
-#	modified:   smtpd/aliases.c
 #	modified:   smtpd/lka.c
+#	modified:   smtpd/makemap.8
+#	modified:   smtpd/makemap.c
+#	modified:   smtpd/map.c
 #	modified:   smtpd/parse.y
 #	modified:   smtpd/ruleset.c
-#	modified:   smtpd/runner.c
-#	modified:   smtpd/smtpd.c
 #	modified:   smtpd/smtpd.h
 #	modified:   status.log
-#	modified:   tcpdump/pf_print_state.c
 #	modified:   up.log
 #
 no changes added to commit (use "git add" and/or "git commit -a")
