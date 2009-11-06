@@ -1,16 +1,20 @@
+Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
++--[ RSA 1024]----+
+|          oo++oo.|
+|         .   ==..|
+|          . .. =+|
+|         .    =.+|
+|        S .  E ..|
+|         o  o o .|
+|          o    . |
+|           .     |
+|                 |
++-----------------+
+
 ? .git
 ? .gitignore
 ? status.log
 ? up.log
 ? ppp/ppp/obj
 ? ppp/pppctl/obj
-P pcidump/pcidump.8
-P pcidump/pcidump.c
 C ppp/ppp/route.c
-P smtpd/bounce.c
-P smtpd/dns.c
-P smtpd/lka.c
-P smtpd/mta.c
-P smtpd/parse.y
-P smtpd/smtp_session.c
-P smtpd/smtpd.h

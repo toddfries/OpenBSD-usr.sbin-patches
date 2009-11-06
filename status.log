@@ -3,15 +3,6 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   pcidump/pcidump.8
-#	modified:   pcidump/pcidump.c
-#	modified:   smtpd/bounce.c
-#	modified:   smtpd/dns.c
-#	modified:   smtpd/lka.c
-#	modified:   smtpd/mta.c
-#	modified:   smtpd/parse.y
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpd.h
 #	modified:   status.log
 #	modified:   up.log
 #
