@@ -1,4 +1,4 @@
-/*	$OpenBSD: bounce.c,v 1.9 2009/09/16 15:33:06 jacekm Exp $	*/
+/*	$OpenBSD: bounce.c,v 1.11 2009/11/05 12:08:41 jsing Exp $	*/
 
 /*
  * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
@@ -55,6 +55,7 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 {
 	struct client_ctx	*cc = NULL;
 	int			 msgfd = -1;
+	char			*reason;
 
 	/* init smtp session */
 	if ((cc = calloc(1, sizeof(*cc))) == NULL)
@@ -71,11 +72,18 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	    messagep->sender.domain) < 0)
 		goto fail;
 
+	/* Construct an appropriate reason line. */
+	reason = messagep->session_errorline;
+	if (strlen(reason) > 4 && (*reason == '1' || *reason == '6'))
+		reason += 4;
+	
 	/* create message header */
+	/* XXX - The Date: header should be added during SMTP pickup. */
 	if (client_data_printf(cc->sp,
 	    "Subject: Delivery status notification\n"
 	    "From: Mailer Daemon <MAILER-DAEMON@%s>\n"
 	    "To: %s@%s\n"
+	    "Date: %s\n"
 	    "\n"
 	    "Hi !\n"
 	    "\n"
@@ -90,8 +98,9 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	    "\n",
 	    env->sc_hostname,
 	    messagep->sender.user, messagep->sender.domain,
+	    time_to_text(time(NULL)),
 	    messagep->recipient.user, messagep->recipient.domain,
-	    messagep->session_errorline) < 0)
+	    reason) < 0)
 		goto fail;
 
 	/* append original message */
