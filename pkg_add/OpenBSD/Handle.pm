@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Handle.pm,v 1.6 2009/10/19 14:00:10 espie Exp $
+# $OpenBSD: Handle.pm,v 1.9 2009/11/08 12:16:23 espie Exp $
 #
 # Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
 #
@@ -97,6 +97,23 @@ sub has_error
 	return $self->{error};
 }
 
+sub error_message
+{
+	my $self = shift;
+	my $error = $self->{error};
+	if ($error == BAD_PACKAGE) {
+		return "bad package";
+	} elsif ($error == CANT_INSTALL) {
+		return "can't install";
+	} elsif ($error == NOT_FOUND) {
+		return "not found";
+	} elsif ($error == ALREADY_INSTALLED) {
+		return "already installed";
+	} else {
+		return "no error";
+	}
+}
+
 sub create_old
 {
 
@@ -177,7 +194,7 @@ sub get_plist
 		    OpenBSD::Add::tweak_package_status($pkgname, $state);
 		print "Not reinstalling $pkgname\n" if $state->{verbose} and
 		    !$handle->{tweaked};
-		$state->{tracker}->{installed}->{$pkgname} = 1;
+		$state->tracker->{installed}->{$pkgname} = 1;
 		$location->close_now;
 		$location->wipe_info;
 		$handle->set_error(ALREADY_INSTALLED);
@@ -226,6 +243,7 @@ sub complete
 	if (!defined $handle->{location}) {
 		$handle->get_location($state);
 	}
+	return if $handle->has_error;
 	if (!defined $handle->{plist}) {
 		$handle->get_plist($state);
 	}

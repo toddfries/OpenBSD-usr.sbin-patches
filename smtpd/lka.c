@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.80 2009/11/05 12:26:19 gilles Exp $	*/
+/*	$OpenBSD: lka.c,v 1.83 2009/11/08 23:08:56 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -51,19 +51,21 @@ void		lka_dispatch_runner(int, short, void *);
 void		lka_dispatch_mta(int, short, void *);
 void		lka_setup_events(struct smtpd *);
 void		lka_disable_events(struct smtpd *);
-void		lka_expand_rcpt(struct smtpd *, struct aliaseslist *, struct lkasession *);
-int		lka_resolve_alias(struct smtpd *, char *tag, struct path *, struct alias *);
+void		lka_expand_pickup(struct smtpd *, struct lkasession *);
+int		lka_expand_resume(struct smtpd *, struct lkasession *);
+int		lka_resolve_node(struct smtpd *, char *tag, struct path *, struct expand_node *);
 int		lka_verify_mail(struct smtpd *, struct path *);
 struct rule    *ruleset_match(struct smtpd *, char *, struct path *, struct sockaddr_storage *);
-int		lka_resolve_path(struct smtpd *, struct path *);
+int		lka_resolve_path(struct smtpd *, struct lkasession *, struct path *);
 struct lkasession *lka_session_init(struct smtpd *, struct submit_status *);
 void		lka_request_forwardfile(struct smtpd *, struct lkasession *, char *);
-void		lka_clear_aliaseslist(struct aliaseslist *);
+void		lka_clear_expandtree(struct expandtree *);
+void		lka_clear_deliverylist(struct deliverylist *);
 int		lka_encode_credentials(char *, size_t, char *);
 size_t		lka_expand(char *, size_t, struct path *);
 void		lka_rcpt_action(struct smtpd *, char *, struct path *);
-int		lka_expand_rcpt_iteration(struct smtpd *, struct aliaseslist *, struct lkasession *);
 void		lka_session_destroy(struct smtpd *, struct lkasession *);
+void		lka_expansion_done(struct smtpd *, struct lkasession *);
 
 void
 lka_sig_handler(int sig, short event, void *p)
@@ -213,7 +215,7 @@ lka_dispatch_parent(int sig, short event, void *p)
 			struct forward_req	*fwreq = imsg.data;
 			struct lkasession	key;
 			struct lkasession	*lkasession;
-			struct alias		 alias;
+			struct path *path;
 
 			IMSG_SIZE_CHECK(fwreq);
 
@@ -224,14 +226,19 @@ lka_dispatch_parent(int sig, short event, void *p)
 			fd = imsg.fd;
 			--lkasession->pending;
 
+			strlcpy(lkasession->path.pw_name, fwreq->pw_name,
+			    sizeof(lkasession->path.pw_name));
+			lkasession->path.flags |= F_PATH_FORWARDED;
+
 			/* received a descriptor, we have a forward file ... */
 			if (fd != -1) {
-				if (! forwards_get(fd, &lkasession->aliaseslist)) {
+				if (! forwards_get(fd, &lkasession->expandtree)) {
 					lkasession->ss.code = 530;
-					lkasession->flags |= F_ERROR;
+					lkasession->flags |= F_ERROR;					
 				}
 				close(fd);
-				lka_expand_rcpt(env, &lkasession->aliaseslist, lkasession);
+				lkasession->path.flags |= F_PATH_FORWARDED;
+				lka_expand_pickup(env, lkasession);
 				break;
 			}
 
@@ -239,17 +246,15 @@ lka_dispatch_parent(int sig, short event, void *p)
 			if (! fwreq->status) {
 				lkasession->ss.code = 530;
 				lkasession->flags |= F_ERROR;
-				lka_expand_rcpt(env, &lkasession->aliaseslist, lkasession);
+				lka_expand_pickup(env, lkasession);
 				break;
 			}
 
-			/* no forward file, convert pw_name to a struct alias ... */
-			alias_parse(&alias, fwreq->pw_name);
-
-			/* then resolve alias and get back to expanding the aliases list */
-			lka_resolve_alias(env, lkasession->message.tag, &lkasession->message.recipient, &alias);
-			queue_submit_envelope(env, &lkasession->message);
-			lka_expand_rcpt(env, &lkasession->aliaseslist, lkasession);
+			/* no forward file, convert pw_name to a struct path ... */
+			path = path_dup(&lkasession->path);
+			strlcpy(path->pw_name, fwreq->pw_name, sizeof(path->pw_name));
+			TAILQ_INSERT_TAIL(&lkasession->deliverylist, path, entry);			
+			lka_expand_pickup(env, lkasession);
 			break;
 		}
 		default:
@@ -337,59 +342,55 @@ lka_dispatch_mfa(int sig, short event, void *p)
 		case IMSG_LKA_RCPT: {
 			struct submit_status	*ss = imsg.data;
 			struct lkasession	*lkasession;
-			int ret = 0;
+			struct path		*path;
 
 			IMSG_SIZE_CHECK(ss);
 
-			if (IS_RELAY(ss->u.path)) {
-				ss->code = 250;
-				queue_submit_envelope(env, &ss->msg);
-				queue_commit_envelopes(env, &ss->msg);
-				break;
-			}
+			ss->code = 250;
+			path = &ss->u.path;
 
-			if (! lka_resolve_path(env, &ss->u.path)) {
+			lkasession = lka_session_init(env, ss);
+			if (! lka_resolve_path(env, lkasession, path)) {
 				ss->code = 530;
 				imsg_compose_event(iev, IMSG_LKA_RCPT, 0, 0, -1,
 				    ss, sizeof(*ss));
-				break;
-			}
-
-			ss->code = 250;
-			lkasession = lka_session_init(env, ss);
-			if (lkasession->path.flags & F_PATH_ACCOUNT) {
-				log_debug("lka_dispatch_mfa: path is not expandable");
-				lka_request_forwardfile(env, lkasession, lkasession->path.user);
-				break;
-			}
-			else if (lkasession->path.flags & F_PATH_ALIAS) {
-				log_debug("lka_dispatch_mfa: path is aliases-expandable");
-				ret = aliases_get(env,
-				    lkasession->path.rule.r_amap,
-				    &lkasession->aliaseslist,
-				    lkasession->path.user);
-			}
-			else if (lkasession->path.flags & F_PATH_VIRTUAL) {
-				log_debug("lka_dispatch_mfa: path is virtual-expandable");
-				ret = aliases_virtual_get(env, lkasession->path.cond->c_map,
-				    &lkasession->aliaseslist, &lkasession->path);
-			}
-			else
-				fatal("lka_dispatch_mfa: path with illegal flag");
-
-			log_debug("lka_dispatch_mfa: expanded to %d envelopes", ret);
-
-			if (ret == 0) {
-				/* No aliases ... */
-				ss->code = 530;
-				imsg_compose_event(iev, IMSG_LKA_RCPT, 0, 0,
-				    -1, ss, sizeof(*ss));
 				lka_session_destroy(env, lkasession);
 				break;
 			}
 
-			lka_expand_rcpt(env, &lkasession->aliaseslist, lkasession);
+			if (path->flags & F_PATH_ACCOUNT) {
+				lka_request_forwardfile(env, lkasession, path->pw_name);
+				break;
+			}
 
+			if (path->flags & F_PATH_RELAY) {
+				path = path_dup(&ss->u.path);
+				TAILQ_INSERT_TAIL(&lkasession->deliverylist, path, entry);
+			}
+
+			if (path->flags & F_PATH_ALIAS) {
+				if (! aliases_get(env, ss->u.path.rule.r_amap,
+					&lkasession->expandtree, ss->u.path.user)) {
+					ss->code = 530;
+					imsg_compose_event(iev, IMSG_LKA_RCPT, 0, 0, -1,
+					    ss, sizeof(*ss));
+					lka_session_destroy(env, lkasession);
+					break;
+				}
+			}
+
+			if (path->flags & F_PATH_VIRTUAL) {
+				if (! aliases_virtual_get(env, ss->u.path.cond->c_map,
+					&lkasession->expandtree, &ss->u.path)) {
+					ss->code = 530;
+					imsg_compose_event(iev, IMSG_LKA_RCPT, 0, 0, -1,
+					    ss, sizeof(*ss));
+					lka_session_destroy(env, lkasession);
+					break;
+				}
+			}
+
+			lka_expand_pickup(env, lkasession);
 			break;
 		}
 		default:
@@ -832,21 +833,21 @@ lka_expand(char *buf, size_t len, struct path *path)
 }
 
 int
-lka_resolve_alias(struct smtpd *env, char *tag, struct path *path, struct alias *alias)
+lka_resolve_node(struct smtpd *env, char *tag, struct path *path, struct expand_node *expnode)
 {
 	struct path psave = *path;
 
 	bzero(path, sizeof(struct path));
 
-	switch (alias->type) {
-	case ALIAS_USERNAME:
-		log_debug("lka_resolve_alias: alias is local username: %s",
-		    alias->u.username);
-		if (strlcpy(path->pw_name, alias->u.username,
+	switch (expnode->type) {
+	case EXPAND_USERNAME:
+		log_debug("lka_resolve_node: node is local username: %s",
+		    expnode->u.username);
+		if (strlcpy(path->pw_name, expnode->u.username,
 			sizeof(path->pw_name)) >= sizeof(path->pw_name))
 			return 0;
 
-		if (strlcpy(path->user, alias->u.username,
+		if (strlcpy(path->user, expnode->u.username,
 			sizeof(path->user)) >= sizeof(path->user))
 			return 0;
 
@@ -860,37 +861,44 @@ lka_resolve_alias(struct smtpd *env, char *tag, struct path *path, struct alias 
 			    sizeof(psave.domain));
 		}
 
-		log_debug("lka_resolve_alias: resolved to address: %s@%s",
+		log_debug("lka_resolve_node: resolved to address: %s@%s",
 		    path->user, path->domain);
 		lka_rcpt_action(env, tag, path);
 		break;
 
-	case ALIAS_FILENAME:
-		log_debug("lka_resolve_alias: alias is filename: %s",
-		    alias->u.filename);
+	case EXPAND_FILENAME:
+		log_debug("lka_resolve_node: node is filename: %s",
+		    expnode->u.filename);
 		path->rule.r_action = A_FILENAME;
-		strlcpy(path->u.filename, alias->u.filename,
+		strlcpy(path->u.filename, expnode->u.filename,
 		    sizeof(path->u.filename));
 		break;
 
-	case ALIAS_FILTER:
-		log_debug("lka_resolve_alias: alias is filter: %s",
-		    alias->u.filter);
+	case EXPAND_FILTER:
+		log_debug("lka_resolve_node: node is filter: %s",
+		    expnode->u.filter);
 		path->rule.r_action = A_EXT;
-		strlcpy(path->rule.r_value.command, alias->u.filter + 2,
+		strlcpy(path->rule.r_value.command, expnode->u.filter + 2,
 		    sizeof(path->rule.r_value.command));
 		path->rule.r_value.command[strlen(path->rule.r_value.command) - 1] = '\0';
 		break;
 
-	case ALIAS_ADDRESS:
-		log_debug("lka_resolve_alias: alias is address: %s@%s",
-		    alias->u.path.user, alias->u.path.domain);
+	case EXPAND_ADDRESS:
+		log_debug("lka_resolve_node: node is address: %s@%s",
+		    expnode->u.mailaddr.user, expnode->u.mailaddr.domain);
 
-		*path = alias->u.path;
+		if (strlcpy(path->user, expnode->u.mailaddr.user,
+			sizeof(path->user)) >= sizeof(path->user))
+			return 0;
+
+		if (strlcpy(path->domain, expnode->u.mailaddr.domain,
+			sizeof(path->domain)) >= sizeof(path->domain))
+			return 0;
+
 		lka_rcpt_action(env, tag, path);
 		break;
-	case ALIAS_INCLUDE:
-		fatalx("lka_resolve_alias: unexpected type");
+	case EXPAND_INCLUDE:
+		fatalx("lka_resolve_node: unexpected type");
 		break;
 	}
 
@@ -904,17 +912,15 @@ lka_resolve_alias(struct smtpd *env, char *tag, struct path *path, struct alias 
 }
 
 void
-lka_expand_rcpt(struct smtpd *env, struct aliaseslist *aliases, struct lkasession *lkasession)
+lka_expand_pickup(struct smtpd *env, struct lkasession *lkasession)
 {
 	int	ret;
-	struct alias	*alias;
-	struct message	message;
 
 	ret = 0;
 	while (! (lkasession->flags & F_ERROR) &&
 	    ! lkasession->pending && lkasession->iterations < 5) {
 		++lkasession->iterations;
-		ret = lka_expand_rcpt_iteration(env, &lkasession->aliaseslist, lkasession);
+		ret = lka_expand_resume(env, lkasession);
 		if (ret == -1) {
 			lkasession->ss.code = 530;
 			lkasession->flags |= F_ERROR;
@@ -927,105 +933,81 @@ lka_expand_rcpt(struct smtpd *env, struct aliaseslist *aliases, struct lkasessio
 	if (lkasession->pending)
 		return;
 
-	if (lkasession->flags & F_ERROR) {
-		lka_clear_aliaseslist(&lkasession->aliaseslist);
-		imsg_compose_event(env->sc_ievs[PROC_MFA], IMSG_LKA_RCPT, 0, 0,
-		    -1, &lkasession->ss, sizeof(struct submit_status));
-	}
-	else if (TAILQ_FIRST(&lkasession->aliaseslist) == NULL) {
-		queue_commit_envelopes(env, &lkasession->message);
-	}
-	else {
-		message = lkasession->message;
-
-		while ((alias = TAILQ_FIRST(&lkasession->aliaseslist)) != NULL) {
-			lka_resolve_alias(env, message.tag, &message.recipient, alias);
-			queue_submit_envelope(env, &message);
-
-			TAILQ_REMOVE(&lkasession->aliaseslist, alias, entry);
-			free(alias);
-		}
-		queue_commit_envelopes(env, &message);
-	}
-
-	lka_session_destroy(env, lkasession);
+	lka_expansion_done(env, lkasession);
 }
 
 int
-lka_expand_rcpt_iteration(struct smtpd *env, struct aliaseslist *aliases, struct lkasession *lkasession)
+lka_expand_resume(struct smtpd *env, struct lkasession *lkasession)
 {
 	u_int8_t done = 1;
-	struct alias *rmalias = NULL;
-	struct alias *alias;
+	struct expand_node *expnode, *rmnode = NULL;
 	struct path *lkasessionpath = NULL;
 	struct path *respath = NULL;
 
 	lkasessionpath = &lkasession->path;
-	rmalias = NULL;
-	TAILQ_FOREACH(alias, aliases, entry) {
-		if (rmalias) {
-			TAILQ_REMOVE(aliases, rmalias, entry);
-			free(rmalias);
-			rmalias = NULL;
-		}
-		
-		if (alias->type == ALIAS_ADDRESS) {
-			respath = &alias->u.path;
-			lka_rcpt_action(env, lkasession->message.tag, respath);
-			lka_resolve_path(env, respath);
+	rmnode = NULL;
+	
+	RB_FOREACH(expnode, expandtree, &lkasession->expandtree) {
+		struct path path;
 
-			if (alias->u.path.flags & F_PATH_VIRTUAL) {
-				if (aliases_virtual_get(env,
-					respath->cond->c_map,
-					aliases, respath)) {
-					rmalias = alias;
-					done = 0;
-				}
-			}
-
-			if (alias->u.path.flags & F_PATH_ALIAS) {
-				if (aliases_get(env, lkasessionpath->rule.r_amap,
-					aliases, alias->u.username)) {
-					done = 0;
-					rmalias = alias;
-				}
-			}
+		if (rmnode) {
+			expandtree_remove(&lkasession->expandtree, rmnode);
+			free(rmnode);
+			rmnode = NULL;
 		}
-		
-		else if (alias->type == ALIAS_USERNAME) {
+		rmnode = expnode;
+
+		if (! lka_resolve_node(env, lkasession->message.tag, &path, expnode))
+			return -1;
+		path.flags = lkasessionpath->flags;
+
+		respath = path_dup(&path);
+		if (! lka_resolve_path(env, lkasession, respath))
+			return -1;
+
+		if (respath->flags & F_PATH_ACCOUNT) {
+			if (respath->flags & F_PATH_FORWARDED)
+				TAILQ_INSERT_TAIL(&lkasession->deliverylist, respath, entry);
+			else
+				lka_request_forwardfile(env, lkasession, respath->pw_name);
+		}
+
+		else if (respath->flags & F_PATH_ALIAS) {
 			if (aliases_get(env, lkasessionpath->rule.r_amap,
-				aliases, alias->u.username)) {
+				&lkasession->expandtree, respath->user))
 				done = 0;
-				rmalias = alias;
-			}
-			else {
-				lka_request_forwardfile(env, lkasession,
-				    alias->u.username);
-				done = 0;
-				rmalias = alias;
-			}
 		}
-	}
-	if (rmalias) {
-		TAILQ_REMOVE(aliases, rmalias, entry);
-		free(rmalias);
-		rmalias = NULL;
+
+		else if (respath->flags & F_PATH_VIRTUAL) {
+			if (aliases_virtual_get(env, lkasessionpath->cond->c_map,
+				&lkasession->expandtree, respath))
+				done = 0;
+		}
+
 	}
 
-	if (!done && lkasession->iterations == 5)
+	if (rmnode) {
+		expandtree_remove(&lkasession->expandtree, rmnode);
+		free(rmnode);
+	}
+
+	if (!done && lkasession->iterations == 5) {
 		return -1;
+	}
 
-	if (TAILQ_FIRST(aliases) == NULL)
+	if (RB_ROOT(&lkasession->expandtree) == NULL)
 		return 0;
 
 	return 1;
 }
 
 int
-lka_resolve_path(struct smtpd *env, struct path *path){
-
-	if (path->cond == NULL)
+lka_resolve_path(struct smtpd *env, struct lkasession *lkasession, struct path *path)
+{
+	if (IS_RELAY(*path)) {
+		path->flags |= F_PATH_RELAY;
 		return 1;
+	}
 
 	switch (path->cond->c_type) {
 	case C_ALL:
@@ -1034,11 +1016,8 @@ lka_resolve_path(struct smtpd *env, struct path *path){
 		char username[MAXLOGNAME];
 		struct passwd *pw;
 
-		/* recipient is to be relayed, no need for more processing */
-		if (IS_RELAY(*path))
-			return 1;
-
 		lowercase(username, path->user, sizeof(username));
+
 		if (aliases_exist(env, path->rule.r_amap, username)) {
 			path->flags |= F_PATH_ALIAS;
 			return 1;
@@ -1106,13 +1085,24 @@ lkasession_cmp(struct lkasession *s1, struct lkasession *s2)
 }
 
 void
-lka_clear_aliaseslist(struct aliaseslist *aliaseslist)
+lka_clear_expandtree(struct expandtree *expandtree)
 {
-	struct alias *alias;
+	struct expand_node *expnode;
 
-	while ((alias = TAILQ_FIRST(aliaseslist)) != NULL) {
-		TAILQ_REMOVE(aliaseslist, alias, entry);
-		free(alias);
+	while ((expnode = RB_ROOT(expandtree)) != NULL) {
+		expandtree_remove(expandtree, expnode);
+		free(expnode);
+	}
+}
+
+void
+lka_clear_deliverylist(struct deliverylist *deliverylist)
+{
+	struct path *path;
+
+	while ((path = TAILQ_FIRST(deliverylist)) != NULL) {
+		TAILQ_REMOVE(deliverylist, path, entry);
+		free(path);
 	}
 }
 
@@ -1147,12 +1137,13 @@ lka_session_init(struct smtpd *env, struct submit_status *ss)
 	if (lkasession == NULL)
 		fatal("lka_session_init: calloc");
 
-	lkasession->id = queue_generate_id();
+	lkasession->id = generate_uid();
 	lkasession->path = ss->u.path;
 	lkasession->message = ss->msg;
 	lkasession->ss = *ss;
 	
-	TAILQ_INIT(&lkasession->aliaseslist);
+	RB_INIT(&lkasession->expandtree);
+	TAILQ_INIT(&lkasession->deliverylist);
 	SPLAY_INSERT(lkatree, &env->lka_sessions, lkasession);
 
 	return lkasession;
@@ -1175,6 +1166,37 @@ lka_request_forwardfile(struct smtpd *env, struct lkasession *lkasession, char *
 	imsg_compose_event(env->sc_ievs[PROC_PARENT], IMSG_PARENT_FORWARD_OPEN, 0, 0, -1,
 	    &fwreq, sizeof(fwreq));
 	++lkasession->pending;
+}
+
+void
+lka_expansion_done(struct smtpd *env, struct lkasession *lkasession)
+{
+	struct message message;
+	struct path *path;
+
+	if (lkasession->flags & F_ERROR) {
+		lka_clear_expandtree(&lkasession->expandtree);
+		lka_clear_deliverylist(&lkasession->deliverylist);
+		imsg_compose_event(env->sc_ievs[PROC_MFA], IMSG_LKA_RCPT, 0, 0,
+		    -1, &lkasession->ss, sizeof(struct submit_status));
+	}
+	else if (TAILQ_FIRST(&lkasession->deliverylist) == NULL) {
+		queue_commit_envelopes(env, &lkasession->message);
+	}
+	else {
+		message = lkasession->message;
+
+		while ((path = TAILQ_FIRST(&lkasession->deliverylist)) != NULL) {
+			message.recipient = *path;
+			queue_submit_envelope(env, &message);
+
+			TAILQ_REMOVE(&lkasession->deliverylist, path, entry);
+			free(path);
+		}
+		queue_commit_envelopes(env, &message);
+	}
+
+	lka_session_destroy(env, lkasession);
 }
 
 SPLAY_GENERATE(lkatree, lkasession, nodes, lkasession_cmp);

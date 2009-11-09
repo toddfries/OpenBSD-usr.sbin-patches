@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.70 2009/11/03 11:10:43 jacekm Exp $	*/
+/*	$OpenBSD: runner.c,v 1.72 2009/11/08 23:08:56 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -800,6 +800,8 @@ runner_message_schedule(struct message *messagep, time_t tm)
 
 	delay = SMTPD_QUEUE_MAXINTERVAL;
 
+	// recompute path
+
 	if (messagep->type == T_MDA_MESSAGE ||
 		messagep->type == T_BOUNCE_MESSAGE) {
 		if (messagep->status & S_MESSAGE_LOCKFAILURE) {
@@ -960,7 +962,7 @@ batch_record(struct smtpd *env, struct message *messagep)
 		if (batchp == NULL)
 			fatal("batch_record: calloc");
 
-		batchp->id = queue_generate_id();
+		batchp->id = generate_uid();
 
 		(void)strlcpy(batchp->message_id, messagep->message_id,
 		    sizeof(batchp->message_id));

@@ -1,20 +1,30 @@
-Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
-+--[ RSA 1024]----+
-|          oo++oo.|
-|         .   ==..|
-|          . .. =+|
-|         .    =.+|
-|        S .  E ..|
-|         o  o o .|
-|          o    . |
-|           .     |
-|                 |
-+-----------------+
-
 ? .git
 ? .gitignore
 ? status.log
 ? up.log
 ? ppp/ppp/obj
 ? ppp/pppctl/obj
+P pcidump/pcidump.c
+P pkg_add/pkg_add
+P pkg_add/pkg_create.1
+P pkg_add/OpenBSD/Dependencies.pm
+P pkg_add/OpenBSD/Handle.pm
+P pkg_add/OpenBSD/Tracker.pm
+P pkg_add/OpenBSD/Update.pm
+P pkg_add/OpenBSD/UpdateSet.pm
 C ppp/ppp/route.c
+P smtpd/aliases.c
+P smtpd/enqueue.c
+U smtpd/expand.c
+P smtpd/forward.c
+P smtpd/lka.c
+P smtpd/makemap.c
+P smtpd/queue.c
+P smtpd/queue_shared.c
+P smtpd/runner.c
+P smtpd/smtp.c
+P smtpd/smtpd.h
+P smtpd/util.c
+P smtpd/makemap/Makefile
+P smtpd/smtpd/Makefile
+P ypserv/ypinit/ypinit.8
