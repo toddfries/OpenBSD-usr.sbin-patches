@@ -1,4 +1,4 @@
-/*	$OpenBSD: expand.c,v 1.1 2009/11/08 23:15:03 gilles Exp $	*/
+/*	$OpenBSD: expand.c,v 1.3 2009/11/09 23:49:34 gilles Exp $	*/
 
 /*
  * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
@@ -43,33 +43,56 @@ expandtree_lookup(struct expandtree *expandtree, struct expand_node *node)
 }
 
 void
-expandtree_insert(struct expandtree *expandtree, struct expand_node *node)
+expandtree_increment_node(struct expandtree *expandtree, struct expand_node *node)
 {
-	node->id = generate_uid();
-	RB_INSERT(expandtree, expandtree, node);
+	struct expand_node *p;
+
+	p = expandtree_lookup(expandtree, node);
+	if (p == NULL) {
+		p = calloc(1, sizeof(struct expand_node));
+		if (p == NULL)
+			fatal("calloc");
+		*p = *node;
+		if (RB_INSERT(expandtree, expandtree, p))
+			fatalx("expandtree_increment_node: node already exists");
+	}
+	p->refcnt++;
 }
 
 void
-expandtree_remove(struct expandtree *expandtree, struct expand_node *node)
+expandtree_decrement_node(struct expandtree *expandtree, struct expand_node *node)
+{
+	struct expand_node *p;
+
+	p = expandtree_lookup(expandtree, node);
+	if (p == NULL)
+		fatalx("expandtree_decrement_node: node doesn't exist.");
+
+	p->refcnt--;
+}
+
+void
+expandtree_remove_node(struct expandtree *expandtree, struct expand_node *node)
 {
 	struct expand_node *p;
 
 	p = expandtree_lookup(expandtree, node);
 	if (p == NULL)
 		fatalx("expandtree_remove: node doesn't exist.");
-	RB_REMOVE(expandtree, expandtree, node);
+
+	RB_REMOVE(expandtree, expandtree, p);
 }
 
 int
 expand_cmp(struct expand_node *e1, struct expand_node *e2)
 {
-	if (e1->id < e2->id)
+	if (e1->type < e2->type)
 		return -1;
 
-	if (e1->id > e2->id)
+	if (e1->type > e2->type)
 		return 1;
 
-	return 0;
+	return memcmp(&e1->u, &e2->u, sizeof(e1->u));
 }
 
 RB_GENERATE(expandtree, expand_node, entry, expand_cmp);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.c,v 1.9 2009/10/25 20:43:29 chl Exp $	*/
+/*	$OpenBSD: client.c,v 1.12 2009/11/10 14:57:03 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -19,6 +19,7 @@
 
 #include <sys/types.h>
 #include <sys/queue.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -26,6 +27,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <netdb.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,7 +68,20 @@ client_init(int fd, char *ehlo)
 
 	if ((sp = calloc(1, sizeof(*sp))) == NULL)
 		goto done;
-	if ((sp->ehlo = strdup(ehlo)) == NULL)
+	if (ehlo == NULL || *ehlo == '\0') {
+		char			 buf[NI_MAXHOST];
+		struct sockaddr_storage	 sa;
+		socklen_t		 len;
+
+		len = sizeof(sa);
+		if (getsockname(fd, (struct sockaddr *)&sa, &len))
+			goto done;
+		if (getnameinfo((struct sockaddr *)&sa, len, buf, sizeof(buf),
+		    NULL, 0, NI_NUMERICHOST))
+			goto done;
+		if (asprintf(&sp->ehlo, "[%s]", buf) == -1)
+			goto done;
+	} else if ((sp->ehlo = strdup(ehlo)) == NULL)
 		goto done;
 	if ((sp->sender = strdup("")) == NULL)
 		goto done;
@@ -615,7 +630,7 @@ client_write(struct smtp_client *sp)
 		if (sp->rcptsent == NULL)
 			goto done;
 
-		if (client_putln(sp, "RCPT TO: <%s>", sp->rcptsent->mbox) < 0)
+		if (client_putln(sp, "RCPT TO:<%s>", sp->rcptsent->mbox) < 0)
 			goto done;
 		break;
 
@@ -875,17 +890,22 @@ client_getln(struct smtp_client *sp)
 		if (sp->verbose)
 			fprintf(sp->verbose, "<<< %s\n", ln);
 
-		if (strlen(ln) == 3 || ln[3] == ' ')
+		if (strlen(ln) == 3)
 			break;
-		else if (ln[3] != '-') {
-			cause = "150 garbled multiline reply";
+		else if (strlen(ln) < 4 || (ln[3] != ' ' && ln[3] != '-')) {
+			cause = "150 garbled smtp reply";
 			goto done;
 		}
 
-		if (strcmp(ln + 4, "STARTTLS") == 0)
-			sp->exts[CLIENT_EXT_STARTTLS].have = 1;
-		if (strncmp(ln + 4, "AUTH", 4) == 0)
-			sp->exts[CLIENT_EXT_AUTH].have = 1;
+		if (sp->state == CLIENT_EHLO) {
+			if (strcmp(ln + 4, "STARTTLS") == 0)
+				sp->exts[CLIENT_EXT_STARTTLS].have = 1;
+			else if (strncmp(ln + 4, "AUTH", 4) == 0)
+				sp->exts[CLIENT_EXT_AUTH].have = 1;
+		}
+
+		if (ln[3] == ' ')
+			break;
 	}
 
 	/* validate reply code */

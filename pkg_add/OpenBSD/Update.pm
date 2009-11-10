@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.89 2009/11/08 10:46:11 espie Exp $
+# $OpenBSD: Update.pm,v 1.91 2009/11/10 11:36:56 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -13,7 +13,7 @@
 # ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 # WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-#
+
 use strict;
 use warnings;
 
@@ -59,6 +59,9 @@ sub process_handle
 	my $found;
 	my $plist;
 
+	if (!$state->{defines}->{downgrade}) {
+		push(@search, OpenBSD::Search::FilterLocation->more_recent_than($pkgname));
+	}
 	push(@search, OpenBSD::Search::FilterLocation->new(
 	    sub {
 		my $l = shift;
