@@ -468,6 +468,8 @@ struct message_storage {
 
 	enum message_flags		 flags;
 	enum message_status		 status;
+
+	struct mta_relay		*relay;
 };
 
 struct message {
@@ -787,6 +789,7 @@ enum mta_state {
 	MTA_DATA,
 	MTA_MX,
 	MTA_CONNECT,
+	MTA_PTR,
 	MTA_PROTOCOL,
 	MTA_DONE
 };
@@ -800,6 +803,7 @@ enum mta_state {
 struct mta_relay {
 	TAILQ_ENTRY(mta_relay)	 entry;
 	struct sockaddr_storage	 sa;
+	char			 fqdn[MAXHOSTNAMELEN];
 	int			 used;
 };
 
@@ -814,6 +818,7 @@ struct mta_session {
 	TAILQ_HEAD(,message)	 recipients;
 	TAILQ_HEAD(,mta_relay)	 relays;
 	char			*secret;
+	int			 fd;
 	int			 datafd;
 	struct event		 ev;
 	char			*cert;
