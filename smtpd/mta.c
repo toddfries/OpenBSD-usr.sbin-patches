@@ -690,9 +690,10 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 				break;
 			case '2':
 				m->status = S_MESSAGE_ACCEPTED;
-				log_info("%s: to=<%s@%s>, delay=%d, stat=Sent (%s)",
+				log_info("%s: to=<%s@%s>, delay=%d, relay=%s, stat=Sent (%s)",
 				    m->message_uid, m->recipient.user,
 				    m->recipient.domain, time(NULL) - m->creation,
+				    s->host,
 				    m->session_errorline + 4);
 				break;
 			default:
