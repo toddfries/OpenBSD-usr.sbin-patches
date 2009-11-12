@@ -1,8 +1,7 @@
-/*	$OpenBSD: client.c,v 1.12 2009/11/10 14:57:03 jacekm Exp $	*/
+/*	$OpenBSD: client.c,v 1.16 2009/11/11 15:36:10 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
- * Copyright (c) 2002, 2003 Niels Provos <provos@citi.umich.edu>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -438,9 +437,14 @@ client_read(struct smtp_client *sp)
 	if (0) {
 #endif
 	} else {
+		errno = 0;
 		if (buf_read(sp->w.fd, &sp->r) == -1) {
-			strlcpy(sp->ebuf, "130 buf_read error",
-			    sizeof(sp->ebuf));
+			if (errno)
+				snprintf(sp->ebuf, sizeof(sp->ebuf),
+				    "130 buf_read: %s", strerror(errno));
+			else
+				snprintf(sp->ebuf, sizeof(sp->ebuf),
+				    "130 buf_read: connection closed");
 			return (CLIENT_ERROR);
 		}
 	}
@@ -880,8 +884,6 @@ client_getln(struct smtp_client *sp)
 		if ((ln = buf_getln(&sp->r)) == NULL) {
 			if (errno)
 				cause = "150 buf_getln error";
-			else if (sp->r.wpos >= sizeof(sp->r.buf))
-				cause = "150 reply too big";
 			else
 				rv = 0;
 			goto done;
@@ -890,9 +892,20 @@ client_getln(struct smtp_client *sp)
 		if (sp->verbose)
 			fprintf(sp->verbose, "<<< %s\n", ln);
 
-		if (strlen(ln) == 3)
-			break;
-		else if (strlen(ln) < 4 || (ln[3] != ' ' && ln[3] != '-')) {
+		/* 3-char replies are invalid on their own, append space */
+		if (strlen(ln) == 3) {
+			char buf[5];
+
+			strlcpy(buf, ln, sizeof(buf));
+			strlcat(buf, " ", sizeof(buf));
+			free(ln);
+			if ((ln = strdup(buf)) == NULL) {
+				cause = "150 strdup error";
+				goto done;
+			}
+		}
+
+		if (strlen(ln) < 4 || (ln[3] != ' ' && ln[3] != '-')) {
 			cause = "150 garbled smtp reply";
 			goto done;
 		}
@@ -1022,30 +1035,27 @@ client_data_add(struct smtp_client *sp, char *buf, size_t len)
 char *
 buf_getln(struct buf_read *r)
 {
-	char	*line;
-	size_t	 i;
+	char	*buf = r->buf, *line;
+	size_t	 bufsz = r->wpos, i;
 
 	/* look for terminating newline */
-	for (i = 0; i < r->wpos; i++)
-		if (r->buf[i] == '\r' || r->buf[i] == '\n')
+	for (i = 0; i < bufsz; i++)
+		if (buf[i] == '\n')
 			break;
-	if (i == r->wpos)
+	if (i == bufsz)
 		return (NULL);
 
 	/* make a copy of the line */
-        if ((line = malloc(i + 1)) == NULL)
+	if ((line = calloc(i + 1, 1)) == NULL)
 		return (NULL);
-        memcpy(line, r->buf, i);
-        line[i] = '\0';
+	memcpy(line, buf, i);
+
+	/* handle CRLF */
+	if (i != 0 && line[i - 1] == '\r')
+		line[i - 1] = '\0';
 
 	/* drain the buffer */
-	if (i < r->wpos - 1) {
-		char fch = r->buf[i], sch = r->buf[i + 1];
-
-		if ((sch == '\r' || sch == '\n') && sch != fch)
-			i += 1;
-	}
-	memmove(r->buf, r->buf + i + 1, r->wpos - i - 1);
+	memmove(buf, buf + i + 1, bufsz - i - 1);
 	r->wpos -= i + 1;
 
 	return (line);
@@ -1059,19 +1069,21 @@ buf_getln(struct buf_read *r)
 int
 buf_read(int fd, struct buf_read *r)
 {
+	char		*buf = r->buf + r->wpos;
+	size_t		 bufsz = sizeof(r->buf) - r->wpos;
 	ssize_t		 n;
 
-	n = read(fd, r->buf + r->wpos, sizeof(r->buf) - r->wpos);
-	if (n == -1) {
+	if (bufsz == 0) {
+		errno = EMSGSIZE;
+		return (-1);
+	}
+
+	if ((n = read(fd, buf, bufsz)) == -1) {
 		if (errno == EAGAIN || errno == EINTR)
 			return (-2);
 		return (-1);
-	}
-
-	if (n == 0) {
-		errno = 0;
+	} else if (n == 0)
 		return (-1);
-	}
 
 	r->wpos += n;
 

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.15 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.23 2009/11/11 13:00:40 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -45,14 +45,98 @@ sub cleanup
 	OpenBSD::SharedItems::cleanup($self, $state);
 }
 
+package OpenBSD::Log;
+use OpenBSD::Error;
+our @ISA = qw(OpenBSD::Error);
+
+sub set_context
+{
+	&OpenBSD::Error::set_pkgname;
+}
+
+sub dump
+{
+	&OpenBSD::Error::delayed_output;
+}
+
+
 package OpenBSD::pkg_foo::State;
 use OpenBSD::Error;
-our @ISA=(qw(OpenBSD::Error));
+
+sub new
+{
+	my $class = shift;
+	my $o = bless {}, $class;
+	$o->init(@_);
+	return $o;
+}
+
+sub init
+{
+	my $self = shift;
+	$self->{l} = OpenBSD::Log->new;
+	$self->{progressmeter} = bless {}, "OpenBSD::StubProgress";
+}
+
+sub log
+{
+	my $self = shift;
+	if (@_ == 0) {
+		return $self->{l};
+	} else {
+		$self->{l}->print(@_);
+	}
+}
+
+sub print
+{
+	my $self = shift;
+	$self->progress->print(@_);
+}
+
+sub say
+{
+	my $self = shift;
+	$self->progress->print(@_, "\n");
+}
+
+sub errprint
+{
+	my $self = shift;
+	$self->progress->errprint(@_);
+}
+
+sub errsay
+{
+	my $self = shift;
+	$self->progress->errprint(@_, "\n");
+}
 
 sub progress
 {
 	my $self = shift;
 	return $self->{progressmeter};
+}
+
+sub vsystem
+{
+	my $self = shift;
+	$self->progress->clear;
+	OpenBSD::Error::VSystem($self->{very_verbose}, @_);
+}
+
+sub system
+{
+	my $self = shift;
+	$self->progress->clear;
+	OpenBSD::Error::System(@_);
+}
+
+sub unlink
+{
+	my $self = shift;
+	$self->progress->clear;
+	OpenBSD::Error::Unlink(@_);
 }
 
 # we always have a progressmeter we can print to...
@@ -62,8 +146,6 @@ sub setup_progressmeter
 	if (!$opt_x && !$self->{beverbose}) {
 		require OpenBSD::ProgressMeter;
 		$self->{progressmeter} = OpenBSD::ProgressMeter->new;
-	} else {
-		$self->{progressmeter} = bless {}, "OpenBSD::StubProgress";
 	}
 }
 
@@ -72,7 +154,7 @@ sub check_root
 	my $state = shift;
 	if ($< && !$state->{defines}->{nonroot}) {
 		if ($state->{not}) {
-			Warn "$0 should be run as root\n";
+			$state->errsay("$0 should be run as root");
 		} else {
 			Fatal "$0 must be run as root";
 		}
@@ -83,7 +165,7 @@ sub choose_location
 {
 	my ($state, $name, $list) = @_;
 	if (@$list == 0) {
-		$state->progress->print("Can't find $name\n");
+		$state->say("Can't find $name");
 		return undef;
 	} elsif (@$list == 1) {
 		return $list->[0];
@@ -98,8 +180,7 @@ sub choose_location
 		my $result = OpenBSD::Interactive::ask_list("Ambiguous: choose package for $name", 1, sort keys %h);
 		return $h{$result};
 	} else {
-		$state->progress->print("Ambiguous: $name could be ", 
-		    join(' ', keys %h), "\n");
+		$state->say("Ambiguous: $name could be ", join(' ', keys %h));
 		return undef;
 	}
 }
@@ -117,6 +198,12 @@ sub next {}
 sub set_header {}
 
 sub print
+{
+	shift;
+	print @_;
+}
+
+sub errprint
 {
 	shift;
 	print STDERR @_;
