@@ -49,8 +49,7 @@ log_init(int n_debug)
 
 	debug = n_debug;
 
-	if (!debug)
-		openlog(__progname, LOG_PID | LOG_NDELAY, LOG_MAIL);
+	openlog(__progname, LOG_PID | LOG_NDELAY, LOG_MAIL);
 
 	tzset();
 }
@@ -80,8 +79,8 @@ vlog(int pri, const char *fmt, va_list ap)
 			free(nfmt);
 		}
 		fflush(stderr);
-	} else
-		vsyslog(pri, fmt, ap);
+	}
+	vsyslog(pri, fmt, ap);
 }
 
 
