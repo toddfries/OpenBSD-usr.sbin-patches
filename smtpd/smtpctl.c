@@ -57,6 +57,7 @@ struct imsgname {
 struct imsgname imsgs[] = {
 	{ IMSG_CTL_SHUTDOWN,		"stop",			NULL },
 	{ IMSG_CONF_RELOAD,		"reload",		NULL },
+	{ IMSG_CTL_LOG_VERBOSE,		"debug",		NULL },
 	{ 0,				NULL,			NULL }
 };
 struct imsgname imsgunknown = {
@@ -91,7 +92,7 @@ main(int argc, char *argv[])
 	struct imsg		imsg;
 	int			ctl_sock;
 	int			done = 0;
-	int			n;
+	int			n, verbose = 0;
 
 	/* parse options */
 	if (strcmp(__progname, "sendmail") == 0 || strcmp(__progname, "send-mail") == 0)
@@ -190,6 +191,14 @@ connected:
 	}
 	case MONITOR:
 		/* XXX */
+		break;
+	case LOG_VERBOSE:
+		verbose = 1;
+		/* FALLTHROUGH */
+	case LOG_BRIEF:
+		imsg_compose(ibuf, IMSG_CTL_LOG_VERBOSE, 0, 0, -1, &verbose,
+		    sizeof(verbose));
+		printf("%s logging request sent.\n",(verbose)?"VERBOSE":"BRIEF");
 		break;
 	default:
 		err(1, "unknown request (%d)", res->action);

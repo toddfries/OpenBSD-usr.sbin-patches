@@ -705,6 +705,7 @@ parent_dispatch_control(int sig, short event, void *p)
 	struct imsgbuf		*ibuf;
 	struct imsg		 imsg;
 	ssize_t			 n;
+	int			 verbose;
 
 	iev = env->sc_ievs[PROC_CONTROL];
 	ibuf = &iev->ibuf;
@@ -757,6 +758,12 @@ parent_dispatch_control(int sig, short event, void *p)
 			imsg_compose_event(iev, IMSG_CONF_RELOAD, 0, 0, -1, r, sizeof(*r));
 			break;
 		}
+		case IMSG_CTL_LOG_VERBOSE:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(verbose))
+				break;
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
+			break;
 		default:
 			log_warnx("parent_dispatch_control: got imsg %d",
 			    imsg.hdr.type);

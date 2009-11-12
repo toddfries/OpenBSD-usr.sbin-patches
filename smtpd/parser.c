@@ -56,6 +56,7 @@ struct token {
 	const struct token	*next;
 };
 
+static const struct token t_log[];
 static const struct token t_main[];
 static const struct token t_show[];
 static const struct token t_pause[];
@@ -70,6 +71,7 @@ static const struct token t_main[] = {
 	{KEYWORD,	"resume",	NONE,      	t_resume},
 	{KEYWORD,	"stop",		SHUTDOWN,      	NULL},
 	{KEYWORD,	"schedule",    	SCHEDULE,      	t_schedule},
+	{KEYWORD,	"log",    	NONE,      	t_log},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -97,6 +99,12 @@ static const struct token t_resume[] = {
 static const struct token t_schedule[] = {
 	{VARIABLE,	"message id/uid",      	SCHEDULE,	NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
+};
+
+static const struct token t_log[] = {
+	{KEYWORD,	"verbose",	LOG_VERBOSE,	NULL},
+	{KEYWORD,	"brief",	LOG_BRIEF,	NULL},
+	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
 static struct parse_result	res;

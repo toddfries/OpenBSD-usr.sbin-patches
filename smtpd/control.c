@@ -276,7 +276,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 	struct ctl_conn		*c;
 	struct smtpd		*env = arg;
 	struct imsg		 imsg;
-	int			 n;
+	int			 n,verbose;
 	uid_t			 euid;
 	gid_t			 egid;
 
@@ -383,6 +383,13 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags |= SMTPD_EXITING;
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(verbose))
+				break;
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_PARENT], IMSG_CTL_LOG_VERBOSE, 0, 0, -1, &verbose, sizeof(verbose));
+			log_verbose(verbose);
 			break;
 		case IMSG_MDA_PAUSE:
 			if (euid)

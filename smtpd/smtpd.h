@@ -121,6 +121,7 @@ enum imsg_type {
 	IMSG_CTL_OK,		/* answer to smtpctl requests */
 	IMSG_CTL_FAIL,
 	IMSG_CTL_SHUTDOWN,
+	IMSG_CTL_LOG_VERBOSE,
 	IMSG_CONF_START,
 	IMSG_CONF_SSL,
 	IMSG_CONF_SSL_CERT,
@@ -813,6 +814,7 @@ int bounce_session_switch(struct smtpd *, FILE *, enum session_state *, char *,
 
 /* log.c */
 void		log_init(int);
+void		log_verbose(int);
 void		log_warn(const char *, ...)
     __attribute__ ((format (printf, 1, 2)));
 void		log_warnx(const char *, ...)

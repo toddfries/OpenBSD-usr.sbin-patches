@@ -31,6 +31,8 @@ enum actions {
 	RESUME_MDA,
 	RESUME_MTA,
 	RESUME_SMTP,
+	LOG_VERBOSE,
+	LOG_BRIEF,
 };
 
 struct parse_result {
