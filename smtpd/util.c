@@ -101,7 +101,7 @@ hostname_match(char *hostname, char *pattern)
 }
 
 int
-recipient_to_path(struct path *path, char *recipient)
+recipient_to_mailaddr(struct mailaddr *mailaddr, char *recipient)
 {
 	char *username;
 	char *hostname;
@@ -110,8 +110,8 @@ recipient_to_path(struct path *path, char *recipient)
 	hostname = strrchr(username, '@');
 
 	if (username[0] == '\0') {
-		*path->user = '\0';
-		*path->domain = '\0';
+		*mailaddr->user = '\0';
+		*mailaddr->domain = '\0';
 		return 1;
 	}
 
@@ -123,12 +123,12 @@ recipient_to_path(struct path *path, char *recipient)
 		*hostname++ = '\0';
 	}
 
-	if (strlcpy(path->user, username, sizeof(path->user))
-	    >= sizeof(path->user))
+	if (strlcpy(mailaddr->user, username, sizeof(mailaddr->user))
+	    >= sizeof(mailaddr->user))
 		return 0;
 
-	if (strlcpy(path->domain, hostname, sizeof(path->domain))
-	    >= sizeof(path->domain))
+	if (strlcpy(mailaddr->domain, hostname, sizeof(mailaddr->domain))
+	    >= sizeof(mailaddr->domain))
 		return 0;
 
 	return 1;
@@ -376,9 +376,9 @@ message_set_errormsg(struct message *messagep, char *fmt, ...)
 
 	va_start(ap, fmt);
 
-	ret = vsnprintf(messagep->session_errorline, MAX_LINE_SIZE, fmt, ap);
+	ret = vsnprintf(messagep->storage.session.errorline, MAX_LINE_SIZE, fmt, ap);
 	if (ret >= MAX_LINE_SIZE)
-		strlcpy(messagep->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
+		strlcpy(messagep->storage.session.errorline + (MAX_LINE_SIZE - 4), "...", 4);
 
 	/* this should not happen */
 	if (ret == -1)
@@ -390,7 +390,7 @@ message_set_errormsg(struct message *messagep, char *fmt, ...)
 char *
 message_get_errormsg(struct message *messagep)
 {
-	return messagep->session_errorline;
+	return messagep->storage.session.errorline;
 }
 
 void
@@ -419,18 +419,18 @@ sa_set_port(struct sockaddr *sa, int port)
 	freeaddrinfo(res);
 }
 
-struct path *
-path_dup(struct path *path)
+struct message *
+message_dup(struct message *message)
 {
-	struct path *pathp;
+	struct message *messagep;
 
-	pathp = calloc(sizeof(struct path), 1);
-	if (pathp == NULL)
+	messagep = calloc(sizeof(struct message), 1);
+	if (messagep == NULL)
 		fatal("calloc");
 
-	*pathp = *path;
+	*messagep = *message;
 
-	return pathp;
+	return messagep;
 }
 
 u_int64_t
@@ -449,3 +449,4 @@ generate_uid(void)
 
 	return (id);
 }
+

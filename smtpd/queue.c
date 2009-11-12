@@ -165,7 +165,7 @@ queue_dispatch_smtp(int sig, short event, void *p)
 			ss.code = 250;
 			bzero(ss.u.msgid, MAX_ID_SIZE);
 
-			if (messagep->flags & F_MESSAGE_ENQUEUED)
+			if (messagep->storage.flags & F_MESSAGE_ENQUEUED)
 				f = enqueue_create_layout;
 			else
 				f = queue_create_incoming_layout;
@@ -183,12 +183,12 @@ queue_dispatch_smtp(int sig, short event, void *p)
 
 			IMSG_SIZE_CHECK(messagep);
 
-			if (messagep->flags & F_MESSAGE_ENQUEUED)
+			if (messagep->storage.flags & F_MESSAGE_ENQUEUED)
 				f = enqueue_delete_message;
 			else
 				f = queue_delete_incoming_message;
 
-			f(messagep->message_id);
+			f(messagep->storage.message_id);
 
 			break;
 		}
@@ -202,7 +202,7 @@ queue_dispatch_smtp(int sig, short event, void *p)
 
 			ss.id = messagep->session_id;
 
-			if (messagep->flags & F_MESSAGE_ENQUEUED) {
+			if (messagep->storage.flags & F_MESSAGE_ENQUEUED) {
 				f = enqueue_commit_message;
 				counter = &env->stats->queue.inserts_local;
 			} else {
@@ -230,7 +230,7 @@ queue_dispatch_smtp(int sig, short event, void *p)
 
 			ss.id = messagep->session_id;
 
-			if (messagep->flags & F_MESSAGE_ENQUEUED)
+			if (messagep->storage.flags & F_MESSAGE_ENQUEUED)
 				f = enqueue_open_messagefile;
 			else
 				f = queue_open_incoming_message_file;
@@ -413,14 +413,13 @@ queue_dispatch_lka(int sig, short event, void *p)
 			messagep->id = generate_uid();
 			ss.id = messagep->session_id;
 
-			if (IS_MAILBOX(messagep->recipient) ||
-			    IS_EXT(messagep->recipient))
-				messagep->type = T_MDA_MESSAGE;
+			if (IS_MAILBOX(*messagep) || IS_EXT(*messagep))
+				messagep->storage.type = T_MDA_MESSAGE;
 			else
-				messagep->type = T_MTA_MESSAGE;
+				messagep->storage.type = T_MTA_MESSAGE;
 
 			/* Write to disk */
-			if (messagep->flags & F_MESSAGE_ENQUEUED)
+			if (messagep->storage.flags & F_MESSAGE_ENQUEUED)
 				f = enqueue_record_envelope;
 			else
 				f = queue_record_incoming_envelope;

@@ -68,12 +68,12 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 		goto fail;
 
 	/* assign recipient */
-	if (client_rcpt(cc->sp, "%s@%s", messagep->sender.user,
-	    messagep->sender.domain) < 0)
+	if (client_rcpt(cc->sp, "%s@%s", messagep->storage.sender.user,
+	    messagep->storage.sender.domain) < 0)
 		goto fail;
 
 	/* Construct an appropriate reason line. */
-	reason = messagep->session_errorline;
+	reason = messagep->storage.session.errorline;
 	if (strlen(reason) > 4 && (*reason == '1' || *reason == '6'))
 		reason += 4;
 	
@@ -97,14 +97,14 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	    "Below is a copy of the original message:\n"
 	    "\n",
 	    env->sc_hostname,
-	    messagep->sender.user, messagep->sender.domain,
+	    messagep->storage.sender.user, messagep->storage.sender.domain,
 	    time_to_text(time(NULL)),
-	    messagep->recipient.user, messagep->recipient.domain,
+	    messagep->storage.recipient.user, messagep->storage.recipient.domain,
 	    reason) < 0)
 		goto fail;
 
 	/* append original message */
-	if ((msgfd = queue_open_message_file(messagep->message_id)) == -1)
+	if ((msgfd = queue_open_message_file(messagep->storage.message_id)) == -1)
 		goto fail;
 	if (client_data_fd(cc->sp, msgfd) < 0)
 		goto fail;
@@ -135,7 +135,7 @@ bounce_event(int fd, short event, void *p)
 
 	if (event & EV_TIMEOUT) {
 		message_set_errormsg(&cc->m, "150 timeout");
-		cc->m.status = S_MESSAGE_TEMPFAILURE;
+		cc->m.storage.status = S_MESSAGE_TEMPFAILURE;
 		queue_message_update(&cc->m);
 		client_close(cc->sp);
 		free(cc);
@@ -172,9 +172,9 @@ bounce_event(int fd, short event, void *p)
 		queue_remove_envelope(&cc->m);
 	else {
 		if (*ep == '5')
-			cc->m.status = S_MESSAGE_PERMFAILURE;
+			cc->m.storage.status = S_MESSAGE_PERMFAILURE;
 		else
-			cc->m.status = S_MESSAGE_TEMPFAILURE;
+			cc->m.storage.status = S_MESSAGE_TEMPFAILURE;
 		message_set_errormsg(&cc->m, "%s", ep);
 		queue_message_update(&cc->m);
 	}

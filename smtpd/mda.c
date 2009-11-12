@@ -159,7 +159,7 @@ mda_dispatch_parent(int sig, short event, void *p)
 
 			/* ... unless it is maildir, in which case we need to
 			 * "trigger EOF" differently */
-			if (b->message.recipient.rule.r_action == A_MAILDIR)
+			if (b->message.rule.r_action == A_MAILDIR)
 				imsg_compose_event(env->sc_ievs[PROC_PARENT],
 				    IMSG_PARENT_MAILDIR_RENAME, 0, 0, -1, b,
 				    sizeof(*b));
@@ -175,10 +175,10 @@ mda_dispatch_parent(int sig, short event, void *p)
 
 			IMSG_SIZE_CHECK(b);
 
-			status = b->message.status;
+			status = b->message.storage.status;
 			if ((b = batch_by_id(env, b->id)) == NULL)
 				fatalx("mda: internal inconsistency");
-			b->message.status = status;
+			b->message.storage.status = status;
 
 			mda_done(env, b);
 			break;
@@ -300,12 +300,12 @@ mda_dispatch_runner(int sig, short event, void *p)
 			/* runner submits the message to deliver */
 			if ((b = batch_by_id(env, append->batch_id)) == NULL)
 				fatalx("mda: internal inconsistency");
-			if (b->message.message_id[0])
+			if (b->message.storage.message_id[0])
 				fatal("mda: runner submitted extra msg");
 			b->message = *append;
 
 			/* safe default */
-			b->message.status = S_MESSAGE_TEMPFAILURE;
+			b->message.storage.status = S_MESSAGE_TEMPFAILURE;
 			break;
 		}
 
@@ -428,17 +428,17 @@ mda_store(struct batch *b)
  
 	/* add Return-Path to preserve envelope sender */
 	/* XXX: remove user provided Return-Path, if any */
-	if (b->message.sender.user[0] &&
-	    b->message.sender.domain[0]) {
+	if (b->message.storage.sender.user[0] &&
+	    b->message.storage.sender.domain[0]) {
 		fprintf(dst, "Return-Path: %s@%s\n",
-		    b->message.sender.user,
-		    b->message.sender.domain);
+		    b->message.storage.sender.user,
+		    b->message.storage.sender.domain);
 	}
 	 
 	/* add Delivered-To to help loop detection */
 	fprintf(dst, "Delivered-To: %s@%s\n",
-	    b->message.session_rcpt.user,
-	    b->message.session_rcpt.domain);
+	    b->message.storage.session.recipient.user,
+	    b->message.storage.session.recipient.domain);
 
 	/* write message data */
 	/* XXX: it blocks in !mdir case */
@@ -461,7 +461,7 @@ mda_done(struct smtpd *env, struct batch *b)
 		 * Deinit parent first.
 		 */
 
-		if (b->message.recipient.rule.r_action == A_MAILDIR) {
+		if (b->message.rule.r_action == A_MAILDIR) {
 			/*
 			 * In case of maildir, deiniting parent's state consists
 			 * of removing the file in tmp.
@@ -497,16 +497,16 @@ mda_done(struct smtpd *env, struct batch *b)
 		    &b->message, sizeof(b->message));
 
 		/* log status */
-		if (b->message.status & S_MESSAGE_PERMFAILURE)
+		if (b->message.storage.status & S_MESSAGE_PERMFAILURE)
 			log_debug("mda: permanent failure");
-		else if (b->message.status & S_MESSAGE_TEMPFAILURE)
+		else if (b->message.storage.status & S_MESSAGE_TEMPFAILURE)
 			log_debug("mda: temporary failure");
 		else
 			log_info("%s: to=<%s@%s>, delay=%d, stat=Sent",
-			    b->message.message_uid,
-			    b->message.recipient.user,
-			    b->message.recipient.domain,
-			    time(NULL) - b->message.creation);
+			    b->message.storage.message_uid,
+			    b->message.storage.recipient.user,
+			    b->message.storage.recipient.domain,
+			    time(NULL) - b->message.storage.creation);
 
 		/* deallocate resources */
 		SPLAY_REMOVE(batchtree, &env->batch_queue, b);

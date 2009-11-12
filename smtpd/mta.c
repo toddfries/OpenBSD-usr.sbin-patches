@@ -263,8 +263,8 @@ mta_dispatch_runner(int sig, short event, void *p)
 			if ((m = malloc(sizeof(*m))) == NULL)
 				fatal(NULL);
 			*m = *append;
-			strlcpy(m->session_errorline, "000 init",
-			    sizeof(m->session_errorline));
+			strlcpy(m->storage.session.errorline, "000 init",
+			    sizeof(m->storage.session.errorline));
  			TAILQ_INSERT_TAIL(&s->recipients, m, entry);
 			break;
 		}
@@ -651,19 +651,19 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 
 		/* set envelope sender */
 		m = TAILQ_FIRST(&s->recipients);
-		if (m->sender.user[0] && m->sender.domain[0])
+		if (m->storage.sender.user[0] && m->storage.sender.domain[0])
 			if (client_sender(s->smtp_state, "%s@%s",
-			    m->sender.user, m->sender.domain) < 0)
+			    m->storage.sender.user, m->storage.sender.domain) < 0)
 				fatal("mta: client_sender failed");
 			
 		/* set envelope recipients */
 		TAILQ_FOREACH(m, &s->recipients, entry) {
-			if (m->session_errorline[0] == '2' ||
-			    m->session_errorline[0] == '5' ||
-			    m->session_errorline[0] == '6')
+			if (m->storage.session.errorline[0] == '2' ||
+			    m->storage.session.errorline[0] == '5' ||
+			    m->storage.session.errorline[0] == '6')
 				continue;
-			if (client_rcpt(s->smtp_state, "%s@%s", m->recipient.user,
-			    m->recipient.domain) < 0)
+			if (client_rcpt(s->smtp_state, "%s@%s", m->storage.recipient.user,
+			    m->storage.recipient.domain) < 0)
 				fatal("mta: client_rcpt failed");
 			client_udata_set(s->smtp_state, m);
 		}
@@ -683,20 +683,20 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 
 		/* update queue status */
 		while ((m = TAILQ_FIRST(&s->recipients))) {
-			switch (m->session_errorline[0]) {
+			switch (m->storage.session.errorline[0]) {
 			case '6':
 			case '5':
-				m->status = S_MESSAGE_PERMFAILURE;
+				m->storage.status = S_MESSAGE_PERMFAILURE;
 				break;
 			case '2':
-				m->status = S_MESSAGE_ACCEPTED;
+				m->storage.status = S_MESSAGE_ACCEPTED;
 				log_info("%s: to=<%s@%s>, delay=%d, stat=Sent (%s)",
-				    m->message_uid, m->recipient.user,
-				    m->recipient.domain, time(NULL) - m->creation,
-				    m->session_errorline + 4);
+				    m->storage.message_uid, m->storage.recipient.user,
+				    m->storage.recipient.domain, time(NULL) - m->storage.creation,
+				    m->storage.session.errorline + 4);
 				break;
 			default:
-				m->status = S_MESSAGE_TEMPFAILURE;
+				m->storage.status = S_MESSAGE_TEMPFAILURE;
 				break;
 			}
 			imsg_compose_event(s->env->sc_ievs[PROC_QUEUE],
@@ -877,13 +877,13 @@ mta_status_message(struct message *m, char *status)
 	 * higher status (eg. 5yz is of higher status than 4yz), so check
 	 * this before deciding to overwrite existing status with a new one.
 	 */
-	if (strncmp(m->session_errorline, status, 3) > 0)
+	if (strncmp(m->storage.session.errorline, status, 3) > 0)
 		return;
 
 	/* change status */
-	log_debug("mta: new status for %s@%s: %s", m->recipient.user,
-	    m->recipient.domain, status);
-	strlcpy(m->session_errorline, status, sizeof(m->session_errorline));
+	log_debug("mta: new status for %s@%s: %s", m->storage.recipient.user,
+	    m->storage.recipient.domain, status);
+	strlcpy(m->storage.session.errorline, status, sizeof(m->storage.session.errorline));
 }
 
 void
@@ -900,7 +900,7 @@ mta_request_datafd(struct mta_session *s)
 
 	b.id = s->id;
 	m = TAILQ_FIRST(&s->recipients);
-	strlcpy(b.message_id, m->message_id, sizeof(b.message_id));
+	strlcpy(b.message_id, m->storage.message_id, sizeof(b.message_id));
 	imsg_compose_event(s->env->sc_ievs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FD,
 	    0, 0, -1, &b, sizeof(b));
 }
@@ -912,9 +912,9 @@ mta_todo(struct mta_session *s)
 	size_t		 n = 0;
 
 	TAILQ_FOREACH(m, &s->recipients, entry)
-		if (m->session_errorline[0] != '2' &&
-		    m->session_errorline[0] != '5' &&
-		    m->session_errorline[0] != '6')
+		if (m->storage.session.errorline[0] != '2' &&
+		    m->storage.session.errorline[0] != '5' &&
+		    m->storage.session.errorline[0] != '6')
 			n++;
 	return (n);
 }

@@ -423,8 +423,9 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 		switch (imsg.hdr.type) {
 		case IMSG_PARENT_MAILBOX_OPEN: {
 			struct batch *batchp = imsg.data;
-			struct path *path;
+			struct mailaddr mailaddr;
 			struct passwd *pw;
+			struct message *message;
 			char *pw_name;
 			char *file;
 			u_int8_t i;
@@ -433,48 +434,51 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 				enum action_type action;
 				int (*handler)(char *, struct passwd *, struct batch *);
 			} action_hdl_table[] = {
-				{ A_MBOX,	parent_mailbox_open },
-				{ A_MAILDIR,	parent_maildir_open },
-				{ A_EXT,	parent_external_mda },
-				{ A_FILENAME,	parent_filename_open }
+				{ T_DELIVERY_MBOX,	parent_mailbox_open },
+				{ T_DELIVERY_MAILDIR,	parent_maildir_open },
+				{ T_DELIVERY_MDA,	parent_external_mda },
+				{ T_DELIVERY_FILENAME,	parent_filename_open }
 			};
 
 			IMSG_SIZE_CHECK(batchp);
 
+			message = &batchp->message;
+
 			batchp->env = env;
-			path = &batchp->message.recipient;
-			if (batchp->type & T_BOUNCE_BATCH) {
-				path = &batchp->message.sender;
-			}
-			
+			mailaddr = message->storage.recipient;
+			if (batchp->type & T_BOUNCE_BATCH)
+				mailaddr = message->storage.sender;
+
 			for (i = 0; i < nitems(action_hdl_table); ++i)
-				if (action_hdl_table[i].action == path->rule.r_action)
+				if (action_hdl_table[i].action ==
+				    message->storage.delivery.type)
 					break;
+
 			if (i == nitems(action_hdl_table))
 				fatalx("parent_dispatch_mda: unknown action");
 
-			file = path->rule.r_value.path;
+			if (message->storage.delivery.type == T_DELIVERY_FILENAME)
+				file = message->storage.delivery.u.pathname;
+			else if (message->storage.delivery.type == T_DELIVERY_MDA)
+				file = message->storage.delivery.u.mda;
 
-			if (path->rule.r_action == A_FILENAME) {
-				file = path->u.filename;
-				pw_name = SMTPD_USER;
-			}
-			else if (path->rule.r_user != NULL)
-				pw_name = path->rule.r_user;
-			else
-				pw_name = path->pw_name;
+			pw_name = SMTPD_USER;
+			if (message->rule.r_user != NULL)
+				pw_name = message->rule.r_user;
+			else if (message->storage.delivery.pw_name[0] != '\0')
+				pw_name = message->storage.delivery.pw_name;
 
 			errno = 0;
 			pw = getpwnam(pw_name);
 			if (pw == NULL) {
 				if (errno) {
 					log_warn("%s: getpwnam: %s",
-					    batchp->message.message_id,
+					    batchp->message.storage.message_id,
 					    pw_name);
 					parent_mda_tempfail(env, batchp);
 				} else {
 					log_warnx("%s: getpwnam: %s: user does not exist",
-					    batchp->message.message_id,
+					    batchp->message.storage.message_id,
 					    pw_name);
 					parent_mda_permfail(env, batchp);
 				}
@@ -491,7 +495,7 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 
 			if (fd == -1) {
 				log_warnx("%s: could not init delivery for %s",
-				     batchp->message.message_id, pw_name);
+				     batchp->message.storage.message_id, pw_name);
 				parent_mda_tempfail(env, batchp);
 			} else
 				imsg_compose_event(iev,
@@ -515,34 +519,35 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 		case IMSG_PARENT_MAILDIR_RENAME: {
 			char		 tmp[MAXPATHLEN], new[MAXPATHLEN];
 			struct batch	*batchp = imsg.data;
-			struct path	*path;
+			struct message	*message;
+			struct mailaddr	*mailaddr;
 			struct passwd	*pw;
 			int		 ret;
 			char		*pw_name;
 
 			IMSG_SIZE_CHECK(batchp);
 
-			path = &batchp->message.recipient;
-			if (batchp->type & T_BOUNCE_BATCH) {
-				path = &batchp->message.sender;
-			}
+			mailaddr = &batchp->message.storage.recipient;
+			if (batchp->type & T_BOUNCE_BATCH)
+				mailaddr = &batchp->message.storage.sender;
 
-			if (path->rule.r_user != NULL)
-				pw_name = path->rule.r_user;
+			message = &batchp->message; 
+			if (message->rule.r_user != NULL)
+				pw_name = message->rule.r_user;
 			else
-				pw_name = path->pw_name;
+				pw_name = message->storage.delivery.pw_name;
 
 			errno = 0;
 			pw = getpwnam(pw_name);
 			if (pw == NULL) {
 				if (errno) {
 					log_warn("%s: getpwnam: %s",
-					    batchp->message.message_id,
+					    batchp->message.storage.message_id,
 					    pw_name);
 					parent_mda_tempfail(env, batchp);
 				} else {
 					log_warnx("%s: getpwnam: %s: user does not exist",
-					    batchp->message.message_id,
+					    batchp->message.storage.message_id,
 					    pw_name);
 					parent_mda_permfail(env, batchp);
 				}
@@ -550,10 +555,10 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 			}
 
 			if (! bsnprintf(tmp, sizeof(tmp), "%s/tmp/%s",
-				path->rule.r_value.path, batchp->message.message_uid))
+				message->storage.delivery.u.pathname, batchp->message.storage.message_uid))
 				fatal("parent_dispatch_mda: snprintf");
 			if (! bsnprintf(new, sizeof(new), "%s/new/%s",
-				path->rule.r_value.path, batchp->message.message_uid))
+				message->storage.delivery.u.pathname, batchp->message.storage.message_uid))
 				fatal("parent_dispatch_mda: snprintf");
 
 			if (seteuid(pw->pw_uid) == -1)
@@ -570,7 +575,7 @@ parent_dispatch_mda(int imsgfd, short event, void *p)
 
 			if (ret < 0) {
 				log_warn("%s: %s: cannot rename to the 'new' directory",
-				    batchp->message.message_id, tmp);
+				    batchp->message.storage.message_id, tmp);
 				parent_mda_tempfail(env, batchp);
 				unlink(tmp);
 			} else
@@ -1238,7 +1243,7 @@ parent_open_message_file(struct batch *batchp)
 	struct message *messagep;
 
 	messagep = &batchp->message;
-	hval = queue_hash(messagep->message_id);
+	hval = queue_hash(messagep->storage.message_id);
 
 	if (! bsnprintf(pathname, sizeof(pathname), "%s%s/%d/%s/message",
 		PATH_SPOOL, PATH_QUEUE, hval, batchp->message_id))
@@ -1258,8 +1263,8 @@ parent_mailbox_open(char *path, struct passwd *pw, struct batch *batchp)
 
 	/* This can never happen, but better safe than sorry. */
 	if (! bsnprintf(sender, MAX_PATH_SIZE, "%s@%s",
-		batchp->message.sender.user,
-		batchp->message.sender.domain))
+		batchp->message.storage.sender.user,
+		batchp->message.storage.sender.domain))
 		fatal("parent_mailbox_open: bogus email length");
 
 	log_debug("executing mail.local");
@@ -1334,7 +1339,7 @@ parent_maildir_open(char *path, struct passwd *pw, struct batch *batchp)
 		return -1;
 
 	if (! bsnprintf(tmp, sizeof(tmp), "%s/tmp/%s", path,
-		batchp->message.message_uid))
+		batchp->message.storage.message_uid))
 		return -1;
 
 	return open(tmp, mode, 0600);
@@ -1551,7 +1556,7 @@ lockfail:
 	if (fd != -1)
 		close(fd);
 
-	batchp->message.status |= S_MESSAGE_LOCKFAILURE;
+	batchp->message.storage.status |= S_MESSAGE_LOCKFAILURE;
 	return -1;
 }
 
@@ -1613,7 +1618,7 @@ child_cmp(struct child *c1, struct child *c2)
 void
 parent_mda_permfail(struct smtpd *env, struct batch *b)
 {
-	b->message.status |= S_MESSAGE_PERMFAILURE;
+	b->message.storage.status |= S_MESSAGE_PERMFAILURE;
 	imsg_compose_event(env->sc_ievs[PROC_MDA], IMSG_MDA_FINALIZE,
 	    0, 0, -1, b, sizeof(*b));
 }
@@ -1628,7 +1633,7 @@ parent_mda_tempfail(struct smtpd *env, struct batch *b)
 void
 parent_mda_success(struct smtpd *env, struct batch *b)
 {
-	b->message.status &= ~S_MESSAGE_TEMPFAILURE;
+	b->message.storage.status &= ~S_MESSAGE_TEMPFAILURE;
 	imsg_compose_event(env->sc_ievs[PROC_MDA], IMSG_MDA_FINALIZE,
 	    0, 0, -1, b, sizeof(*b));
 }

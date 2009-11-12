@@ -395,6 +395,25 @@ runner_dispatch_lka(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_LKA_RULEMATCH: {
+			struct message *message;
+			struct batch *batchp;
+
+			message = calloc(1, sizeof (struct message));
+			if (message == NULL)
+				fatal("runner_dispatch_lka: calloc");
+			*message = *(struct message *)imsg.data;
+
+			message->batch_id = 0;
+			batchp = batch_lookup(env, message);
+			if (batchp != NULL)
+				message->batch_id = batchp->id;
+
+			batchp = batch_record(env, message);
+			if (message->batch_id == 0)
+				message->batch_id = batchp->id;
+			break;
+		}
 		default:
 			log_warnx("runner_dispatch_lka: got imsg %d",
 			    imsg.hdr.type);
@@ -446,7 +465,7 @@ runner_dispatch_smtp(int sig, short event, void *p)
 			IMSG_SIZE_CHECK(m);
 
 			if (imsg.fd < 0 || ! bounce_session(env, imsg.fd, m)) {
-				m->status = S_MESSAGE_TEMPFAILURE;
+				m->storage.status = S_MESSAGE_TEMPFAILURE;
 				queue_message_update(m);
 			}
 			break;
@@ -629,11 +648,11 @@ runner_process_queue(struct smtpd *env)
 		if (! queue_load_envelope(&message, basename(path)))
 			continue;
 
-		if (message.type & T_MDA_MESSAGE)
+		if (message.storage.type & T_MDA_MESSAGE)
 			if (env->sc_opts & SMTPD_MDA_PAUSED)
 				continue;
 
-		if (message.type & T_MTA_MESSAGE)
+		if (message.storage.type & T_MTA_MESSAGE)
 			if (env->sc_opts & SMTPD_MTA_PAUSED)
 				continue;
 
@@ -647,8 +666,8 @@ runner_process_queue(struct smtpd *env)
 			continue;
 		}
 
-		message.flags |= F_MESSAGE_SCHEDULED;
-		message.flags &= ~F_MESSAGE_FORCESCHEDULE;
+		message.storage.flags |= F_MESSAGE_SCHEDULED;
+		message.storage.flags &= ~F_MESSAGE_FORCESCHEDULE;
 		queue_update_envelope(&message);
 
 		if (! bsnprintf(rqpath, sizeof(rqpath), "%s/%s", PATH_RUNQUEUE,
@@ -673,8 +692,6 @@ runner_process_runqueue(struct smtpd *env)
 	char		 path[MAXPATHLEN];
 	struct message	 message;
 	time_t		 tm;
-	struct batch	*batchp;
-	struct message	*messagep;
 	struct qwalk	*q;
 
 	tm = time(NULL);
@@ -684,32 +701,42 @@ runner_process_runqueue(struct smtpd *env)
 	while (qwalk(q, path)) {
 		unlink(path);
 
+		bzero(&message, sizeof(struct message));
 		if (! queue_load_envelope(&message, basename(path)))
 			continue;
 
-		if (message.flags & F_MESSAGE_PROCESSING)
+		if (message.storage.flags & F_MESSAGE_PROCESSING)
 			continue;
 
-		message.lasttry = tm;
-		message.flags &= ~F_MESSAGE_SCHEDULED;
-		message.flags |= F_MESSAGE_PROCESSING;
+		message.storage.lasttry = tm;
+		message.storage.flags &= ~F_MESSAGE_SCHEDULED;
+		message.storage.flags |= F_MESSAGE_PROCESSING;
 
 		if (! queue_update_envelope(&message))
 			continue;
 
-		messagep = calloc(1, sizeof (struct message));
-		if (messagep == NULL)
-			fatal("runner_process_runqueue: calloc");
-		*messagep = message;
+		if (message.storage.type == T_MTA_BATCH) {
+			imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RULEMATCH,
+			    0, 0, -1, &message, sizeof (struct message));
+		}
+		else {
+			struct message *messagep;
+			struct batch *batchp;
 
-		messagep->batch_id = 0;
-		batchp = batch_lookup(env, messagep);
-		if (batchp != NULL)
-			messagep->batch_id = batchp->id;
+			messagep = calloc(1, sizeof (struct message));
+			if (messagep == NULL)
+				fatal("runner_dispatch_lka: calloc");
+			*messagep = message;
 
-		batchp = batch_record(env, messagep);
-		if (messagep->batch_id == 0)
-			messagep->batch_id = batchp->id;
+			messagep->batch_id = 0;
+			batchp = batch_lookup(env, messagep);
+			if (batchp != NULL)
+				messagep->batch_id = batchp->id;
+
+			batchp = batch_record(env, messagep);
+			if (messagep->batch_id == 0)
+				messagep->batch_id = batchp->id;
+		}
 	}
 
 	qwalk_close(q);
@@ -780,14 +807,14 @@ runner_message_schedule(struct message *messagep, time_t tm)
 {
 	time_t delay;
 
-	if (messagep->flags & (F_MESSAGE_SCHEDULED|F_MESSAGE_PROCESSING))
+	if (messagep->storage.flags & (F_MESSAGE_SCHEDULED|F_MESSAGE_PROCESSING))
 		return 0;
 
-	if (messagep->flags & F_MESSAGE_FORCESCHEDULE)
+	if (messagep->storage.flags & F_MESSAGE_FORCESCHEDULE)
 		return 1;
 
 	/* Batch has been in the queue for too long and expired */
-	if (tm - messagep->creation >= SMTPD_QUEUE_EXPIRY) {
+	if (tm - messagep->storage.creation >= SMTPD_QUEUE_EXPIRY) {
 		message_set_errormsg(messagep, "message expired after sitting in queue for %d days",
 			SMTPD_QUEUE_EXPIRY / 60 / 60 / 24);
 		bounce_record_message(messagep);
@@ -795,40 +822,40 @@ runner_message_schedule(struct message *messagep, time_t tm)
 		return 0;
 	}
 
-	if (messagep->lasttry == 0)
+	if (messagep->storage.lasttry == 0)
 		return 1;
 
 	delay = SMTPD_QUEUE_MAXINTERVAL;
 
 	// recompute path
 
-	if (messagep->type == T_MDA_MESSAGE ||
-		messagep->type == T_BOUNCE_MESSAGE) {
-		if (messagep->status & S_MESSAGE_LOCKFAILURE) {
-			if (messagep->retry < 128)
+	if (messagep->storage.type == T_MDA_MESSAGE ||
+		messagep->storage.type == T_BOUNCE_MESSAGE) {
+		if (messagep->storage.status & S_MESSAGE_LOCKFAILURE) {
+			if (messagep->storage.retry < 128)
 				return 1;
-			delay = (messagep->retry * 60) + arc4random_uniform(60);
+			delay = (messagep->storage.retry * 60) + arc4random_uniform(60);
 		}
 		else {
-			if (messagep->retry < 5)
+			if (messagep->storage.retry < 5)
 				return 1;
 			
-			if (messagep->retry < 15)
-				delay = (messagep->retry * 60) + arc4random_uniform(60);
+			if (messagep->storage.retry < 15)
+				delay = (messagep->storage.retry * 60) + arc4random_uniform(60);
 		}
 	}
 
-	if (messagep->type == T_MTA_MESSAGE) {
-		if (messagep->retry < 3)
+	if (messagep->storage.type == T_MTA_MESSAGE) {
+		if (messagep->storage.retry < 3)
 			delay = SMTPD_QUEUE_INTERVAL;
-		else if (messagep->retry <= 7) {
-			delay = SMTPD_QUEUE_INTERVAL * (1 << (messagep->retry - 3));
+		else if (messagep->storage.retry <= 7) {
+			delay = SMTPD_QUEUE_INTERVAL * (1 << (messagep->storage.retry - 3));
 			if (delay > SMTPD_QUEUE_MAXINTERVAL)
 				delay = SMTPD_QUEUE_MAXINTERVAL;
 		}
 	}
 
-	if (tm >= messagep->lasttry + delay)
+	if (tm >= messagep->storage.lasttry + delay)
 		return 1;
 
 	return 0;
@@ -842,10 +869,10 @@ runner_force_envelope_schedule(char *mid)
 	if (! queue_load_envelope(&message, mid))
 		return 0;
 
-	if (! message.flags & (F_MESSAGE_PROCESSING|F_MESSAGE_SCHEDULED))
+	if (! message.storage.flags & (F_MESSAGE_PROCESSING|F_MESSAGE_SCHEDULED))
 		return 1;
 
-	message.flags |= F_MESSAGE_FORCESCHEDULE;
+	message.storage.flags |= F_MESSAGE_FORCESCHEDULE;
 
 	if (! queue_update_envelope(&message))
 		return 0;
@@ -949,7 +976,6 @@ struct batch *
 batch_record(struct smtpd *env, struct message *messagep)
 {
 	struct batch *batchp;
-	struct path *path;
 
 	batchp = NULL;
 	if (messagep->batch_id != 0) {
@@ -964,31 +990,16 @@ batch_record(struct smtpd *env, struct message *messagep)
 
 		batchp->id = generate_uid();
 
-		(void)strlcpy(batchp->message_id, messagep->message_id,
+		(void)strlcpy(batchp->message_id, messagep->storage.message_id,
 		    sizeof(batchp->message_id));
 		TAILQ_INIT(&batchp->messages);
 		SPLAY_INSERT(batchtree, &env->batch_queue, batchp);
 
-		if (messagep->type & T_BOUNCE_MESSAGE) {
-			batchp->type = T_BOUNCE_BATCH;
-			path = &messagep->sender;
-		}
-		else {
-			path = &messagep->recipient;
-		}
-		batchp->rule = path->rule;
+		batchp->type = messagep->storage.type;
+		batchp->rule = messagep->rule;
 
-		(void)strlcpy(batchp->hostname, path->domain,
+		(void)strlcpy(batchp->hostname, messagep->storage.recipient.domain,
 		    sizeof(batchp->hostname));
-
-		if (batchp->type != T_BOUNCE_BATCH) {
-			if (IS_MAILBOX(*path) || IS_EXT(*path)) {
-				batchp->type = T_MDA_BATCH;
-			}
-			else {
-				batchp->type = T_MTA_BATCH;
-			}
-		}
 	}
 
 	TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
@@ -1005,7 +1016,8 @@ batch_lookup(struct smtpd *env, struct message *message)
 	/* We only support delivery of one message at a time, in MDA
 	 * and bounces messages.
 	 */
-	if (message->type == T_BOUNCE_MESSAGE || message->type == T_MDA_MESSAGE)
+	if (message->storage.type == T_BOUNCE_MESSAGE ||
+	    message->storage.type == T_MDA_MESSAGE)
 		return NULL;
 
 	/* If message->batch_id != 0, we can retrieve batch by id */
@@ -1020,14 +1032,14 @@ batch_lookup(struct smtpd *env, struct message *message)
 	 */
 	SPLAY_FOREACH(batchp, batchtree, &env->batch_queue) {
 
-		if (batchp->type != message->type)
+		if (batchp->type != message->storage.type)
 			continue;
 
-		if (strcasecmp(batchp->message_id, message->message_id) != 0)
+		if (strcasecmp(batchp->message_id, message->storage.message_id) != 0)
 			continue;
 
 		if (batchp->type & T_MTA_BATCH)
-			if (strcasecmp(batchp->hostname, message->recipient.domain) != 0)
+			if (strcasecmp(batchp->hostname, message->storage.recipient.domain) != 0)
 				continue;
 
 		break;
@@ -1058,11 +1070,10 @@ runner_check_loop(struct message *messagep)
 	FILE *fp;
 	char *buf, *lbuf;
 	size_t len;
-	struct path chkpath;
 	int ret = 0;
 	int rcvcount = 0;
 
-	fd = queue_open_message_file(messagep->message_id);
+	fd = queue_open_message_file(messagep->storage.message_id);
 	if ((fp = fdopen(fd, "r")) == NULL)
 		fatal("fdopen");
 
@@ -1091,18 +1102,19 @@ runner_check_loop(struct message *messagep)
 		}
 
 		else if (strncasecmp("Delivered-To: ", buf, 14) == 0) {
-			struct path rcpt;
+			struct mailaddr rcpt;
+			struct mailaddr mailaddr;
 
-			bzero(&chkpath, sizeof (struct path));
-			if (! recipient_to_path(&chkpath, buf + 14))
+			bzero(&mailaddr, sizeof (struct mailaddr));
+			if (! recipient_to_mailaddr(&mailaddr, buf + 14))
 				continue;
 
-			rcpt = messagep->recipient;
-			if (messagep->type == T_BOUNCE_MESSAGE)
-				rcpt = messagep->sender;
+			rcpt = messagep->storage.recipient;
+			if (messagep->storage.type == T_BOUNCE_MESSAGE)
+				rcpt = messagep->storage.sender;
 
-			if (strcasecmp(chkpath.user, rcpt.user) == 0 &&
-			    strcasecmp(chkpath.domain, rcpt.domain) == 0) {
+			if (strcasecmp(mailaddr.user, rcpt.user) == 0 &&
+			    strcasecmp(mailaddr.domain, rcpt.domain) == 0) {
 				ret = 1;
 				break;
 			}
@@ -1117,8 +1129,8 @@ runner_check_loop(struct message *messagep)
 void
 message_reset_flags(struct message *m)
 {
-	m->flags &= ~F_MESSAGE_SCHEDULED;
-	m->flags &= ~F_MESSAGE_PROCESSING;
+	m->storage.flags &= ~F_MESSAGE_SCHEDULED;
+	m->storage.flags &= ~F_MESSAGE_PROCESSING;
 
 	while (! queue_update_envelope(m))
 		sleep(1);

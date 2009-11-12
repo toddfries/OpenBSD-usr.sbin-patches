@@ -35,7 +35,7 @@
 #include "smtpd.h"
 
 int aliases_expand_include(struct expandtree *, char *);
-int alias_is_filter(struct alias *, char *, size_t);
+int alias_is_mda(struct alias *, char *, size_t);
 int alias_is_username(struct alias *, char *, size_t);
 int alias_is_address(struct alias *, char *, size_t);
 int alias_is_filename(struct alias *, char *, size_t);
@@ -121,7 +121,7 @@ aliases_get(struct smtpd *env, objid_t mapid, struct expandtree *expandtree, cha
 		alias = *nextalias;
 		++nextalias;
 		if (alias.type == EXPAND_INCLUDE) {
-			aliases_expand_include(expandtree, alias.u.filename);
+			aliases_expand_include(expandtree, alias.u.pathname);
 		}
 		else {
 			bzero(&expnode, sizeof(struct expand_node));
@@ -172,7 +172,7 @@ aliases_vdomain_exists(struct smtpd *env, objid_t mapid, char *hostname)
 }
 
 int
-aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct path *path)
+aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct mailaddr *mailaddr)
 {
 	int ret;
 	DBT key;
@@ -191,8 +191,8 @@ aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct path *path)
 		return 0;
 	}
 
-	if (! bsnprintf(strkey, sizeof(strkey), "%s@%s", path->user,
-		path->domain)) {
+	if (! bsnprintf(strkey, sizeof(strkey), "%s@%s", mailaddr->user,
+		mailaddr->domain)) {
 		aliasesdb->close(aliasesdb);
 		return 0;
 	}
@@ -206,7 +206,7 @@ aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct path *path)
 		if (ret == -1)
 			log_warn("aliases_virtual_exist");
 
-		if (! bsnprintf(strkey, sizeof(strkey), "@%s", path->domain)) {
+		if (! bsnprintf(strkey, sizeof(strkey), "@%s", mailaddr->domain)) {
 			aliasesdb->close(aliasesdb);
 			return 0;
 		}
@@ -227,7 +227,7 @@ aliases_virtual_exist(struct smtpd *env, objid_t mapid, struct path *path)
 
 int
 aliases_virtual_get(struct smtpd *env, objid_t mapid,
-    struct expandtree *expandtree, struct path *path)
+    struct expandtree *expandtree, struct mailaddr *mailaddr)
 {
 	int ret;
 	DBT key;
@@ -250,8 +250,8 @@ aliases_virtual_get(struct smtpd *env, objid_t mapid,
 		return 0;
 	}
 
-	if (! bsnprintf(strkey, sizeof(strkey), "%s@%s", path->user,
-		path->domain)) {
+	if (! bsnprintf(strkey, sizeof(strkey), "%s@%s", mailaddr->user,
+		mailaddr->domain)) {
 		aliasesdb->close(aliasesdb);
 		return 0;
 	}
@@ -265,7 +265,7 @@ aliases_virtual_get(struct smtpd *env, objid_t mapid,
 		if (ret == -1)
 			log_warn("aliases_virtual_get");
 
-		if (! bsnprintf(strkey, sizeof(strkey), "@%s", path->domain)) {
+		if (! bsnprintf(strkey, sizeof(strkey), "@%s", mailaddr->domain)) {
 			aliasesdb->close(aliasesdb);
 			return 0;
 		}
@@ -294,7 +294,7 @@ aliases_virtual_get(struct smtpd *env, objid_t mapid,
 		alias = *nextalias;
 		++nextalias;
 		if (alias.type == EXPAND_INCLUDE) {
-			aliases_expand_include(expandtree, alias.u.filename);
+			aliases_expand_include(expandtree, alias.u.pathname);
 		}
 		else {
 			bzero(&expnode, sizeof(struct expand_node));
@@ -354,7 +354,7 @@ alias_parse(struct alias *alias, char *line)
 	size_t i;
 	int (*f[])(struct alias *, char *, size_t) = {
 		alias_is_include,
-		alias_is_filter,
+		alias_is_mda,
 		alias_is_filename,
 		alias_is_address,
 		alias_is_username
@@ -382,14 +382,14 @@ alias_parse(struct alias *alias, char *line)
 
 
 int
-alias_is_filter(struct alias *alias, char *line, size_t len)
+alias_is_mda(struct alias *alias, char *line, size_t len)
 {
 	if (strncmp(line, "\"|", 2) == 0 &&
 	    line[len - 1] == '"') {
-		if (strlcpy(alias->u.filter, line, sizeof(alias->u.filter)) >=
-		    sizeof(alias->u.filter))
+		if (strlcpy(alias->u.mda, line, sizeof(alias->u.mda)) >=
+		    sizeof(alias->u.mda))
 			return 0;
-		alias->type = EXPAND_FILTER;
+		alias->type = EXPAND_MDA;
 		return 1;
 	}
 	return 0;
@@ -460,8 +460,8 @@ alias_is_filename(struct alias *alias, char *line, size_t len)
 	if (*line != '/')
 		return 0;
 
-	if (strlcpy(alias->u.filename, line,
-	    sizeof(alias->u.filename)) >= sizeof(alias->u.filename))
+	if (strlcpy(alias->u.pathname, line,
+	    sizeof(alias->u.pathname)) >= sizeof(alias->u.pathname))
 		return 0;
 	alias->type = EXPAND_FILENAME;
 	return 1;

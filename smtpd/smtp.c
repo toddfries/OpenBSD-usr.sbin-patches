@@ -111,7 +111,7 @@ smtp_dispatch_parent(int sig, short event, void *p)
 			 */
 			SPLAY_FOREACH(s, sessiontree, &env->sc_sessions) {
 				s->s_l = NULL;
-				s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+				s->s_msg.storage.status |= S_MESSAGE_TEMPFAILURE;
 			}
 			if (env->sc_listeners)
 				smtp_disable_events(env);
@@ -198,10 +198,10 @@ smtp_dispatch_parent(int sig, short event, void *p)
 
 			if (reply->success) {
 				s->s_flags |= F_AUTHENTICATED;
-				s->s_msg.flags |= F_MESSAGE_AUTHENTICATED;
+				s->s_msg.storage.flags |= F_MESSAGE_AUTHENTICATED;
 			} else {
 				s->s_flags &= ~F_AUTHENTICATED;
-				s->s_msg.flags &= ~F_MESSAGE_AUTHENTICATED;
+				s->s_msg.storage.flags &= ~F_MESSAGE_AUTHENTICATED;
 			}
 
 			session_pickup(s, NULL);
@@ -329,8 +329,8 @@ smtp_dispatch_lka(int sig, short event, void *p)
 			    reply->error ? "<unknown>" : reply->host,
 			    sizeof(s->s_hostname));
 
-			strlcpy(s->s_msg.session_hostname, s->s_hostname,
-			    sizeof(s->s_msg.session_hostname));
+			strlcpy(s->s_msg.storage.session.hostname, s->s_hostname,
+			    sizeof(s->s_msg.storage.session.hostname));
 
 			session_init(s->s_l, s);
 
@@ -392,8 +392,8 @@ smtp_dispatch_queue(int sig, short event, void *p)
 			if ((s = session_lookup(env, ss->id)) == NULL)
 				break;
 
-			(void)strlcpy(s->s_msg.message_id, ss->u.msgid,
-			    sizeof(s->s_msg.message_id));
+			(void)strlcpy(s->s_msg.storage.message_id, ss->u.msgid,
+			    sizeof(s->s_msg.storage.message_id));
 			session_pickup(s, ss);
 			break;
 		}
@@ -441,7 +441,7 @@ smtp_dispatch_queue(int sig, short event, void *p)
 				/*
 				 * Session is write-only, can't destroy it.
 				 */
-				s->s_msg.status |= S_MESSAGE_TEMPFAILURE;
+				s->s_msg.storage.status |= S_MESSAGE_TEMPFAILURE;
 			} else
 				fatalx("smtp_dispatch_queue: corrupt session");
 			break;
@@ -539,8 +539,9 @@ smtp_dispatch_control(int sig, short event, void *p)
 			s->s_fd = fd[0];
 			s->s_env = env;
 			s->s_l = &l;
-			s->s_msg.flags |= F_MESSAGE_ENQUEUED;
-			(void)strlcpy(s->s_msg.tag, s->s_l->tag, sizeof(s->s_msg.tag));
+			s->s_msg.storage.flags |= F_MESSAGE_ENQUEUED;
+			(void)strlcpy(s->s_msg.storage.session.tag, s->s_l->tag,
+			    sizeof(s->s_msg.storage.session.tag));
 
 			bzero(&hints, sizeof(hints));
 			hints.ai_family = PF_UNSPEC;
@@ -556,8 +557,8 @@ smtp_dispatch_control(int sig, short event, void *p)
 
 			bsnprintf(s->s_hostname, sizeof(s->s_hostname),
 			    "%d@localhost", euid);
-			strlcpy(s->s_msg.session_hostname, s->s_hostname,
-			    sizeof(s->s_msg.session_hostname));
+			strlcpy(s->s_msg.storage.session.hostname, s->s_hostname,
+			    sizeof(s->s_msg.storage.session.hostname));
 
 			SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 
@@ -647,7 +648,7 @@ smtp_dispatch_runner(int sig, short event, void *p)
 			s->s_fd = fd[0];
 			s->s_env = env;
 			s->s_l = &l;
-			s->s_msg.flags |= F_MESSAGE_ENQUEUED|F_MESSAGE_BOUNCE;
+			s->s_msg.storage.flags |= F_MESSAGE_ENQUEUED|F_MESSAGE_BOUNCE;
 
 			bzero(&hints, sizeof(hints));
 			hints.ai_family = PF_UNSPEC;
@@ -663,8 +664,8 @@ smtp_dispatch_runner(int sig, short event, void *p)
 
 			strlcpy(s->s_hostname, "localhost",
 			    sizeof(s->s_hostname));
-			strlcpy(s->s_msg.session_hostname, s->s_hostname,
-			    sizeof(s->s_msg.session_hostname));
+			strlcpy(s->s_msg.storage.session.hostname, s->s_hostname,
+			    sizeof(s->s_msg.storage.session.hostname));
 
 			SPLAY_INSERT(sessiontree, &s->s_env->sc_sessions, s);
 
