@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: CollisionReport.pm,v 1.20 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: CollisionReport.pm,v 1.22 2009/11/11 13:00:40 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -41,7 +41,7 @@ sub find_collisions
 		return $bypkg;
 	}
 	for my $pkg (installed_packages()) {
-		print "Looking for collisions in $pkg\n" if $verbose;
+		$state->say("Looking for collisions in $pkg") if $verbose;
 		my $plist = OpenBSD::PackingList->from_installation($pkg, 
 		    \&OpenBSD::PackingList::FilesOnly);
 		next if !defined $plist;
@@ -65,7 +65,7 @@ sub collision_report($$)
 	if ($state->{defines}->{removecollisions}) {
 		require OpenBSD::Error;
 		for my $f (@$list) {
-			OpenBSD::Error::Unlink(1, $f->fullname);
+			$state->unlink(1, $f->fullname);
 		}
 		return;
 	}
@@ -74,13 +74,13 @@ sub collision_report($$)
 	my $clueless_bat2;
 	my $found = 0;
 	
-	print "Collision: the following files already exist\n";
+	$state->say("Collision: the following files already exist");
 	if (!$state->{defines}->{dontfindcollisions}) {
 		my $bypkg = find_collisions(\%todo, $state->{verbose});
 		for my $pkg (sort keys %$bypkg) {
 		    for my $item (sort @{$bypkg->{$pkg}}) {
 		    	$found++;
-			print "\t$item ($pkg)\n";
+			$state->say("\t$item ($pkg)");
 		    }
 		    if ($pkg =~ m/^(?:partial\-|borked\.\d+$)/o) {
 			$clueless_bat = $pkg;
@@ -98,26 +98,26 @@ sub collision_report($$)
 			    my $old = $todo{$item};
 			    my $d = $old->new($destdir.$item);
 			    if ($d->equals($old)) {
-				print "\t$item (same checksum)\n";
+				$state->say("\t$item (same checksum)");
 			    } else {
-				print "\t$item (different checksum)\n";
+				$state->say("\t$item (different checksum)");
 			    }
 		    } else {
-			    print "\t$item\n";
+			    $state->say("\t$item");
 		    }
 	    	}
 	}
 	if (defined $clueless_bat) {
-		print "The package name $clueless_bat suggests that a former installation\n";
-		print "of a similar package got interrupted.  It is likely that\n";
-		print "\tpkg_delete $clueless_bat\n";
-		print "will solve the problem\n";
+		$state->print("The package name $clueless_bat suggests that a former installation\n",
+		    "of a similar package got interrupted.  It is likely that\n",
+		    "\tpkg_delete $clueless_bat\n",
+		    "will solve the problem\n");
 	}
 	if (defined $clueless_bat2) {
-		print "The package name $clueless_bat2 suggests remaining libraries\n";
-		print "from a former package update.  It is likely that\n";
-		print "\tpkg_delete $clueless_bat2\n";
-		print "will solve the problem\n";
+		$state->print("The package name $clueless_bat2 suggests remaining libraries\n",
+		    "from a former package update.  It is likely that\n",
+		    "\tpkg_delete $clueless_bat2\n".
+		    "will solve the problem\n");
 	}
 	my $dorepair = 0;
 	if ($found == 0) {
@@ -132,10 +132,9 @@ sub collision_report($$)
 		}
 	}
 	if ($dorepair == 1) {
-		require OpenBSD::Error;
 		for my $f (@$list) {
 
-			if (OpenBSD::Error::Unlink($state->{verbose}, 
+			if ($state->unlink($state->{verbose}, 
 			    $f->fullname)) {
 				$state->{problems}--;
 			} else {
