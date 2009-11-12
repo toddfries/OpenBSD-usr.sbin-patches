@@ -4,12 +4,5 @@
 ? up.log
 ? ppp/ppp/obj
 ? ppp/pppctl/obj
-P pkg_add/pkg_add
-P popa3d/standalone.c
-P portmap/portmap.c
+P mopd/mopd/process.c
 C ppp/ppp/route.c
-P smtpd/config.c
-P smtpd/parse.y
-P snmpd/ber.c
-P tcpdump/print-ike.c
-P ypldap/ber.c
