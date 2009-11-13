@@ -181,12 +181,10 @@ char *
 ss_to_text(struct sockaddr_storage *ss)
 {
 	static char	 buf[NI_MAXHOST];
-	char		*p;
 
 	buf[0] = '\0';
-	p = buf;
 
-	if (getnameinfo((struct sockaddr *)ss, ss->ss_len, p,
+	if (getnameinfo((struct sockaddr *)ss, ss->ss_len, buf,
 	    NI_MAXHOST, NULL, 0, NI_NUMERICHOST))
 		fatalx("ss_to_text: getnameinfo");
 
