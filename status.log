@@ -1,19 +1,26 @@
 # On branch master
-# Your branch is ahead of 'origin/master' by 1 commit.
-#
 # Changed but not updated:
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   pkg_add/pkg_add
-#	modified:   popa3d/standalone.c
-#	modified:   portmap/portmap.c
-#	modified:   smtpd/config.c
-#	modified:   smtpd/parse.y
-#	modified:   snmpd/ber.c
+#	modified:   dvmrpctl/parser.c
+#	modified:   dvmrpctl/parser.h
+#	modified:   ospfctl/parser.c
+#	modified:   ospfctl/parser.h
+#	modified:   ospfd/rde_lsdb.c
+#	modified:   ospfd/rde_spf.c
+#	modified:   relayctl/parser.c
+#	modified:   relayctl/parser.h
+#	modified:   ripctl/parser.c
+#	modified:   ripctl/parser.h
+#	modified:   smtpd/enqueue.c
+#	modified:   smtpd/lka.c
+#	modified:   smtpd/mda.c
+#	modified:   smtpd/mta.c
+#	modified:   smtpd/smtp_session.c
+#	modified:   smtpd/smtpctl.c
+#	modified:   smtpd/smtpd.h
 #	modified:   status.log
-#	modified:   tcpdump/print-ike.c
 #	modified:   up.log
-#	modified:   ypldap/ber.c
 #
 no changes added to commit (use "git add" and/or "git commit -a")
