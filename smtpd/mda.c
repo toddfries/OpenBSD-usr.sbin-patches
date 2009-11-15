@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.31 2009/11/11 10:04:05 chl Exp $	*/
+/*	$OpenBSD: mda.c,v 1.32 2009/11/13 12:01:54 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -498,7 +498,6 @@ mda_done(struct smtpd *env, struct batch *b)
 		    &b->message, sizeof(b->message));
 
 		/* log status */
-		if (b->message.storage.status & S_MESSAGE_PERMFAILURE)
 			log_debug("mda: permanent failure");
 		else if (b->message.storage.status & S_MESSAGE_TEMPFAILURE)
 			log_debug("mda: temporary failure");

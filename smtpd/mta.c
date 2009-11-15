@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.75 2009/11/11 10:04:05 chl Exp $	*/
+/*	$OpenBSD: mta.c,v 1.76 2009/11/13 11:27:52 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -881,9 +881,10 @@ mta_event(int fd, short event, void *p)
 void
 mta_status(struct mta_session *s, const char *fmt, ...)
 {
-	char		*status;
-	struct message	*m;
-	va_list		 ap;
+	char			*status;
+	struct message		*m;
+	struct mta_relay	*relay;
+	va_list			 ap;
 
 	va_start(ap, fmt);
 	if (vasprintf(&status, fmt, ap) == -1)
@@ -891,17 +892,36 @@ mta_status(struct mta_session *s, const char *fmt, ...)
 	va_end(ap);
 
 	TAILQ_FOREACH(m, &s->recipients, entry) {
+<<<<<<< HEAD
 		if (m->storage.session.errorline[0] == '2' ||
 		    m->storage.session.errorline[0] == '5' ||
 		    m->storage.session.errorline[0] == '6')
+=======
+		if (m->session_errorline[0] == '2' ||
+		    m->session_errorline[0] == '5' ||
+		    m->session_errorline[0] == '6')
+>>>>>>> todd.noIPv6literal
 			continue;
 
 		/* save new status */
 		mta_status_message(m, status);
 
+<<<<<<< HEAD
 		/* remember the relay that accepted the message */
 		if (*status == '2')
 			m->storage.relay = TAILQ_FIRST(&s->relays);
+=======
+		relay = TAILQ_FIRST(&s->relays);
+
+		/* log successes/failures quickly */
+		if (*status == '2' || *status == '5')
+			log_info("%s: to=<%s@%s>, delay=%d, relay=%s [%s], stat=%s (%s)",
+			    m->message_id, m->recipient.user,
+			    m->recipient.domain, time(NULL) - m->creation,
+			    relay->fqdn, ss_to_text(&relay->sa),
+			    *status == '2' ? "Sent" : "RemoteError",
+			    m->session_errorline + 4);
+>>>>>>> todd.noIPv6literal
 	}
 
 	free(status);

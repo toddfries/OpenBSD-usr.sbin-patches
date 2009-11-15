@@ -180,11 +180,16 @@ nextsub:
 char *
 ss_to_text(struct sockaddr_storage *ss)
 {
-	static char	 buf[NI_MAXHOST];
+	static char	 buf[NI_MAXHOST + 5];
 	char		*p;
 
 	buf[0] = '\0';
 	p = buf;
+
+	if (ss->ss_family == PF_INET6) {
+		strlcpy(buf, "IPv6:", sizeof(buf));
+		p = buf + 5;
+	}
 
 	if (getnameinfo((struct sockaddr *)ss, ss->ss_len, p,
 	    NI_MAXHOST, NULL, 0, NI_NUMERICHOST))
