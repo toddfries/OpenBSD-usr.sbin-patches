@@ -498,6 +498,7 @@ mda_done(struct smtpd *env, struct batch *b)
 		    &b->message, sizeof(b->message));
 
 		/* log status */
+		if (b->message.storage.status & S_MESSAGE_PERMFAILURE)
 			log_debug("mda: permanent failure");
 		else if (b->message.storage.status & S_MESSAGE_TEMPFAILURE)
 			log_debug("mda: temporary failure");
