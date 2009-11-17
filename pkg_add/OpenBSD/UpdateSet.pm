@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.23 2009/11/11 13:00:40 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.25 2009/11/16 14:42:18 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -15,199 +15,6 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-
-# these things don't really live here, they're just stuff that's shared
-# between pkg_add and pkg_delete, so to avoid yes another header...
-
-use strict;
-use warnings;
-
-package OpenBSD::SharedItemsRecorder;
-sub new
-{
-	my $class = shift;
-	return bless {}, $class;
-}
-
-sub is_empty
-{
-	my $self = shift;
-	return !(defined $self->{dirs} or defined $self->{users} or
-		defined $self->{groups});
-}
-
-sub cleanup
-{
-	my ($self, $state) = @_;
-	return if $self->is_empty or $state->{not};
-
-	require OpenBSD::SharedItems;
-	OpenBSD::SharedItems::cleanup($self, $state);
-}
-
-package OpenBSD::Log;
-use OpenBSD::Error;
-our @ISA = qw(OpenBSD::Error);
-
-sub set_context
-{
-	&OpenBSD::Error::set_pkgname;
-}
-
-sub dump
-{
-	&OpenBSD::Error::delayed_output;
-}
-
-
-package OpenBSD::pkg_foo::State;
-use OpenBSD::Error;
-
-sub new
-{
-	my $class = shift;
-	my $o = bless {}, $class;
-	$o->init(@_);
-	return $o;
-}
-
-sub init
-{
-	my $self = shift;
-	$self->{l} = OpenBSD::Log->new;
-	$self->{progressmeter} = bless {}, "OpenBSD::StubProgress";
-}
-
-sub log
-{
-	my $self = shift;
-	if (@_ == 0) {
-		return $self->{l};
-	} else {
-		$self->{l}->print(@_);
-	}
-}
-
-sub print
-{
-	my $self = shift;
-	$self->progress->print(@_);
-}
-
-sub say
-{
-	my $self = shift;
-	$self->progress->print(@_, "\n");
-}
-
-sub errprint
-{
-	my $self = shift;
-	$self->progress->errprint(@_);
-}
-
-sub errsay
-{
-	my $self = shift;
-	$self->progress->errprint(@_, "\n");
-}
-
-sub progress
-{
-	my $self = shift;
-	return $self->{progressmeter};
-}
-
-sub vsystem
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::VSystem($self->{very_verbose}, @_);
-}
-
-sub system
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::System(@_);
-}
-
-sub unlink
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::Unlink(@_);
-}
-
-# we always have a progressmeter we can print to...
-sub setup_progressmeter
-{
-	my ($self, $opt_x) = @_;
-	if (!$opt_x && !$self->{beverbose}) {
-		require OpenBSD::ProgressMeter;
-		$self->{progressmeter} = OpenBSD::ProgressMeter->new;
-	}
-}
-
-sub check_root
-{
-	my $state = shift;
-	if ($< && !$state->{defines}->{nonroot}) {
-		if ($state->{not}) {
-			$state->errsay("$0 should be run as root");
-		} else {
-			Fatal "$0 must be run as root";
-		}
-	}
-}
-
-sub choose_location
-{
-	my ($state, $name, $list) = @_;
-	if (@$list == 0) {
-		$state->say("Can't find $name");
-		return undef;
-	} elsif (@$list == 1) {
-		return $list->[0];
-	}
-
-	my %h = map {($_->name, $_)} @$list;
-	if ($state->{interactive}) {
-		require OpenBSD::Interactive;
-
-		$h{'<None>'} = undef;
-		$state->progress->clear;
-		my $result = OpenBSD::Interactive::ask_list("Ambiguous: choose package for $name", 1, sort keys %h);
-		return $h{$result};
-	} else {
-		$state->say("Ambiguous: $name could be ", join(' ', keys %h));
-		return undef;
-	}
-}
-
-# stub class when no actual progressmeter that still prints out.
-package OpenBSD::StubProgress;
-sub clear {}
-
-sub show {}
-
-sub message {}
-
-sub next {}
-
-sub set_header {}
-
-sub print
-{
-	shift;
-	print @_;
-}
-
-sub errprint
-{
-	shift;
-	print STDERR @_;
-}
 
 # an UpdateSet is a list of packages to remove/install.
 # it contains three things:
@@ -225,6 +32,22 @@ sub errprint
 # Normal UpdateSets contain one newer package at most.
 # Bigger UpdateSets can be created through the merge operation, which
 # will be used only when necessary.
+use strict;
+use warnings;
+
+# hints should behave like locations
+package OpenBSD::hint;
+sub new
+{
+	my ($class, $name) = @_;
+	bless {name => $name}, $class;
+}
+
+sub pkgname
+{
+	return shift->{name};
+}
+
 package OpenBSD::UpdateSet;
 sub new
 {
@@ -242,7 +65,9 @@ sub add_newer
 sub add_hints
 {
 	my ($self, @hints) = @_;
-	push(@{$self->{hints}}, @hints);
+	for my $h (@hints) {
+		push(@{$self->{hints}}, OpenBSD::hint->new($h));
+	}
 	return $self;
 }
 
@@ -271,6 +96,11 @@ sub hints
 {
 	my $self =shift;
 	return @{$self->{hints}};
+}
+sub hint_names
+{
+	my $self =shift;
+	return map {$_->pkgname} $self->hints;
 }
 
 sub older_names
@@ -353,13 +183,13 @@ sub validate_plists
 		OpenBSD::CollisionReport::collision_report($state->{colliding}, $state);
 	}
 	if (defined $state->{overflow}) {
-		OpenBSD::Vstat::tally();
+		$state->vstat->tally;
 	}
 	if ($state->{problems}) {
 		require OpenBSD::Error;
 		OpenBSD::Error::Fatal "fatal issues in ", $self->print;
 	}
-	OpenBSD::Vstat::synchronize();
+	$state->vstat->synchronize;
 }
 
 sub compute_size
@@ -406,47 +236,6 @@ sub merge
 	# then regen tracker info for $self
 	$tracker->add_set($self);
 	return $self;
-}
-
-package OpenBSD::PackingList;
-sub compute_size
-{
-	my $plist = shift;
-	my $totsize = 0;
-	$plist->visit('compute_size', \$totsize);
-	$totsize = 1 if $totsize == 0;
-	$plist->{totsize} = $totsize;
-}
-
-package OpenBSD::PackingElement;
-sub mark_progress
-{
-}
-
-sub compute_size
-{
-}
-
-package OpenBSD::PackingElement::FileBase;
-sub mark_progress
-{
-	my ($self, $progress, $donesize, $totsize) = @_;
-	return unless defined $self->{size};
-	$$donesize += $self->{size};
-	$progress->show($$donesize, $totsize);
-}
-
-sub compute_size
-{
-	my ($self, $totsize) = @_;
-
-	$$totsize += $self->{size} if defined $self->{size};
-}
-
-package OpenBSD::PackingElement::Sample;
-sub compute_size
-{
-	&OpenBSD::PackingElement::FileBase::compute_size;
 }
 
 1;

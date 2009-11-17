@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_add,v 1.381 2009/11/12 14:44:00 espie Exp $
+# $OpenBSD: pkg_add,v 1.388 2009/11/16 23:02:36 espie Exp $
 #
 # Copyright (c) 2003-2009 Marc Espie <espie@openbsd.org>
 #
@@ -20,26 +20,22 @@
 use strict;
 use warnings;
 
+use OpenBSD::AddDelete;
+
+package OpenBSD::AddDelete;
 use OpenBSD::Dependencies;
 use OpenBSD::PackingList;
 use OpenBSD::PackageInfo;
 use OpenBSD::PackageLocator;
 use OpenBSD::PackageName;
 use OpenBSD::PkgCfl;
-use OpenBSD::Vstat;
-use OpenBSD::Getopt;
-use OpenBSD::Error;
 use OpenBSD::Interactive;
 use OpenBSD::Add;
 use OpenBSD::SharedLibs;
-use OpenBSD::Paths;
 use OpenBSD::UpdateSet;
 use OpenBSD::Handle;
 
-my $bad = 0;
-
-our %defines = ();
-our $not;
+our ($state, %defines, $bad, $opt_B);
 
 package OpenBSD::PackingList;
 
@@ -65,8 +61,8 @@ sub has_new_sig
 	return $plist->{new_sig};
 }
 
-package OpenBSD::pkg_add::State;
-our @ISA=(qw(OpenBSD::pkg_foo::State));
+package OpenBSD::State;
+our @ISA=(qw(OpenBSD::UI));
 
 # one-level dependencies tree, for nicer printouts
 sub build_deptree
@@ -267,7 +263,7 @@ sub can_install
 	return 1;
 }
 
-package main;
+package OpenBSD::AddDelete;
 
 sub failed_message
 {
@@ -588,39 +584,15 @@ sub find_truelocations
 	}
 }
 
-set_usage('pkg_add [-acIinqruvxz] [-A arch] [-B pkg-destdir] [-F keywords]',
-'[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
+our ($opt_a, $opt_A, $opt_P, $opt_Q, $opt_r, $opt_u, $opt_l, $opt_z);
 
-our ($opt_a, $opt_v, $opt_n, $opt_I, $opt_L, $opt_B, $opt_A, $opt_P, $opt_Q, $opt_x, $opt_r, $opt_q, $opt_c, $opt_i, $opt_u, $opt_l, $opt_z);
-$opt_v = 0;
-try { 
-	getopts('aqchivnruxzIl:L:f:F:B:A:P:Q:',
-	{
-	 'h' => sub { Usage(); },
-	 'F' => sub { 
-	 		for my $o (split /\,/o, shift) { 
-				$defines{$o} = 1;
-			}
-	    	},
-	 'f' => sub { 
-	 		for my $o (split /\,/o, shift) { 
-				$defines{$o} = 1;
-			}
-	    	}}); 
-} catchall {
-	Usage($_);
-};
+handle_options('aqchruzl:A:P:Q:', {},
+    'pkg_add [-acIinqruvxz] [-A arch] [-B pkg-destdir] [-F keywords]',
+    '[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
 
-try {
-$opt_L = OpenBSD::Paths->localbase unless defined $opt_L;
-
-my $state = OpenBSD::pkg_add::State->new;
 $state->{cache} = {};
-$state->{recorder} = OpenBSD::SharedItemsRecorder->new;
 $state->{do_faked} = 0;
-$state->{localbase} = $opt_L;
 $state->{arch} = $opt_A;
-$state->{defines} = \%defines;
 
 if (defined $opt_Q and defined $opt_B) {
 	Usage "-Q and -B are incompatible options";
@@ -656,17 +628,7 @@ if (defined $state->{destdir}) {
 }
 
 
-$state->{not} = $opt_n;
-# XXX RequiredBy
-$not = $opt_n;
-$state->{quick} = $opt_q;
-$state->{extra} = $opt_c;
 $state->{automatic} = $opt_a;
-$state->{dont_run_scripts} = $opt_I;
-$state->{very_verbose} = $opt_v >= 2;
-$state->{verbose} = $opt_v;
-$state->{interactive} = $opt_i;
-$state->{beverbose} = $opt_n || ($opt_v >= 2);
 $state->{allow_replacing} = $opt_r || $opt_u;
 
 if (@ARGV == 0 && !$opt_u && !$opt_l) {
@@ -678,74 +640,14 @@ if ($opt_l && @ARGV != 0) {
 }
 
 
-lock_db($state->{not}) unless $state->{defines}->{nolock};
-$state->setup_progressmeter($opt_x);
-$state->check_root;
-
 # Here we create the list of packages to install
 # actually, an updateset list (@todo2), and we hope to do this lazily
 # later for the most part...
 my @todo2 = ();
 
-if ($opt_l) {
-	open my $f, '<', $opt_l or die "$!: bad list $opt_l";
-	my $_;
-	while (<$f>) {
-		chomp;
-		s/\s.*//;
-		push(@ARGV, $_);
-	}
-}
-
-# three cases: 
-# 1/ match fuzzily against a list
-if ($opt_l || $opt_z) {
-
-	$state->progress->set_header("Looking for packages");
-	for my $_ (@ARGV) {
-		my $set = OpenBSD::UpdateSet->new->add_hints($_);
-		if ($state->updater->process_hint($set, $_, $state)) {
-			push(@todo2, $set);
-		}
-	}
-# 2/ update existing stuff
-} elsif ($opt_u) {
-	require OpenBSD::PackageRepository::Installed;
-
-	if (@ARGV == 0) {
-		@ARGV = sort(installed_packages());
-		$state->{full_update} = 1;
-	}
-	my $inst = OpenBSD::PackageRepository::Installed->new;
-	$state->progress->set_header("Looking for updates");
-	for my $pkgname (@ARGV) {
-		my $l;
-
-		if (OpenBSD::PackageName::is_stem($pkgname)) {
-			$l = stem2location($inst, $pkgname, $state);
- 		} else {
-			$l = $inst->find($pkgname, $state->{arch});
-		}
-		if (!defined $l) {
-			$state->say("Problem finding $pkgname");
-		} else {
-			my $set = OpenBSD::UpdateSet->new->add_older(OpenBSD::Handle->from_location($l));
-			my $problem = 0;
-			for my $l ($set->older) {
-				(defined $state->updater->process_handle($set, $l, $state)) or $problem = 1;
-			}
-			if ($set->newer > 0) {
-				push(@todo2, $set);
-			} else {
-				$state->tracker->mark_uptodate($set);
-			}
-			if ($problem) {
-				$state->tracker->mark_cant_update($set);
-			}
-		}
-	}
-	$state->progress->next;
-
+sub inform_user_of_pending_update
+{
+	my $state = shift;
 	my @cantupdate = $state->tracker->cant_update;
 	if (@cantupdate > 0) {
 		$state->print("Cannot find updates for ", join(', ', (@cantupdate > 50 ? @cantupdate[1..50] : @cantupdate)));
@@ -763,7 +665,7 @@ if ($opt_l || $opt_z) {
 			    $state->{interactive}, 0)) {
 				exit(1);
 			}
-	    	}
+		}
 	}
 	if (defined $state->{issues}) {
 		$state->say("There are some ambiguities. ",
@@ -771,71 +673,99 @@ if ($opt_l || $opt_z) {
 	}
 	$state->say("Running update ", 
 	    join(',', map {$_->short_print} @todo2));
-} else {
-# 3/ actual names
-	find_truelocations(\@ARGV, \@todo2, $state);
-	OpenBSD::Add::tag_user_packages(@todo2);
 }
 
-if ($bad) {
-	exit(1);
-}
-
-
-my $handler = sub { my $sig = shift; die "Caught SIG$sig"; };
-local $SIG{'INT'} = $handler;
-local $SIG{'QUIT'} = $handler;
-local $SIG{'HUP'} = $handler;
-local $SIG{'KILL'} = $handler;
-local $SIG{'TERM'} = $handler;
-
-# This is the actual very small loop that adds all packages
-eval {
-$state->tracker->add_sets(@todo2);
-while (my $set = shift @todo2) {
-	unshift(@todo2, install_set($set, $state));
-}
-};
-# Note how well we performed. We need to clean up BEFORE we exit anyways.
-my $dielater = $@;
-
-# cleanup various things
-$state->{recorder}->cleanup($state);
-OpenBSD::PackingElement::Fontdir::finish_fontdirs($state);
-OpenBSD::Add::manpages_index($state);
-OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
-
-
-# and display delayed thingies.
-if ($state->{packages_with_sig}) {
-	$state->print("Packages with signatures: ", $state->{packages_with_sig});
-	if ($state->{packages_without_sig}) {
-		print ". UNSIGNED PACKAGES: ", join(', ', keys %{$state->{packages_without_sig}});
+sub process_parameters
+{
+	if ($opt_l) {
+		open my $f, '<', $opt_l or die "$!: bad list $opt_l";
+		my $_;
+		while (<$f>) {
+			chomp;
+			s/\s.*//;
+			push(@ARGV, $_);
+		}
 	}
-	print "\n";
-}
-if ($state->{beverbose}) {
-	OpenBSD::Vstat::tally();
-}
-$state->progress->clear;
-$state->log->dump;
-if (defined $state->{updatedepends} && %{$state->{updatedepends}}) {
-	print "Forced updates, bogus dependencies for ", 
-	    join(' ', sort(keys %{$state->{updatedepends}})),
-	    " may remain\n";
-}
 
-# show any error, and show why we died...
-rethrow $dielater;
-} catch {
-	print STDERR "$0: $_\n";
-	if ($_ =~ m/^Caught SIG(\w+)/o) {
-		kill $1, $$;
+	# three cases: 
+	# 1/ match fuzzily against a list
+	if ($opt_l || $opt_z) {
+
+		$state->progress->set_header("Looking for packages");
+		for my $_ (@ARGV) {
+			my $set = OpenBSD::UpdateSet->new->add_hints($_);
+			if ($state->updater->process_set($set, $state)) {
+				push(@todo2, $set);
+			}
+		}
+		inform_user_of_pending_update($state);
+	# 2/ update existing stuff
+	} elsif ($opt_u) {
+		require OpenBSD::PackageRepository::Installed;
+
+		if (@ARGV == 0) {
+			@ARGV = sort(installed_packages());
+			$state->{full_update} = 1;
+		}
+		my $inst = OpenBSD::PackageRepository::Installed->new;
+		$state->progress->set_header("Looking for updates");
+		for my $pkgname (@ARGV) {
+			my $l;
+
+			if (OpenBSD::PackageName::is_stem($pkgname)) {
+				$l = stem2location($inst, $pkgname, $state);
+			} else {
+				$l = $inst->find($pkgname, $state->{arch});
+			}
+			if (!defined $l) {
+				$state->say("Problem finding $pkgname");
+			} else {
+				my $set = OpenBSD::UpdateSet->new->add_older(OpenBSD::Handle->from_location($l));
+				if ($state->updater->process_set($set, $state)) {
+					push(@todo2, $set);
+				}
+			}
+		}
+		$state->progress->next;
+
+		inform_user_of_pending_update($state);
+
+	} else {
+	# 3/ actual names
+		find_truelocations(\@ARGV, \@todo2, $state);
+		OpenBSD::Add::tag_user_packages(@todo2);
 	}
-	exit(1);
-};
-
-if ($bad) {
-	exit(1);
 }
+
+sub finish_display
+{
+	OpenBSD::Add::manpages_index($state);
+
+
+	# and display delayed thingies.
+	if ($state->{packages_with_sig}) {
+		$state->print("Packages with signatures: ", 
+		    $state->{packages_with_sig});
+		if ($state->{packages_without_sig}) {
+			print ". UNSIGNED PACKAGES: ", 
+			    join(', ', keys %{$state->{packages_without_sig}});
+		}
+		print "\n";
+	}
+	if (defined $state->{updatedepends} && %{$state->{updatedepends}}) {
+		print "Forced updates, bogus dependencies for ", 
+		    join(' ', sort(keys %{$state->{updatedepends}})),
+		    " may remain\n";
+	}
+}
+
+
+framework(
+sub {
+	# This is the actual very small loop that adds all packages
+	$state->tracker->add_sets(@todo2);
+	while (my $set = shift @todo2) {
+		unshift(@todo2, install_set($set, $state));
+	}
+});
 
