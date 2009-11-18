@@ -3,29 +3,17 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   pkg_add/Makefile
-#	modified:   pkg_add/OpenBSD/Add.pm
+#	modified:   pkg_add/OpenBSD/AddDelete.pm
 #	modified:   pkg_add/OpenBSD/CollisionReport.pm
-#	modified:   pkg_add/OpenBSD/Delete.pm
-#	modified:   pkg_add/OpenBSD/Error.pm
-#	modified:   pkg_add/OpenBSD/PackageInfo.pm
-#	modified:   pkg_add/OpenBSD/PackingList.pm
-#	modified:   pkg_add/OpenBSD/ProgressMeter.pm
-#	modified:   pkg_add/OpenBSD/Tracker.pm
+#	modified:   pkg_add/OpenBSD/Interactive.pm
+#	modified:   pkg_add/OpenBSD/Replace.pm
+#	modified:   pkg_add/OpenBSD/SharedLibs.pm
 #	modified:   pkg_add/OpenBSD/Update.pm
-#	modified:   pkg_add/OpenBSD/UpdateSet.pm
 #	modified:   pkg_add/pkg_add
+#	modified:   pkg_add/pkg_create
 #	modified:   pkg_add/pkg_delete
-#	modified:   rpc.lockd/lockd.c
-#	modified:   smtpd/dns.c
-#	modified:   smtpd/mta.c
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpd.c
+#	modified:   smtpd/client.c
 #	modified:   status.log
 #	modified:   up.log
 #
-# Untracked files:
-#   (use "git add <file>..." to include in what will be committed)
-#
-#	pkg_add/OpenBSD/AddDelete.pm
 no changes added to commit (use "git add" and/or "git commit -a")
