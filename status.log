@@ -3,23 +3,16 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   dvmrpctl/parser.c
-#	modified:   dvmrpctl/parser.h
-#	modified:   ospfctl/parser.c
-#	modified:   ospfctl/parser.h
-#	modified:   ospfd/rde_lsdb.c
-#	modified:   ospfd/rde_spf.c
-#	modified:   relayctl/parser.c
-#	modified:   relayctl/parser.h
-#	modified:   ripctl/parser.c
-#	modified:   ripctl/parser.h
-#	modified:   smtpd/enqueue.c
-#	modified:   smtpd/lka.c
-#	modified:   smtpd/mda.c
-#	modified:   smtpd/mta.c
-#	modified:   smtpd/smtp_session.c
-#	modified:   smtpd/smtpctl.c
-#	modified:   smtpd/smtpd.h
+#	modified:   pkg_add/OpenBSD/AddDelete.pm
+#	modified:   pkg_add/OpenBSD/CollisionReport.pm
+#	modified:   pkg_add/OpenBSD/Interactive.pm
+#	modified:   pkg_add/OpenBSD/Replace.pm
+#	modified:   pkg_add/OpenBSD/SharedLibs.pm
+#	modified:   pkg_add/OpenBSD/Update.pm
+#	modified:   pkg_add/pkg_add
+#	modified:   pkg_add/pkg_create
+#	modified:   pkg_add/pkg_delete
+#	modified:   smtpd/client.c
 #	modified:   status.log
 #	modified:   up.log
 #

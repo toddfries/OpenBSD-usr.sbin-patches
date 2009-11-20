@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.93 2009/11/11 12:04:19 espie Exp $
+# $OpenBSD: Update.pm,v 1.99 2009/11/17 10:17:21 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -18,7 +18,6 @@ use strict;
 use warnings;
 
 package OpenBSD::Update;
-use OpenBSD::Interactive;
 use OpenBSD::PackageInfo;
 use OpenBSD::PackageLocator;
 use OpenBSD::PackageName;
@@ -36,6 +35,7 @@ sub add_updateset
 	my ($self, $set, $handle, $location) = @_;
 
 	my $n = OpenBSD::Handle->from_location($location);
+	$handle->{done} = $n;
 	$set->add_newer($n);
 }
 
@@ -141,23 +141,59 @@ sub process_hint
 	my ($self, $set, $hint, $state) = @_;
 
 	my $l;
+	my $hint_name = $hint->pkgname;
 	my $k = OpenBSD::Search::FilterLocation->keep_most_recent;
 	# first try to find us exactly
 
-	$state->progress->message("Looking for $hint");
-	$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Exact->new($hint), $k);
+	$state->progress->message("Looking for $hint_name");
+	$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Exact->new($hint_name), $k);
 	if (@$l == 0) {
-		my $t = $hint;
+		my $t = $hint_name;
 		$t =~ s/\-\d([^-]*)\-?/--/;
 		$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Stem->new($t), $k);
 	}
-	my $r = $state->choose_location($hint, $l);
+	my $r = $state->choose_location($hint_name, $l);
 	if (defined $r) {
-		$self->add_updateset($set, undef, $r);
+		$self->add_updateset($set, $hint, $r);
 		return 1;
 	} else {
 		return 0;
 	}
+}
+
+sub process_set
+{
+	my ($self, $set, $state) = @_;
+	my $problem;
+	my $need_update;
+	for my $h ($set->older) {
+		next if $h->{done};
+		my $r = $self->process_handle($set, $h, $state);
+		if (!defined $r) {
+			$problem = 1;
+		}
+		if ($r) {
+			$need_update = 1;
+		}
+	}
+	for my $h ($set->hints) {
+		next if $h->{done};
+		my $r = $self->process_hint($set, $h, $state);
+		if (!defined $r) {
+			$problem = 1;
+		}
+		if ($r) {
+			$need_update = 1;
+		}
+	}
+	if ($problem) {
+		$state->tracker->mark_cant_update($set);
+		return 0;
+	} elsif (!$need_update) {
+		$state->tracker->mark_uptodate($set);
+		return 0;
+	} 
+	return 1;
 }
 
 1;
