@@ -35,14 +35,13 @@
 
 #include "smtpd.h"
 
-struct rule    *ruleset_match(struct smtpd *, char *tag, struct mailaddr *, struct sockaddr_storage *, struct cond **, int);
+struct rule    *ruleset_match(struct smtpd *, char *tag, struct path *, struct sockaddr_storage *);
 int		ruleset_check_source(struct map *, struct sockaddr_storage *);
 int		ruleset_match_mask(struct sockaddr_storage *, struct netaddr *);
 
 
 struct rule *
-ruleset_match(struct smtpd *env, char *tag, struct mailaddr *mailaddr, struct sockaddr_storage *ss,
-	struct cond **retcond, int auth)
+ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_storage *ss)
 {
 	struct rule *r;
 	struct cond *cond;
@@ -54,14 +53,14 @@ ruleset_match(struct smtpd *env, char *tag, struct mailaddr *mailaddr, struct so
 		if (r->r_tag[0] != '\0' && strcmp(r->r_tag, tag) != 0)
 			continue;
 
-		if (ss != NULL && !auth &&
-			!ruleset_check_source(r->r_sources, ss))
+		if (ss != NULL &&
+		    (!(path->flags & F_PATH_AUTHENTICATED) &&
+			! ruleset_check_source(r->r_sources, ss)))
 			continue;
 
 		TAILQ_FOREACH(cond, &r->r_conditions, c_entry) {
 			if (cond->c_type == C_ALL) {
-				if (retcond != NULL)
-					*retcond = cond;
+				path->cond = cond;
 				return r;
 			}
 
@@ -73,17 +72,15 @@ ruleset_match(struct smtpd *env, char *tag, struct mailaddr *mailaddr, struct so
 				switch (map->m_src) {
 				case S_NONE:
 					TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-						if (hostname_match(mailaddr->domain, me->me_key.med_string)) {
-							if (retcond != NULL)
-								*retcond = cond;
+						if (hostname_match(path->domain, me->me_key.med_string)) {
+							path->cond = cond;
 							return r;
 						}
 					}
 					break;
 				case S_DB:
-					if (map_dblookup(env, map->m_id, mailaddr->domain) != NULL) {
-						if (retcond != NULL)
-							*retcond = cond;
+					if (map_dblookup(env, map->m_id, path->domain) != NULL) {
+						path->cond = cond;
 						return r;
 					}
 					break;
@@ -94,9 +91,8 @@ ruleset_match(struct smtpd *env, char *tag, struct mailaddr *mailaddr, struct so
 			}
 
 			if (cond->c_type == C_VDOM) {
-				if (aliases_vdomain_exists(env, cond->c_map, mailaddr->domain)) {
-					if (retcond != NULL)
-						*retcond = cond;
+				if (aliases_vdomain_exists(env, cond->c_map, path->domain)) {
+					path->cond = cond;
 					return r;
 				}
 			}

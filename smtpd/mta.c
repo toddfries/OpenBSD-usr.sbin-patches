@@ -265,8 +265,8 @@ mta_dispatch_runner(int sig, short event, void *p)
 			if ((m = malloc(sizeof(*m))) == NULL)
 				fatal(NULL);
 			*m = *append;
-			strlcpy(m->storage.session.errorline, "000 init",
-			    sizeof(m->storage.session.errorline));
+			strlcpy(m->session_errorline, "000 init",
+			    sizeof(m->session_errorline));
  			TAILQ_INSERT_TAIL(&s->recipients, m, entry);
 			break;
 		}
@@ -678,9 +678,9 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 
 		/* set envelope sender */
 		m = TAILQ_FIRST(&s->recipients);
-		if (m->storage.sender.user[0] && m->storage.sender.domain[0])
+		if (m->sender.user[0] && m->sender.domain[0])
 			if (client_sender(s->smtp_state, "%s@%s",
-			    m->storage.sender.user, m->storage.sender.domain) < 0)
+			    m->sender.user, m->sender.domain) < 0)
 				fatal("mta: client_sender failed");
 			
 		/* set envelope recipients */
@@ -899,13 +899,13 @@ mta_message_status(struct message *m, char *status)
 	 * higher status (eg. 5yz is of higher status than 4yz), so check
 	 * this before deciding to overwrite existing status with a new one.
 	 */
-	if (strncmp(m->storage.session.errorline, status, 3) > 0)
+	if (strncmp(m->session_errorline, status, 3) > 0)
 		return;
 
 	/* change status */
-	log_debug("mta: new status for %s@%s: %s", m->storage.recipient.user,
-	    m->storage.recipient.domain, status);
-	strlcpy(m->storage.session.errorline, status, sizeof(m->storage.session.errorline));
+	log_debug("mta: new status for %s@%s: %s", m->recipient.user,
+	    m->recipient.domain, status);
+	strlcpy(m->session_errorline, status, sizeof(m->session_errorline));
 }
 
 void
@@ -943,7 +943,7 @@ mta_request_datafd(struct mta_session *s)
 
 	b.id = s->id;
 	m = TAILQ_FIRST(&s->recipients);
-	strlcpy(b.message_id, m->storage.message_id, sizeof(b.message_id));
+	strlcpy(b.message_id, m->message_id, sizeof(b.message_id));
 	imsg_compose_event(s->env->sc_ievs[PROC_QUEUE], IMSG_QUEUE_MESSAGE_FD,
 	    0, 0, -1, &b, sizeof(b));
 }

@@ -126,8 +126,7 @@ queue_record_layout_envelope(char *queuepath, struct message *message)
 
 again:
 	if (! bsnprintf(evpname, sizeof(evpname), "%s/%s%s/%s.%qu", queuepath,
-		message->storage.message_id, PATH_ENVELOPES,
-		message->storage.message_id,
+		message->message_id, PATH_ENVELOPES, message->message_id,
 		(u_int64_t)arc4random()))
 		fatalx("queue_record_incoming_envelope: snprintf");
 
@@ -144,12 +143,12 @@ again:
 	if (fp == NULL)
 		fatal("queue_record_incoming_envelope: fdopen");
 
-	message->storage.creation = time(NULL);
-	if (strlcpy(message->storage.message_uid, strrchr(evpname, '/') + 1,
-	    sizeof(message->storage.message_uid)) >= sizeof(message->storage.message_uid))
+	message->creation = time(NULL);
+	if (strlcpy(message->message_uid, strrchr(evpname, '/') + 1,
+	    sizeof(message->message_uid)) >= sizeof(message->message_uid))
 		fatalx("queue_record_incoming_envelope: truncation");
 
-	if (fwrite(&message->storage, sizeof (struct message_storage), 1, fp) != 1) {
+	if (fwrite(message, sizeof (struct message), 1, fp) != 1) {
 		if (errno == ENOSPC)
 			goto tempfail;
 		fatal("queue_record_incoming_envelope: write");
@@ -163,8 +162,8 @@ again:
 tempfail:
 	unlink(evpname);
 	close(fd);
-	message->storage.creation = 0;
-	message->storage.message_uid[0] = '\0';
+	message->creation = 0;
+	message->message_uid[0] = '\0';
 
 	return 0;
 }
@@ -175,7 +174,7 @@ queue_remove_layout_envelope(char *queuepath, struct message *message)
 	char pathname[MAXPATHLEN];
 
 	if (! bsnprintf(pathname, sizeof(pathname), "%s/%s%s/%s", queuepath,
-		message->storage.message_id, PATH_ENVELOPES, message->storage.message_uid))
+		message->message_id, PATH_ENVELOPES, message->message_uid))
 		fatal("queue_remove_incoming_envelope: snprintf");
 
 	if (unlink(pathname) == -1)
@@ -191,11 +190,11 @@ queue_commit_layout_message(char *queuepath, struct message *messagep)
 	char queuedir[MAXPATHLEN];
 	
 	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", queuepath,
-		messagep->storage.message_id))
+		messagep->message_id))
 		fatal("queue_commit_message_incoming: snprintf");
 
 	if (! bsnprintf(queuedir, sizeof(queuedir), "%s/%d", PATH_QUEUE,
-		queue_hash(messagep->storage.message_id)))
+		queue_hash(messagep->message_id)))
 		fatal("queue_commit_message_incoming: snprintf");
 
 	if (mkdir(queuedir, 0700) == -1) {
@@ -206,7 +205,7 @@ queue_commit_layout_message(char *queuepath, struct message *messagep)
 	}
 
 	if (strlcat(queuedir, "/", sizeof(queuedir)) >= sizeof(queuedir) ||
-	    strlcat(queuedir, messagep->storage.message_id, sizeof(queuedir)) >=
+	    strlcat(queuedir, messagep->message_id, sizeof(queuedir)) >=
 	    sizeof(queuedir))
 		fatalx("queue_commit_incoming_message: truncation");
 
@@ -225,7 +224,7 @@ queue_open_layout_messagefile(char *queuepath, struct message *messagep)
 	char pathname[MAXPATHLEN];
 	
 	if (! bsnprintf(pathname, sizeof(pathname), "%s/%s/message", queuepath,
-		messagep->storage.message_id))
+		messagep->message_id))
 		fatal("queue_open_incoming_message_file: snprintf");
 
 	return open(pathname, O_CREAT|O_EXCL|O_RDWR, 0600);
@@ -277,8 +276,8 @@ bounce_create_layout(char *msgid, struct message *message)
 		return 0;
 
 	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/%d/%s/message",
-		PATH_QUEUE, queue_hash(message->storage.message_id),
-		message->storage.message_id))
+		PATH_QUEUE, queue_hash(message->message_id),
+		message->message_id))
 		return 0;
 
 	if (! bsnprintf(lnkpath, sizeof(lnkpath), "%s/%s/message",
@@ -300,8 +299,8 @@ bounce_delete_message(char *msgid)
 int
 bounce_record_envelope(struct message *message)
 {
-	message->storage.lasttry = 0;
-	message->storage.retry = 0;
+	message->lasttry = 0;
+	message->retry = 0;
 	return queue_record_layout_envelope(PATH_BOUNCE, message);
 }
 
@@ -323,19 +322,18 @@ bounce_record_message(struct message *messagep)
 	char	msgid[MAX_ID_SIZE];
 	struct message mbounce;
 
-	if (messagep->storage.type == T_BOUNCE_MESSAGE) {
+	if (messagep->type == T_BOUNCE_MESSAGE) {
 		log_debug("mailer daemons loop detected !");
 		return 0;
 	}
 
 	mbounce = *messagep;
-	mbounce.storage.type = T_BOUNCE_MESSAGE;
+	mbounce.type = T_BOUNCE_MESSAGE;
 
 	if (! bounce_create_layout(msgid, messagep))
 		return 0;
 
-	strlcpy(mbounce.storage.message_id, msgid,
-	    sizeof(mbounce.storage.message_id));
+	strlcpy(mbounce.message_id, msgid, sizeof(mbounce.message_id));
 	if (! bounce_record_envelope(&mbounce))
 		return 0;
 
@@ -443,21 +441,21 @@ queue_delete_message(char *msgid)
 void
 queue_message_update(struct message *messagep)
 {
+	messagep->flags &= ~F_MESSAGE_PROCESSING;
+	messagep->status &= ~(S_MESSAGE_ACCEPTED|S_MESSAGE_REJECTED);
 	messagep->batch_id = 0;
-	messagep->storage.flags &= ~F_MESSAGE_PROCESSING;
-	messagep->storage.status &= ~(S_MESSAGE_ACCEPTED|S_MESSAGE_REJECTED);
-	messagep->storage.retry++;
+	messagep->retry++;
 
-	if (messagep->storage.status & S_MESSAGE_PERMFAILURE) {
-		if (messagep->storage.type != T_BOUNCE_MESSAGE &&
-		    messagep->storage.sender.user[0] != '\0')
+	if (messagep->status & S_MESSAGE_PERMFAILURE) {
+		if (messagep->type != T_BOUNCE_MESSAGE &&
+		    messagep->sender.user[0] != '\0')
 			bounce_record_message(messagep);
 		queue_remove_envelope(messagep);
 		return;
 	}
 
-	if (messagep->storage.status & S_MESSAGE_TEMPFAILURE) {
-		messagep->storage.status &= ~S_MESSAGE_TEMPFAILURE;
+	if (messagep->status & S_MESSAGE_TEMPFAILURE) {
+		messagep->status &= ~S_MESSAGE_TEMPFAILURE;
 		queue_update_envelope(messagep);
 		return;
 	}
@@ -472,22 +470,22 @@ queue_remove_envelope(struct message *messagep)
 	char pathname[MAXPATHLEN];
 	u_int16_t hval;
 
-	hval = queue_hash(messagep->storage.message_id);
+	hval = queue_hash(messagep->message_id);
 
 	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s%s/%s",
-		PATH_QUEUE, hval, messagep->storage.message_id, PATH_ENVELOPES,
-		messagep->storage.message_uid))
+		PATH_QUEUE, hval, messagep->message_id, PATH_ENVELOPES,
+		messagep->message_uid))
 		fatal("queue_remove_envelope: snprintf");
 
 	if (unlink(pathname) == -1)
 		fatal("queue_remove_envelope: unlink");
 
 	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s%s", PATH_QUEUE,
-		hval, messagep->storage.message_id, PATH_ENVELOPES))
+		hval, messagep->message_id, PATH_ENVELOPES))
 		fatal("queue_remove_envelope: snprintf");
 
 	if (rmdir(pathname) != -1)
-		queue_delete_message(messagep->storage.message_id);
+		queue_delete_message(messagep->message_id);
 
 	return 1;
 }
@@ -507,8 +505,8 @@ queue_update_envelope(struct message *messagep)
 		fatalx("queue_update_envelope");
 
 	if (! bsnprintf(dest, sizeof(dest), "%s/%d/%s%s/%s", PATH_QUEUE,
-		queue_hash(messagep->storage.message_id), messagep->storage.message_id,
-		PATH_ENVELOPES, messagep->storage.message_uid))
+		queue_hash(messagep->message_id), messagep->message_id,
+		PATH_ENVELOPES, messagep->message_uid))
 		fatal("queue_update_envelope: snprintf");
 
 	fp = fopen(temp, "w");
@@ -517,7 +515,7 @@ queue_update_envelope(struct message *messagep)
 			goto tempfail;
 		fatal("queue_update_envelope: open");
 	}
-	if (fwrite(&messagep->storage, sizeof(struct message_storage), 1, fp) != 1) {
+	if (fwrite(messagep, sizeof(struct message), 1, fp) != 1) {
 		if (errno == ENOSPC)
 			goto tempfail;
 		fatal("queue_update_envelope: fwrite");
@@ -550,7 +548,6 @@ queue_load_envelope(struct message *messagep, char *evpid)
 	char pathname[MAXPATHLEN];
 	char msgid[MAX_ID_SIZE];
 	FILE *fp;
-	struct message_storage storage;
 
 	if (strlcpy(msgid, evpid, sizeof(msgid)) >= sizeof(msgid))
 		fatalx("queue_load_envelope: truncation");
@@ -566,10 +563,9 @@ queue_load_envelope(struct message *messagep, char *evpid)
 			return 0;
 		fatal("queue_load_envelope: fopen");
 	}
-	if (fread(&storage, sizeof(struct message_storage), 1, fp) != 1)
+	if (fread(messagep, sizeof(struct message), 1, fp) != 1)
 		fatal("queue_load_envelope: fread");
 	fclose(fp);
-	messagep->storage = storage;
 
 	return 1;
 }
@@ -752,36 +748,36 @@ display_envelope(struct message *envelope, int flags)
 
 	status[0] = '\0';
 
-	getflag(&envelope->storage.status, S_MESSAGE_TEMPFAILURE, "TEMPFAIL",
+	getflag(&envelope->status, S_MESSAGE_TEMPFAILURE, "TEMPFAIL",
 	    status, sizeof(status));
 
-	if (envelope->storage.status)
-		errx(1, "%s: unexpected status 0x%04x", envelope->storage.message_uid,
-		    envelope->storage.status);
+	if (envelope->status)
+		errx(1, "%s: unexpected status 0x%04x", envelope->message_uid,
+		    envelope->status);
 
-	getflag(&envelope->storage.flags, F_MESSAGE_BOUNCE, "BOUNCE",
+	getflag(&envelope->flags, F_MESSAGE_BOUNCE, "BOUNCE",
 	    status, sizeof(status));
-	getflag(&envelope->storage.flags, F_MESSAGE_AUTHENTICATED, "AUTH",
+	getflag(&envelope->flags, F_MESSAGE_AUTHENTICATED, "AUTH",
 	    status, sizeof(status));
-	getflag(&envelope->storage.flags, F_MESSAGE_PROCESSING, "PROCESSING",
+	getflag(&envelope->flags, F_MESSAGE_PROCESSING, "PROCESSING",
 	    status, sizeof(status));
-	getflag(&envelope->storage.flags, F_MESSAGE_SCHEDULED, "SCHEDULED",
+	getflag(&envelope->flags, F_MESSAGE_SCHEDULED, "SCHEDULED",
 	    status, sizeof(status));
-	getflag(&envelope->storage.flags, F_MESSAGE_ENQUEUED, "ENQUEUED",
+	getflag(&envelope->flags, F_MESSAGE_ENQUEUED, "ENQUEUED",
 	    status, sizeof(status));
-	getflag(&envelope->storage.flags, F_MESSAGE_FORCESCHEDULE, "SCHEDULED_MANUAL",
+	getflag(&envelope->flags, F_MESSAGE_FORCESCHEDULE, "SCHEDULED_MANUAL",
 	    status, sizeof(status));
 
-	if (envelope->storage.flags)
-		errx(1, "%s: unexpected flags 0x%04x", envelope->storage.message_uid,
-		    envelope->storage.flags);
+	if (envelope->flags)
+		errx(1, "%s: unexpected flags 0x%04x", envelope->message_uid,
+		    envelope->flags);
 	
 	if (status[0])
 		status[strlen(status) - 1] = '\0';
 	else
 		strlcpy(status, "-", sizeof(status));
 
-	switch (envelope->storage.type) {
+	switch (envelope->type) {
 	case T_MDA_MESSAGE:
 		printf("MDA");
 		break;
@@ -796,15 +792,15 @@ display_envelope(struct message *envelope, int flags)
 	}
 	
 	printf("|%s|%s|%s@%s|%s@%s|%d|%u",
-	    envelope->storage.message_uid,
+	    envelope->message_uid,
 	    status,
-	    envelope->storage.sender.user, envelope->storage.sender.domain,
-	    envelope->storage.recipient.user, envelope->storage.recipient.domain,
-	    envelope->storage.lasttry,
-	    envelope->storage.retry);
+	    envelope->sender.user, envelope->sender.domain,
+	    envelope->recipient.user, envelope->recipient.domain,
+	    envelope->lasttry,
+	    envelope->retry);
 	
-	if (envelope->storage.session.errorline[0] != '\0')
-		printf("|%s", envelope->storage.session.errorline);
+	if (envelope->session_errorline[0] != '\0')
+		printf("|%s", envelope->session_errorline);
 
 	printf("\n");
 }

@@ -49,6 +49,8 @@ void		mfa_test_rcpt_resume(struct smtpd *, struct submit_status *);
 
 int		strip_source_route(char *, size_t);
 
+struct rule    *ruleset_match(struct smtpd *, struct path *, struct sockaddr_storage *);
+
 void
 mfa_sig_handler(int sig, short event, void *p)
 {
@@ -388,22 +390,20 @@ void
 mfa_test_mail(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
-	struct mailaddr		*mailaddr;
 
 	ss.id = m->id;
 	ss.code = 530;
-	ss.u.mailaddr = m->storage.sender;
-	mailaddr = &ss.u.mailaddr;
+	ss.u.path = m->sender;
 
-	if (strip_source_route(mailaddr->user, sizeof(mailaddr->user)))
+	if (strip_source_route(ss.u.path.user, sizeof(ss.u.path.user)))
 		goto refuse;
 
-	if (! valid_localpart(mailaddr->user) ||
-	    ! valid_domainpart(mailaddr->domain)) {
+	if (! valid_localpart(ss.u.path.user) ||
+	    ! valid_domainpart(ss.u.path.domain)) {
 		/*
 		 * "MAIL FROM:<>" is the exception we allow.
 		 */
-		if (!(mailaddr->user[0] == '\0' && mailaddr->domain[0] == '\0'))
+		if (!(ss.u.path.user[0] == '\0' && ss.u.path.domain[0] == '\0'))
 			goto refuse;
 	}
 
@@ -422,25 +422,29 @@ accept:
 }
 
 void
-mfa_test_rcpt(struct smtpd *env, struct message *message)
+mfa_test_rcpt(struct smtpd *env, struct message *m)
 {
 	struct submit_status	 ss;
-	struct mailaddr		*mailaddr;
 
-	if (! valid_message_id(message->storage.message_id))
+	if (! valid_message_id(m->message_id))
 		fatalx("mfa_test_rcpt: received corrupted message_id");
 
-	ss.id = message->session_id;
+	ss.id = m->session_id;
 	ss.code = 530;
-	ss.message = *message;
-	ss.u.mailaddr = message->storage.recipient;
-	mailaddr = &message->storage.recipient;
+	ss.u.path = m->session_rcpt;
+	ss.ss = m->session_ss;
+	ss.msg = *m;
+	ss.msg.recipient = m->session_rcpt;
+	ss.flags = m->flags;
 
-	strip_source_route(mailaddr->user, sizeof(mailaddr->user));
+	strip_source_route(ss.u.path.user, sizeof(ss.u.path.user));
 
-	if (! valid_localpart(mailaddr->user) ||
-	    ! valid_domainpart(mailaddr->domain))
+	if (! valid_localpart(ss.u.path.user) ||
+	    ! valid_domainpart(ss.u.path.domain))
 		goto refuse;
+
+	if (ss.flags & F_MESSAGE_AUTHENTICATED)
+		ss.u.path.flags |= F_PATH_AUTHENTICATED;
 
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RULEMATCH, 0, 0, -1,
 	    &ss, sizeof(ss));
@@ -459,6 +463,7 @@ mfa_test_rcpt_resume(struct smtpd *env, struct submit_status *ss) {
 		return;
 	}
 
+	ss->msg.recipient = ss->u.path;
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RCPT, 0, 0, -1,
 	    ss, sizeof(*ss));
 }

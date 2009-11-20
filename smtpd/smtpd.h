@@ -89,9 +89,6 @@
 /* max len of any smtp line */
 #define	SMTP_LINE_MAX		16384
 
-/* queue version */
-#define	QUEUE_VERSION		1
-
 #define F_STARTTLS		 0x01
 #define F_SMTPS			 0x02
 #define F_AUTH			 0x04
@@ -341,23 +338,15 @@ struct rule {
 	objid_t				 r_amap;
 };
 
-enum delivery_type {
-	T_DELIVERY_NONE,
-	T_DELIVERY_MBOX,
-	T_DELIVERY_MAILDIR,
-	T_DELIVERY_MDA,
-	T_DELIVERY_FILENAME
-};
-
-enum delivery_flags {
-	F_DELIVERY_ALIAS = 0x1,
-	F_DELIVERY_VIRTUAL = 0x2,
-	F_DELIVERY_EXPANDED = 0x4,
-	F_DELIVERY_NOFORWARD = 0x8,
-	F_DELIVERY_FORWARDED = 0x10,
-	F_DELIVERY_ACCOUNT = 0x20,
-	F_DELIVERY_AUTHENTICATED = 0x40,
-	F_DELIVERY_RELAY = 0x80
+enum path_flags {
+	F_PATH_ALIAS = 0x1,
+	F_PATH_VIRTUAL = 0x2,
+	F_PATH_EXPANDED = 0x4,
+	F_PATH_NOFORWARD = 0x8,
+	F_PATH_FORWARDED = 0x10,
+	F_PATH_ACCOUNT = 0x20,
+	F_PATH_AUTHENTICATED = 0x40,
+	F_PATH_RELAY = 0x80,
 };
 
 struct mailaddr {
@@ -365,28 +354,31 @@ struct mailaddr {
 	char	domain[MAX_DOMAINPART_SIZE];
 };
 
-union delivery_data {
+union path_data {
 	char username[MAXLOGNAME];
-	char pathname[MAXPATHLEN];
-	char mda[MAXPATHLEN];
+	char filename[MAXPATHLEN];
+	char filter[MAXPATHLEN];
 	struct mailaddr mailaddr;
 };
 
-struct delivery {
-	enum delivery_type		 type;
-	union delivery_data    		 u;
-	enum delivery_flags	       	 flags;
-
-	struct passwd			*pw;
+struct path {
+	TAILQ_ENTRY(path)		 entry;
+	struct rule			 rule;
+	struct cond			*cond;
+	enum path_flags			 flags;
+	u_int8_t			 forwardcnt;
+	char				 user[MAX_LOCALPART_SIZE];
+	char				 domain[MAX_DOMAINPART_SIZE];
 	char				 pw_name[MAXLOGNAME];
-	
+	union path_data			 u;
 };
+TAILQ_HEAD(deliverylist, path);
 
 enum expand_type {
 	EXPAND_INVALID,
 	EXPAND_USERNAME,
 	EXPAND_FILENAME,
-	EXPAND_MDA,
+	EXPAND_FILTER,
 	EXPAND_INCLUDE,
 	EXPAND_ADDRESS
 };
@@ -401,12 +393,12 @@ struct expand_node {
 	size_t			refcnt;
 	enum expand_flags      	flags;
 	enum expand_type       	type;
-	union delivery_data    	u;
+	union path_data		u;
 };
 
 struct alias {
-	enum expand_type	type;
-	union delivery_data    	u;
+	enum expand_type type;
+	union path_data		u;
 };
 
 enum message_type {
@@ -433,58 +425,38 @@ enum message_flags {
 	F_MESSAGE_AUTHENTICATED	= 0x8,
 	F_MESSAGE_ENQUEUED	= 0x10,
 	F_MESSAGE_FORCESCHEDULE	= 0x20,
-	F_MESSAGE_BOUNCE	= 0x40,
-	F_MESSAGE_EXPANDED	= 0x80
-};
-
-struct session_data {
-	char				tag[MAX_TAG_SIZE];
-	char				helo[MAXHOSTNAMELEN];
-	char				hostname[MAXHOSTNAMELEN];
-	char				errorline[MAX_LINE_SIZE];
-	struct mailaddr			sender;
-	struct mailaddr			recipient;
-	struct sockaddr_storage		ss;
-};
-
-struct message_storage {
-	u_int8_t			 version;
-
-	enum message_type		 type;
-
-	char				 message_id[MAX_ID_SIZE];
-	char				 message_uid[MAX_ID_SIZE];
-
-	struct session_data		 session;
-
-	struct mailaddr			 sender;
-	struct mailaddr			 recipient;
-
-	struct delivery			 delivery;
-
-	time_t				 creation;
-	time_t				 lasttry;
-	u_int8_t			 retry;
-
-	enum message_flags		 flags;
-	enum message_status		 status;
-
-	struct mta_relay		*relay;
+	F_MESSAGE_BOUNCE	= 0x40
 };
 
 struct message {
 	TAILQ_ENTRY(message)		 entry;
 
+	enum message_type		 type;
+
 	u_int64_t			 id;
 	u_int64_t			 session_id;
 	u_int64_t			 batch_id;
 
-	struct rule			 rule;
-	struct cond			 condition;
+	char				 tag[MAX_TAG_SIZE];
 
-	struct message_storage 		 storage;
+	char				 message_id[MAX_ID_SIZE];
+	char				 message_uid[MAX_ID_SIZE];
+
+	char				 session_helo[MAXHOSTNAMELEN];
+	char				 session_hostname[MAXHOSTNAMELEN];
+	char				 session_errorline[MAX_LINE_SIZE];
+	struct sockaddr_storage		 session_ss;
+	struct path			 session_rcpt;
+
+	struct path			 sender;
+	struct path			 recipient;
+
+	time_t				 creation;
+	time_t				 lasttry;
+	u_int8_t			 retry;
+	enum message_flags		 flags;
+	enum message_status		 status;
 };
-TAILQ_HEAD(deliverylist, message);
 
 enum batch_type {
 	T_MDA_BATCH		= 0x1,
@@ -725,20 +697,19 @@ struct submit_status {
 	u_int64_t			 id;
 	int				 code;
 	union submit_path {
-		struct delivery		 delivery;
-		struct mailaddr		 mailaddr;
+		struct path		 path;
 		char			 msgid[MAX_ID_SIZE];
 		char			 errormsg[MAX_LINE_SIZE];
 	}				 u;
 	enum message_flags		 flags;
-	struct message			 message;
+	struct sockaddr_storage		 ss;
+	struct message			 msg;
 };
 
 struct forward_req {
 	u_int64_t			 id;
 	u_int8_t			 status;
 	char				 pw_name[MAXLOGNAME];
-	struct message			 message;
 };
 
 struct dns {
@@ -770,10 +741,10 @@ struct lkasession {
 	SPLAY_ENTRY(lkasession)		 nodes;
 	u_int64_t			 id;
 
-	struct delivery			 delivery;
-
+	struct path			 path;
 	struct deliverylist    		 deliverylist;
-	RB_HEAD(expandtree, expand_node) expandtree;
+
+	RB_HEAD(expandtree, expand_node)	expandtree;
 
 	u_int8_t			 iterations;
 	u_int32_t			 pending;
@@ -829,8 +800,8 @@ struct mta_session {
 int aliases_exist(struct smtpd *, objid_t, char *);
 int aliases_get(struct smtpd *, objid_t, struct expandtree *, char *);
 int aliases_vdomain_exists(struct smtpd *, objid_t, char *);
-int aliases_virtual_exist(struct smtpd *, objid_t, struct mailaddr *);
-int aliases_virtual_get(struct smtpd *, objid_t, struct expandtree *, struct mailaddr *);
+int aliases_virtual_exist(struct smtpd *, objid_t, struct path *);
+int aliases_virtual_get(struct smtpd *, objid_t, struct expandtree *, struct path *);
 int alias_parse(struct alias *, char *);
 void alias_to_expand_node(struct expand_node *, struct alias *);
 
@@ -1027,7 +998,7 @@ int		 bsnprintf(char *, size_t, const char *, ...)
     __attribute__ ((format (printf, 3, 4)));
 int		 safe_fclose(FILE *);
 int		 hostname_match(char *, char *);
-int		 recipient_to_mailaddr(struct mailaddr *, char *);
+int		 recipient_to_path(struct path *, char *);
 int		 valid_localpart(char *);
 int		 valid_domainpart(char *);
 char		*ss_to_text(struct sockaddr_storage *);
@@ -1039,5 +1010,5 @@ void		 lowercase(char *, char *, size_t);
 void		 message_set_errormsg(struct message *, char *, ...);
 char		*message_get_errormsg(struct message *);
 void		 sa_set_port(struct sockaddr *, int);
-struct message	*message_dup(struct message *);
+struct path	*path_dup(struct path *);
 u_int64_t	 generate_uid(void);
