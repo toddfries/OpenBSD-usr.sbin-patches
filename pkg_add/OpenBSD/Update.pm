@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.102 2009/11/22 11:26:43 espie Exp $
+# $OpenBSD: Update.pm,v 1.105 2009/11/24 11:41:56 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -57,7 +57,7 @@ sub new
 sub add_handle
 {
 	my ($self, $set, $old, $n) = @_;
-	$old->{update} = $n;
+	$old->{update_found} = $n;
 	$set->add_newer($n);
 }
 
@@ -100,9 +100,6 @@ sub process_handle
 		if (@$l == 0) {
 			return $l;
 		}
-		if (@$l == 1 && $state->{defines}->{pkgpath}) {
-			return $l;
-		}
 		my @l2 = ();
 		$plist = OpenBSD::PackingList->from_installation($pkgname, \&OpenBSD::PackingList::UpdateInfoOnly);
 		if (!defined $plist) {
@@ -143,17 +140,16 @@ sub process_handle
 		return undef;
 	}
 	if (@$l == 1) {
-		if ($state->{defines}->{pkgpath}) {
-			$state->say("Directly updating $pkgname -> ", $l->[0]->name);
-			$self->add_location($set, $h, $l->[0]);
-			return 1;
-		}
 		if (defined $found && $found eq $l->[0] &&
 		    !$plist->uses_old_libs && !$state->{defines}->{installed}) {
-				my $msg = "No need to update $pkgname";
-				$state->progress->message($msg);
-				$state->say($msg) if $state->{beverbose};
-				return 0;
+			$h->{update_found} = $h;
+			my $msg = "No need to update $pkgname";
+			if (defined $state->{todo} && $state->{todo} > 0) {
+				$msg .= " ($state->{todo} to go)";
+			}
+			$state->progress->message($msg);
+			$state->say($msg) if $state->{beverbose};
+			return 0;
 		}
 	}
 
@@ -231,7 +227,7 @@ sub process_set
 	my ($self, $set, $state) = @_;
 	my $problem;
 	for my $h ($set->older, $set->hints) {
-		next if $h->{update};
+		next if $h->{update_found};
 		if (!defined $h->update($self, $set, $state)) {
 			$problem = 1;
 		}
