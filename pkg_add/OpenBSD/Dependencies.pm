@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.85 2009/11/28 10:25:34 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.89 2009/11/29 13:19:29 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -259,7 +259,23 @@ sub find_dep_in_stuff_to_install
 {
 	my ($self, $state, $dep) = @_;
 
-	return find_candidate($dep->spec, keys %{$state->tracker->{to_install}});
+	# this is tricky, we don't always know what we're going to actually
+	# install yet.
+	my @candidates = $dep->spec->filter(keys %{$state->tracker->{to_update}});
+	if (@candidates > 0) {
+		for my $k (@candidates) {
+			my $set = $state->tracker->{to_update}{$k};
+			push(@{$self->{deplist}}, $set);
+		}
+		$self->{not_ready} = 1;
+		return $candidates[0];
+	}
+
+	my $v = find_candidate($dep->spec, keys %{$state->tracker->{to_install}});
+	if ($v) {
+		push(@{$self->{deplist}}, $state->tracker->{to_install}->{$v});
+	}
+	return $v;
 }
 
 sub solve_dependency
@@ -276,7 +292,6 @@ sub solve_dependency
 		}
 		$v = $self->find_dep_in_stuff_to_install($state, $dep);
 		if ($v) {
-			push(@{$self->{deplist}}, $state->tracker->{to_install}->{$v});
 			return $v;
 		}
 	}
@@ -292,7 +307,6 @@ sub solve_dependency
 	if (!$state->{allow_replacing}) {
 		$v = $self->find_dep_in_stuff_to_install($state, $dep);
 		if ($v) {
-			push(@{$self->{deplist}}, $state->tracker->{to_install}->{$v});
 			return $v;
 		}
 	}
@@ -351,6 +365,7 @@ sub dump
 	    	join(',', (map {$_->short_print} @{$self->{deplist}})), 
 		")" 
 	    	if @{$self->{deplist}} > 0;
+	    print "!!" if $self->{not_ready};
 	    print "\n";
 	}
 }
@@ -384,34 +399,42 @@ sub record_old_dependencies
 	}
 }
 
+sub adjust_old_dependency_on
+{
+	my ($self, $pkgname, $state) = @_;
+
+	my $set = $self->{set};
+	
+	for my $o ($set->older) {
+		next unless defined $o->{wantlist};
+		require OpenBSD::Replace;
+		require OpenBSD::RequiredBy;
+
+		my $oldname = $o->pkgname;
+
+		$state->say("Adjusting dependencies for ",
+		    "$oldname->$pkgname") if $state->{beverbose};
+		my $d = OpenBSD::RequiredBy->new($pkgname);
+		for my $dep (@{$o->{wantlist}}) {
+			if (defined $set->{older}->{$dep}) {
+				$state->say("\tskipping $dep")
+				    if $state->{beverbose};
+				next;
+			}
+			$state->say("\t$dep") if $state->{beverbose};
+			$d->add($dep);
+			OpenBSD::Replace::adjust_dependency($dep, 
+			    $oldname, $pkgname) if $oldname ne $pkgname;
+		}
+	}
+}
+
 sub adjust_old_dependencies
 {
 	my ($self, $state) = @_;
+	
 	for my $pkg ($self->{set}->newer) {
-		my $pkgname = $pkg->pkgname;
-		for my $o ($self->{set}->older) {
-			next unless defined $o->{wantlist};
-			require OpenBSD::Replace;
-			require OpenBSD::RequiredBy;
-
-			my $oldname = $o->pkgname;
-
-			$state->say("Adjusting dependencies for ",
-			    "$pkgname/$oldname") if $state->{beverbose};
-			my $d = OpenBSD::RequiredBy->new($pkgname);
-			for my $dep (@{$o->{wantlist}}) {
-				if (defined $self->{set}->{skipupdatedeps}->{$dep}) {
-					$state->say("\tskipping $dep") 
-					    if $state->{beverbose};
-					next;
-				}
-				$state->say("\t$dep") 
-				    if $state->{beverbose};
-				$d->add($dep);
-				OpenBSD::Replace::adjust_dependency($dep, 
-				    $oldname, $pkgname);
-			}
-		}
+		$self->adjust_old_dependency_on($pkg->pkgname, $state);
 	}
 }
 
@@ -477,8 +500,8 @@ sub solve_wantlibs
 				    $h->pkgname, ":");
 			}
 			$okay = 0;
-			OpenBSD::SharedLibs::report_problem(
-			    $state->{localbase}, $lib->{name});
+			OpenBSD::SharedLibs::report_problem($state, 
+			    $lib->{name});
 		}
 	}
 	if (!$okay) {

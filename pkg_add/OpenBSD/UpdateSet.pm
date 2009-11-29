@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.28 2009/11/24 10:50:18 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.30 2009/11/29 07:54:18 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -52,10 +52,25 @@ package OpenBSD::hint2;
 our @ISA = qw(OpenBSD::hint);
 
 package OpenBSD::UpdateSet;
+
 sub new
 {
 	my $class = shift;
 	return bless {newer => {}, older => {}, hints => []}, $class;
+}
+
+sub cleanup
+{
+	my ($self, $error) = @_;
+	for my $h ($self->older, $self->newer) {
+		$h->cleanup($error);
+	}
+	$self->{error} //= $error;
+}
+
+sub has_error
+{
+	&OpenBSD::Handle::has_error;
 }
 
 sub add_newer
@@ -245,10 +260,21 @@ sub merge
 		$tracker->remove_set($set);
 		# ... and mark it as already done
 		$set->{finished} = 1;
+		# XXX and mark it as merged, for eventual updates
+		$set->{merged} = $self;
 	}
 	# then regen tracker info for $self
 	$tracker->add_set($self);
 	return $self;
+}
+
+sub real_set
+{
+	my $set = shift;
+	while (defined $set->{merged}) {
+		$set = $set->{merged};
+	}
+	return $set;
 }
 
 1;
