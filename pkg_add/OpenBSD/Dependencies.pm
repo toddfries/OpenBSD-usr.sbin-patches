@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.89 2009/11/29 13:19:29 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.93 2009/12/04 10:45:20 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -113,7 +113,12 @@ sub find_in_extra_sources
 sub find_in_new_source
 {
 	my ($self, $solver, $state, $obj, $dep) = @_;
-	OpenBSD::SharedLibs::add_libs_from_installed_package($dep);
+
+	if ($solver->{set}->{newer}->{$dep}) {
+		OpenBSD::SharedLibs::add_libs_from_plist($solver->{set}->{newer}->{$dep}->plist);
+	} else {
+		OpenBSD::SharedLibs::add_libs_from_installed_package($dep);
+	}
 	if ($solver->check_lib_spec($solver->{localbase}, $obj, 
 	    {$dep => 1})) {
 		$state->say("found libspec $obj in package $dep") 
@@ -250,9 +255,7 @@ sub find_dep_in_self
 {
 	my ($self, $state, $dep) = @_;
 
-	return find_candidate($dep->spec, 
-	    map {$_->pkgname} $self->{set}->newer);
-
+	return find_candidate($dep->spec, $self->{set}->newer_names);
 }
 
 sub find_dep_in_stuff_to_install
@@ -350,7 +353,8 @@ sub check_depends
 	my @bad = ();
 
 	for my $dep ($self->dependencies) {
-		push(@bad, $dep) unless is_installed($dep);
+		push(@bad, $dep) 
+		    unless is_installed($dep) or $self->{set}->{newer}->{$dep};
 	}
 	return @bad;
 }
