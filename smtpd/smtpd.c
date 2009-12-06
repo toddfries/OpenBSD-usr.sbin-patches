@@ -59,6 +59,7 @@ void		 parent_dispatch_mfa(int, short, void *);
 void		 parent_dispatch_mta(int, short, void *);
 void		 parent_dispatch_smtp(int, short, void *);
 void		 parent_dispatch_runner(int, short, void *);
+void		 parent_dispatch_queue(int, short, void *);
 void		 parent_dispatch_control(int, short, void *);
 void		 parent_sig_handler(int, short, void *);
 int		 parent_open_message_file(struct batch *);
@@ -647,6 +648,51 @@ parent_dispatch_smtp(int fd, short event, void *p)
 }
 
 void
+parent_dispatch_queue(int sig, short event, void *p)
+{
+	struct smtpd		*env = p;
+	struct imsgev		*iev;
+	struct imsgbuf		*ibuf;
+	struct imsg		 imsg;
+	ssize_t			 n;
+
+	iev = env->sc_ievs[PROC_QUEUE];
+	ibuf = &iev->ibuf;
+
+	if (event & EV_READ) {
+		if ((n = imsg_read(ibuf)) == -1)
+			fatal("imsg_read_error");
+		if (n == 0) {
+			/* this pipe is dead, so remove the event handler */
+			event_del(&iev->ev);
+			event_loopexit(NULL);
+			return;
+		}
+	}
+
+	if (event & EV_WRITE) {
+		if (msgbuf_write(&ibuf->w) == -1)
+			fatal("msgbuf_write");
+	}
+
+	for (;;) {
+		if ((n = imsg_get(ibuf, &imsg)) == -1)
+			fatal("parent_dispatch_queue: imsg_get error");
+		if (n == 0)
+			break;
+
+		switch (imsg.hdr.type) {
+		default:
+			log_warnx("parent_dispatch_queue: got imsg %d",
+			    imsg.hdr.type);
+			fatalx("parent_dispatch_queue: unexpected imsg");
+		}
+		imsg_free(&imsg);
+	}
+	imsg_event_add(iev);
+}
+
+void
 parent_dispatch_runner(int sig, short event, void *p)
 {
 	struct smtpd		*env = p;
@@ -754,6 +800,31 @@ parent_dispatch_control(int sig, short event, void *p)
 				r->ret = 1;
 			}
 			imsg_compose_event(iev, IMSG_CONF_RELOAD, 0, 0, -1, r, sizeof(*r));
+			break;
+		}
+		case IMSG_CTL_VERBOSE: {
+			int verbose;
+
+			IMSG_SIZE_CHECK(&verbose);
+
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+
+			log_debug("parent_dispatch_control: got IMSG_CTL_VERBOSE");
+			log_verbose(verbose);
+			imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_MDA], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_MFA], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_MTA], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_CTL_VERBOSE,
+	    		    0, 0, -1, &verbose, sizeof(verbose));
 			break;
 		}
 		default:
@@ -875,6 +946,7 @@ main(int argc, char *argv[])
 		{ PROC_MFA,	parent_dispatch_mfa },
 		{ PROC_MTA,	parent_dispatch_mta },
 		{ PROC_SMTP,	parent_dispatch_smtp },
+		{ PROC_QUEUE,	parent_dispatch_queue },
 		{ PROC_RUNNER,	parent_dispatch_runner }
 	};
 

@@ -99,6 +99,16 @@ mfa_dispatch_parent(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_CTL_VERBOSE: {
+			int verbose;
+
+			IMSG_SIZE_CHECK(&verbose);
+
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_debug("mfa_dispatch_parent: got IMSG_CTL_VERBOSE");
+			log_verbose(verbose);
+			break;
+		}
 		default:
 			log_warnx("mfa_dispatch_parent: got imsg %d",
 			    imsg.hdr.type);

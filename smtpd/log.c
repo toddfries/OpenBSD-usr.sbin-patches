@@ -36,6 +36,7 @@
 #include "smtpd.h"
 
 int	 debug;
+int	 verbose;
 
 void	 vlog(int, const char *, va_list);
 void	 logit(int, const char *, ...)
@@ -48,11 +49,18 @@ log_init(int n_debug)
 	extern char	*__progname;
 
 	debug = n_debug;
+	verbose = n_debug;
 
 	if (!debug)
 		openlog(__progname, LOG_PID | LOG_NDELAY, LOG_MAIL);
 
 	tzset();
+}
+
+void
+log_verbose(int v)
+{
+	verbose = v;
 }
 
 void
@@ -134,7 +142,7 @@ log_debug(const char *emsg, ...)
 {
 	va_list	 ap;
 
-	if (debug > 1) {
+	if (verbose) {
 		va_start(ap, emsg);
 		vlog(LOG_DEBUG, emsg, ap);
 		va_end(ap);
