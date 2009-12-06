@@ -258,6 +258,16 @@ lka_dispatch_parent(int sig, short event, void *p)
 			lka_expand_pickup(env, lkasession);
 			break;
 		}
+		case IMSG_CTL_VERBOSE: {
+			int verbose;
+
+			IMSG_SIZE_CHECK(&verbose);
+
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_debug("lka_dispatch_parent: got IMSG_CTL_VERBOSE");
+			log_verbose(verbose);
+			break;
+		}
 		default:
 			log_warnx("lka_dispatch_parent: got imsg %d",
 			    imsg.hdr.type);
