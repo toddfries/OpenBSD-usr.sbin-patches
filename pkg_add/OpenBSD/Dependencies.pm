@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.93 2009/12/04 10:45:20 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.95 2009/12/05 11:45:35 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -305,6 +305,15 @@ sub solve_dependency
 	}
 	$v = find_candidate($dep->spec, @l);
 	if ($v) {
+		if ($state->{newupdates}) {
+			if ($state->tracker->is_known($v)) {
+				return $v;
+			}
+			my $set = OpenBSD::UpdateSet->new->add_older(OpenBSD::Handle->create_old($v, $state));
+			push(@{$self->{deplist}}, $set);
+			$state->tracker->add_set($set);
+			$self->{not_ready} = 1;
+		}
 		return $v;
 	}
 	if (!$state->{allow_replacing}) {
@@ -501,7 +510,7 @@ sub solve_wantlibs
 			    $lib->{name});
 			if ($okay) {
 				$state->errsay("Can't install ", 
-				    $h->pkgname, ":");
+				    $h->pkgname, " because of libraries");
 			}
 			$okay = 0;
 			OpenBSD::SharedLibs::report_problem($state, 
