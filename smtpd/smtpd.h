@@ -794,7 +794,7 @@ struct mta_session {
 	int			 datafd;
 	struct event		 ev;
 	char			*cert;
-	void			*pcb;
+	void			*smtp_state;
 };
 
 /* aliases.c */

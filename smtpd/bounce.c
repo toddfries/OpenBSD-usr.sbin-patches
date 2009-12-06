@@ -39,7 +39,7 @@
 struct client_ctx {
 	struct event		 ev;
 	struct message		 m;
-	struct smtp_client	*pcb;
+	struct smtp_client	*sp;
 };
 
 void		 bounce_event(int, short, void *);
@@ -61,14 +61,17 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	/* init smtp session */
 	if ((cc = calloc(1, sizeof(*cc))) == NULL)
 		goto fail;
-	cc->pcb = client_init(fd, env->sc_hostname, 1);
+	if ((cc->sp = client_init(fd, env->sc_hostname)) == NULL)
+		goto fail;
 	cc->m = *messagep;
 
-	client_ssl_optional(cc->pcb);
+	if (client_ssl_optional(cc->sp) < 0)
+		goto fail;
 
 	/* assign recipient */
-	client_rcpt(cc->pcb, NULL, "%s@%s", messagep->sender.user,
-	    messagep->sender.domain);
+	if (client_rcpt(cc->sp, "%s@%s", messagep->sender.user,
+	    messagep->sender.domain) < 0)
+		goto fail;
 
 	/* Construct an appropriate reason line. */
 	reason = messagep->session_errorline;
@@ -77,7 +80,7 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	
 	/* create message header */
 	/* XXX - The Date: header should be added during SMTP pickup. */
-	client_data_printf(cc->pcb,
+	if (client_data_printf(cc->sp,
 	    "Subject: Delivery status notification\n"
 	    "From: Mailer Daemon <MAILER-DAEMON@%s>\n"
 	    "To: %s@%s\n"
@@ -98,25 +101,27 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	    messagep->sender.user, messagep->sender.domain,
 	    time_to_text(time(NULL)),
 	    messagep->recipient.user, messagep->recipient.domain,
-	    reason);
+	    reason) < 0)
+		goto fail;
 
 	/* append original message */
 	if ((msgfd = queue_open_message_file(messagep->message_id)) == -1)
 		goto fail;
-	client_data_fd(cc->pcb, msgfd);
+	if (client_data_fd(cc->sp, msgfd) < 0)
+		goto fail;
 	close(msgfd);
 	msgfd = -1;
 
 	/* setup event */
 	session_socket_blockmode(fd, BM_NONBLOCK);
 	event_set(&cc->ev, fd, EV_WRITE, bounce_event, cc);
-	event_add(&cc->ev, &cc->pcb->timeout);
+	event_add(&cc->ev, client_timeout(cc->sp));
 
 	return 1;
 fail:
 	close(msgfd);
-	if (cc && cc->pcb)
-		client_close(cc->pcb);
+	if (cc && cc->sp)
+		client_close(cc->sp);
 	free(cc);
 	return 0;
 }
@@ -125,29 +130,45 @@ void
 bounce_event(int fd, short event, void *p)
 {
 	struct client_ctx	*cc = p;
-	char			*ep;
+	char			*ep = NULL;
+	int			 error = 0;
+	int			(*iofunc)(struct smtp_client *);
 
 	if (event & EV_TIMEOUT) {
-		ep = "150 timeout";
-		goto out;
+		message_set_errormsg(&cc->m, "150 timeout");
+		cc->m.status = S_MESSAGE_TEMPFAILURE;
+		queue_message_update(&cc->m);
+		client_close(cc->sp);
+		free(cc);
+		return;
 	}
 
-	switch (client_talk(cc->pcb)) {
+	if (event & EV_READ)
+		iofunc = client_read;
+	else
+		iofunc = client_write;
+
+	switch (iofunc(cc->sp)) {
 	case CLIENT_WANT_READ:
-		goto read;
+		event_set(&cc->ev, fd, EV_READ, bounce_event, cc);
+		event_add(&cc->ev, client_timeout(cc->sp));
+		return;
 	case CLIENT_WANT_WRITE:
-		goto write;
+		event_set(&cc->ev, fd, EV_WRITE, bounce_event, cc);
+		event_add(&cc->ev, client_timeout(cc->sp));
+		return;
+	case CLIENT_ERROR:
+		error = 1;
 	case CLIENT_RCPT_FAIL:
-		ep = cc->pcb->reply;
-		break;
 	case CLIENT_DONE:
-		ep = cc->pcb->status;
 		break;
-	default:
-		fatalx("bounce_event: unexpected code");
 	}
 
-out:
+	if (error)
+		ep = client_strerror(cc->sp);
+	else
+		ep = client_reply(cc->sp);
+
 	if (*ep == '2')
 		queue_remove_envelope(&cc->m);
 	else {
@@ -159,16 +180,6 @@ out:
 		queue_message_update(&cc->m);
 	}
 
-	client_close(cc->pcb);
+	client_close(cc->sp);
 	free(cc);
-	return;
-
-read:
-	event_set(&cc->ev, fd, EV_READ, bounce_event, cc);
-	event_add(&cc->ev, &cc->pcb->timeout);
-	return;
-
-write:
-	event_set(&cc->ev, fd, EV_WRITE, bounce_event, cc);
-	event_add(&cc->ev, &cc->pcb->timeout);
 }
