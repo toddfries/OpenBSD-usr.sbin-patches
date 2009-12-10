@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpctl.c,v 1.150 2009/12/01 14:29:40 claudio Exp $ */
+/*	$OpenBSD: bgpctl.c,v 1.153 2009/12/08 17:36:12 claudio Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -50,7 +50,7 @@ int		 show_summary_msg(struct imsg *, int);
 int		 show_summary_terse_msg(struct imsg *, int);
 int		 show_neighbor_terse(struct imsg *);
 int		 show_neighbor_msg(struct imsg *, enum neighbor_views);
-void		 print_neighbor_capa_mp_safi(u_int8_t);
+void		 print_neighbor_capa_mp(struct peer *);
 void		 print_neighbor_msgstats(struct peer *);
 void		 print_timer(const char *, time_t);
 static char	*fmt_timeframe(time_t t);
@@ -532,6 +532,8 @@ show_neighbor_msg(struct imsg *imsg, enum neighbor_views nv)
 	struct ctl_timer	*t;
 	struct in_addr		 ina;
 	char			 buf[NI_MAXHOST], pbuf[NI_MAXSERV], *s;
+	int			 hascapamp = 0;
+	u_int8_t		 i;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CTL_SHOW_NEIGHBOR:
@@ -578,17 +580,16 @@ show_neighbor_msg(struct imsg *imsg, enum neighbor_views nv)
 		printf("  Last read %s, holdtime %us, keepalive interval %us\n",
 		    fmt_timeframe(p->stats.last_read),
 		    p->holdtime, p->holdtime/3);
-		if (p->capa.peer.mp_v4 || p->capa.peer.mp_v6 ||
-		    p->capa.peer.refresh || p->capa.peer.restart ||
-		    p->capa.peer.as4byte) {
+		for (i = 0; i < AID_MAX; i++)
+			if (p->capa.peer.mp[i])
+				hascapamp = 1;
+		if (hascapamp || p->capa.peer.refresh ||
+		    p->capa.peer.restart || p->capa.peer.as4byte) {
 			printf("  Neighbor capabilities:\n");
-			if (p->capa.peer.mp_v4) {
-				printf("    Multiprotocol extensions: IPv4");
-				print_neighbor_capa_mp_safi(p->capa.peer.mp_v4);
-			}
-			if (p->capa.peer.mp_v6) {
-				printf("    Multiprotocol extensions: IPv6");
-				print_neighbor_capa_mp_safi(p->capa.peer.mp_v6);
+			if (hascapamp) {
+				printf("    Multiprotocol extensions: ");
+				print_neighbor_capa_mp(p);
+				printf("\n");
 			}
 			if (p->capa.peer.refresh)
 				printf("    Route Refresh\n");
@@ -648,20 +649,16 @@ show_neighbor_msg(struct imsg *imsg, enum neighbor_views nv)
 }
 
 void
-print_neighbor_capa_mp_safi(u_int8_t safi)
+print_neighbor_capa_mp(struct peer *p)
 {
-	switch (safi) {
-	case SAFI_UNICAST:
-		printf(" Unicast");
-		break;
-	case SAFI_MULTICAST:
-		printf(" Multicast");
-		break;
-	default:
-		printf(" unknown (%u)", safi);
-		break;
-	}
-	printf("\n");
+	int		comma;
+	u_int8_t	i;
+
+	for (i = 0, comma = 0; i < AID_MAX; i++)
+		if (p->capa.peer.mp[i]) {
+			printf("%s%s", comma ? ", " : "", aid2str(i));
+			comma = 1;
+		}
 }
 
 void
@@ -1234,7 +1231,7 @@ show_rib_detail_msg(struct imsg *imsg, int nodescr)
 			memcpy(&as, data, sizeof(as));
 			memcpy(&id, data + sizeof(as), sizeof(id));
 			printf("    Aggregator: %s [%s]\n", 
-			    log_as(htonl(as)), inet_ntoa(id));
+			    log_as(ntohl(as)), inet_ntoa(id));
 			break;
 		case ATTR_ORIGINATOR_ID:
 			memcpy(&id, data, sizeof(id));
@@ -1419,19 +1416,20 @@ show_ext_community(u_char *data, u_int16_t len)
 		case EXT_COMMUNITY_TWO_AS:
 			memcpy(&as2, data + i + 2, sizeof(as2));
 			memcpy(&u32, data + i + 4, sizeof(u32));
-			printf("%s %hu:%u", get_ext_subtype(subtype), as2, u32);
+			printf("%s %s:%u", get_ext_subtype(subtype),
+			    log_as(ntohs(as2)), ntohl(u32));
 			break;
 		case EXT_COMMUNITY_IPV4:
 			memcpy(&ip, data + i + 2, sizeof(ip));
 			memcpy(&u16, data + i + 6, sizeof(u16));
 			printf("%s %s:%hu", get_ext_subtype(subtype),
-			    inet_ntoa(ip), u16);
+			    inet_ntoa(ip), ntohs(u16));
 			break;
 		case EXT_COMMUNITY_FOUR_AS:
 			memcpy(&as4, data + i + 2, sizeof(as4));
 			memcpy(&u16, data + i + 6, sizeof(u16));
 			printf("%s %s:%hu", get_ext_subtype(subtype),
-			    log_as(as4), u16);
+			    log_as(ntohl(as4)), ntohs(u16));
 			break;
 		case EXT_COMMUNITY_OPAQUE:
 			memcpy(&ext, data + i, sizeof(ext));
