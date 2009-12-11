@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.77 2009/11/16 09:40:43 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.79 2009/12/10 15:02:30 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -879,7 +879,7 @@ mta_message_status(struct message *m, char *status)
 	 * higher status (eg. 5yz is of higher status than 4yz), so check
 	 * this before deciding to overwrite existing status with a new one.
 	 */
-	if (strncmp(m->session_errorline, status, 3) > 0)
+	if (*status != '2' && strncmp(m->session_errorline, status, 3) > 0)
 		return;
 
 	/* change status */
