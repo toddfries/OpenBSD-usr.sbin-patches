@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.26 2009/11/13 20:34:51 chl Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.30 2009/12/13 22:02:55 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -27,6 +27,7 @@
 #include <err.h>
 #include <errno.h>
 #include <event.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <pwd.h>
 #include <signal.h>
@@ -78,7 +79,6 @@ struct {
 };
 
 #define	SMTP_LINELEN		1000
-#define	SMTP_TIMEOUT		120
 #define	TIMEOUTMSG		"Timeout\n"
 
 #define WSP(c)			(c == ' ' || c == '\t')
@@ -122,10 +122,10 @@ sighdlr(int sig)
 int
 enqueue(int argc, char *argv[])
 {
-	int			 i, ch, tflag = 0, noheader, ret;
+	int			 i, ch, tflag = 0, noheader;
 	char			*fake_from = NULL;
 	struct passwd		*pw;
-	struct smtp_client	*sp;
+	struct smtp_client	*pcb;
 	struct buf		*body;
 
 	bzero(&msg, sizeof(msg));
@@ -186,15 +186,14 @@ enqueue(int argc, char *argv[])
 	}
 
 	signal(SIGALRM, sighdlr);
-	alarm(SMTP_TIMEOUT);
+	alarm(300);
 
-	msg.fd = open_connection();
+	if ((msg.fd = open_connection()) == -1)
+		errx(1, "server too busy");
 
 	/* init session */
-	if ((sp = client_init(msg.fd, "localhost")) == NULL)
-		err(1, "client_init failed");
-	if (verbose)
-		client_verbose(sp, stdout);
+	pcb = client_init(msg.fd, open("/dev/null", O_RDONLY), "localhost",
+	    verbose);
 
 	/* parse message */
 	if ((body = buf_dynamic(0, SIZE_T_MAX)) < 0)
@@ -202,67 +201,59 @@ enqueue(int argc, char *argv[])
 	noheader = parse_message(stdin, fake_from == NULL, tflag, body);
 
 	/* set envelope from */
-	if (client_sender(sp, "%s", msg.from) < 0)
-		err(1, "client_sender failed");
+	client_sender(pcb, "%s", msg.from);
 
 	/* add recipients */
 	if (msg.rcpt_cnt == 0)
 		errx(1, "no recipients");
 	for (i = 0; i < msg.rcpt_cnt; i++)
-		if (client_rcpt(sp, "%s", msg.rcpts[i]) < 0)
-			err(1, "client_rcpt failed");
+		client_rcpt(pcb, "%s", msg.rcpts[i]);
 
 	/* add From */
-	if (!msg.saw_from) {
-		if (msg.fromname != NULL) {
-			if (client_data_printf(sp,
-			    "From: %s <%s>\n", msg.fromname, msg.from) < 0)
-				err(1, "client_data_printf failed");
-		} else
-			if (client_data_printf(sp,
-			    "From: %s\n", msg.from) < 0)
-				err(1, "client_data_printf failed");
-	}
+	if (!msg.saw_from)
+		client_printf(pcb, "From: %s%s<%s>\n",
+		    msg.fromname ? msg.fromname : "",
+		    msg.fromname ? " " : "", 
+		    msg.from);
 
 	/* add Date */
 	if (!msg.saw_date)
-		if (client_data_printf(sp,
-		    "Date: %s\n", time_to_text(timestamp)) < 0)
-			err(1, "client_data_printf failed");
+		client_printf(pcb, "Date: %s\n", time_to_text(timestamp));
 
 	/* add Message-Id */
 	if (!msg.saw_msgid)
-		if (client_data_printf(sp,
-		    "Message-Id: <%llu.enqueue@%s>\n",
-			generate_uid(), host) < 0)
-			err(1, "client_data_printf failed");
+		client_printf(pcb, "Message-Id: <%llu.enqueue@%s>\n",
+		    generate_uid(), host);
 
 	/* add separating newline */
 	if (noheader)
-		if (client_data_printf(sp, "\n") < 0)
-			err(1, "client_data_printf failed");
+		client_printf(pcb, "\n");
 
-	if (client_data_printf(sp, "%.*s", buf_size(body), body->buf) < 0)
-		err(1, "client_data_printf failed");
+	client_printf(pcb, "%.*s", buf_size(body), body->buf);
 	buf_free(body);
 
 	/* run the protocol engine */
 	for (;;) {
-		while ((ret = client_read(sp)) == CLIENT_WANT_READ)
-			;
-		if (ret == CLIENT_ERROR)
-			errx(1, "read error: %s", client_strerror(sp));
-		if (ret == CLIENT_RCPT_FAIL)
-			errx(1, "recipient refused: %s", client_reply(sp));
-		if (ret == CLIENT_DONE)
+		alarm(pcb->timeout.tv_sec);
+
+		switch (client_talk(pcb)) {
+		case CLIENT_WANT_READ:
+		case CLIENT_WANT_WRITE:
+			continue;
+		case CLIENT_RCPT_FAIL:
+			errx(1, "%s", pcb->reply);
+		case CLIENT_DONE:
 			break;
-		while ((ret = client_write(sp)) == CLIENT_WANT_WRITE)
-			;
-		if (ret == CLIENT_ERROR)
-			errx(1, "write error: %s", client_strerror(sp));
+		default:
+			errx(1, "client_talk: unexpected code");
+		}
+
+		if (pcb->status[0] != '2')
+			errx(1, "%s", pcb->status);
+		break;
 	}
 
-	client_close(sp);
+	client_close(pcb);
 
 	close(msg.fd);
 	exit (0);
@@ -478,7 +469,7 @@ qualify_addr(char *in)
 {
 	char	*out;
 
-	if (strchr(in, '@') == NULL) {
+	if (strlen(in) > 0 && strchr(in, '@') == NULL) {
 		if (asprintf(&out, "%s@%s", in, host) == -1)
 			err(1, "qualify asprintf");
 	} else

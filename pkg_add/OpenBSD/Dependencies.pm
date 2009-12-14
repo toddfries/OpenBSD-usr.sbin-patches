@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.96 2009/12/07 13:41:02 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.98 2009/12/13 17:54:15 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -243,7 +243,7 @@ sub find_dep_in_repositories
 		@pkgs = ((grep {$_ eq $dep->{def}} @pkgs),
 		    (sort (grep {$_ ne $dep->{def}} @pkgs)));
 		my $good =  OpenBSD::Interactive::ask_list(
-		    'Ambiguous: choose dependency for '.$self->{set}->short_print.': ',
+		    'Ambiguous: choose dependency for '.$self->{set}->print.': ',
 		    $state->{interactive}, @pkgs);
 		return $c{$good};
 	} else {
@@ -283,7 +283,7 @@ sub find_dep_in_stuff_to_install
 
 sub solve_dependency
 {
-	my ($self, $state, $dep) = @_;
+	my ($self, $state, $dep, $package) = @_;
 
 	my $v;
 
@@ -291,6 +291,7 @@ sub solve_dependency
 		
 		$v = $self->find_dep_in_self($state, $dep);
 		if ($v) {
+			push(@{$package->{before}}, $v);
 			return $v;
 		}
 		$v = $self->find_dep_in_stuff_to_install($state, $dep);
@@ -347,7 +348,7 @@ sub solve_depends
 
 	for my $package ($self->{set}->newer) {
 		for my $dep (@{$package->{plist}->{depend}}) {
-			my $v = $self->solve_dependency($state, $dep);
+			my $v = $self->solve_dependency($state, $dep, $package);
 			$self->{all_dependencies}->{$v} = $dep;
 			$self->{to_register}->{$package}->{$v} = $dep;
 		}
@@ -372,10 +373,10 @@ sub dump
 {
 	my $self = shift;
 	if ($self->dependencies) {
-	    print "Dependencies for ", $self->{set}->short_print, 
+	    print "Dependencies for ", $self->{set}->print, 
 	    	" resolve to: ", join(', ',  $self->dependencies);
 	    print " (todo: ", 
-	    	join(',', (map {$_->short_print} @{$self->{deplist}})), 
+	    	join(',', (map {$_->print} @{$self->{deplist}})), 
 		")" 
 	    	if @{$self->{deplist}} > 0;
 	    print "!!" if $self->{not_ready};
