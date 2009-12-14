@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_add,v 1.419 2009/12/07 13:41:02 espie Exp $
+# $OpenBSD: pkg_add,v 1.424 2009/12/13 17:58:54 espie Exp $
 #
 # Copyright (c) 2003-2009 Marc Espie <espie@openbsd.org>
 #
@@ -81,7 +81,7 @@ sub deptree_header
 {
 	my ($state, $pkg) = @_;
 	if (defined $state->{deptree}->{$pkg}) {
-		return $state->{deptree}->{$pkg}->shorter_print.':';
+		return $state->{deptree}->{$pkg}->short_print.':';
 	} else {
 		return '';
 	}
@@ -132,7 +132,7 @@ sub setup_header
 	if (defined $handle) {
 		$header .= $handle->pkgname;
 	} else {
-		$header .= $set->short_print;
+		$header .= $set->print;
 	}
 	if (defined $info) {
 		$header.=" ($info)";
@@ -232,7 +232,7 @@ sub can_install
 
 	return 1 if @conflicts == 0;
 	if (!$state->{allow_replacing}) {
-		$state->errsay("Can't install ", $set->short_print, 
+		$state->errsay("Can't install ", $set->print, 
 		    " because of conflicts (",join(',', @conflicts), ")");
 		return 0;
 	}
@@ -246,7 +246,7 @@ sub can_install
 	for my $toreplace (@conflicts) {
 		if ($state->tracker->is_installed($toreplace)) {
 			$state->errsay("Cannot replace $toreplace in ", 
-			    $set->short_print, ": just got installed");
+			    $set->print, ": just got installed");
 			return 0;
 		}
 
@@ -279,7 +279,7 @@ sub can_install
 		if (!OpenBSD::Replace::can_old_package_be_replaced($old->plist, 
 		    $set, $state)) {
 			$state->errsay("Can't update $name into ", 
-			    $set->short_print);
+			    $set->print);
 			return 0;
 		}
 
@@ -289,6 +289,34 @@ sub can_install
 	}
 
 	$set->mark_as_manual_install if $manual_install;
+	return 1;
+}
+
+sub recheck_conflicts
+{
+	my ($set, $state) = @_;
+	
+	# no conflicts between newer sets
+	for my $h ($set->newer) {
+		for my $h2 ($set->newer) {
+			next if $h2 == $h;
+			if ($h->plist->conflict_list->conflicts_with($h2->pkgname)) {
+				$state->errsay($set->print, ": internal conflict between ", $h->pkgname, " and ", $h2->pkgname);
+				return 0;
+			}
+		}
+	}
+
+	# and between newer sets and kept sets neither
+	for my $h ($set->newer) {
+		for my $h2 ($set->older) {
+			next unless $h2->{keepit};
+			if ($h->plist->conflict_list->conflicts_with($h2->pkgname) || $h2->plist->conflict_list->conflicts_with($h->pkgname)) {
+				$state->errsay($set->print, ": internal conflict between ", $h->pkgname, " and ", $h2->pkgname);
+				return 0;
+ 			}
+		}
+	}
 	return 1;
 }
 
@@ -324,6 +352,52 @@ sub partial_install
 {
 	my ($base_msg, $set, $state) = @_;
 	return failed_message($base_msg, $state->{interrupted}, save_partial_set($set, $state));
+}
+
+sub build_before
+{
+	my %known = map {($_->pkgname, 1)} @_;
+	require OpenBSD::RequiredBy;
+	for my $c (@_) {
+		for my $d (OpenBSD::RequiredBy->new($c->pkgname)->list) {
+			push(@{$c->{before}}, $d) if $known{$d};
+		}
+	}
+}
+
+sub okay
+{
+	my ($h, $c) = @_;
+
+	for my $d (@{$c->{before}}) {
+		return 0 if !$h->{$d};
+	}
+	return 1;
+}
+
+sub iterate
+{
+	my $sub = pop @_;
+	my $done = {};
+	my $something_done;
+
+	do {
+		$something_done = 0;
+
+		for my $c (@_) {
+			next if $done->{$c->pkgname};
+			if (okay($done, $c)) {
+				&$sub($c);
+				$done->{$c->pkgname} = 1;
+				$something_done = 1;
+			}
+		}
+	} while ($something_done);
+	# if we can't do stuff in order, do it anyways
+	for my $c (@_) {
+		next if $done->{$c->pkgname};
+		&$sub($c);
+	}
 }
 
 sub really_add
@@ -414,7 +488,9 @@ sub really_add
 		}
 
 		$set->{solver}->record_old_dependencies($state);
-		for my $o ($set->older_to_do) {
+		build_before($set->older_to_do);
+		iterate($set->older_to_do, sub {
+			my $o = shift;
 			$set->setup_header($state, $o, "deleting");
 			my $oldname = $o->pkgname;
 			$state->set_name_from_handle($o);
@@ -433,12 +509,14 @@ sub really_add
 			}
 			OpenBSD::PkgCfl::unregister($o->plist, $state);
 			$state->progress->clear;
-		}
+		});
 		# Here there should be code to handle old libs
 	}
 
 	my $first = 1;
-	for my $handle ($set->newer) {
+	iterate($set->newer, sub {
+		my $handle = shift;
+
 		if (!$first) {
 			$state->progress->next;
 			$first = 0;
@@ -466,7 +544,7 @@ sub really_add
 			Fatal partial_install("Installation of $pkgname failed",
 			    $set, $state);
 		}
-	}
+	});
 	$set->setup_header($state);
 	$state->progress->next($state->{todo}-1);
 	for my $handle ($set->newer) {
@@ -564,7 +642,7 @@ sub install_set
 	my @baddeps = $set->{solver}->check_depends;
 
 	if (@baddeps) {
-		$state->errsay("Can't install ", $set->short_print,
+		$state->errsay("Can't install ", $set->print,
 		    ": can't resolve ", join(',', @baddeps));
 		for my $handle ($set->newer) {
 			$handle->location->close_now;
@@ -592,6 +670,11 @@ sub install_set
 #			return ();
 #		}
 #	}
+	if (!$set->recheck_conflicts($state)) {
+		$set->cleanup(OpenBSD::Handle::CANT_INSTALL);
+		$state->tracker->cant($set);
+		return ();
+	}
 	really_add($set, $state);
 	$set->cleanup;
 	$state->tracker->done($set);

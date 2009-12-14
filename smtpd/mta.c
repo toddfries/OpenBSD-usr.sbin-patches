@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.79 2009/12/10 15:02:30 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.81 2009/12/12 14:03:59 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -56,7 +56,7 @@ void			 mta_event(int, short, void *);
 
 void			 mta_status(struct mta_session *, const char *, ...);
 void			 mta_message_status(struct message *, char *);
-void			 mta_message_log(struct message *, struct mta_relay *);
+void			 mta_message_log(struct mta_session *, struct message *);
 void			 mta_message_done(struct mta_session *, struct message *);
 void			 mta_connect_done(int, short, void *);
 void			 mta_request_datafd(struct mta_session *);
@@ -646,7 +646,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		 */
 		log_debug("mta: entering smtp phase");
 
-		pcb = client_init(s->fd, s->env->sc_hostname, 1);
+		pcb = client_init(s->fd, s->datafd, s->env->sc_hostname, 1);
 
 		/* lookup SSL certificate */
 		if (s->cert) {
@@ -688,9 +688,6 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		TAILQ_FOREACH(m, &s->recipients, entry)
 			client_rcpt(pcb, m, "%s@%s", m->recipient.user,
 			    m->recipient.domain);
-
-		/* load message body */
-		client_data_fd(pcb, s->datafd);
 
 		s->pcb = pcb;
 		event_set(&s->ev, s->fd, EV_WRITE, mta_event, s);
@@ -813,7 +810,7 @@ mta_event(int fd, short event, void *p)
 		goto write;
 	case CLIENT_RCPT_FAIL:
 		mta_message_status(pcb->rcptfail->p, pcb->reply);
-		mta_message_log(pcb->rcptfail->p, TAILQ_FIRST(&s->relays));
+		mta_message_log(s, pcb->rcptfail->p);
 		mta_message_done(s, pcb->rcptfail->p);
 		goto write;
 	case CLIENT_DONE:
@@ -863,7 +860,7 @@ mta_status(struct mta_session *s, const char *fmt, ...)
 
 		/* remove queue entry */
 		if (*status == '2' || *status == '5' || *status == '6') {
-			mta_message_log(m, TAILQ_FIRST(&s->relays));
+			mta_message_log(s, m);
 			mta_message_done(s, m);
 		}
 	}
@@ -889,14 +886,16 @@ mta_message_status(struct message *m, char *status)
 }
 
 void
-mta_message_log(struct message *m, struct mta_relay *relay)
+mta_message_log(struct mta_session *s, struct message *m)
 {
-	char	*status = m->session_errorline;
+	struct mta_relay	*relay = TAILQ_FIRST(&s->relays);
+	char			*status = m->session_errorline;
 
 	log_info("%s: to=<%s@%s>, delay=%d, relay=%s [%s], stat=%s (%s)",
 	    m->message_id, m->recipient.user,
 	    m->recipient.domain, time(NULL) - m->creation,
-	    relay->fqdn, ss_to_text(&relay->sa),
+	    relay ? relay->fqdn : "(none)",
+	    relay ? ss_to_text(&relay->sa) : "",
 	    *status == '2' ? "Sent" :
 	    *status == '5' ? "RemoteError" :
 	    *status == '4' ? "RemoteError" : "LocalError",

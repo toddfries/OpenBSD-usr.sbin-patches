@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.35 2009/12/07 15:09:08 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.38 2009/12/13 17:58:55 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -80,6 +80,7 @@ sub add_newer
 	my $self = shift;
 	for my $h (@_) {
 		$self->{newer}->{$h->pkgname} = $h;
+		$self->{updates}++;
 	}
 	return $self;
 }
@@ -156,7 +157,8 @@ sub older_to_do
 	require OpenBSD::PackageInfo;
 	my @l = ();
 	for my $h ($self->older) {
-		if (OpenBSD::PackageInfo::is_installed($h->pkgname)) {
+		if (!defined $h->{keepit} && 
+		    OpenBSD::PackageInfo::is_installed($h->pkgname)) {
 			push(@l, $h);
 		}
 	}
@@ -166,32 +168,19 @@ sub older_to_do
 sub print
 {
 	my $self = shift;
-	my @l = ();
-	if ($self->newer > 0) {
-		push(@l, "installing", $self->newer_names);
-	}
+	my $result = "";
 	if ($self->older > 0) {
-		push(@l, "deinstalling", $self->older_names);
+		$result .= join('+',$self->older_names)."->";
 	}
-	return join(' ', @l);
+	if ($self->newer > 0) {
+		$result .= join('+', $self->newer_names);
+	} elsif ($self->hints > 0) {
+		$result .= join('+', $self->hint_names);
+	}
+	return $result;
 }
 
 sub short_print
-{
-	my $self = shift;
-	my @l = ();
-	if ($self->older > 0) {
-		push(@l, join('+',$self->older_names));
-	}
-	if ($self->newer > 0) {
-		push(@l, join('+', $self->newer_names));
-	} elsif ($self->hints > 0) {
-		push(@l, join('+', $self->hint_names));
-	}
-	return join('->', @l);
-}
-
-sub shorter_print
 {
 	my $self = shift;
 	return join('+', $self->newer_names);
@@ -260,9 +249,10 @@ sub merge
 		$self->add_older($set->older);
 		# ... and mark it as already done
 		$set->{finished} = 1;
+		$self->{updates} += $set->{updates};
+		$set->{updates} = 0;
 		# XXX and mark it as merged, for eventual updates
 		$set->{merged} = $self;
-		$self->{updates} += $set->{updates};
 	}
 	# then regen tracker info for $self
 	$tracker->todo($self);

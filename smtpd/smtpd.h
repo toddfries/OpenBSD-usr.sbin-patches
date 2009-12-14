@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.159 2009/11/13 11:27:52 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.161 2009/12/13 22:02:55 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -674,6 +674,11 @@ struct s_mda {
 	size_t		write_error;
 };
 
+struct s_control {
+	size_t		sessions;
+	size_t		sessions_active;
+};
+
 struct stats {
 	struct s_parent		 parent;
 	struct s_queue		 queue;
@@ -681,6 +686,7 @@ struct stats {
 	struct s_session	 mta;
 	struct s_mda		 mda;
 	struct s_session	 smtp;
+	struct s_control	 control;
 };
 
 struct sched {
@@ -939,6 +945,7 @@ SPLAY_PROTOTYPE(batchtree, batch, b_nodes, batch_cmp);
 
 /* smtp.c */
 pid_t		 smtp(struct smtpd *);
+void		 smtp_resume(struct smtpd *);
 
 /* smtp_session.c */
 void		 session_init(struct listener *, struct session *);
@@ -1014,3 +1021,5 @@ char		*message_get_errormsg(struct message *);
 void		 sa_set_port(struct sockaddr *, int);
 struct path	*path_dup(struct path *);
 u_int64_t	 generate_uid(void);
+void		 fdlimit(int);
+int		 availdesc(void);
