@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.162 2009/12/14 13:17:51 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.164 2009/12/14 18:21:53 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -162,6 +162,7 @@ enum imsg_type {
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
 	IMSG_BATCH_CLOSE,
+	IMSG_BATCH_DONE,
 
 	IMSG_PARENT_ENQUEUE_OFFLINE,
 	IMSG_PARENT_FORWARD_OPEN,
@@ -648,6 +649,8 @@ struct s_queue {
 
 struct s_runner {
 	size_t		active;
+	size_t		bounces_active;
+	size_t		bounces;
 };
 
 struct s_session {
@@ -673,7 +676,8 @@ struct s_session {
 };
 
 struct s_mda {
-	size_t		write_error;
+	size_t		sessions;
+	size_t		sessions_active;
 };
 
 struct s_control {
