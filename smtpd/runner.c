@@ -556,7 +556,7 @@ runner(struct smtpd *env)
 	signal(SIGHUP, SIG_IGN);
 
 	/* see fdlimit()-related comment in queue.c */
-	fdlimit(getdtablesize() * 2);
+	fdlimit(1.0);
 	if ((env->sc_maxconn = availdesc() / 4) < 1)
 		fatalx("runner: fd starvation");
 

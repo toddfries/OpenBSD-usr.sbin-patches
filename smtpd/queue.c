@@ -581,10 +581,10 @@ queue(struct smtpd *env)
 
 	/*
 	 * queue opens fds for four purposes: smtp, mta, mda, and bounces.
-	 * Therefore, double the fdlimit the second time to achieve a 4x
-	 * increase relative to default.
+	 * Therefore, use all available fd space and set the maxconn (=max
+	 * session count for mta and mda) to a quarter of this value.
 	 */
-	fdlimit(getdtablesize() * 2);
+	fdlimit(1.0);
 	if ((env->sc_maxconn = availdesc() / 4) < 1)
 		fatalx("runner: fd starvation");
 
