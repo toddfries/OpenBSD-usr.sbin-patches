@@ -512,11 +512,6 @@ client_write(struct smtp_client *sp)
 		client_putln(sp, "QUIT");
 		break;
 
-	case CLIENT_QUIT:
-		sp->timeout.tv_sec = 300;
-		client_putln(sp, "QUIT");
-		break;
-
 	default:
 		fatalx("client_write: unexpected state");
 	}
