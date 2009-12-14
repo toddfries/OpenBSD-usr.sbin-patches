@@ -452,21 +452,19 @@ generate_uid(void)
 }
 
 void
-fdlimit(double percent)
+fdlimit(int n)
 {
 	struct rlimit rl;
-	rlim_t oldcur;
 
 	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
 		fatal("fdlimit: getrlimit");
-	oldcur = rl.rlim_cur;
-	printf("fdlimit: cur %lld, max %lld\n",rl.rlim_cur,rl.rlim_max);
-	rl.rlim_cur = percent * rl.rlim_max;
-	printf("fdlimit: %lld = %f * %lld\n",rl.rlim_cur,percent,rl.rlim_max);
-	if (setrlimit(RLIMIT_NOFILE, &rl) == -1) {
-		printf("fdlimit: setrlimit(cur %lld -> cur %lld)\n",oldcur,rl.rlim_cur);
-		fatal("fdlimit: setrlimit");
+	if ((u_int)n > rl.rlim_max) {
+		log_warnx("fdlimit: need %d, limit %llu", n, rl.rlim_max);
+		fatalx("fdlimit: hard limit reached");
 	}
+	rl.rlim_cur = n;
+	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
+		fatal("fdlimit: getrlimit");
 }
 
 int

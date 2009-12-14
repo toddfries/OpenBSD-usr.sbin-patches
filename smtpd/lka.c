@@ -666,10 +666,10 @@ lka(struct smtpd *env)
 	signal(SIGHUP, SIG_IGN);
 
 	/*
-	 * lka opens all kinds of files and sockets, so bump the limit to max.
+	 * lka opens all kinds of files and sockets, so bump the limit further.
 	 * XXX: need to analyse the exact hard limit.
 	 */
-	fdlimit(1.0);
+	fdlimit(getdtablesize() * 2);
 
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));

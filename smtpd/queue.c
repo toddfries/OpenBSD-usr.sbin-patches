@@ -584,7 +584,7 @@ queue(struct smtpd *env)
 	 * Therefore, double the fdlimit the second time to achieve a 4x
 	 * increase relative to default.
 	 */
-	fdlimit(1.0);
+	fdlimit(getdtablesize() * 2);
 
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));

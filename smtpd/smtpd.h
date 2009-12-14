@@ -1022,5 +1022,5 @@ char		*message_get_errormsg(struct message *);
 void		 sa_set_port(struct sockaddr *, int);
 struct path	*path_dup(struct path *);
 u_int64_t	 generate_uid(void);
-void		 fdlimit(double);
+void		 fdlimit(int);
 int		 availdesc(void);

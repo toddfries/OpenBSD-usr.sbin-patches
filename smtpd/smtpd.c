@@ -979,13 +979,13 @@ fork_peers(struct smtpd *env)
 	SPLAY_INIT(&env->children);
 
 	/*
-	 * By default each process is limited to use 50% of available fd space.
-	 * Processes that require 2 fds per session (eg. smtp) will halve this
-	 * number in order to compute their session limit.
-	 * Processes that serve fds to many other processes (eg. queue) will
-	 * bump their limit to 100%.
+	 * Each process has fd soft limit doubled.  This is done with smtp,
+	 * mta and mda in mind, because all of them require 2 fds per one
+	 * session.  Additionally, processes such as queue may bump it even
+	 * further as in the worst case scenarios they could hold many more
+	 * fds open.
 	 */
-	fdlimit(0.5);
+	fdlimit(getdtablesize() * 2);
 
 	env->sc_instances[PROC_CONTROL] = 1;
 	env->sc_instances[PROC_LKA] = 1;
