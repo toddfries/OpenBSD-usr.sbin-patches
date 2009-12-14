@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.73 2009/12/13 22:02:55 jacekm Exp $	*/
+/*	$OpenBSD: runner.c,v 1.75 2009/12/14 18:21:53 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -304,6 +304,10 @@ runner_dispatch_mda(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_BATCH_DONE:
+			env->stats->mda.sessions_active--;
+			break;
+
 		default:
 			log_warnx("runner_dispatch_mda: got imsg %d",
 			    imsg.hdr.type);
@@ -349,6 +353,9 @@ runner_dispatch_mta(int sig, short event, void *p)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_BATCH_DONE:
+			env->stats->mta.sessions_active--;
+			break;
 
 		default:
 			log_warnx("runner_dispatch_mta: got imsg %d",
@@ -550,6 +557,8 @@ runner(struct smtpd *env)
 
 	/* see fdlimit()-related comment in queue.c */
 	fdlimit(getdtablesize() * 2);
+	if ((env->sc_maxconn = availdesc() / 4) < 1)
+		fatalx("runner: fd starvation");
 
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
@@ -623,7 +632,12 @@ runner_process_queue(struct smtpd *env)
 	char		 rqpath[MAXPATHLEN];
 	struct message	 message;
 	time_t		 now;
+	size_t		 mta_av, mda_av, bnc_av;
 	struct qwalk	*q;
+
+	mta_av = env->sc_maxconn - env->stats->mta.sessions_active;
+	mda_av = env->sc_maxconn - env->stats->mda.sessions_active;
+	bnc_av = env->sc_maxconn - env->stats->runner.bounces_active;
 
 	now = time(NULL);
 	q = qwalk_new(PATH_QUEUE);
@@ -632,13 +646,26 @@ runner_process_queue(struct smtpd *env)
 		if (! queue_load_envelope(&message, basename(path)))
 			continue;
 
-		if (message.type & T_MDA_MESSAGE)
+		if (message.type & T_MDA_MESSAGE) {
 			if (env->sc_opts & SMTPD_MDA_PAUSED)
 				continue;
+			if (mda_av == 0)
+				continue;
+		}
 
-		if (message.type & T_MTA_MESSAGE)
+		if (message.type & T_MTA_MESSAGE) {
 			if (env->sc_opts & SMTPD_MTA_PAUSED)
 				continue;
+			if (mta_av == 0)
+				continue;
+		}
+
+		if (message.type & T_BOUNCE_MESSAGE) {
+			if (env->sc_opts & (SMTPD_MDA_PAUSED|SMTPD_MTA_PAUSED))
+				continue;
+			if (bnc_av == 0)
+				continue;
+		}
 
 		if (! runner_message_schedule(&message, now))
 			continue;
@@ -665,6 +692,13 @@ runner_process_queue(struct smtpd *env)
 				break;
 			fatal("runner_process_queue: symlink");
 		}
+
+		if (message.type & T_MDA_MESSAGE)
+			mda_av--;
+		if (message.type & T_MTA_MESSAGE)
+			mta_av--;
+		if (message.type & T_BOUNCE_MESSAGE)
+			bnc_av--;
 	}
 	
 	qwalk_close(q);
@@ -755,13 +789,20 @@ runner_batch_dispatch(struct smtpd *env, struct batch *batchp, time_t curtime)
 			bzero(messagep, sizeof(*messagep));
 			free(messagep);
 		}
+		env->stats->runner.bounces_active++;
+		env->stats->runner.bounces++;
 		return;
 	}
 
-	if (batchp->type & T_MDA_BATCH)
+	if (batchp->type & T_MDA_BATCH) {
 		proctype = PROC_MDA;
-	else if (batchp->type & T_MTA_BATCH)
+		env->stats->mda.sessions_active++;
+		env->stats->mda.sessions++;
+	} else if (batchp->type & T_MTA_BATCH) {
 		proctype = PROC_MTA;
+		env->stats->mta.sessions_active++;
+		env->stats->mta.sessions++;
+	}
 
 	imsg_compose_event(env->sc_ievs[proctype], IMSG_BATCH_CREATE, 0, 0, -1,
 	    batchp, sizeof (struct batch));
