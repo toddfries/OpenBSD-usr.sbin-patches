@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.91 2009/12/14 13:17:51 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.92 2009/12/14 19:56:55 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -1051,11 +1051,17 @@ fork_peers(struct smtpd *env)
 	SPLAY_INIT(&env->children);
 
 	/*
-	 * By default each process is limited to use 50% of available fd space.
-	 * Processes that require 2 fds per session (eg. smtp) will halve this
-	 * number in order to compute their session limit.
-	 * Processes that serve fds to many other processes (eg. queue) will
-	 * bump their limit to 100%.
+	 * Pick descriptor limit that will guarantee impossibility of fd
+	 * starvation condition.  The logic:
+	 *
+	 * Treat hardlimit as 100%.
+	 * Limit smtp to 50% (inbound connections)
+	 * Limit mta to 50% (outbound connections)
+	 * Limit mda to 50% (local deliveries)
+	 * In all three above, compute max session limit by halving the fd
+	 * limit (50% -> 25%), because each session costs two fds.
+	 * Limit queue to 100% to cover the extreme case when tons of fds are
+	 * opened for all four possible purposes (smtp, mta, mda, bounce)
 	 */
 	fdlimit(0.5);
 
