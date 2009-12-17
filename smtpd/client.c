@@ -46,7 +46,7 @@ void		 client_status(struct smtp_client *, char *, ...);
 
 int		 client_getln(struct smtp_client *, int);
 void		 client_putln(struct smtp_client *, char *, ...);
-struct buf	*client_message_read(FILE *, size_t);
+struct buf	*client_content_read(FILE *, size_t);
 
 #ifndef CLIENT_NO_SSL
 int		 client_ssl_connect(struct smtp_client *);
@@ -427,18 +427,12 @@ again:
 		break;
 
 	case CLIENT_HELO:
-		if (*sp->reply == '5') {
-			client_status(sp, "190 untimely 5yz reply: %s", sp->reply);
-			goto quit2;
-		} else if (*sp->reply != '2')
+		if (*sp->reply != '2')
 			goto quit;
 		break;
 
 	case CLIENT_STARTTLS:
-		if (*sp->reply == '5') {
-			client_status(sp, "190 untimely 5yz reply: %s", sp->reply);
-			goto quit2;
-		} else if (*sp->reply != '2') {
+		if (*sp->reply != '2') {
 			sp->exts[CLIENT_EXT_STARTTLS].fail = 1;
 			if (client_use_extensions(sp) < 0)
 				goto quit2;
@@ -477,9 +471,8 @@ again:
 			sp->content = sp->head;
 			sp->head = NULL;
 			if (sp->content == NULL)
-				sp->content = client_message_read(sp->body, sp->sndlowat);
-			if (sp->content == NULL)
-				fatalx("client_read: empty message");
+				sp->content = client_content_read(sp->body,
+				    sp->sndlowat);
 		} else {
 			/*
 			 * Leaving content pointer at NULL will make us proceed
@@ -492,15 +485,11 @@ again:
 	case CLIENT_DOT:
 		goto quit;
 
-	case CLIENT_QUIT:
-		/* impossible? */
-		break;
-
 	default:
 		fatalx("client_read: unexpected type");
 	}
 
-	if (TAILQ_FIRST(&sp->cmdrecvq))
+	if (!TAILQ_EMPTY(&sp->cmdrecvq))
 		goto again;
 
 	return (sp->iomode);
@@ -533,7 +522,7 @@ client_write(struct smtp_client *sp)
 
 	if (sp->content) {
 		buf_close(&sp->w, sp->content);
-		sp->content = client_message_read(sp->body, sp->sndlowat);
+		sp->content = client_content_read(sp->body, sp->sndlowat);
 	} else {
 		while (sp->cmdi < sp->cmdw) {
 			if ((cmd = TAILQ_FIRST(&sp->cmdsendq)) == NULL)
@@ -869,7 +858,7 @@ client_putln(struct smtp_client *sp, char *fmt, ...)
  * Put chunk of message content to output buffer.
  */
 struct buf *
-client_message_read(FILE *fp, size_t max)
+client_content_read(FILE *fp, size_t max)
 {
 	struct buf	*b;
 	char		*ln;
@@ -878,7 +867,9 @@ client_message_read(FILE *fp, size_t max)
 	if ((b = buf_dynamic(0, SIZE_T_MAX)) == NULL)
 		fatal(NULL);
 
-	while (total < 4096 && (ln = fgetln(fp, &len))) {
+	while (buf_size(b) < max) {
+		if ((ln = fgetln(fp, &len)) == NULL)
+			break;
 		if (ln[len - 1] == '\n')
 			len--;
 		if (*ln == '.' && buf_add(b, ".", 1))
