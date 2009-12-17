@@ -19,6 +19,6 @@ CFLAGS+=	-DCLIENT_NO_SSL
 
 SRCS=	smtpctl.c parser.c buffer.c imsg.c log.c enqueue.c		\
 	queue_shared.c util.c client.c
-LDADD+=	-lutil
-DPADD+=	${LIBUTIL}
+LDADD+=	-lutil -levent
+DPADD+=	${LIBUTIL} ${LIBEVENT}
 .include <bsd.prog.mk>
