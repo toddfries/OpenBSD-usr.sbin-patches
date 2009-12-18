@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.97 2009/11/16 14:42:18 espie Exp $
+# $OpenBSD: Add.pm,v 1.100 2009/12/17 11:57:02 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -103,6 +103,7 @@ sub perform_installation
 		$handle->{partial} = {};
 	}
 	$state->{partial} = $handle->{partial};
+	$state->progress->show(0, $totsize);
 	$handle->{plist}->install_and_progress($state, \$donesize, $totsize);
 	$handle->{location}->finish_and_close;
 }
@@ -170,6 +171,10 @@ sub prepare_for_addition
 sub install_and_progress
 {
 	my ($self, $state, $donesize, $totsize) = @_;
+	$state->{callback} = sub {
+		my $done = shift;
+		$state->progress->show($$donesize + $done, $totsize);
+	};
 	unless ($state->{do_faked} && $state->{end_faked}) {
 		$self->install($state);
 	}
@@ -285,7 +290,7 @@ sub install
 	my $l=[];
 	push(@$l, "-v") if $state->{very_verbose};
 	$self->build_args($l);
-	$state->vsystem($self->command,, @$l, $auth);
+	$state->vsystem($self->command,, @$l, '--', $auth);
 }
 
 package OpenBSD::PackingElement::NewUser;
@@ -325,7 +330,7 @@ sub install
 
 	my $name = $self->name;
 	$self->SUPER::install($state);
-	open(my $pipe, '-|', OpenBSD::Paths->sysctl, '-n', $name);
+	open(my $pipe, '-|', OpenBSD::Paths->sysctl, '-n', '--', $name);
 	my $actual = <$pipe>;
 	chomp $actual;
 	if ($self->{mode} eq '=' && $actual eq $self->{value}) {
@@ -338,7 +343,7 @@ sub install
 		$state->say("sysctl -w $name != ".  $self->{value});
 		return;
 	}
-	$state->vsystem(OpenBSD::Paths->sysctl, $name.'='.$self->{value});
+	$state->vsystem(OpenBSD::Paths->sysctl, '--', $name.'='.$self->{value});
 }
 			
 package OpenBSD::PackingElement::DirBase;
@@ -405,7 +410,7 @@ sub install
 			$state->{archive}->skip;
 			return;
 		} else {
-			$file->create;
+			$file->create($state->{callback});
 			$self->may_check_digest($file, $state);
 
 		}
@@ -568,7 +573,7 @@ sub install
 	return if $state->{not};
 	my $fullname = $state->{destdir}.$self->fullname;
 	$state->vsystem(OpenBSD::Paths->install_info,
-	    "--info-dir=".dirname($fullname), $fullname);
+	    "--info-dir=".dirname($fullname), '--', $fullname);
 }
 
 package OpenBSD::PackingElement::Shell;

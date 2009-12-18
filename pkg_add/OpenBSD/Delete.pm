@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.91 2009/12/14 09:35:56 espie Exp $
+# $OpenBSD: Delete.pm,v 1.93 2009/12/17 11:57:02 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -148,6 +148,7 @@ sub delete_plist
 	$ENV{'PKG_PREFIX'} = $plist->localbase;
 	$plist->register_manpage($state);
 	manpages_unindex($state);
+	$state->progress->show(0, $totsize);
 	$plist->delete_and_progress($state, \$donesize, $totsize);
 	if ($plist->has(UNDISPLAY)) {
 		$plist->get(UNDISPLAY)->prepare($state);
@@ -559,7 +560,7 @@ sub delete
 	unless ($state->{not}) {
 	    my $fullname = $state->{destdir}.$self->fullname;
 	    $state->vsystem(OpenBSD::Paths->install_info, 
-		"--delete", "--info-dir=".dirname($fullname), $fullname);
+		"--delete", "--info-dir=".dirname($fullname), '--', $fullname);
 	}
 	$self->SUPER::delete($state);
 }
