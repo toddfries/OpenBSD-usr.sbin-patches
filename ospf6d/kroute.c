@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.13 2009/09/20 20:27:53 stsp Exp $ */
+/*	$OpenBSD: kroute.c,v 1.15 2009/12/21 18:35:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -1048,7 +1048,7 @@ fetchtable(void)
 	mib[0] = CTL_NET;
 	mib[1] = AF_ROUTE;
 	mib[2] = 0;
-	mib[3] = AF_INET;
+	mib[3] = AF_INET6;
 	mib[4] = NET_RT_DUMP;
 	mib[5] = 0;
 	mib[6] = 0;	/* rtableid */
@@ -1309,7 +1309,7 @@ dispatch_rtmsg(void)
 			ifindex = rtm->rtm_index;
 			if ((sa = rti_info[RTAX_GATEWAY]) != NULL) {
 				switch (sa->sa_family) {
-				case AF_INET:
+				case AF_INET6:
 					nexthop = ((struct sockaddr_in6 *)
 					    sa)->sin6_addr;
 					break;
