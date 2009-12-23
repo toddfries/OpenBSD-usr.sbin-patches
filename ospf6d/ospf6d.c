@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6d.c,v 1.16 2009/11/02 20:24:58 claudio Exp $ */
+/*	$OpenBSD: ospf6d.c,v 1.18 2009/12/22 19:47:05 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
