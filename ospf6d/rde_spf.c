@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_spf.c,v 1.15 2009/07/28 19:20:40 claudio Exp $ */
+/*	$OpenBSD: rde_spf.c,v 1.20 2009/12/22 19:47:05 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Esben Norby <norby@openbsd.org>
@@ -39,9 +39,10 @@ struct vertex			*spf_root = NULL;
 void		 calc_nexthop_clear(struct vertex *);
 void		 calc_nexthop_add(struct vertex *, struct vertex *,
 		     const struct in6_addr *, u_int32_t);
-struct in6_addr	*calc_nexthop_lladdr(struct vertex *, struct lsa_rtr_link *);
+struct in6_addr	*calc_nexthop_lladdr(struct vertex *, struct lsa_rtr_link *,
+		     unsigned int);
 void		 calc_nexthop_transit_nbr(struct vertex *, struct vertex *,
-		     u_int32_t ifindex);
+		     unsigned int);
 void		 calc_nexthop(struct vertex *, struct vertex *,
 		     struct area *, struct lsa_rtr_link *);
 void		 rt_nexthop_clear(struct rt_node *);
@@ -212,7 +213,6 @@ rt_calc(struct vertex *v, struct area *area, struct ospfd_conf *conf)
 	struct in6_addr		 ia6;
 	u_int16_t		 i, off;
 	u_int8_t		 flags;
-	enum path_type		 type;
 
 	lsa_age(v);
 	if (ntohs(v->lsa->hdr.age) == MAX_AGE)
@@ -269,15 +269,9 @@ rt_calc(struct vertex *v, struct area *area, struct ospfd_conf *conf)
 
 				adv_rtr.s_addr = htonl(w->adv_rtr);
 
-				if (prefix->prefixlen == 128 ||
-				    prefix->options & OSPF_PREFIX_LA)
-					type = DT_RTR;
-				else
-					type = DT_NET;
-
 				rt_update(&ia6, prefix->prefixlen, &w->nexthop,
 				    w->cost + ntohs(prefix->metric), 0,
-				    area->id, adv_rtr, PT_INTRA_AREA, type,
+				    area->id, adv_rtr, PT_INTRA_AREA, DT_NET,
 				    flags, 0);
 			}
 			off += sizeof(struct lsa_prefix)
@@ -410,26 +404,28 @@ calc_nexthop_add(struct vertex *dst, struct vertex *parent,
 }
 
 struct in6_addr *
-calc_nexthop_lladdr(struct vertex *dst, struct lsa_rtr_link *rtr_link)
+calc_nexthop_lladdr(struct vertex *dst, struct lsa_rtr_link *rtr_link,
+    unsigned int ifindex)
 {
-	struct iface	*iface;
-	struct vertex	*link;
-	struct rde_nbr	*nbr;
+	struct iface		*iface;
+	struct vertex		*link;
+	struct rde_nbr		*nbr;
 
 	/* Find outgoing interface, we need its LSA tree */
 	LIST_FOREACH(iface, &dst->area->iface_list, entry) {
-		if (ntohl(rtr_link->iface_id) == iface->ifindex)
+		if (ifindex == iface->ifindex)
 			break;
 	}
 	if (!iface) {
-		warnx("calc_nexthop_lladdr: no interface found for ifindex");
+		log_warnx("calc_nexthop_lladdr: no interface found for "
+		    "ifindex %d", ntohl(rtr_link->iface_id));
 		return (NULL);
 	}
 
 	/* Determine neighbor's link-local address.
 	 * Try to get it from link LSA first. */
 	link = lsa_find_tree(&iface->lsa_tree,
-		htons(LSA_TYPE_LINK), rtr_link->nbr_iface_id,
+		htons(LSA_TYPE_LINK), rtr_link->iface_id,
 		htonl(dst->adv_rtr));
 	if (link)
 		return &link->lsa->data.link.lladdr;
@@ -443,7 +439,7 @@ calc_nexthop_lladdr(struct vertex *dst, struct lsa_rtr_link *rtr_link)
 
 void
 calc_nexthop_transit_nbr(struct vertex *dst, struct vertex *parent,
-    u_int32_t ifindex)
+    unsigned int ifindex)
 {
 	struct lsa_rtr_link	*rtr_link;
 	unsigned int		 i;
@@ -461,7 +457,7 @@ calc_nexthop_transit_nbr(struct vertex *dst, struct vertex *parent,
 		if (rtr_link->type == LINK_TYPE_TRANSIT_NET &&
 		    rtr_link->nbr_rtr_id == parent->lsa->hdr.adv_rtr &&
 		    rtr_link->nbr_iface_id == parent->lsa->hdr.ls_id) {
-			lladdr = calc_nexthop_lladdr(dst, rtr_link);
+			lladdr = calc_nexthop_lladdr(dst, rtr_link, ifindex);
 			calc_nexthop_add(dst, parent, lladdr, ifindex);
 		}
 	}
@@ -480,7 +476,8 @@ calc_nexthop(struct vertex *dst, struct vertex *parent,
 		case LSA_TYPE_ROUTER:
 			if (rtr_link->type != LINK_TYPE_POINTTOPOINT)
 				fatalx("inconsistent SPF tree");
-			nexthop = calc_nexthop_lladdr(dst, rtr_link);
+			nexthop = calc_nexthop_lladdr(dst, rtr_link, 
+			    ntohl(rtr_link->iface_id));
 			break;
 		case LSA_TYPE_NETWORK:
 			if (rtr_link->type != LINK_TYPE_TRANSIT_NET)
@@ -842,6 +839,7 @@ rt_nexthop_add(struct rt_node *r, struct v_nexthead *vnh,
 
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		rn->nexthop = vn->nexthop;
+		rn->ifindex = vn->ifindex;
 		rn->adv_rtr.s_addr = adv_rtr.s_addr;
 		rn->uptime = now.tv_sec;
 		rn->connected = vn->prev == spf_root;
@@ -905,6 +903,7 @@ rt_dump(struct in_addr area, pid_t pid, u_int8_t r_type)
 
 			rtctl.prefix = r->prefix;
 			rtctl.nexthop = rn->nexthop;
+			rtctl.ifindex = rn->ifindex;
 			rtctl.area.s_addr = r->area.s_addr;
 			rtctl.adv_rtr.s_addr = rn->adv_rtr.s_addr;
 			rtctl.cost = r->cost;
