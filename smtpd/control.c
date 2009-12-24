@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.43 2009/12/13 22:02:55 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.44 2009/12/23 17:16:03 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>

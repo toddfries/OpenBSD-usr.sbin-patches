@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.30 2009/12/13 22:02:55 jacekm Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.31 2009/12/23 17:16:03 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
