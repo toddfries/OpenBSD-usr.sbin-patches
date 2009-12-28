@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.101 2009/12/27 22:26:28 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.103 2009/12/28 21:30:09 espie Exp $
 #
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
 #
@@ -114,7 +114,7 @@ sub find_in_new_source
 {
 	my ($self, $solver, $state, $obj, $dep) = @_;
 
-	if ($solver->{set}->{newer}->{$dep}) {
+	if (defined $solver->{set}->{newer}->{$dep}) {
 		OpenBSD::SharedLibs::add_libs_from_plist($solver->{set}->{newer}->{$dep}->plist);
 	} else {
 		OpenBSD::SharedLibs::add_libs_from_installed_package($dep);
@@ -395,7 +395,8 @@ sub check_depends
 
 	for my $dep ($self->dependencies) {
 		push(@bad, $dep) 
-		    unless is_installed($dep) or $self->{set}->{newer}->{$dep};
+		    unless is_installed($dep) or 
+		    	defined $self->{set}->{newer}->{$dep};
 	}
 	return @bad;
 }
@@ -432,55 +433,6 @@ sub register_dependencies
 	delete $self->{toregister};
 	delete $self->{all_dependencies};
 	delete $self->{deplist};
-}
-
-sub record_old_dependencies
-{
-	my ($self, $state) = @_;
-	for my $o ($self->{set}->older_to_do) {
-		require OpenBSD::RequiredBy;
-		my @wantlist = OpenBSD::RequiredBy->new($o->pkgname)->list;
-		$o->{wantlist} = \@wantlist;
-	}
-}
-
-sub adjust_old_dependency_on
-{
-	my ($self, $pkgname, $state) = @_;
-
-	my $set = $self->{set};
-	
-	for my $o ($set->older) {
-		next unless defined $o->{wantlist};
-		require OpenBSD::Replace;
-		require OpenBSD::RequiredBy;
-
-		my $oldname = $o->pkgname;
-
-		$state->say("Adjusting dependencies for ",
-		    "$oldname->$pkgname") if $state->verbose >= 3;
-		my $d = OpenBSD::RequiredBy->new($pkgname);
-		for my $dep (@{$o->{wantlist}}) {
-			if (defined $set->{older}->{$dep}) {
-				$state->say("\tskipping $dep")
-				    if $state->verbose >= 4;
-				next;
-			}
-			$state->say("\t$dep") if $state->verbose >= 4;
-			$d->add($dep);
-			OpenBSD::Replace::adjust_dependency($dep, 
-			    $oldname, $pkgname) if $oldname ne $pkgname;
-		}
-	}
-}
-
-sub adjust_old_dependencies
-{
-	my ($self, $state) = @_;
-	
-	for my $pkg ($self->{set}->newer) {
-		$self->adjust_old_dependency_on($pkg->pkgname, $state);
-	}
 }
 
 sub repair_dependencies

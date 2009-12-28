@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Replace.pm,v 1.64 2009/12/27 15:32:20 espie Exp $
+# $OpenBSD: Replace.pm,v 1.66 2009/12/28 21:30:09 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -309,14 +309,10 @@ sub is_set_safe
 	my $ok = 1;
 
 	for my $pkg ($set->older) {
-		next if defined $pkg->{exec_checked};
 		$ok = 0 unless can_old_package_be_replaced($pkg->plist, $state);
-		$pkg->{exec_checked} = 1;
 	}
 	for my $pkg ($set->newer) {
-		next if defined $pkg->{exec_checked};
 		$ok = 0 unless is_new_package_safe($pkg->plist, $state);
-		$pkg->{exec_checked} = 1;
 	}
 	return 1 if $ok;
 
@@ -458,16 +454,6 @@ sub save_old_libraries
 	for my $o ($set->older) {
 		save_libs_from_handle($o, $set, $state);
 	}
-}
-
-			
-sub adjust_dependency
-{
-	my ($dep, $from, $into) = @_;
-
-	my $l = OpenBSD::Requiring->new($dep);
-	$l->delete($from);
-	$l->add($into);
 }
 
 1;
