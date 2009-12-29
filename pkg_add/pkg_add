@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_add,v 1.444 2009/12/28 21:29:42 espie Exp $
+# $OpenBSD: pkg_add,v 1.448 2009/12/29 14:29:49 espie Exp $
 #
 # Copyright (c) 2003-2009 Marc Espie <espie@openbsd.org>
 #
@@ -127,9 +127,58 @@ sub quirks
 	return $state->{quirks};
 }
 
+package OpenBSD::ConflictCache;
+our @ISA = (qw(OpenBSD::Cloner));
+sub new
+{
+	my $class = shift;
+	bless {done => {}, c => {}}, $class;
+}
+
+sub add
+{
+	my ($self, $handle) = @_;
+	return if $self->{done}{$handle};
+	$self->{done}{$handle} = 1;
+	for my $conflict (OpenBSD::PkgCfl::find_all($handle->plist, $state)) {
+		$self->{c}{$conflict} = 1;
+	}
+}
+
+sub list
+{
+	my $self = shift;
+	return keys %{$self->{c}};
+}
+
+sub merge
+{
+	my ($self, @extra) = @_;
+	$self->clone('c', @extra);
+	$self->clone('done', @extra);
+}
+
 package OpenBSD::UpdateSet;
 use OpenBSD::PackageInfo;
 use OpenBSD::Error;
+
+sub solver
+{
+	my $set = shift;
+	if (!defined $set->{solver}) {
+		$set->{solver} = OpenBSD::Dependencies::Solver->new($set);
+	}
+	return $set->{solver};
+}
+
+sub conflict_cache
+{
+	my $set = shift;
+	if (!defined $set->{conflict_cache}) {
+		$set->{conflict_cache} = OpenBSD::ConflictCache->new;
+	}
+	return $set->{conflict_cache};
+}
 
 sub setup_header
 {
@@ -170,6 +219,21 @@ sub complete
 
 	for my $n ($set->newer) {
 		$n->complete($state);
+		my $pkgname = $n->pkgname;
+		my $plist = $n->plist;
+		if (is_installed($pkgname) && 
+		    (!$state->{allow_replacing} ||	
+		      !$state->{defines}->{installed} &&
+		      !$plist->has_new_sig($state) && 
+		      !$plist->uses_old_libs)) {
+			$n->{tweaked} = 
+			    OpenBSD::Add::tweak_package_status($pkgname, $state);
+			$state->say("Not reinstalling $pkgname")
+			    if $state->verbose >= 2 and !$n->{tweaked};
+			$state->tracker->uptodate($set);
+			$state->tracker->{uptodate}->{$pkgname} = 1;
+			$n->cleanup(OpenBSD::Handle::ALREADY_INSTALLED);
+		}
 		return 1 if $n->has_error;
 	}
 	for my $o ($set->older) {
@@ -190,14 +254,12 @@ sub find_conflicts
 {
 	my ($set, $state) = @_;
 
-	my @conflicts;
+	my $c = $set->conflict_cache;
 
 	for my $handle ($set->newer) {
-		push(@conflicts, 
-		    OpenBSD::PkgCfl::find_all($handle->plist, $state));
+		$c->add($handle);
 	}
-	my %conflicts = map {($_,1)} @conflicts;
-	return keys %conflicts;
+	return $c->list;
 }
 
 sub mark_as_manual_install
@@ -649,20 +711,16 @@ sub install_set
 		return ();
 	}
 
-	if (!defined $set->{solver} || $set->{solver}->{not_ready}) {
-		delete $set->{solver};
-		$set->{solver} = OpenBSD::Dependencies::Solver->new($set);
-		my @deps = $set->{solver}->solve_depends($state);
-		if ($state->verbose >= 2) {
-			$set->{solver}->dump;
+	my @deps = $set->solver->solve_depends($state);
+	if ($state->verbose >= 2) {
+		$set->solver->dump;
+	}
+	if (@deps > 0) {
+		$state->build_deptree($set, @deps);
+		if ($set->solver->check_for_loops($state)) {
+			return $set;
 		}
-		if (@deps > 0) {
-			$state->build_deptree($set, @deps);
-			if ($set->{solver}->check_for_loops($state)) {
-				return $set;
-			}
-			return (@deps, $set);
-		}
+		return (@deps, $set);
 	}
 
 	if ($set->older_to_do) {
@@ -674,7 +732,7 @@ sub install_set
 	}
 
 	# verify dependencies have been installed
-	my @baddeps = $set->{solver}->check_depends;
+	my @baddeps = $set->solver->check_depends;
 
 	if (@baddeps) {
 		$state->errsay("Can't install ", $set->print,
@@ -685,14 +743,13 @@ sub install_set
 		return ();
 	}
 
-#	print "Didn't need to process: ", join(',', @{$set->{solver}->{todo}}), "\n";
-	if (!$set->{solver}->solve_wantlibs($state)) {
+	if (!$set->solver->solve_wantlibs($state)) {
 		$set->cleanup(OpenBSD::Handle::CANT_INSTALL);
 		$state->tracker->cant($set);
 		$bad++;
 		return ();
 	}
-#	if (!$set->{solver}->solve_tags($state)) {
+#	if (!$set->solver->solve_tags($state)) {
 #		if (!$defines{libdepends}) {
 #			$bad++;
 #			return ();
