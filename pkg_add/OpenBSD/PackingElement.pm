@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.165 2009/12/20 22:38:45 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.167 2009/12/30 09:39:08 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -871,6 +871,18 @@ sub keyword() { "localbase" }
 __PACKAGE__->register_with_factory;
 sub category() { "localbase" }
 
+package OpenBSD::PackingElement::Url;
+our @ISA=qw(OpenBSD::PackingElement::Unique);
+
+sub keyword() { "url" }
+__PACKAGE__->register_with_factory;
+sub category() { "url" }
+
+# XXX don't incorporate this in signatures.
+sub write_no_sig()
+{
+}
+
 package OpenBSD::PackingElement::Conflict;
 our @ISA=qw(OpenBSD::PackingElement::Meta);
 
@@ -1597,11 +1609,12 @@ sub stringize($)
 	return join(',', @{$self->{arches}});
 }
 
+my ($machine_arch, $arch);
+
 sub check
 {
 	my ($self, $forced_arch) = @_;
 
-	my ($machine_arch, $arch);
 	for my $ok (@{$self->{arches}}) {
 		return 1 if $ok eq '*';
 		if (defined $forced_arch) {
