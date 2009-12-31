@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SharedLibs.pm,v 1.41 2009/12/17 11:57:02 espie Exp $
+# $OpenBSD: SharedLibs.pm,v 1.44 2009/12/31 14:14:08 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -94,7 +94,11 @@ sub register_lib
 	if (defined $stem) {
 		push(@{$registered_libs->{$stem}->{$dir}->{$major}},
 		    [$minor, $pkgname]);
+	} else {
+		print STDERR "Bogus library in $pkgname: $name\n"
+		    unless $pkgname eq 'system';
 	}
+
 }
 
 my $done_plist = {};
@@ -112,6 +116,7 @@ sub add_libs_from_system
 	for my $dirname (system_dirs()) {
 		opendir(my $dir, $destdir.$dirname."/lib") or next;
 		while (my $d = readdir($dir)) {
+			next unless $d =~ m/\.so/;
 			register_lib("$dirname/lib/$d", 'system');
 		}
 		closedir($dir);
@@ -207,22 +212,28 @@ sub report_problem
 	my ($dir, $name) = normalize_dir_and_spec($base, $p);
 	my ($stem, $major, $minor) = parse_spec($name);
 
-	return unless defined $stem;
-	return unless defined $registered_libs->{$stem};
-
 	my $r = "";
-	while (my ($d, $v) = each %{$registered_libs->{$stem}}) {
-		my @l = ();
-		while (my ($M, $w) = each %$v) {
-			for my $e (@$w) {
-				push(@l, entry_string($stem, $M, $e->[0]).
-				    " (".why_is_this_bad($base, $name, $dir, 
-				    $d, $major, $M, $minor, $e->[0], $e->[1]).
-				    ")");
+	if (!defined $stem) {
+		$r = "| bad library specification\n";
+	} elsif (!defined $registered_libs->{$stem}) {
+		$r = "| not found anywhere\n";
+	} else {
+		while (my ($d, $v) = each %{$registered_libs->{$stem}}) {
+			my @l = ();
+			while (my ($M, $w) = each %$v) {
+				for my $e (@$w) {
+					push(@l, 
+					    entry_string($stem, $M, $e->[0]).
+					    " (".
+					    why_is_this_bad($base, $name, $dir, 
+						$d, $major, $M, $minor, 
+						$e->[0], $e->[1]).
+					    ")");
+				}
 			}
-		}
-		if (@l > 0) {
-			$r .= "| in $d: ". join(", ", sort @l). "\n";
+			if (@l > 0) {
+				$r .= "| in $d: ". join(", ", sort @l). "\n";
+			}
 		}
 	}
 	if (!defined $printed->{$name} || $printed->{$name} ne $r) {
