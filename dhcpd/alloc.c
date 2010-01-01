@@ -1,4 +1,4 @@
-/*	$OpenBSD: alloc.c,v 1.4 2004/09/16 18:35:42 deraadt Exp $	*/
+/*	$OpenBSD: alloc.c,v 1.7 2010/01/01 08:02:34 krw Exp $	*/
 
 /* Memory allocation... */
 
@@ -104,14 +104,6 @@ new_hash_table(int count, char *name)
 	return (rval);
 }
 
-struct hash_bucket *
-new_hash_bucket(char *name)
-{
-	struct hash_bucket *rval = dmalloc(sizeof(struct hash_bucket), name);
-
-	return (rval);
-}
-
 void
 free_hash_bucket(struct hash_bucket *ptr, char *name)
 {
@@ -129,28 +121,6 @@ void
 free_tree(struct tree *ptr, char *name)
 {
 	dfree(ptr, name);
-}
-
-struct shared_network *
-new_shared_network(char *name)
-{
-	struct shared_network *rval =
-		dmalloc(sizeof(struct shared_network), name);
-	return (rval);
-}
-
-struct subnet *
-new_subnet(char *name)
-{
-	struct subnet *rval = dmalloc(sizeof(struct subnet), name);
-	return (rval);
-}
-
-struct class *
-new_class(char *name)
-{
-	struct class *rval = dmalloc(sizeof(struct class), name);
-	return (rval);
 }
 
 struct lease_state *
@@ -174,28 +144,6 @@ free_lease_state(struct lease_state *ptr, char *name)
 		dfree(ptr->prl, name);
 	ptr->next = free_lease_states;
 	free_lease_states = ptr;
-}
-
-struct lease *
-new_leases(int n, char *name)
-{
-	struct lease *rval = dmalloc(n * sizeof(struct lease), name);
-	return (rval);
-}
-
-struct lease *
-new_lease(char *name)
-{
-	struct lease *rval = dmalloc(sizeof(struct lease), name);
-	return (rval);
-}
-
-struct group *
-new_group(char *name)
-{
-	struct group *rval =
-		dmalloc(sizeof(struct group), name);
-	return (rval);
 }
 
 void
