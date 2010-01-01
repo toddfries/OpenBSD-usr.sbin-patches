@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.122 2009/12/28 19:28:59 espie Exp $
+# $OpenBSD: Update.pm,v 1.126 2010/01/01 17:37:08 espie Exp $
 #
-# Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -43,7 +43,6 @@ sub update
 
 package OpenBSD::Update;
 use OpenBSD::PackageInfo;
-use OpenBSD::PackageLocator;
 use OpenBSD::PackageName;
 use OpenBSD::Error;
 use OpenBSD::UpdateSet;
@@ -101,6 +100,18 @@ sub process_handle
 		Fatal("Can't locate $pkgname");
 	}
 
+	if ($plist->has('explicit-update') && $state->{allupdates}) {
+		$h->{update_found} = $h;
+		$set->move_kept($h);
+		return 0;
+	}
+
+#	if (defined $plist->{url}) {
+#		require OpenBSD::PackageLocator;
+#		my $repo;
+#		($repo, undef, undef) = OpenBSD::PackageLocator::path_parse($plist->{url}->name);
+#		$set->add_repositories($repo);
+#	}
 	my @search = ();
 
 	my $sname = $pkgname;
@@ -149,6 +160,10 @@ sub process_handle
 			    next;
 			}
 		    }
+		    if ($p2->has('explicit-update') && $state->{allupdates}) {
+			$oldfound = 1;
+			next;
+		    }
 		    if ($plist->signature eq $p2->signature) {
 			$found = $handle;
 			push(@l2, $handle);
@@ -165,7 +180,7 @@ sub process_handle
 		push(@search, OpenBSD::Search::FilterLocation->keep_most_recent);
 	}
 
-	my $l = OpenBSD::PackageLocator->match_locations(@search);
+	my $l = $set->match_locations(@search);
 	if (@$l == 0) {
 		if ($oldfound) {
 			$h->{update_found} = $h;
@@ -204,6 +219,22 @@ sub process_handle
 	}
 }
 
+sub find_nearest
+{
+	my ($base, $locs) = @_;
+
+	my $pkgname = OpenBSD::PackageName->from_string($base);
+	return undef if !defined $pkgname->{version};
+	my @sorted = sort {$a->pkgname->{version}->compare($b->pkgname->{version}) } @$locs;
+	if ($sorted[0]->pkgname->{version}->compare($pkgname->{version}) > 0) {
+		return $sorted[0];
+	}
+	if ($sorted[-1]->pkgname->{version}->compare($pkgname->{version}) < 0) {
+		return $sorted[-1];
+	}
+	return undef;
+}
+
 sub process_hint
 {
 	my ($self, $set, $hint, $state) = @_;
@@ -214,11 +245,18 @@ sub process_hint
 	# first try to find us exactly
 
 	$state->progress->message("Looking for $hint_name");
-	$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Exact->new($hint_name), $k);
+	$l = $set->match_locations(OpenBSD::Search::Exact->new($hint_name), $k);
 	if (@$l == 0) {
 		my $t = $hint_name;
 		$t =~ s/\-\d([^-]*)\-?/--/;
-		$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Stem->new($t), $k);
+		$l = $set->match_locations(OpenBSD::Search::Stem->new($t), $k);
+	}
+	if (@$l > 1) {
+		my $r = find_nearest($hint_name, $l);
+		if (defined $r) {
+			$self->add_location($set, $hint, $r);
+			return 1;
+		}
 	}
 	my $r = $state->choose_location($hint_name, $l);
 	if (defined $r) {
@@ -236,15 +274,13 @@ sub process_hint2
 	my ($self, $set, $hint, $state) = @_;
 	my $pkgname = $hint->pkgname;
 	if (OpenBSD::PackageName::is_stem($pkgname)) {
-		my ($h, $path, $repo);
 		if ($pkgname =~ m/\//o) {
-			($repo, $path, $pkgname) = OpenBSD::PackageLocator::path_parse($pkgname);
-			$h = $repo;
-		} else {
-			$h = 'OpenBSD::PackageLocator';
-			$path = "";
-		}
-		my $l = $state->updater->stem2location($h, $pkgname, $state, 
+			require OpenBSD::PackageLocator;
+			my $repo;
+			($repo, undef, $pkgname) = OpenBSD::PackageLocator::path_parse($pkgname);
+			$set->add_repositories($repo);
+		};
+		my $l = $state->updater->stem2location($set, $pkgname, $state, 
 		    $set->{quirks});
 		if (defined $l) {
 			$self->add_location($set, $hint, $l);
@@ -289,8 +325,8 @@ sub process_set
 
 sub stem2location
 {
-	my ($self, $repo, $name, $state, $is_quirks) = @_;
-	my $l = $repo->match_locations(OpenBSD::Search::Stem->new($name));
+	my ($self, $locator, $name, $state, $is_quirks) = @_;
+	my $l = $locator->match_locations(OpenBSD::Search::Stem->new($name));
 	if (@$l > 1 && !$state->{defines}->{allversions}) {
 		$l = OpenBSD::Search::FilterLocation->keep_most_recent->filter_locations($l);
 	}

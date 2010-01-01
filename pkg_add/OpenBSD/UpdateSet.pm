@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.45 2009/12/29 18:16:14 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.49 2010/01/01 13:00:05 espie Exp $
 #
-# Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -69,13 +69,60 @@ sub new
 	    $class;
 }
 
+sub path
+{
+	my $set = shift;
+	
+	return $set->{path};
+}
+
+sub add_repositories
+{
+	my ($set, @repos) = @_;
+
+	if (!defined $set->{path}) {
+		require OpenBSD::PackageRepositoryList;
+
+		$set->{path} = OpenBSD::PackageRepositoryList->new;
+	}
+	$set->{path}->add(@repos);
+}
+
+sub merge_paths
+{
+	my ($set, $other) = @_;
+
+	if (defined $other->path) {
+		if (!defined $set->path) {
+			$set->{path} = $other->path;
+		} elsif ($set->{path} ne $other->path) {
+			$set->add_path(@{$other->{path}});
+		}
+	}
+}
+
+sub match_locations
+{
+	my ($set, @spec) = @_;
+	my $r = [];
+	if (defined $set->{path}) {
+		$r = $set->{path}->match_locations(@spec);
+	}
+	if (@$r == 0) {
+		require OpenBSD::PackageLocator;
+		$r = OpenBSD::PackageLocator->match_locations(@spec);
+	}
+	return $r;
+}
+
 sub cleanup
 {
-	my ($self, $error) = @_;
+	my ($self, $error, $errorinfo) = @_;
 	for my $h ($self->older, $self->newer) {
-		$h->cleanup($error);
+		$h->cleanup($error, $errorinfo);
 	}
 	$self->{error} //= $error;
+	$self->{errorinfo} //= $errorinfo;
 	delete $self->{solver};
 	delete $self->{conflict_cache};
 	$self->{finished} = 1;
@@ -314,6 +361,7 @@ sub merge
 		$self->add_newer($set->newer);
 		$self->add_older($set->older);
 		$self->add_kept($set->kept);
+		$self->merge_paths($set);
 		# ... and mark it as already done
 		$set->{finished} = 1;
 		$tracker->handle_set($set);
