@@ -1,4 +1,4 @@
-/*	$OpenBSD: tree.c,v 1.11 2006/03/13 19:57:42 otto Exp $ */
+/*	$OpenBSD: tree.c,v 1.14 2010/01/01 20:46:20 krw Exp $ */
 
 /* Routines for manipulating parse trees... */
 
@@ -75,14 +75,20 @@ tree_cache(struct tree *tree)
 struct tree *
 tree_const(unsigned char *data, int len)
 {
-	struct tree	*nt;
+	unsigned char *d;
+	struct tree *nt;
 
-	if (!(nt = new_tree("tree_const")) || !(nt->data.const_val.data =
-	    (unsigned char *)dmalloc(len, "tree_const")))
+	d = calloc(1, len);
+	nt = calloc(1, sizeof(struct tree));
+	if (!nt || !d)
 		error("No memory for constant data tree node.");
+
+	memcpy(d, data, len);
+
 	nt->op = TREE_CONST;
-	memcpy(nt->data.const_val.data, data, len);
+	nt->data.const_val.data = d;
 	nt->data.const_val.len = len;
+
 	return nt;
 }
 
@@ -112,16 +118,17 @@ tree_concat(struct tree *left, struct tree *right)
 		    left->data.const_val.len);
 		memcpy(buf + left->data.const_val.len,
 		    right->data.const_val.data, right->data.const_val.len);
-		dfree(left->data.const_val.data, "tree_concat");
-		dfree(right->data.const_val.data, "tree_concat");
+		free(left->data.const_val.data);
+		free(right->data.const_val.data);
 		left->data.const_val.data = buf;
 		left->data.const_val.len += right->data.const_val.len;
-		free_tree(right, "tree_concat");
+		free(right);
 		return left;
 	}
 
 	/* Otherwise, allocate a new node to concatenate the two. */
-	if (!(nt = new_tree("tree_concat")))
+	nt = calloc(1, sizeof(struct tree));
+	if (!nt)
 		error("No memory for data tree concatenation node.");
 	nt->op = TREE_CONCAT;
 	nt->data.concat.left = left;
@@ -142,9 +149,11 @@ tree_limit(struct tree *tree, int limit)
 	}
 
 	/* Otherwise, put in a node which enforces the limit on evaluation. */
-	rv = new_tree("tree_limit");
-	if (!rv)
+	rv = calloc(1, sizeof(struct tree));
+	if (!rv) {
+		warning("No memory for data tree limit node.");
 		return NULL;
+	}
 	rv->op = TREE_LIMIT;
 	rv->data.limit.tree = tree;
 	rv->data.limit.limit = limit;
@@ -198,7 +207,7 @@ tree_evaluate(struct tree_cache *tree_cache)
 	 * location and size and return.
 	 */
 	if (tree_cache->value)
-		dfree(tree_cache->value, "tree_evaluate");
+		free(tree_cache->value);
 	tree_cache->value = bp;
 	tree_cache->len = bufix;
 	tree_cache->buf_size = bc;

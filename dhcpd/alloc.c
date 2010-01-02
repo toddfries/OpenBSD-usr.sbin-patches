@@ -1,4 +1,4 @@
-/*	$OpenBSD: alloc.c,v 1.7 2010/01/01 08:02:34 krw Exp $	*/
+/*	$OpenBSD: alloc.c,v 1.11 2010/01/01 20:46:19 krw Exp $	*/
 
 /* Memory allocation... */
 
@@ -54,24 +54,6 @@ dmalloc(int size, char *name)
 	return (foo);
 }
 
-void
-dfree(void *ptr, char *name)
-{
-	if (!ptr) {
-		warning("dfree %s: free on null pointer.", name);
-		return;
-	}
-	free(ptr);
-}
-
-struct tree *
-new_tree(char *name)
-{
-	struct tree *rval = dmalloc(sizeof(struct tree), name);
-
-	return (rval);
-}
-
 struct tree_cache *free_tree_caches;
 
 struct tree_cache *
@@ -90,37 +72,11 @@ new_tree_cache(char *name)
 	return (rval);
 }
 
-struct hash_table *
-new_hash_table(int count, char *name)
-{
-	struct hash_table *rval;
-
-	rval = dmalloc(sizeof(struct hash_table) -
-	    (DEFAULT_HASH_SIZE * sizeof(struct hash_bucket *)) +
-	    (count * sizeof(struct hash_bucket *)), name);
-	if (rval == NULL)
-		return (NULL);
-	rval->hash_count = count;
-	return (rval);
-}
-
-void
-free_hash_bucket(struct hash_bucket *ptr, char *name)
-{
-	dfree(ptr, name);
-}
-
 void
 free_tree_cache(struct tree_cache *ptr)
 {
 	ptr->value = (unsigned char *)free_tree_caches;
 	free_tree_caches = ptr;
-}
-
-void
-free_tree(struct tree *ptr, char *name)
-{
-	dfree(ptr, name);
 }
 
 struct lease_state *
@@ -141,13 +97,7 @@ void
 free_lease_state(struct lease_state *ptr, char *name)
 {
 	if (ptr->prl)
-		dfree(ptr->prl, name);
+		free(ptr->prl);
 	ptr->next = free_lease_states;
 	free_lease_states = ptr;
-}
-
-void
-free_lease(struct lease *ptr, char *name)
-{
-	dfree(ptr, name);
 }
