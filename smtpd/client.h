@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.h,v 1.8 2009/12/23 17:16:03 jacekm Exp $	*/
+/*	$OpenBSD: client.h,v 1.11 2010/01/02 16:41:19 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -23,10 +23,10 @@
 struct smtp_client;
 
 /* return codes for io routines */
-#define CLIENT_DONE		 0	/* finished */
-#define CLIENT_WANT_WRITE	-1	/* want read + write */
-#define CLIENT_STOP_WRITE	-2	/* want read */
-#define CLIENT_RCPT_FAIL	-3	/* recipient refused */
+#define CLIENT_DONE		-1	/* finished */
+#define CLIENT_WANT_WRITE	-2	/* want read + write */
+#define CLIENT_STOP_WRITE	-3	/* want read */
+#define CLIENT_RCPT_FAIL	-4	/* recipient refused */
 
 /* client commands */
 #define CLIENT_BANNER		0x1
@@ -70,22 +70,25 @@ struct client_auth {
 	size_t			 keysz;
 };
 
+/* session flags */
+#define CLIENT_FLAG_FIRSTTIME	0x1
+#define CLIENT_FLAG_HANDSHAKING	0x2
+#define CLIENT_FLAG_RCPTOKAY	0x4
+#define CLIENT_FLAG_DYING	0x8
+
 struct smtp_client {
 	size_t			 cmdi;		/* iterator */
 	size_t			 cmdw;		/* window */
 	struct cmdqueue		 cmdsendq;	/* cmds to send */
 	struct cmdqueue		 cmdrecvq;	/* replies waited for */
 
+	int			 flags;
 	void			*rcptfail;
-	size_t			 rcptokay;
-
 	char			*ehlo;
 	char			 reply[1024];
 	struct buf_read		 r;
 	struct msgbuf		 w;
-	short			 ssl_handshake;
 	void			*ssl;
-	int			 iomode;
 	int			 sndlowat;
 	struct timeval		 timeout;
 	FILE			*verbose;
@@ -98,7 +101,6 @@ struct smtp_client {
 	struct client_auth	 auth;
 
 	char			 status[1024];
-	short			 dying;
 };
 
 struct smtp_client	*client_init(int, int, char *, int);
