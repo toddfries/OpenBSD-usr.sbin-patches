@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.93 2009/12/24 14:19:46 gilles Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.94 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -807,9 +807,9 @@ parent_dispatch_control(int sig, short event, void *p)
 			IMSG_SIZE_CHECK(&verbose);
 
 			memcpy(&verbose, imsg.data, sizeof(verbose));
-
-			log_debug("parent_dispatch_control: got IMSG_CTL_VERBOSE");
 			log_verbose(verbose);
+
+			/* forward to other processes */
 			imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_CTL_VERBOSE,
 	    		    0, 0, -1, &verbose, sizeof(verbose));
 			imsg_compose_event(env->sc_ievs[PROC_MDA], IMSG_CTL_VERBOSE,
@@ -928,7 +928,7 @@ int
 main(int argc, char *argv[])
 {
 	int		 c;
-	int		 debug;
+	int		 debug, verbose;
 	int		 opts;
 	const char	*conffile = CONF_FILE;
 	struct smtpd	 env;
@@ -950,6 +950,7 @@ main(int argc, char *argv[])
 
 	opts = 0;
 	debug = 0;
+	verbose = 0;
 
 	log_init(1);
 
@@ -971,6 +972,7 @@ main(int argc, char *argv[])
 			conffile = optarg;
 			break;
 		case 'v':
+			verbose = 1;
 			opts |= SMTPD_OPT_VERBOSE;
 			break;
 		default:
@@ -1004,6 +1006,7 @@ main(int argc, char *argv[])
 		errx(1, "invalid directory permissions");
 
 	log_init(debug);
+	log_verbose(verbose);
 
 	if (!debug)
 		if (daemon(0, 0) == -1)

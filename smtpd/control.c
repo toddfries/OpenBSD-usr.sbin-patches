@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.44 2009/12/23 17:16:03 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.45 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -401,8 +401,6 @@ control_dispatch_ext(int fd, short event, void *arg)
 			break;
 		case IMSG_CTL_VERBOSE: {
 			int verbose;
-
-			log_debug("received verbose request");
 
 			if (euid)
 				goto badcred;

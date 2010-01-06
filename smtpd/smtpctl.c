@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.44 2009/12/14 18:21:53 jacekm Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.45 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -198,7 +198,8 @@ connected:
 	case LOG_BRIEF:
 		imsg_compose(ibuf, IMSG_CTL_VERBOSE, 0, 0, -1, &verbose,
 		    sizeof(verbose));
-		printf("%s logging request sent.\n",(verbose)?"VERBOSE":"BRIEF");
+		printf("logging request sent.\n");
+		done = 1;
 		break;
 	default:
 		err(1, "unknown request (%d)", res->action);

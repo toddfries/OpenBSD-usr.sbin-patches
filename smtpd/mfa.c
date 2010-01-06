@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.42 2009/10/18 20:41:21 gilles Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.43 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -105,7 +105,6 @@ mfa_dispatch_parent(int sig, short event, void *p)
 			IMSG_SIZE_CHECK(&verbose);
 
 			memcpy(&verbose, imsg.data, sizeof(verbose));
-			log_debug("mfa_dispatch_parent: got IMSG_CTL_VERBOSE");
 			log_verbose(verbose);
 			break;
 		}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.3 2008/12/04 17:24:13 cloder Exp $	*/
+/*	$OpenBSD: log.c,v 1.4 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.97 2009/12/15 00:23:38 jacekm Exp $	*/
+/*	$OpenBSD: lka.c,v 1.98 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -264,7 +264,6 @@ lka_dispatch_parent(int sig, short event, void *p)
 			IMSG_SIZE_CHECK(&verbose);
 
 			memcpy(&verbose, imsg.data, sizeof(verbose));
-			log_debug("lka_dispatch_parent: got IMSG_CTL_VERBOSE");
 			log_verbose(verbose);
 			break;
 		}

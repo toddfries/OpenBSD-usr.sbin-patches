@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.76 2009/12/14 19:56:55 jacekm Exp $	*/
+/*	$OpenBSD: queue.c,v 1.77 2010/01/03 14:37:37 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -114,7 +114,6 @@ queue_dispatch_parent(int sig, short event, void *p)
 			IMSG_SIZE_CHECK(&verbose);
 
 			memcpy(&verbose, imsg.data, sizeof(verbose));
-			log_debug("queue_dispatch_parent: got IMSG_CTL_VERBOSE");
 			log_verbose(verbose);
 			break;
 		}
