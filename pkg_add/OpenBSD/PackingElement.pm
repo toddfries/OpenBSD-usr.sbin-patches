@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.168 2010/01/01 13:36:07 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.170 2010/01/05 17:53:23 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -901,6 +901,7 @@ sub category() { "conflict" }
 
 package OpenBSD::PackingElement::Dependency;
 our @ISA=qw(OpenBSD::PackingElement::Depend);
+use OpenBSD::Error;
 
 sub keyword() { "depend" }
 __PACKAGE__->register_with_factory;
@@ -921,16 +922,14 @@ sub stringize
 	    (qw(pkgpath pattern def)));
 }
 
-sub spec
-{
+OpenBSD::Auto::cache(spec,
+    sub {
+	require OpenBSD::Search;
+
 	my $self = shift;
-	if (!defined $self->{spec}) {
-		require OpenBSD::Search;
-		$self->{spec} = OpenBSD::Search::PkgSpec->new($self->{pattern});
-		$self->{spec}->add_pkgpath_hint($self->{pkgpath});
-	}
-	return $self->{spec};
-}
+	return OpenBSD::Search::PkgSpec->new($self->{pattern})
+	    ->add_pkgpath_hint($self->{pkgpath});
+    });
 
 package OpenBSD::PackingElement::Wantlib;
 our @ISA=qw(OpenBSD::PackingElement::Depend);
