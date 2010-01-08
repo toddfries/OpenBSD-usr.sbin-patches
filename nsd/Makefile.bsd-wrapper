@@ -6,7 +6,8 @@ BINDIR=		/usr/sbin
 CHROOTDIR=	/var/nsd
 USER=		named
 
-XCFLAGS=	CC="${CC}" CFLAGS="${CFLAGS} ${COPTS}" LDFLAGS="${LDFLAGS}"
+XCFLAGS=	CC="${CC}" CFLAGS="${CFLAGS} ${COPTS}" LDFLAGS="${LDFLAGS}" \
+		YACC="/usr/bin/yacc"
 CONFIGURE_OPTS=	--prefix=/usr \
 		--localstatedir=/var \
 		--sysconfdir=/etc \
@@ -17,7 +18,9 @@ CONFIGURE_OPTS=	--prefix=/usr \
 		--with-zonesdir=${CHROOTDIR}/zones \
 		--with-dbfile=${CHROOTDIR}/nsd.db \
 		--with-difffile=${CHROOTDIR}/ixfr.db \
-		--with-xfrdfile=${CHROOTDIR}/xfrd.state
+		--with-xfrdfile=${CHROOTDIR}/xfrd.state \
+		--enable-root-server \
+		--enable-nsid
 
 PROG=	nsd zonec \
 	nsd-notify nsd-checkconf nsd-patch nsd-xfer
