@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageLocator.pm,v 1.83 2010/01/09 13:44:57 espie Exp $
+# $OpenBSD: PackageLocator.pm,v 1.86 2010/01/09 15:10:17 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -23,30 +23,36 @@ package OpenBSD::PackageLocator;
 use OpenBSD::PackageRepositoryList;
 use OpenBSD::PackageRepository;
 
-my $pkgpath = OpenBSD::PackageRepositoryList->new;
+my $default_path;
 
-if (defined $ENV{PKG_PATH}) {
-	my $v = $ENV{PKG_PATH};
-	$v =~ s/^\:+//o;
-	$v =~ s/\:+$//o;
-	while (my $o = OpenBSD::PackageRepository->parse(\$v)) {
-		$pkgpath->add($o);
+sub default_path
+{
+	if (!defined $default_path) {
+		$default_path = OpenBSD::PackageRepositoryList->new;
+
+		if (defined $ENV{PKG_PATH}) {
+			my $v = $ENV{PKG_PATH};
+			$v =~ s/^\:+//o;
+			$v =~ s/\:+$//o;
+			while (my $o = OpenBSD::PackageRepository->parse(\$v)) {
+				$default_path->add($o);
+			}
+		} else {
+			$default_path->add(OpenBSD::PackageRepository->new("./"));
+		}
+
 	}
-} else {
-	$pkgpath->add(OpenBSD::PackageRepository->new("./"));
+	return $default_path;
 }
-
-# rebuild PKG_PATH
-#$ENV{PKG_PATH} = $pkgpath->print_without_src;
 
 sub path_parse
 {
-	my ($pkgname, $path) = (shift, './');
+	my ($class, $pkgname, $path) = (@_, './');
 	if ($pkgname =~ m/^(.*[\/\:])(.*)/) {
 		($pkgname, $path) = ($2, $1);
 	}
 
-	return (OpenBSD::PackageRepository->new($path), $path, $pkgname);
+	return (OpenBSD::PackageRepository->new($path), $pkgname);
 }
 
 sub find
@@ -55,13 +61,13 @@ sub find
 
 	my $package;
 	if (m/[\/\:]/o) {
-		my ($repository, undef, $pkgname) = path_parse($_);
+		my ($repository, $pkgname) = $class->path_parse($_);
 		$package = $repository->find($pkgname, $arch);
 		if (defined $package) {
-			$pkgpath->add($repository);
+			$class->default_path->add($repository);
 		}
 	} else {
-		$package = $pkgpath->find($_, $arch);
+		$package = $class->default_path->find($_, $arch);
 	}
 	return $package;
 }
@@ -72,25 +78,21 @@ sub grabPlist
 
 	my $plist;
 	if (m/[\/\:]/o) {
-		my ($repository, undef, $pkgname) = path_parse($_);
+		my ($repository, $pkgname) = $class->path_parse($_);
 		$plist = $repository->grabPlist($pkgname, $arch, $code);
 		if (defined $plist) {
-			$pkgpath->add($repository);
+			$class->default_path->add($repository);
 		}
 	} else {
-		$plist = $pkgpath->grabPlist($_, $arch, $code);
+		$plist = $class->default_path->grabPlist($_, $arch, $code);
 	}
 	return $plist;
-}
-
-sub cleanup
-{
-	$pkgpath->cleanup;
 }
 
 sub match_locations
 {
 	my ($class, @search) = @_;
-	return $pkgpath->match_locations(@search);
+	return $class->default_path->match_locations(@search);
 }
+
 1;
