@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_create,v 1.130 2010/01/05 19:38:21 espie Exp $
+# $OpenBSD: pkg_create,v 1.132 2010/01/10 21:27:59 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -310,6 +310,20 @@ sub avert_duplicates_and_other_checks
 	$self->SUPER::avert_duplicates_and_other_checks($allfiles);
 }
 
+package OpenBSD::PackingElement::Wantlib;
+sub avert_duplicates_and_other_checks
+{
+	my ($self, $allfiles) = @_;
+	require OpenBSD::SharedLibs;
+
+	if (!defined OpenBSD::SharedLibs::parse_spec($self->name)) {
+		print STDERR "Error in packing-list: invalid wantlib: ", 
+		    $self->name, "\n";
+		$main::errors++;
+	}
+	$self->SUPER::avert_duplicates_and_other_checks($allfiles);
+}
+
 # put together file and filename, in order to handle fragments simply
 package MyFile;
 sub new
@@ -481,7 +495,7 @@ my ($cert, $privkey);
 
 
 set_usage(
-'pkg_create [-nQqv] [-A arches] [-B pkg-destdir] [-D name=value]',
+'pkg_create [-nQqv] [-A arches] [-B pkg-destdir] [-D name[=value]]',
 '[-L localbase] [-M displayfile] [-P pkg-dependency]',
 '[-s x509 -s cert -s priv] [-U undisplayfile] [-W wantedlib]',
 '-d desc -D COMMENT=value -f packinglist -p prefix pkg-name');
@@ -685,9 +699,10 @@ if ($plist->{deprecated}) {
 
 $plist->avert_duplicates_and_other_checks({});
 
-if ($errors) {
+if ($errors && $subst->empty('REGRESSION_TESTING')) {
 	exit 1;
 }
+$errors = 0;
 
 if (defined $cert) {
 	my $sig = OpenBSD::PackingElement::DigitalSignature->new_x509;
