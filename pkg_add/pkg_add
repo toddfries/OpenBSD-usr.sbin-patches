@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_add,v 1.465 2010/01/10 21:27:59 espie Exp $
+# $OpenBSD: pkg_add,v 1.468 2010/01/11 13:40:58 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -284,6 +284,41 @@ sub mark_as_manual_install
 	}
 }
 
+sub updates
+{
+	my ($n, $plist) = @_;
+	if (!$n->location->update_info->match_pkgpath($plist)) {
+		return 0;
+	}
+	if (!$n->plist->conflict_list->conflicts_with($plist->pkgname)) {
+		return 0;
+	}
+	my $r = OpenBSD::PackageName->from_string($n->pkgname)->compare(
+	    OpenBSD::PackageName->from_string($plist->pkgname));
+	if (defined $r && $r < 0) {
+		return 0;
+	}
+	return 1;
+}
+
+sub is_an_update_from
+{
+	my ($set, @conflicts) = @_;
+LOOP:	for my $c (@conflicts) {
+		next if $c =~ m/^\.libs\d*\-/;
+		next if $c =~ m/^partial\-/;
+		my $plist = OpenBSD::PackingList->from_installation($c, \&OpenBSD::PackingList::UpdateInfoOnly);
+		return 0 unless defined $plist;
+		for my $n ($set->newer) {
+			if (updates($n, $plist)) {
+				next LOOP;
+			}
+		}
+	    	return 0;
+	}
+	return 1;
+}
+
 sub install_issues
 {
 	my ($set, $state) = @_;
@@ -291,12 +326,17 @@ sub install_issues
 	my @conflicts = $set->find_conflicts($state);
 
 	return 0 if @conflicts == 0;
-	if (!$state->{allow_replacing}) {
-		$state->errsay("Can't install ", $set->print, 
-		    " because of conflicts (",join(',', @conflicts), ")");
-		return "conflicts";
-	}
 
+	if (!$state->{allow_replacing}) {
+		if (grep { !/^.libs\d*\-/ && !/^partial\-/ } @conflicts) {
+			if (!$set->is_an_update_from(@conflicts)) {
+				$state->errsay("Can't install ", $set->print, 
+				    " because of conflicts (",
+				    join(',', @conflicts), ")");
+				return "conflicts";
+			}
+		}
+	}
 
 	my $later = 0;
 	for my $toreplace (@conflicts) {
@@ -559,8 +599,8 @@ sub really_add
 	local $SIG{'TERM'} = $handler;
 
 	if ($replacing) {
-		require OpenBSD::Replace;
-		OpenBSD::Replace::save_old_libraries($set, $state);
+		require OpenBSD::OldLibs;
+		OpenBSD::OldLibs->save($set, $state);
 	}
 
 	$set->compute_size;
@@ -934,6 +974,7 @@ sub process_parameters
 		for my $pkgname (@ARGV) {
 			my $l;
 
+			next if $pkgname =~ m/^quirks\-\d/;
 			if (OpenBSD::PackageName::is_stem($pkgname)) {
 				$l = $state->updater->stem2location($inst, $pkgname, $state);
 			} else {
