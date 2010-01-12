@@ -1,4 +1,4 @@
-/*	$OpenBSD: mib.c,v 1.32 2009/12/16 22:17:53 deraadt Exp $	*/
+/*	$OpenBSD: mib.c,v 1.34 2010/01/11 11:15:03 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -723,7 +723,7 @@ kinfo_proc(u_int32_t idx, struct kinfo_proc2 **kinfo)
 		nkp = count;
 	}
 
-	klist = malloc(count * sizeof(*klist));
+	klist = calloc(count, sizeof(*klist));
 	if (klist == NULL)
 		return (-1);
 
@@ -881,11 +881,12 @@ mib_ifget(u_int idx)
 		if (kif == NULL)
 			return (NULL);
 	}
+	idx = kif->if_index;
 
 	/* Update interface information */
-	kr_updateif(kif->if_index);
-	if ((kif = kr_getif(kif->if_index)) == NULL) {
-		log_debug("mib_ifxtable: interface disappeared?");
+	kr_updateif(idx);
+	if ((kif = kr_getif(idx)) == NULL) {
+		log_debug("mib_ifxtable: interface %d disappeared?", idx);
 		return (NULL);
 	}
 
