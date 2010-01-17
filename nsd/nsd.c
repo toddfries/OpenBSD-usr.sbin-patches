@@ -649,6 +649,7 @@ main(int argc, char *argv[])
 #endif /* BIND8_STATS */
 #ifdef HAVE_CHROOT
 	if(nsd.chrootdir == 0) nsd.chrootdir = nsd.options->chroot;
+	if(nsd.chrootdir == 0) nsd.chrootdir = strdup(CHROOTDIR);
 #endif /* HAVE_CHROOT */
 	if(nsd.username == 0) {
 		if(nsd.options->username) nsd.username = nsd.options->username;
@@ -821,7 +822,7 @@ main(int argc, char *argv[])
 		if (l>0 && strncmp(nsd.chrootdir + (l-1), "/", 1) != 0) {
 			char *chroot_slash = region_alloc(nsd.region, sizeof(char)*(l+2));
 			memcpy(chroot_slash, nsd.chrootdir, sizeof(char)*(l+1));
-			strncat(chroot_slash, "/", 1);
+			strlcat(chroot_slash, "/", sizeof(char)*(l+2));
 			nsd.chrootdir = chroot_slash;
 			++l;
 		}
