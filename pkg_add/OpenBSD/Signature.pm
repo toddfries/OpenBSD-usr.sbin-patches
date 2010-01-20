@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Signature.pm,v 1.2 2010/01/10 12:38:27 espie Exp $
+# $OpenBSD: Signature.pm,v 1.4 2010/01/19 14:32:22 espie Exp $
 #
 # Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 #
@@ -32,12 +32,10 @@ package OpenBSD::PackingElement::Wantlib;
 sub signature
 {
 	my ($self, $hash) = @_;
-	require OpenBSD::SharedLibs;
 
-	my ($stem, $major, $minor) = OpenBSD::SharedLibs::parse_spec($self->name);
-	if (defined $stem) {
-		$hash->{$stem} = OpenBSD::LibrarySpec->new($stem, 
-		    $major, $minor);
+	my $spec = $self->spec;
+	if ($spec->is_valid) {
+		$hash->{$spec->key} = $spec;
 	}
 }
 
@@ -46,15 +44,12 @@ sub from_plist
 {
 	my ($class, $plist) = @_;
 
+	my $k = {};
+	$plist->visit('signature', $k);
+
 	if ($plist->has('always-update')) {
-		my $s;
-		open my $fh, '>', \$s;
-		$plist->write_no_sig($fh);
-		close $fh;
-		return $class->always->new($plist->pkgname, $s);
+		return $class->always->new($plist->pkgname, $k, $plist);
 	} else {
-		my $k = {};
-		$plist->visit('signature', $k);
 		return $class->new($plist->pkgname, $k);
 	}
 }
@@ -79,9 +74,43 @@ sub string
 sub compare
 {
 	my ($a, $b) = @_;
+	return $b->revert_compare($a);
+}
+
+sub revert_compare
+{
+	my ($b, $a) = @_;
 
 	if ($a->{name} eq $b->{name}) {
-		return $b->revert_compare($a);
+		my $awins = 0;
+		my $bwins = 0;
+		my $done = {};
+		while (my ($k, $v) = each %{$a->{extra}}) {
+			if (!defined $b->{extra}{$k}) {
+				$a->print_error($b);
+				return undef;
+			}
+			$done->{$k} = 1;
+			my $r = $v->compare($b->{extra}{$k});
+			if ($r > 0) {
+				$awins++;
+			} elsif ($r < 0) {
+				$bwins++;
+			}
+		}
+		for my $k (keys %{$b->{extra}}) {
+			if (!$done->{$k}) {
+				$a->print_error($b);
+				return undef;
+			}
+		}
+		if ($awins == 0) {
+			return -$bwins;
+		} elsif ($bwins == 0) {
+			return $awins;
+		} else {
+			return undef;
+		}
 	} else {
 		return OpenBSD::PackageName->from_string($a->{name})->compare(OpenBSD::PackageName->from_string($b->{name}));
 	}
@@ -96,86 +125,64 @@ sub print_error
 	print STDERR $a->string, " vs. ", $b->string, "\n";
 }
 
-sub revert_compare
-{
-	my ($b, $a) = @_;
-
-	my $awins = 0;
-	my $bwins = 0;
-	my $done = {};
-	while (my ($k, $v) = each %{$a->{extra}}) {
-		if (!defined $b->{extra}{$k}) {
-			$a->print_error($b);
-			return undef;
-		}
-		$done->{$k} = 1;
-		my $r = $v->compare($b->{extra}{$k});
-		if ($r > 0) {
-			$awins++;
-		} elsif ($r < 0) {
-			$bwins++;
-		}
-	}
-	for my $k (keys %{$b->{extra}}) {
-		if (!$done->{$k}) {
-			$a->print_error($b);
-			return undef;
-		}
-	}
-	if ($awins == 0) {
-		return -$bwins;
-	} elsif ($bwins == 0) {
-		return $awins;
-	} else {
-		return undef;
-	}
-}
-
 package OpenBSD::Signature::Full;
 our @ISA=qw(OpenBSD::Signature);
+
+sub new
+{
+	my ($class, $pkgname, $extra, $plist) = @_;
+	my $o = $class->SUPER::new($pkgname, $extra);
+	my $hash;
+	open my $fh, '>', \$hash;
+	$plist->write_no_sig($fh);
+	close $fh;
+	$o->{hash} = $hash;
+	return $o;
+}
 
 sub string
 {
 	my $self = shift;
-	return $self->{extra};
+	return join(',', $self->SUPER::string, $self->{hash});
 }
 
 sub revert_compare
 {
 	my ($b, $a) = @_;
-	return $a->string cmp $b->string;
+	my $r = $b->SUPER::revert_compare($a);
+	if (defined $r && $r == 0) {
+		if ($a->string ne $b->string) {
+			return undef;
+		}
+	}
+	return $r;
 }
 
 sub compare
 {
 	my ($a, $b) = @_;
-	return $a->string cmp $b->string;
+	my $r = $a->SUPER::compare($b);
+	if (defined $r && $r == 0) {
+		if ($a->string ne $b->string) {
+			return undef;
+		}
+	}
+	return $r;
 }
 
-package OpenBSD::LibrarySpec;
-sub new
-{
-	my ($class, $stem, $major, $minor) = @_;
-	bless {stem => $stem, major => $major, minor => $minor}, $class;
-}
-
-sub to_string
-{
-	my $self = shift;
-	return join('.', $self->{stem}, $self->{major}, $self->{minor});
-}
+package OpenBSD::LibSpec;
 
 sub compare
 {
 	my ($a, $b) = @_;
 	
-	if ($a->{stem} ne $b->{stem}) {
+	if ($a->key ne $b->key) {
 		return undef;
 	}
-	if ($a->{major} != $b->{major}) {
-		return $a->{major} <=> $b->{major};
+	if ($a->major != $b->major) {
+		return $a->major <=> $b->major;
 	}
-	return $a->{minor} <=> $b->{minor};
+	return $a->minor <=> $b->minor;
 }
 
 1;
