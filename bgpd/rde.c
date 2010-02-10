@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.284 2010/01/13 06:02:37 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.287 2010/02/09 13:29:15 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -2657,7 +2657,7 @@ rde_update6_queue_runner(u_int8_t aid)
 			case -2:
 				continue;
 			case -1:
-				peer_send_eor(peer, AID_INET6);
+				peer_send_eor(peer, aid);
 				continue;
 			default:
 				b = queue_buf + r;
@@ -2822,7 +2822,10 @@ peer_localaddrs(struct rde_peer *peer, struct bgpd_addr *laddr)
 				ifa = match;
 			sa2addr(ifa->ifa_addr, &peer->local_v4_addr);
 			break;
-		} else if (ifa->ifa_addr->sa_family == AF_INET6 &&
+		}
+	}
+	for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr->sa_family == AF_INET6 &&
 		    strcmp(ifa->ifa_name, match->ifa_name) == 0) {
 			/*
 			 * only accept global scope addresses except explicitly
@@ -2879,7 +2882,7 @@ peer_up(u_int32_t id, struct session_up *sup)
 		return;
 
 	for (i = 0; i < AID_MAX; i++) {
-		if (peer->capa.mp[i] == 1)
+		if (peer->capa.mp[i])
 			peer_dump(id, i);
 	}
 }
