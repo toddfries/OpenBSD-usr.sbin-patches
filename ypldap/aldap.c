@@ -1,5 +1,5 @@
-/*	$Id: aldap.c,v 1.20 2009/07/08 13:13:17 blambert Exp $ */
-/*	$OpenBSD: aldap.c,v 1.20 2009/07/08 13:13:17 blambert Exp $ */
+/*	$Id: aldap.c,v 1.22 2010/02/07 13:04:25 blambert Exp $ */
+/*	$OpenBSD: aldap.c,v 1.22 2010/02/07 13:04:25 blambert Exp $ */
 
 /*
  * Copyright (c) 2008 Alexander Schrijver <aschrijver@openbsd.org>
@@ -59,7 +59,6 @@ aldap_close(struct aldap *al)
 
 	return (0);
 }
-
 
 struct aldap *
 aldap_init(int fd)
@@ -167,7 +166,7 @@ aldap_search(struct aldap *ldap, char *basedn, enum scope scope, char *filter,
 	if ((ber = ber_add_sequence(ber)) == NULL)
 		goto fail;
 	if (attrs != NULL)
-		for (i = 0; i >= 0 && attrs[i] != NULL; i++) {
+		for (i = 0; attrs[i] != NULL; i++) {
 			if ((ber = ber_add_string(ber, attrs[i])) == NULL)
 				goto fail;
 		}
@@ -223,7 +222,7 @@ aldap_parse(struct aldap *ldap)
 	case LDAP_RES_COMPARE:
 	case LDAP_RES_SEARCH_RESULT:
 		if (ber_scanf_elements(m->protocol_op, "{EeSeSe",
-			    &m->body.res.rescode, &m->dn, &m->body.res.diagmsg, &a) != 0)
+		    &m->body.res.rescode, &m->dn, &m->body.res.diagmsg, &a) != 0)
 			goto parsefail;
 		if (m->body.res.rescode == LDAP_REFERRAL)
 			if (ber_scanf_elements(a, "{e", &m->references) != 0)
@@ -291,7 +290,7 @@ aldap_free_references(char **values)
 	if (values == NULL)
 		return;
 
-	for (i = 0; i >= 0 && values[i] != NULL; i++)
+	for (i = 0; values[i] != NULL; i++)
 		free(values[i]);
 
 	free(values);
@@ -320,7 +319,8 @@ aldap_count_entries(struct aldap_message *msg)
 	if (msg->body.search.entries == NULL)
 		return (-1);
 
-	for (i = 0, a = msg->body.search.entries; i >= 0 && a != NULL && ber_get_eoc(a) != 0;
+	for (i = 0, a = msg->body.search.entries;
+	    a != NULL && ber_get_eoc(a) != 0;
 	    i++, a = a->be_next)
 		;
 
@@ -337,8 +337,8 @@ aldap_first_entry(struct aldap_message *msg, char **outkey, char ***outvalues)
 	if (msg->body.search.entries == NULL)
 		goto fail;
 
-	if (ber_scanf_elements(msg->body.search.entries, "{s(e)}e", &key, &b,
-		    &c) != 0)
+	if (ber_scanf_elements(msg->body.search.entries, "{s(e)}e",
+	    &key, &b, &c) != 0)
 		goto fail;
 
 	msg->body.search.iter = msg->body.search.entries->be_next;
@@ -436,7 +436,7 @@ aldap_free_entry(char **values)
 	if (values == NULL)
 		return -1;
 
-	for (i = 0; i >= 0 && values[i] != NULL; i++)
+	for (i = 0; values[i] != NULL; i++)
 		free(values[i]);
 
 	free(values);
@@ -444,26 +444,23 @@ aldap_free_entry(char **values)
 	return (1);
 }
 
+#if 0
 void
 aldap_free_url(struct aldap_url *lu)
 {
-	int i;
-	free(lu->host);
-	free(lu->dn);
-	for (i = 0; i < MAXATTR && lu->attributes[i] != NULL; i++) {
-		free(lu->attributes[i]);
-	}
+	free(lu->buffer);
 	free(lu->filter);
 }
 
 int
 aldap_parse_url(char *url, struct aldap_url *lu)
 {
-	char		*dupstr, *p, *forward, *forward2;
+	char		*p, *forward, *forward2;
 	const char	*errstr = NULL;
 	int		 i;
 
-	p = dupstr = strdup(url);
+	if ((lu->buffer = p = strdup(url)) == NULL)
+		return (-1);
 
 	/* protocol */
 	if (strncasecmp(LDAP_URL, p, strlen(LDAP_URL)) != 0)
@@ -488,7 +485,7 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 	/* fail if no host is given */
 	if (strlen(p) == 0)
 		goto fail;
-	lu->host = strdup(p);
+	lu->host = p;
 	if (forward == NULL)
 		goto done;
 	/* p is assigned either a pointer to a character or to '\0' */
@@ -499,7 +496,7 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 	/* dn */
 	if ((forward = strchr(p, '?')) != NULL)
 		*forward = '\0';
-	lu->dn = strdup(p);
+	lu->dn = p;
 	if (forward == NULL)
 		goto done;
 	/* p is assigned either a pointer to a character or to '\0' */
@@ -514,11 +511,11 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 		if ((forward2 = strchr(p, ',')) == NULL) {
 			if (strlen(p) == 0)
 				break;
-			lu->attributes[i] = strdup(p);
+			lu->attributes[i] = p;
 			break;
 		}
 		*forward2 = '\0';
-		lu->attributes[i] = strdup(p);
+		lu->attributes[i] = p;
 		p = ++forward2;
 	}
 	if (forward == NULL)
@@ -537,6 +534,8 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 		lu->scope = LDAP_SCOPE_ONELEVEL;
 	else if (strcmp(p, "sub") == 0)
 		lu->scope = LDAP_SCOPE_SUBTREE;
+	else
+		goto fail;
 	if (forward == NULL)
 		goto done;
 	p = ++forward;
@@ -544,17 +543,39 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 		goto done;
 
 	/* filter */
-	if (p == NULL)
-		goto done;
-	lu->filter = strdup(p);
-
+	if (p)
+		lu->filter = p;
 done:
-	free(dupstr);
 	return (1);
 fail:
-	free(dupstr);
+	free(lu->buffer);
+	lu->buffer = NULL;
 	return (-1);
 }
+
+int
+aldap_search_url(struct aldap *ldap, char *url, int typesonly, int sizelimit,
+    int timelimit)
+{
+	struct aldap_url *lu;
+
+	if ((lu = calloc(1, sizeof(*lu))) == NULL)
+		return (-1);
+
+	if (aldap_parse_url(url, lu))
+		goto fail;
+
+	if (aldap_search(ldap, lu->dn, lu->scope, lu->filter, lu->attributes,
+	    typesonly, sizelimit, timelimit) == -1)
+		goto fail;
+
+	aldap_free_url(lu);
+	return (ldap->msgid);
+fail:
+	aldap_free_url(lu);
+	return (-1);
+}
+#endif /* 0 */
 
 /*
  * internal functions
@@ -580,7 +601,7 @@ aldap_get_stringset(struct ber_element *elm)
 	if ((ret = calloc(i + 1, sizeof(char *))) == NULL)
 		return NULL;
 
-	for (a = elm, i = 0; i >= 0 && a->be_type == BER_TYPE_OCTETSTRING;
+	for (a = elm, i = 0; a->be_type == BER_TYPE_OCTETSTRING;
 	    a = a->be_next, i++) {
 
 		ber_get_string(a, &s);
@@ -634,7 +655,7 @@ ldap_parse_search_filter(struct ber_element *ber, char *filter)
  * notes:
  *	when cp is passed to a recursive invocation, it is updated
  *	    to point one character beyond the filter that was passed
- *	    i.e., cp jumps to "(filter)"
+ *	    i.e., cp jumps to "(filter)" upon return
  *	                               ^
  *	goto's used to discriminate error-handling based on error type
  *	doesn't handle extended filters (yet)
@@ -1091,7 +1112,7 @@ parseval(char *p, size_t len)
 	if ((buffer = calloc(1, size)) == NULL)
 		return NULL;
 
-	for (i = 0, j = 0; i >= 0 && j < len; i++) {
+	for (i = j = 0; j < len; i++) {
 		if (i >= size) {
 			newsize = size + 1024;
 			if ((newbuffer = realloc(buffer, newsize)) == NULL) {
@@ -1114,6 +1135,7 @@ parseval(char *p, size_t len)
 
 	return buffer;
 }
+
 int
 aldap_get_errno(struct aldap *a, const char **estr)
 {
