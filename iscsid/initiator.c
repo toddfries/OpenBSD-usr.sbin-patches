@@ -133,7 +133,7 @@ initiator_login(struct connection *c)
 	struct pdu *p;
 	struct kvp kvp[] = {
 		{ "AuthMethod", "None" },
-		{ "InitiatorName", "iqn.t41.hostid.66d48107" },
+		{ "InitiatorName", "iqn.t41.hostid.66d48107:plemplem" },
 		{ "TargetName", "iqn.2001-05.com.equallogic:0-8a0906-ca7423603-900e8298d6f4b7a1-test0" },
 //		{ "SessionType", "Discovery" },
 		{ NULL, NULL }
@@ -208,7 +208,7 @@ initiator_login_cb(struct connection *c, void *arg, struct pdu *p)
 	}
 
 	task_cleanup(&tl->task, c);
-//	initiator_discovery(c->session);
+	initiator_discovery(c->session);
 	vscsi_event(VSCSI_REQPROBE, c->session->target, 0);
 }
 

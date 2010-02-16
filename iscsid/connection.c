@@ -40,7 +40,7 @@ void	conn_write_dispatch(int, short, void *);
 
 int	c_do_connect(struct connection *, enum c_event);
 int	c_do_login(struct connection *, enum c_event);
-int	c_do_nothing(struct connection *, enum c_event);
+int	c_do_close(struct connection *, enum c_event);
 
 const char *conn_state(int);
 const char *conn_event(enum c_event);
@@ -235,7 +235,7 @@ struct {
 } fsm[] = {
 	{ CONN_FREE, CONN_EV_CONNECT, c_do_connect },
 	{ CONN_XPT_WAIT, CONN_EV_CONNECTED, c_do_login },
-	{ CONN_IN_LOGIN, CONN_EV_CLOSE, c_do_nothing },
+	{ CONN_IN_LOGIN, CONN_EV_CLOSE, c_do_close },
 	{ 0, 0, NULL }
 };
 
@@ -291,9 +291,9 @@ c_do_login(struct connection *c, enum c_event ev)
 }
 
 int
-c_do_nothing(struct connection *c, enum c_event ev)
+c_do_close(struct connection *c, enum c_event ev)
 {
-	return (CONN_IN_LOGIN);
+	return (CONN_XPT_UP);
 }
 
 const char *
