@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfd.h,v 1.84 2009/11/02 20:20:54 claudio Exp $ */
+/*	$OpenBSD: ospfd.h,v 1.86 2010/02/16 18:27:11 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -118,7 +118,8 @@ enum imsg_type {
 	IMSG_RECONF_AUTHMD,
 	IMSG_RECONF_REDIST,
 	IMSG_RECONF_END,
-	IMSG_DEMOTE
+	IMSG_DEMOTE,
+	IMSG_IFADDRDEL
 };
 
 #define	REDIST_CONNECTED	0x01
@@ -322,6 +323,7 @@ struct iface {
 
 	u_int64_t		 baudrate;
 	u_int32_t		 dead_interval;
+	u_int32_t		 fast_hello_interval;
 	u_int32_t		 ls_ack_cnt;
 	u_int32_t		 crypt_seq_num;
 	time_t			 uptime;
@@ -341,6 +343,11 @@ struct iface {
 	u_int8_t		 linkstate;
 	u_int8_t		 priority;
 	u_int8_t		 passive;
+};
+
+struct ifaddrdel {
+	struct in_addr		addr;
+	unsigned int		ifindex;
 };
 
 /* ospf_conf */
@@ -434,10 +441,11 @@ struct ctl_iface {
 	struct in_addr		 dr_addr;
 	struct in_addr		 bdr_id;
 	struct in_addr		 bdr_addr;
-	time_t			 hello_timer;
+	struct timeval		 hello_timer;
 	time_t			 uptime;
 	u_int64_t		 baudrate;
 	u_int32_t		 dead_interval;
+	u_int32_t		 fast_hello_interval;
 	unsigned int		 ifindex;
 	int			 state;
 	int			 mtu;
