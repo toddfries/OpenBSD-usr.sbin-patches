@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.98 2010/01/03 14:37:37 chl Exp $	*/
+/*	$OpenBSD: lka.c,v 1.101 2010/02/17 17:27:47 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -416,11 +416,16 @@ lka_dispatch_mta(int sig, short event, void *p)
 		case IMSG_LKA_SECRET: {
 			struct secret	*query = imsg.data;
 			char		*secret = NULL;
-			char		*map = "secrets";
+			struct map	*map = NULL;
+			char		*mapname = "secrets";
 
 			IMSG_SIZE_CHECK(query);
 
-			secret = map_dblookupbyname(env, map, query->host);
+			/* should not happen */
+			map = map_findbyname(env, mapname);
+			if (map == NULL)
+				fatalx("secrets map has  disappeared");
+			secret = map_lookup(env, map->m_id, query->host);
 
 			log_debug("secret for %s %s", query->host,
 			    secret ? "found" : "not found");
@@ -429,11 +434,11 @@ lka_dispatch_mta(int sig, short event, void *p)
 
 			if (secret == NULL) {
 				log_warnx("failed to lookup %s in the %s map",
-				    query->host, map);
+				    query->host, mapname);
 			} else if (! lka_encode_credentials(query->secret,
 			    sizeof(query->secret), secret)) {
 				log_warnx("parse error for %s in the %s map",
-				    query->host, map);
+				    query->host, mapname);
 			}
 
 			imsg_compose_event(iev, IMSG_LKA_SECRET, 0, 0, -1, query,
@@ -1008,7 +1013,7 @@ lka_resolve_path(struct smtpd *env, struct lkasession *lkasession, struct path *
 	case C_ALL:
 	case C_NET:
 	case C_DOM: {
-		char username[MAXLOGNAME];
+		char username[MAX_LOCALPART_SIZE];
 		char *sep;
 		struct passwd *pw;
 
@@ -1026,10 +1031,13 @@ lka_resolve_path(struct smtpd *env, struct lkasession *lkasession, struct path *
 			return 1;
 		}
 
+		if (strlen(username) >= MAXLOGNAME)
+			return 0;
+
 		path->flags |= F_PATH_ACCOUNT;
 		pw = getpwnam(username);
 		if (pw == NULL)
-			break;
+			return 0;
 
 		(void)strlcpy(path->pw_name, pw->pw_name,
 		    sizeof(path->pw_name));
