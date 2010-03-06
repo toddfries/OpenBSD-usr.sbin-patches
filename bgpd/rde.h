@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.129 2010/01/13 06:02:37 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.131 2010/03/05 15:25:00 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -273,17 +273,10 @@ struct rib_entry {
 	u_int16_t		 flags;
 };
 
-enum rib_state {
-	RIB_NONE,
-	RIB_NEW,
-	RIB_ACTIVE,
-	RIB_DELETE
-};
-
 struct rib {
 	char			name[PEER_DESCR_LEN];
 	struct rib_tree		rib;
-	enum rib_state		state;
+	enum reconf_action 	state;
 	u_int16_t		flags;
 	u_int16_t		id;
 };
@@ -357,6 +350,8 @@ int		 aspath_match(struct aspath *, enum as_spec, u_int32_t);
 int		 community_match(struct rde_aspath *, int, int);
 int		 community_set(struct rde_aspath *, int, int);
 void		 community_delete(struct rde_aspath *, int, int);
+int		 community_ext_match(struct rde_aspath *,
+		    struct filter_extcommunity *, u_int16_t);
 int		 community_ext_set(struct rde_aspath *,
 		    struct filter_extcommunity *, u_int16_t);
 void		 community_ext_delete(struct rde_aspath *,
