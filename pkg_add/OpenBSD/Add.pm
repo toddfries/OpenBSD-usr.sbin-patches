@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.105 2010/03/22 20:38:44 espie Exp $
+# $OpenBSD: Add.pm,v 1.107 2010/04/05 16:07:10 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -59,9 +59,9 @@ sub register_installation
 
 sub validate_plist
 {
-	my ($plist, $state) = @_;
+	my ($plist, $state, $set) = @_;
 
-	$plist->prepare_for_addition($state, $plist->pkgname);
+	$plist->prepare_for_addition($state, $plist->pkgname, $set);
 }
 
 sub record_partial_installation
@@ -368,7 +368,7 @@ sub install
 	my $fullname = $self->fullname;
 	my $destdir = $state->{destdir};
 
-	if ($state->{replacing}) {
+	if ($state->{extracted_first}) {
 		if ($state->{not}) {
 			$state->say("moving tempfile -> $destdir$fullname") if $state->verbose >= 5;
 			return;
@@ -689,6 +689,26 @@ sub install
 package OpenBSD::PackingElement::FCONTENTS;
 sub copy_info
 {
+}
+
+package OpenBSD::PackingElement::AskUpdate;
+sub prepare_for_addition
+{
+	my ($self, $state, $pkgname, $set) = @_;
+	my @old = $set->older_names;
+	if ($self->spec->match_ref(\@old) > 0) {
+		my $key = "update_".OpenBSD::PackageName::splitstem($pkgname);
+		return if $state->{defines}->{$key};
+		if ($state->{interactive}) {
+			if ($state->confirm($self->{message}."\n".
+			    "Do you want to update now", 0)) {
+			    	return;
+			}
+		} else {
+			$state->errsay("Can't update $pkgname now: $self->{message}");
+		}
+		$state->{problems}++;
+	}
 }
 
 1;

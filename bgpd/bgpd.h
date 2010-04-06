@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.h,v 1.253 2010/03/05 15:25:00 claudio Exp $ */
+/*	$OpenBSD: bgpd.h,v 1.255 2010/04/06 13:25:08 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -454,14 +454,12 @@ struct kroute6 {
 };
 
 struct kroute_nexthop {
-	union {
-		struct kroute		kr4;
-		struct kroute6		kr6;
-	} kr;
 	struct bgpd_addr	nexthop;
 	struct bgpd_addr	gateway;
+	struct bgpd_addr	net;
 	u_int8_t		valid;
 	u_int8_t		connected;
+	u_int8_t		netlen;
 };
 
 struct kif {
@@ -871,6 +869,7 @@ const char	*log_addr(const struct bgpd_addr *);
 const char	*log_in6addr(const struct in6_addr *);
 const char	*log_sockaddr(struct sockaddr *);
 const char	*log_as(u_int32_t);
+const char	*log_rd(u_int64_t);
 const char	*log_ext_subtype(u_int8_t);
 int		 aspath_snprint(char *, size_t, void *, u_int16_t);
 int		 aspath_asprint(char **, void *, u_int16_t);
