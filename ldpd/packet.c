@@ -1,4 +1,4 @@
-/*	$OpenBSD: packet.c,v 1.5 2010/03/26 16:00:09 claudio Exp $ */
+/*	$OpenBSD: packet.c,v 1.8 2010/04/15 15:37:51 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -283,13 +283,11 @@ session_accept(int fd, short event, void *bula)
 		return;
 	}
 
-	if (fcntl(newfd, F_SETFL, O_NONBLOCK) == -1) {
-		log_debug("sess_recv_packet: unable to set non blocking flag");
-		return;
-	}
+	session_socket_blockmode(newfd, BM_NONBLOCK);
 
 	if ((iface = session_find_iface(xconf, src.sin_addr)) == NULL) {
 		log_debug("sess_recv_packet: cannot find a matching interface");
+		close(newfd);
 		return;
 	}
 
@@ -327,8 +325,6 @@ session_read(int fd, short event, void *arg)
 	if ((n = read(fd, nbr->rbuf->buf + nbr->rbuf->wpos,
 	    sizeof(nbr->rbuf->buf) - nbr->rbuf->wpos)) == -1) {
 		if (errno != EINTR && errno != EAGAIN) {
-			/* XXX find better error */
-			event_del(&nbr->rev);
 			session_shutdown(nbr, S_SHUTDOWN, 0, 0);
 			return;
 		}
@@ -337,7 +333,6 @@ session_read(int fd, short event, void *arg)
 	}
 	if (n == 0) {
 		/* connection closed */
-		event_del(&nbr->rev);
 		session_shutdown(nbr, S_SHUTDOWN, 0, 0);
 		return;
 	}
@@ -452,8 +447,12 @@ void
 session_shutdown(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
     u_int32_t type)
 {
+	log_debug("session_shutdown: nbr ID %s, status %x",
+	    inet_ntoa(nbr->id), status);
+
 	send_notification_nbr(nbr, status, msgid, type);
-	send_notification_nbr(nbr, S_SHUTDOWN, msgid, type);
+	if (status != S_SHUTDOWN)
+		send_notification_nbr(nbr, S_SHUTDOWN, msgid, type);
 
 	nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
 }
