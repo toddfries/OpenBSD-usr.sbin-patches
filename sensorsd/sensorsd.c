@@ -1,4 +1,4 @@
-/*	$OpenBSD: sensorsd.c,v 1.47 2009/08/14 15:29:19 cnst Exp $ */
+/*	$OpenBSD: sensorsd.c,v 1.49 2010/04/21 04:07:13 deraadt Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -172,12 +172,14 @@ create(void)
 	mib[0] = CTL_HW;
 	mib[1] = HW_SENSORS;
 
-	for (dev = 0; dev < MAXSENSORDEVICES; dev++) {
+	for (dev = 0; ; dev++) {
 		mib[2] = dev;
 		if (sysctl(mib, 3, &sensordev, &sdlen, NULL, 0) == -1) {
-			if (errno != ENOENT)
-				warn("sysctl");
-			continue;
+			if (errno == ENXIO)
+				continue;
+			if (errno == ENOENT)
+				break;
+			warn("sysctl");
 		}
 		sdlim = create_sdlim(&sensordev);
 		TAILQ_INSERT_TAIL(&sdlims, sdlim, entries);
@@ -657,6 +659,9 @@ print_sensor(enum sensor_type type, int64_t value)
 	case SENSOR_TIMEDELTA:
 		snprintf(fbuf, RFBUFSIZ, "%.6f secs", value / 1000000000.0);
 		break;
+	case SENSOR_ANGLE:
+		snprintf(fbuf, RFBUFSIZ, "%lld", value);
+		break;
 	default:
 		snprintf(fbuf, RFBUFSIZ, "%lld ???", value);
 	}
@@ -757,6 +762,7 @@ get_val(char *buf, int upper, enum sensor_type type)
 	case SENSOR_INDICATOR:
 	case SENSOR_INTEGER:
 	case SENSOR_DRIVE:
+	case SENSOR_ANGLE:
 		rval = val;
 		break;
 	case SENSOR_WATTS:
