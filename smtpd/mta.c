@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.85 2010/04/20 15:34:56 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.87 2010/04/21 18:54:43 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -69,7 +69,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	struct dns		*dns;
 	struct ssl		*ssl;
 
-	if (iev->proc == PROC_RUNNER) {
+	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
 		case IMSG_BATCH_CREATE:
 			b = imsg->data;
@@ -144,6 +144,11 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			b = imsg->data;
 			mta_pickup(mta_lookup(env, b->id), NULL);
 			return;
+
+		case IMSG_QUEUE_MESSAGE_FD:
+			b = imsg->data;
+			mta_pickup(mta_lookup(env, b->id), &imsg->fd);
+			return;
 		}
 	}
 
@@ -180,15 +185,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 				strlcpy(relay->fqdn, dns->host,
 				    sizeof relay->fqdn);
 			mta_pickup(s, NULL);
-			return;
-		}
-	}
-
-	if (iev->proc == PROC_QUEUE) {
-		switch (imsg->hdr.type) {
-		case IMSG_QUEUE_MESSAGE_FD:
-			b = imsg->data;
-			mta_pickup(mta_lookup(env, b->id), &imsg->fd);
 			return;
 		}
 	}
@@ -269,7 +265,6 @@ mta(struct smtpd *env)
 	struct peer peers[] = {
 		{ PROC_PARENT,	imsg_dispatch },
 		{ PROC_QUEUE,	imsg_dispatch },
-		{ PROC_RUNNER,	imsg_dispatch },
 		{ PROC_LKA,	imsg_dispatch }
 	};
 
@@ -286,24 +281,18 @@ mta(struct smtpd *env)
 	purge_config(env, PURGE_EVERYTHING);
 
 	pw = env->sc_pw;
-#ifndef DEBUG
 	if (chroot(pw->pw_dir) == -1)
 		fatal("mta: chroot");
 	if (chdir("/") == -1)
 		fatal("mta: chdir(\"/\")");
-#else
-#warning disabling privilege revocation and chroot in DEBUG MODE
-#endif
 
 	smtpd_process = PROC_MTA;
 	setproctitle("%s", env->sc_title[smtpd_process]);
 
-#ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("mta: cannot drop privileges");
-#endif
 
 	imsg_callback = mta_imsg;
 	event_init();
@@ -508,7 +497,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		while ((m = TAILQ_FIRST(&s->recipients)))
 			mta_message_done(s, m);
 
-		imsg_compose_event(s->env->sc_ievs[PROC_RUNNER],
+		imsg_compose_event(s->env->sc_ievs[PROC_QUEUE],
 		    IMSG_BATCH_DONE, 0, 0, -1, NULL, 0);
 
 		/* deallocate resources */

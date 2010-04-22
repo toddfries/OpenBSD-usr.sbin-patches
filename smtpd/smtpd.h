@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.174 2010/04/20 15:34:56 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.179 2010/04/21 21:47:39 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -149,16 +149,17 @@ enum imsg_type {
 	IMSG_QUEUE_COMMIT_MESSAGE,
 	IMSG_QUEUE_TEMPFAIL,
 	IMSG_QUEUE_STATS,
+	IMSG_QUEUE_PAUSE_LOCAL,
+	IMSG_QUEUE_PAUSE_OUTGOING,
+	IMSG_QUEUE_RESUME_LOCAL,
+	IMSG_QUEUE_RESUME_OUTGOING,
 
 	IMSG_QUEUE_REMOVE_SUBMISSION,
 	IMSG_QUEUE_MESSAGE_UPDATE,
 	IMSG_QUEUE_MESSAGE_FD,
 	IMSG_QUEUE_MESSAGE_FILE,
-
-	IMSG_RUNNER_UPDATE_ENVELOPE,
-	IMSG_RUNNER_STATS,
-	IMSG_RUNNER_SCHEDULE,
-	IMSG_RUNNER_REMOVE,
+	IMSG_QUEUE_SCHEDULE,
+	IMSG_QUEUE_REMOVE,
 
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
@@ -173,18 +174,12 @@ enum imsg_type {
 	IMSG_PARENT_AUTHENTICATE,
 	IMSG_PARENT_SEND_CONFIG,
 
-	IMSG_MDA_PAUSE,
-	IMSG_MTA_PAUSE,
-	IMSG_SMTP_PAUSE,
 	IMSG_SMTP_STATS,
 
-	IMSG_MDA_RESUME,
-	IMSG_MTA_RESUME,
-	IMSG_SMTP_RESUME,
-
 	IMSG_STATS,
-
 	IMSG_SMTP_ENQUEUE,
+	IMSG_SMTP_PAUSE,
+	IMSG_SMTP_RESUME,
 
 	IMSG_DNS_A,
 	IMSG_DNS_A_END,
@@ -254,6 +249,13 @@ enum map_src {
 	S_EXT
 };
 
+enum map_kind {
+	K_NONE,
+	K_ALIASES,
+	K_VIRTUAL,
+	K_SECRETS
+};	
+
 enum mapel_type {
 	ME_STRING,
 	ME_NET,
@@ -281,6 +283,24 @@ struct map {
 	enum map_src			 m_src;
 	char				 m_config[MAXPATHLEN];
 	TAILQ_HEAD(mapel_list, mapel)	 m_contents;
+};
+
+struct map_backend {
+	enum map_src source;
+	void *(*open)(char *);
+	void (*close)(void *);
+	char *(*get)(void *, char *, size_t *);
+	int (*put)(void *, char *, char *);
+};
+
+struct map_parser {
+	enum map_kind kind;
+	void *(*extract)(char *, size_t);
+};
+
+struct map_secret {
+	char username[MAX_LINE_SIZE];
+	char password[MAX_LINE_SIZE];
 };
 
 enum cond_type {
@@ -819,6 +839,7 @@ struct mta_session {
 	void			*pcb;
 };
 
+
 extern void (*imsg_callback)(struct smtpd *, struct imsgev *, struct imsg *);
 
 /* aliases.c */
@@ -936,7 +957,7 @@ void		 show_queue(char *, int);
 u_int16_t	queue_hash(char *);
 
 /* map.c */
-char		*map_lookup(struct smtpd *, objid_t, char *);
+void		*map_lookup(struct smtpd *, objid_t, char *, enum map_kind);
 
 /* mda.c */
 pid_t		 mda(struct smtpd *);

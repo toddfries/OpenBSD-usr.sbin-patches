@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.47 2010/04/20 15:34:56 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.49 2010/04/21 18:54:43 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -78,9 +78,9 @@ control_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	if (iev->proc == PROC_RUNNER) {
+	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
-		case IMSG_RUNNER_SCHEDULE:
+		case IMSG_QUEUE_SCHEDULE:
 			sched = imsg->data;
 			c = control_connbyfd(sched->fd);
 			if (c == NULL)
@@ -90,7 +90,7 @@ control_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			    NULL, 0);
 			return;
 
-		case IMSG_RUNNER_REMOVE:
+		case IMSG_QUEUE_REMOVE:
 			rem = imsg->data;
 			c = control_connbyfd(rem->fd);
 			if (c == NULL)
@@ -146,7 +146,6 @@ control(struct smtpd *env)
 	struct event		 ev_sigterm;
 	struct peer		 peers [] = {
 		{ PROC_QUEUE,	 imsg_dispatch },
-		{ PROC_RUNNER,	 imsg_dispatch },
 		{ PROC_SMTP,	 imsg_dispatch },
 		{ PROC_MFA,	 imsg_dispatch },
 		{ PROC_PARENT,	 imsg_dispatch },
@@ -196,24 +195,18 @@ control(struct smtpd *env)
 	session_socket_blockmode(fd, BM_NONBLOCK);
 	control_state.fd = fd;
 
-#ifndef DEBUG
 	if (chroot(pw->pw_dir) == -1)
 		fatal("control: chroot");
 	if (chdir("/") == -1)
 		fatal("control: chdir(\"/\")");
-#else
-#warning disabling privilege revocation and chroot in DEBUG MODE
-#endif
 
 	smtpd_process = PROC_CONTROL;
 	setproctitle("%s", env->sc_title[smtpd_process]);
 
-#ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("control: cannot drop privileges");
-#endif
 
 	imsg_callback = control_imsg;
 	event_init();
@@ -401,7 +394,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			imsg_compose_event(&c->iev, IMSG_STATS, 0, 0, -1,
 			    env->stats, sizeof(struct stats));
 			break;
-		case IMSG_RUNNER_SCHEDULE: {
+		case IMSG_QUEUE_SCHEDULE: {
 			struct sched *s = imsg.data;
 
 			if (euid)
@@ -418,11 +411,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_RUNNER_SCHEDULE, 0, 0, -1, s, sizeof(*s));
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE], IMSG_QUEUE_SCHEDULE, 0, 0, -1, s, sizeof(*s));
 			break;
 		}
 
-		case IMSG_RUNNER_REMOVE: {
+		case IMSG_QUEUE_REMOVE: {
 			struct remove *s = imsg.data;
 
 			if (euid)
@@ -439,7 +432,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_RUNNER_REMOVE, 0, 0, -1, s, sizeof(*s));
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE], IMSG_QUEUE_REMOVE, 0, 0, -1, s, sizeof(*s));
 			break;
 		}
 /*
@@ -494,7 +487,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		}
-		case IMSG_MDA_PAUSE:
+		case IMSG_QUEUE_PAUSE_LOCAL:
 			if (euid)
 				goto badcred;
 
@@ -504,11 +497,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags |= SMTPD_MDA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MDA_PAUSE,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MTA_PAUSE:
+		case IMSG_QUEUE_PAUSE_OUTGOING:
 			if (euid)
 				goto badcred;
 
@@ -518,8 +511,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags |= SMTPD_MTA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MTA_PAUSE,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_PAUSE_OUTGOING, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_PAUSE:
@@ -536,7 +529,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			    0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MDA_RESUME:
+		case IMSG_QUEUE_RESUME_LOCAL:
 			if (euid)
 				goto badcred;
 
@@ -546,11 +539,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags &= ~SMTPD_MDA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MDA_RESUME,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MTA_RESUME:
+		case IMSG_QUEUE_RESUME_OUTGOING:
 			if (euid)
 				goto badcred;
 
@@ -560,8 +553,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags &= ~SMTPD_MTA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MTA_RESUME,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_RESUME_OUTGOING, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_RESUME:
