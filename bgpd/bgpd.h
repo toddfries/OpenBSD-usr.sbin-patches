@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.h,v 1.253 2010/03/05 15:25:00 claudio Exp $ */
+/*	$OpenBSD: bgpd.h,v 1.256 2010/04/13 09:09:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -329,7 +329,6 @@ enum imsg_type {
 	IMSG_CTL_NEIGHBOR_CLEAR,
 	IMSG_CTL_NEIGHBOR_RREFRESH,
 	IMSG_CTL_KROUTE,
-	IMSG_CTL_KROUTE6,
 	IMSG_CTL_KROUTE_ADDR,
 	IMSG_CTL_RESULT,
 	IMSG_CTL_SHOW_NEIGHBOR,
@@ -341,7 +340,6 @@ enum imsg_type {
 	IMSG_CTL_SHOW_RIB_ATTR,
 	IMSG_CTL_SHOW_RIB_COMMUNITY,
 	IMSG_CTL_SHOW_NETWORK,
-	IMSG_CTL_SHOW_NETWORK6,
 	IMSG_CTL_SHOW_RIB_MEM,
 	IMSG_CTL_SHOW_TERSE,
 	IMSG_CTL_SHOW_TIMER,
@@ -367,8 +365,6 @@ enum imsg_type {
 	IMSG_MRT_CLOSE,
 	IMSG_KROUTE_CHANGE,
 	IMSG_KROUTE_DELETE,
-	IMSG_KROUTE6_CHANGE,
-	IMSG_KROUTE6_DELETE,
 	IMSG_NEXTHOP_ADD,
 	IMSG_NEXTHOP_REMOVE,
 	IMSG_NEXTHOP_UPDATE,
@@ -433,6 +429,16 @@ enum suberr_cease {
 	ERR_CEASE_RSRC_EXHAUST
 };
 
+struct kroute_full {
+	struct bgpd_addr	prefix;
+	struct bgpd_addr	nexthop;
+	char			label[RTLABEL_LEN];
+	u_int16_t		flags;
+	u_short			ifindex;
+	u_int8_t		prefixlen;
+	u_int8_t		priority;
+};
+
 struct kroute {
 	struct in_addr	prefix;
 	struct in_addr	nexthop;
@@ -454,14 +460,12 @@ struct kroute6 {
 };
 
 struct kroute_nexthop {
-	union {
-		struct kroute		kr4;
-		struct kroute6		kr6;
-	} kr;
 	struct bgpd_addr	nexthop;
 	struct bgpd_addr	gateway;
+	struct bgpd_addr	net;
 	u_int8_t		valid;
 	u_int8_t		connected;
+	u_int8_t		netlen;
 };
 
 struct kif {
@@ -503,16 +507,6 @@ struct ctl_neighbor {
 	struct bgpd_addr	addr;
 	char			descr[PEER_DESCR_LEN];
 	int			show_timers;
-};
-
-struct kroute_label {
-	struct kroute	kr;
-	char		label[RTLABEL_LEN];
-};
-
-struct kroute6_label {
-	struct kroute6	kr;
-	char		label[RTLABEL_LEN];
 };
 
 #define	F_RIB_ELIGIBLE	0x01
@@ -819,10 +813,8 @@ int	 host(const char *, struct bgpd_addr *, u_int8_t *);
 
 /* kroute.c */
 int		 kr_init(int, u_int);
-int		 kr_change(struct kroute_label *);
-int		 kr_delete(struct kroute_label *);
-int		 kr6_change(struct kroute6_label *);
-int		 kr6_delete(struct kroute6_label *);
+int		 kr_change(struct kroute_full *);
+int		 kr_delete(struct kroute_full *);
 void		 kr_shutdown(void);
 void		 kr_fib_couple(void);
 void		 kr_fib_decouple(void);
@@ -871,6 +863,7 @@ const char	*log_addr(const struct bgpd_addr *);
 const char	*log_in6addr(const struct in6_addr *);
 const char	*log_sockaddr(struct sockaddr *);
 const char	*log_as(u_int32_t);
+const char	*log_rd(u_int64_t);
 const char	*log_ext_subtype(u_int8_t);
 int		 aspath_snprint(char *, size_t, void *, u_int16_t);
 int		 aspath_asprint(char **, void *, u_int16_t);

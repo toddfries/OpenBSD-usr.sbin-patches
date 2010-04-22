@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.305 2010/02/11 22:05:59 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.307 2010/04/16 12:24:25 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -629,7 +629,6 @@ bgp_fsm(struct peer *peer, enum session_events event)
 			peer->rbuf = calloc(1, sizeof(struct buf_read));
 			if (peer->rbuf == NULL)
 				fatal(NULL);
-			peer->rbuf->wpos = 0;
 
 			/* init write buffer */
 			msgbuf_init(&peer->wbuf);
@@ -2486,7 +2485,6 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 			}
 			break;
 		case IMSG_CTL_KROUTE:
-		case IMSG_CTL_KROUTE6:
 		case IMSG_CTL_KROUTE_ADDR:
 		case IMSG_CTL_SHOW_NEXTHOP:
 		case IMSG_CTL_SHOW_INTERFACE:
@@ -2499,7 +2497,6 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 		case IMSG_CTL_SHOW_RIB_ATTR:
 		case IMSG_CTL_SHOW_RIB_MEM:
 		case IMSG_CTL_SHOW_NETWORK:
-		case IMSG_CTL_SHOW_NETWORK6:
 		case IMSG_CTL_SHOW_NEIGHBOR:
 			if (idx != PFD_PIPE_ROUTE_CTL)
 				fatalx("ctl rib request not from RDE");

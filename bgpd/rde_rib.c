@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.121 2010/03/03 13:52:39 claudio Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.126 2010/04/20 09:02:12 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -50,16 +50,15 @@ RB_GENERATE(rib_tree, rib_entry, rib_e, rib_compare);
 
 /* RIB specific functions */
 u_int16_t
-rib_new(int id, char *name, u_int16_t flags)
+rib_new(char *name, u_int16_t flags)
 {
 	struct rib	*xribs;
 	size_t		newsize;
+	u_int16_t	id;
 
-	if (id < 0) {
-		for (id = 0; id < rib_size; id++) {
-			if (*ribs[id].name == '\0')
-				break;
-		}
+	for (id = 0; id < rib_size; id++) {
+		if (*ribs[id].name == '\0')
+			break;
 	}
 
 	if (id == RIB_FAILED)
@@ -310,7 +309,7 @@ rib_restart(struct rib_context *ctx)
 	re->flags &= ~F_RIB_ENTRYLOCK;
 
 	/* find first non empty element */
-	while (rib_empty(re))
+	while (re && rib_empty(re))
 		re = RB_NEXT(rib_tree, unused, re);
 
 	/* free the previously locked rib element if empty */
@@ -922,16 +921,12 @@ prefix_updateall(struct rde_aspath *asp, enum nexthop_state state,
 void
 prefix_destroy(struct prefix *p)
 {
-	struct rib_entry	*re;
 	struct rde_aspath	*asp;
 
-	re = p->rib;
 	asp = p->aspath;
 	prefix_unlink(p);
 	prefix_free(p);
 
-	if (rib_empty(re))
-		rib_remove(re);
 	if (path_empty(asp))
 		path_destroy(asp);
 }
@@ -944,7 +939,6 @@ prefix_network_clean(struct rde_peer *peer, time_t reloadtime, u_int32_t flags)
 {
 	struct rde_aspath	*asp, *xasp;
 	struct prefix		*p, *xp;
-	struct pt_entry		*pte;
 
 	for (asp = LIST_FIRST(&peer->path_h); asp != NULL; asp = xasp) {
 		xasp = LIST_NEXT(asp, peer_l);
@@ -953,12 +947,8 @@ prefix_network_clean(struct rde_peer *peer, time_t reloadtime, u_int32_t flags)
 		for (p = LIST_FIRST(&asp->prefix_h); p != NULL; p = xp) {
 			xp = LIST_NEXT(p, path_l);
 			if (reloadtime > p->lastchange) {
-				pte = p->prefix;
 				prefix_unlink(p);
 				prefix_free(p);
-
-				if (pt_empty(pte))
-					pt_remove(pte);
 			}
 		}
 		if (path_empty(asp))
@@ -991,11 +981,11 @@ prefix_link(struct prefix *pref, struct rib_entry *re, struct rde_aspath *asp)
 static void
 prefix_unlink(struct prefix *pref)
 {
-	if (pref->rib) {
-		/* make route decision */
-		LIST_REMOVE(pref, rib_l);
-		prefix_evaluate(NULL, pref->rib);
-	}
+	struct rib_entry	*re = pref->rib;
+
+	/* make route decision */
+	LIST_REMOVE(pref, rib_l);
+	prefix_evaluate(NULL, re);
 
 	LIST_REMOVE(pref, path_l);
 	PREFIX_COUNT(pref->aspath, -1);
@@ -1003,6 +993,8 @@ prefix_unlink(struct prefix *pref)
 	pt_unref(pref->prefix);
 	if (pt_empty(pref->prefix))
 		pt_remove(pref->prefix);
+	if (rib_empty(re))
+		rib_remove(re);
 
 	/* destroy all references to other objects */
 	pref->aspath = NULL;
@@ -1010,8 +1002,8 @@ prefix_unlink(struct prefix *pref)
 	pref->rib = NULL;
 
 	/*
-	 * It's the caller's duty to remove empty aspath respectively pt_entry
-	 * structures. Also freeing the unlinked prefix is the caller's duty.
+	 * It's the caller's duty to remove empty aspath structures.
+	 * Also freeing the unlinked prefix is the caller's duty.
 	 */
 }
 
@@ -1107,10 +1099,6 @@ nexthop_update(struct kroute_nexthop *msg)
 		return;
 	}
 
-	if (nexthop_delete(nh))
-		/* nexthop no longer used */
-		return;
-
 	oldstate = nh->state;
 	if (msg->valid)
 		nh->state = NEXTHOP_REACH;
@@ -1125,21 +1113,13 @@ nexthop_update(struct kroute_nexthop *msg)
 		memcpy(&nh->true_nexthop, &msg->gateway,
 		    sizeof(nh->true_nexthop));
 
-	switch (msg->nexthop.aid) {
-	case AID_INET:
-		nh->nexthop_netlen = msg->kr.kr4.prefixlen;
-		nh->nexthop_net.aid = AID_INET;
-		nh->nexthop_net.v4.s_addr = msg->kr.kr4.prefix.s_addr;
-		break;
-	case AID_INET6:
-		nh->nexthop_netlen = msg->kr.kr6.prefixlen;
-		nh->nexthop_net.aid = AID_INET6;
-		memcpy(&nh->nexthop_net.v6, &msg->kr.kr6.prefix,
-		    sizeof(struct in6_addr));
-		break;
-	default:
-		fatalx("nexthop_update: unknown af");
-	}
+	memcpy(&nh->nexthop_net, &msg->net,
+	    sizeof(nh->nexthop_net));
+	nh->nexthop_netlen = msg->netlen;
+
+	if (nexthop_delete(nh))
+		/* nexthop no longer used */
+		return;
 
 	if (rde_noevaluate())
 		/*

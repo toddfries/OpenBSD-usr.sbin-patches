@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.170 2010/03/03 11:11:55 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.179 2010/04/21 21:47:39 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -38,7 +38,7 @@
 
 /* sizes include the tailing '\0' */
 #define MAX_LINE_SIZE		 1024
-#define MAX_LOCALPART_SIZE	 65
+#define MAX_LOCALPART_SIZE	 128
 #define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 #define MAX_ID_SIZE		 64
 #define MAX_TAG_SIZE		 32
@@ -137,7 +137,8 @@ enum imsg_type {
 	IMSG_LKA_RCPT,
 	IMSG_LKA_SECRET,
 	IMSG_LKA_RULEMATCH,
-	IMSG_MDA_FINALIZE,
+	IMSG_MDA_SESS_NEW,
+	IMSG_MDA_DONE,
 	IMSG_MFA_RCPT,
 	IMSG_MFA_MAIL,
 
@@ -148,16 +149,17 @@ enum imsg_type {
 	IMSG_QUEUE_COMMIT_MESSAGE,
 	IMSG_QUEUE_TEMPFAIL,
 	IMSG_QUEUE_STATS,
+	IMSG_QUEUE_PAUSE_LOCAL,
+	IMSG_QUEUE_PAUSE_OUTGOING,
+	IMSG_QUEUE_RESUME_LOCAL,
+	IMSG_QUEUE_RESUME_OUTGOING,
 
 	IMSG_QUEUE_REMOVE_SUBMISSION,
 	IMSG_QUEUE_MESSAGE_UPDATE,
 	IMSG_QUEUE_MESSAGE_FD,
 	IMSG_QUEUE_MESSAGE_FILE,
-
-	IMSG_RUNNER_UPDATE_ENVELOPE,
-	IMSG_RUNNER_STATS,
-	IMSG_RUNNER_SCHEDULE,
-	IMSG_RUNNER_REMOVE,
+	IMSG_QUEUE_SCHEDULE,
+	IMSG_QUEUE_REMOVE,
 
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
@@ -166,27 +168,18 @@ enum imsg_type {
 
 	IMSG_PARENT_ENQUEUE_OFFLINE,
 	IMSG_PARENT_FORWARD_OPEN,
-	IMSG_PARENT_MAILBOX_OPEN,
-	IMSG_PARENT_MESSAGE_OPEN,
-	IMSG_PARENT_MAILDIR_RENAME,
-	IMSG_PARENT_MAILDIR_FAIL,
+	IMSG_PARENT_FORK_MDA,
 	IMSG_PARENT_STATS,
 
 	IMSG_PARENT_AUTHENTICATE,
 	IMSG_PARENT_SEND_CONFIG,
 
-	IMSG_MDA_PAUSE,
-	IMSG_MTA_PAUSE,
-	IMSG_SMTP_PAUSE,
 	IMSG_SMTP_STATS,
 
-	IMSG_MDA_RESUME,
-	IMSG_MTA_RESUME,
-	IMSG_SMTP_RESUME,
-
 	IMSG_STATS,
-
 	IMSG_SMTP_ENQUEUE,
+	IMSG_SMTP_PAUSE,
+	IMSG_SMTP_RESUME,
 
 	IMSG_DNS_A,
 	IMSG_DNS_A_END,
@@ -204,6 +197,8 @@ struct imsgev {
 	void			(*handler)(int, short, void *);
 	struct event		 ev;
 	void			*data;
+	struct smtpd		*env;
+	int			 proc;
 	short			 events;
 };
 
@@ -254,6 +249,13 @@ enum map_src {
 	S_EXT
 };
 
+enum map_kind {
+	K_NONE,
+	K_ALIASES,
+	K_VIRTUAL,
+	K_SECRETS
+};	
+
 enum mapel_type {
 	ME_STRING,
 	ME_NET,
@@ -281,6 +283,24 @@ struct map {
 	enum map_src			 m_src;
 	char				 m_config[MAXPATHLEN];
 	TAILQ_HEAD(mapel_list, mapel)	 m_contents;
+};
+
+struct map_backend {
+	enum map_src source;
+	void *(*open)(char *);
+	void (*close)(void *);
+	char *(*get)(void *, char *, size_t *);
+	int (*put)(void *, char *, char *);
+};
+
+struct map_parser {
+	enum map_kind kind;
+	void *(*extract)(char *, size_t);
+};
+
+struct map_secret {
+	char username[MAX_LINE_SIZE];
+	char password[MAX_LINE_SIZE];
 };
 
 enum cond_type {
@@ -409,7 +429,6 @@ enum message_type {
 };
 
 enum message_status {
-	S_MESSAGE_LOCKFAILURE	= 0x1,
 	S_MESSAGE_PERMFAILURE	= 0x2,
 	S_MESSAGE_TEMPFAILURE	= 0x4,
 	S_MESSAGE_REJECTED	= 0x8,
@@ -467,24 +486,13 @@ enum batch_type {
 
 struct batch {
 	SPLAY_ENTRY(batch)	 b_nodes;
-
 	u_int64_t		 id;
 	enum batch_type		 type;
 	struct rule		 rule;
-
 	struct smtpd		*env;
-
 	char			 message_id[MAX_ID_SIZE];
 	char			 hostname[MAXHOSTNAMELEN];
-
-	struct message		 message;
 	TAILQ_HEAD(, message)	 messages;
-
-	FILE			*mboxfp;
-	FILE			*datafp;
-	struct msgbuf		 w;
-	int			 cleanup_parent;
-	struct event		 ev;
 };
 
 enum child_type {
@@ -496,11 +504,11 @@ enum child_type {
 
 struct child {
 	SPLAY_ENTRY(child)	 entry;
-
 	pid_t			 pid;
 	enum child_type		 type;
 	enum smtp_proc_type	 title;
-	struct batch		 mda_batch;
+	int			 mda_out;
+	u_int32_t		 mda_id;
 };
 
 enum session_state {
@@ -601,6 +609,7 @@ struct session {
 
 struct smtpd {
 	char					 sc_conffile[MAXPATHLEN];
+	size_t					 sc_maxsize;
 
 #define SMTPD_OPT_VERBOSE			 0x00000001
 #define SMTPD_OPT_NOACTION			 0x00000002
@@ -633,6 +642,7 @@ struct smtpd {
 	SPLAY_HEAD(childtree, child)		 children;
 	SPLAY_HEAD(lkatree, lkasession)		 lka_sessions;
 	SPLAY_HEAD(mtatree, mta_session)	 mta_sessions;
+	LIST_HEAD(mdalist, mda_session)		 mda_sessions;
 
 	struct stats				*stats;
 };
@@ -746,6 +756,21 @@ struct secret {
 	char			 secret[MAX_LINE_SIZE];
 };
 
+struct mda_session {
+	LIST_ENTRY(mda_session)	 entry;
+	struct message		 msg;
+	struct msgbuf		 w;
+	struct event		 ev;
+	u_int32_t		 id;
+	FILE			*datafp;
+};
+
+struct deliver {
+	char			to[PATH_MAX];
+	char			user[MAXLOGNAME];
+	short			mode;
+};
+
 struct rulematch {
 	u_int64_t		 id;
 	struct submit_status	 ss;
@@ -814,6 +839,9 @@ struct mta_session {
 	void			*pcb;
 };
 
+
+extern void (*imsg_callback)(struct smtpd *, struct imsgev *, struct imsg *);
+
 /* aliases.c */
 int aliases_exist(struct smtpd *, objid_t, char *);
 int aliases_get(struct smtpd *, objid_t, struct expandtree *, char *);
@@ -871,6 +899,7 @@ SPLAY_PROTOTYPE(childtree, child, entry, child_cmp);
 void	 imsg_event_add(struct imsgev *);
 int	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t, pid_t,
 	    int, void *, u_int16_t);
+void	 imsg_dispatch(int, short, void *);
 
 /* lka.c */
 pid_t		 lka(struct smtpd *);
@@ -928,7 +957,7 @@ void		 show_queue(char *, int);
 u_int16_t	queue_hash(char *);
 
 /* map.c */
-char		*map_lookup(struct smtpd *, objid_t, char *);
+void		*map_lookup(struct smtpd *, objid_t, char *, enum map_kind);
 
 /* mda.c */
 pid_t		 mda(struct smtpd *);

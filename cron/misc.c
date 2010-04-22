@@ -1,4 +1,4 @@
-/*	$OpenBSD: misc.c,v 1.40 2009/10/27 23:59:51 deraadt Exp $	*/
+/*	$OpenBSD: misc.c,v 1.42 2010/04/10 16:43:18 millert Exp $	*/
 
 /* Copyright 1988,1990,1993,1994 by Paul Vixie
  * All rights reserved
@@ -446,6 +446,10 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 	TIME_T now = time((TIME_T) 0);
 	struct tm *t = localtime(&now);
 #endif /*LOG_FILE*/
+#if defined(SYSLOG)
+	char **info, *info_events[] = { "CMD", "ATJOB", "BEGIN EDIT", "DELETE",
+	    "END EDIT", "LIST", "MAIL", "RELOAD", "REPLACE", "STARTUP", NULL };
+#endif /*SYSLOG*/
 
 #if defined(LOG_FILE)
 	/* we assume that MAX_TEMPSTR will hold the date, time, &punctuation.
@@ -495,7 +499,11 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 		syslog_open = TRUE;		/* assume openlog success */
 	}
 
-	syslog(LOG_INFO, "(%s) %s (%s)", username, event, detail);
+	for (info = info_events; *info; info++)
+		if (!strcmp(event, *info))
+			break;
+	syslog(*info ? LOG_INFO : LOG_WARNING, "(%s) %s (%s)", username, event,
+	    detail);
 
 #endif /*SYSLOG*/
 
@@ -673,7 +681,7 @@ long get_gmtoff(time_t *clock, struct tm *local)
 	if (local->tm_year < gmt.tm_year)
 		offset -= 24 * 3600;
 	else if (local->tm_year > gmt.tm_year)
-		offset -= 24 * 3600;
+		offset += 24 * 3600;
 	else if (local->tm_yday < gmt.tm_yday)
 		offset -= 24 * 3600;
 	else if (local->tm_yday > gmt.tm_yday)

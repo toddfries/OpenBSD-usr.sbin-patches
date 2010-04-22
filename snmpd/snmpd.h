@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpd.h,v 1.25 2009/06/06 18:38:01 pyr Exp $	*/
+/*	$OpenBSD: snmpd.h,v 1.28 2010/04/01 14:42:32 claudio Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -98,21 +98,38 @@ extern  struct ctl_connlist ctl_conns;
  * kroute
  */
 
+union kaddr {
+	struct sockaddr		sa;
+	struct sockaddr_in	sin;
+	struct sockaddr_in6	sin6;
+	char			pad[32];
+};
+
 struct kroute {
 	struct in_addr	prefix;
 	struct in_addr	nexthop;
+	u_long		ticks;
 	u_int16_t	flags;
-	u_int16_t	rtlabel;
 	u_short		if_index;
 	u_int8_t	prefixlen;
+	u_int8_t	priority;
+};
+
+struct kroute6 {
+	struct in6_addr	prefix;
+	struct in6_addr	nexthop;
 	u_long		ticks;
+	u_int16_t	flags;
+	u_short		if_index;
+	u_int8_t	prefixlen;
+	u_int8_t	priority;
 };
 
 struct kif_addr {
 	u_short			 if_index;
-	struct in_addr		 addr;
-	struct in_addr		 mask;
-	struct in_addr		 dstbrd;
+	union kaddr		 addr;
+	union kaddr		 mask;
+	union kaddr		 dstbrd;
 
 	TAILQ_ENTRY(kif_addr)	 entry;
 	RB_ENTRY(kif_addr)	 node;
@@ -122,21 +139,17 @@ struct kif {
 	char			 if_name[IF_NAMESIZE];
 	char			 if_descr[IFDESCRSIZE];
 	u_int8_t		 if_lladdr[ETHER_ADDR_LEN];
+	struct if_data		 if_data;
+	u_long			 if_ticks;
 	int			 if_flags;
 	u_short			 if_index;
-	u_int8_t		 if_nhreachable; /* for nexthop verification */
-	u_long			 if_ticks;
-	struct if_data		 if_data;
 };
 
-#define	F_OSPFD_INSERTED	0x0001
-#define	F_KERNEL		0x0002
-#define	F_BGPD_INSERTED		0x0004
-#define	F_CONNECTED		0x0008
-#define	F_DOWN			0x0010
-#define	F_STATIC		0x0020
-#define	F_DYNAMIC		0x0040
-#define	F_REDISTRIBUTED		0x0100
+#define F_CONNECTED		0x0001
+#define F_STATIC		0x0002
+#define F_BLACKHOLE		0x0004
+#define F_REJECT		0x0008
+#define F_DYNAMIC		0x0010
 
 /*
  * Message Processing Subsystem (mps)
@@ -314,6 +327,7 @@ void		 log_info(const char *, ...);
 void		 log_debug(const char *, ...);
 __dead void	 fatal(const char *);
 __dead void	 fatalx(const char *);
+const char	*log_in6addr(const struct in6_addr *);
 const char	*print_host(struct sockaddr_storage *, char *, size_t);
 
 void		 imsg_event_add(struct imsgev *);
@@ -324,13 +338,15 @@ int		 imsg_compose_event(struct imsgev *, enum imsg_type, u_int32_t,
 int		 kr_init(void);
 void		 kr_shutdown(void);
 
-int		 kr_updateif(u_int);
 u_int		 kr_ifnumber(void);
 u_long		 kr_iflastchange(void);
+int		 kr_updateif(u_int);
+u_long		 kr_routenumber(void);
+
 struct kif	*kr_getif(u_short);
 struct kif	*kr_getnextif(u_short);
-struct kif_addr *kr_getaddr(struct in_addr *);
-struct kif_addr *kr_getnextaddr(struct in_addr *);
+struct kif_addr *kr_getaddr(struct sockaddr *);
+struct kif_addr *kr_getnextaddr(struct sockaddr *);
 
 /* snmpe.c */
 pid_t		 snmpe(struct snmpd *, int [2]);
