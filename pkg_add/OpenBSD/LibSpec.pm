@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: LibSpec.pm,v 1.5 2010/03/22 20:38:44 espie Exp $
+# $OpenBSD: LibSpec.pm,v 1.7 2010/04/24 14:29:55 espie Exp $
 #
 # Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 #
@@ -19,6 +19,7 @@ use strict;
 use warnings;
 
 package OpenBSD::LibObject;
+
 
 sub key
 {
@@ -42,10 +43,15 @@ sub minor
 	return $self->{minor};
 }
 
-sub is_valid
+sub version
 {
-	return 1;
+	my $self = shift;
+	return ".".$self->major.".".$self->minor;
 }
+
+sub is_static { 0 }
+
+sub is_valid { 1 }
 
 sub stem
 {
@@ -75,13 +81,26 @@ sub lookup
 	return $r;
 }
 
+sub findbest
+{
+	my ($spec, $repo, $base) = @_;
+	my $r = $spec->lookup($repo, $base);
+	my $best;
+	for my $candidate (@$r) {
+		if (!defined $best || $candidate->is_better($best)) {
+			$best = $candidate;
+		}
+	}
+	return $best;
+}
+
 package OpenBSD::BadLib;
 our @ISA=qw(OpenBSD::LibObject);
 
 sub to_string
 {
 	my $self = shift;
-	return $$self;
+	return $self;
 }
 
 sub new
@@ -119,8 +138,6 @@ sub register
 	push @{$repo->{$lib->stem}}, $lib;
 }
 
-
-
 package OpenBSD::Library;
 our @ISA = qw(OpenBSD::LibObject);
 
@@ -154,6 +171,27 @@ sub origin
 	return $self->{origin};
 }
 
+sub no_match_dispatch
+{
+	my ($library, $spec, $base) = @_;
+	return $spec->no_match_shared($library, $base);
+}
+
+sub is_better
+{
+	my ($self, $other) = @_;
+	if ($other->is_static) {
+		return 1;
+	}
+	if ($self->major > $other->major) {
+		return 1;
+	}
+	if ($self->major == $other->major && $self->minor > $other->minor) {
+		return 1;
+    	}
+	return 0;
+}
+
 package OpenBSD::LibSpec;
 our @ISA = qw(OpenBSD::LibObject);
 
@@ -174,15 +212,22 @@ sub from_string
 	return $cached->{$_} //= $class->new_from_string($_);
 }
 
+sub new_with_stem
+{
+	my ($class, $stem, $major, $minor) = @_;
+
+	if ($stem =~ m/^(.*)\/([^\/]+)$/o) {
+		return $class->new($1, $2, $major, $minor);
+	} else {
+		return $class->new(undef, $stem, $major, $minor);
+	}
+}
+
 sub new_from_string
 {
 	my ($class, $string) = @_;
 	if (my ($stem, $major, $minor) = $string =~ m/^(.*)\.(\d+)\.(\d+)$/o) {
-		if ($stem =~ m/^(.*)\/([^\/]+)$/o) {
-			return $class->new($1, $2, $major, $minor);
-		} else {
-			return $class->new(undef, $stem, $major, $minor);
-		}
+		return $class->new_with_stem($stem, $major, $minor);
 	} else {
 		return $class->badclass->new($string);
 	}
@@ -207,15 +252,16 @@ sub lookup_stem
 	}
 }
 
-sub no_match
+sub no_match_major
+{
+	my ($spec, $library) = @_;
+	return $spec->major != $library->major;
+}
+
+sub no_match_name
 {
 	my ($spec, $library, $base) = @_;
-	if ($spec->major != $library->major) {
-		return "bad major";
-	}
-	if ($spec->minor > $library->minor) {
-		return "minor is too small";
-	}
+
 	if (defined $spec->{dir}) {
 		if ("$base/$spec->{dir}" eq $library->{dir}) {
 			return undef;
@@ -229,6 +275,28 @@ sub no_match
 	}
 	return "bad directory";
 }
+
+sub no_match_shared
+{
+	my ($spec, $library, $base) = @_;
+
+	if ($spec->no_match_major($library)) {
+		return "bad major";
+	}
+	if ($spec->major == $library->major && 
+	    $spec->minor > $library->minor) {
+		return "minor is too small";
+	}
+	return $spec->no_match_name($library, $base);
+}
+
+# classic double dispatch pattern
+sub no_match
+{
+	my ($spec, $library, $base) = @_;
+	return $library->no_match_dispatch($spec, $base);
+}
+
 sub match
 {
 	my ($spec, $library, $base) = @_;
