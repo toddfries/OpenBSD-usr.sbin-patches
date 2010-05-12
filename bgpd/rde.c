@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.291 2010/04/13 09:09:48 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.293 2010/05/04 10:25:31 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -596,8 +596,15 @@ rde_dispatch_imsg_parent(struct imsgbuf *ibuf)
 			memcpy(&rn, imsg.data, sizeof(rn));
 			rid = rib_find(rn.name);
 			if (rid == RIB_FAILED)
-				rib_new(rn.name, rn.flags);
-			else
+				rib_new(rn.name, rn.rtableid, rn.flags);
+			else if (ribs[rid].rtableid != rn.rtableid ||
+			    (ribs[rid].flags & F_RIB_HASNOFIB) !=
+			    (rn.flags & F_RIB_HASNOFIB)) {
+				/* Big hammer in the F_RIB_NOFIB case but
+				 * not often enough used to optimise it more. */
+				rib_free(&ribs[rid]);
+				rib_new(rn.name, rn.rtableid, rn.flags);
+			} else
 				ribs[rid].state = RECONF_KEEP;
 			break;
 		case IMSG_RECONF_FILTER:
@@ -666,7 +673,7 @@ rde_dispatch_imsg_parent(struct imsgbuf *ibuf)
 					    rde_softreconfig_load, &ribs[rid],
 					    AID_UNSPEC);
 			}
-			/* sync local-RIB first */
+			/* sync local-RIBs first */
 			if (reconf_in)
 				rib_dump(&ribs[0], rde_softreconfig_in, NULL,
 				    AID_UNSPEC);
@@ -1981,15 +1988,15 @@ rde_dump_rib_as(struct prefix *p, struct rde_aspath *asp, pid_t pid, int flags)
 	rib.origin = asp->origin;
 	rib.flags = 0;
 	if (p->rib->active == p)
-		rib.flags |= F_RIB_ACTIVE;
+		rib.flags |= F_PREF_ACTIVE;
 	if (asp->peer->conf.ebgp == 0)
-		rib.flags |= F_RIB_INTERNAL;
+		rib.flags |= F_PREF_INTERNAL;
 	if (asp->flags & F_PREFIX_ANNOUNCED)
-		rib.flags |= F_RIB_ANNOUNCE;
+		rib.flags |= F_PREF_ANNOUNCE;
 	if (asp->nexthop == NULL || asp->nexthop->state == NEXTHOP_REACH)
-		rib.flags |= F_RIB_ELIGIBLE;
+		rib.flags |= F_PREF_ELIGIBLE;
 	if (asp->flags & F_ATTR_LOOP)
-		rib.flags &= ~F_RIB_ELIGIBLE;
+		rib.flags &= ~F_PREF_ELIGIBLE;
 	rib.aspath_len = aspath_length(asp->aspath);
 
 	if ((wbuf = imsg_create(ibuf_se_ctl, IMSG_CTL_SHOW_RIB, 0, pid,
@@ -2114,6 +2121,7 @@ rde_dump_ctx_new(struct ctl_show_rib_request *req, pid_t pid,
 	struct rib_entry	*re;
 	u_int			 error;
 	u_int16_t		 id;
+	u_int8_t		 hostplen;
 
 	if ((ctx = calloc(1, sizeof(*ctx))) == NULL) {
 		log_warn("rde_dump_ctx_new");
@@ -2150,7 +2158,18 @@ rde_dump_ctx_new(struct ctl_show_rib_request *req, pid_t pid,
 			ctx->ribctx.ctx_upcall = rde_dump_prefix_upcall;
 			break;
 		}
-		if (req->prefixlen == 32)
+		switch (req->prefix.aid) {
+		case AID_INET:
+		case AID_VPN_IPv4:
+			hostplen = 32;
+			break;
+		case AID_INET6:
+			hostplen = 128;
+			break;
+		default:
+			fatalx("rde_dump_ctx_new: unknown af");
+		}
+		if (req->prefixlen == hostplen)
 			re = rib_lookup(&ribs[id], &req->prefix);
 		else
 			re = rib_get(&ribs[id], &req->prefix, req->prefixlen);
@@ -2212,7 +2231,7 @@ rde_dump_mrt_new(struct mrt *mrt, pid_t pid, int fd)
  * kroute specific functions
  */
 void
-rde_send_kroute(struct prefix *new, struct prefix *old)
+rde_send_kroute(struct prefix *new, struct prefix *old, u_int16_t ribid)
 {
 	struct kroute_full	 kr;
 	struct bgpd_addr	 addr;
@@ -2249,7 +2268,7 @@ rde_send_kroute(struct prefix *new, struct prefix *old)
 	strlcpy(kr.label, rtlabel_id2name(p->aspath->rtlabelid),
 	    sizeof(kr.label));
 
-	if (imsg_compose(ibuf_main, type, 0, 0, -1, &kr,
+	if (imsg_compose(ibuf_main, type, ribs[ribid].rtableid, 0, -1, &kr,
 	    sizeof(kr)) == -1)
 		fatal("imsg_compose error");
 }
