@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.c,v 1.6 2010/04/15 15:04:23 claudio Exp $ */
+/*	$OpenBSD: ldpe.c,v 1.9 2010/05/19 15:28:51 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -313,8 +313,7 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 			    kif->media_type != IFT_CARP));
 
 			LIST_FOREACH(iface, &leconf->iface_list, entry) {
-				if (kif->ifindex == iface->ifindex &&
-				    iface->type != IF_TYPE_VIRTUALLINK) {
+				if (kif->ifindex == iface->ifindex) {
 					iface->flags = kif->flags;
 					iface->linkstate = kif->link_state;
 
@@ -334,8 +333,6 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 			}
 			break;
 		case IMSG_RECONF_CONF:
-			break;
-		case IMSG_RECONF_AREA:
 			break;
 		case IMSG_RECONF_IFACE:
 			break;
@@ -538,12 +535,10 @@ ldpe_nbr_ctl(struct ctl_conn *c)
 
 	LIST_FOREACH(iface, &leconf->iface_list, entry) {
 		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (iface->self != nbr) {
-				nctl = nbr_to_ctl(nbr);
-				imsg_compose_event(&c->iev,
-				    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
-				    sizeof(struct ctl_nbr));
-			}
+			nctl = nbr_to_ctl(nbr);
+			imsg_compose_event(&c->iev,
+			    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
+			    sizeof(struct ctl_nbr));
 		}
 	}
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde.c,v 1.10 2010/03/03 10:17:05 claudio Exp $ */
+/*	$OpenBSD: lde.c,v 1.14 2010/05/25 13:29:45 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -56,7 +56,6 @@ void		 lde_map_list_free(struct lde_nbr *);
 struct ldpd_conf	*ldeconf = NULL, *nconf = NULL;
 struct imsgev		*iev_ldpe;
 struct imsgev		*iev_main;
-struct lde_nbr		*nbrself;
 
 /* ARGSUSED */
 void
@@ -224,28 +223,17 @@ lde_dispatch_imsg(int fd, short event, void *bula)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_LABEL_MAPPING:
-			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(map))
-				fatalx("invalid size of OE request");
-			memcpy(&map, imsg.data, sizeof(map));
-
-			nbr = lde_nbr_find(imsg.hdr.peerid);
-			if (nbr == NULL) {
-				log_debug("lde_dispatch_imsg: cannot find "
-				    "lde neighbor");
-				return;
-			}
-
-			lde_check_mapping(&map, nbr);
-			break;
 		case IMSG_LABEL_MAPPING_FULL:
 			rt_snap(imsg.hdr.peerid);
 
 			lde_imsg_compose_ldpe(IMSG_MAPPING_ADD_END,
 			    imsg.hdr.peerid, 0, NULL, 0);
-
 			break;
+		case IMSG_LABEL_MAPPING:
 		case IMSG_LABEL_REQUEST:
+		case IMSG_LABEL_RELEASE:
+		case IMSG_LABEL_WITHDRAW:
+		case IMSG_LABEL_ABORT:
 			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(map))
 				fatalx("invalid size of OE request");
 			memcpy(&map, imsg.data, sizeof(map));
@@ -257,7 +245,19 @@ lde_dispatch_imsg(int fd, short event, void *bula)
 				return;
 			}
 
-			lde_check_request(&map, nbr);
+			switch (imsg.hdr.type) {
+			case IMSG_LABEL_MAPPING:
+				lde_check_mapping(&map, nbr);
+				break;
+			case IMSG_LABEL_REQUEST:
+				lde_check_request(&map, nbr);
+				break;
+			case IMSG_LABEL_RELEASE:
+				lde_check_release(&map, nbr);
+				break;
+			default:
+				log_warnx("not yet");
+			}
 			break;
 		case IMSG_ADDRESS_ADD:
 			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(addr))
@@ -404,8 +404,6 @@ lde_dispatch_parent(int fd, short event, void *bula)
 			memcpy(nconf, imsg.data, sizeof(struct ldpd_conf));
 
 			break;
-		case IMSG_RECONF_AREA:
-			break;
 		case IMSG_RECONF_IFACE:
 			break;
 		case IMSG_RECONF_END:
@@ -443,7 +441,6 @@ lde_send_insert_klabel(struct rt_node *r)
 	kr.local_label = r->local_label;
 	kr.remote_label = r->remote_label;
 	kr.prefixlen = r->prefixlen;
-	kr.ext_tag = r->ext_tag;
 
 	imsg_compose_event(iev_main, IMSG_KLABEL_INSERT, 0, 0, -1,
 	     &kr, sizeof(kr));
@@ -460,7 +457,6 @@ lde_send_change_klabel(struct rt_node *r)
 	kr.local_label = r->local_label;
 	kr.remote_label = r->remote_label;
 	kr.prefixlen = r->prefixlen;
-	kr.ext_tag = r->ext_tag;
 
 	imsg_compose_event(iev_main, IMSG_KLABEL_CHANGE, 0, 0, -1,
 	     &kr, sizeof(kr));
@@ -536,7 +532,6 @@ struct nbr_table {
 void
 lde_nbr_init(u_int32_t hashsize)
 {
-	struct lde_nbr_head	*head;
 	u_int32_t		 hs, i;
 
 	for (hs = 1; hs < hashsize; hs <<= 1)
@@ -549,22 +544,11 @@ lde_nbr_init(u_int32_t hashsize)
 		LIST_INIT(&ldenbrtable.hashtbl[i]);
 
 	ldenbrtable.hashmask = hs - 1;
-
-	if ((nbrself = calloc(1, sizeof(*nbrself))) == NULL)
-		fatal("lde_nbr_init");
-
-	nbrself->id.s_addr = lde_router_id();
-	nbrself->peerid = NBR_IDSELF;
-	nbrself->state = NBR_STA_DOWN;
-	nbrself->self = 1;
-	head = LDE_NBR_HASH(NBR_IDSELF);
-	LIST_INSERT_HEAD(head, nbrself, hash);
 }
 
 void
 lde_nbr_free(void)
 {
-	free(nbrself);
 	free(ldenbrtable.hashtbl);
 }
 

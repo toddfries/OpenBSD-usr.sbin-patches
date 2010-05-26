@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde_lib.c,v 1.15 2010/04/13 15:39:29 michele Exp $ */
+/*	$OpenBSD: lde_lib.c,v 1.18 2010/05/25 09:31:25 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -265,9 +265,6 @@ lde_kernel_insert(struct kroute *kr)
 
 	LIST_FOREACH(iface, &ldeconf->iface_list, entry) {
 		LIST_FOREACH(ln, &iface->lde_nbr_list, entry) {
-			if (ln->self)
-				continue;
-
 			if (ldeconf->mode & MODE_ADV_UNSOLICITED &&
 			    ldeconf->mode & MODE_DIST_INDEPENDENT)
 				lde_send_labelmapping(ln->peerid, &localmap);
@@ -291,7 +288,6 @@ lde_kernel_remove(struct kroute *kr)
 	struct rt_label		*rl;
 	struct lde_nbr		*ln;
 
-	rn = rt_find(kr->prefix.s_addr, kr->prefixlen);
 	rn = rt_find(kr->prefix.s_addr, kr->prefixlen);
 	if (rn == NULL)
 		return;
@@ -466,8 +462,6 @@ lde_check_request(struct map *map, struct lde_nbr *ln)
 	struct lde_nbr		*lnn;
 	struct map		 localmap;
 
-	bzero(&newlre, sizeof(newlre));
-
 	rn = rt_find(map->prefix, map->prefixlen);
 	if (rn == NULL || rn->remote_label == NO_LABEL) {
 		lde_send_notification(ln->peerid, S_NO_ROUTE, map->messageid,
@@ -511,6 +505,11 @@ lde_check_request(struct map *map, struct lde_nbr *ln)
 
 		TAILQ_INSERT_HEAD(&ln->req_list, newlre, entry);
 	}
+}
+
+void
+lde_check_release(struct map *map, struct lde_nbr *ln)
+{
 }
 
 void

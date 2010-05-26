@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.102 2010/04/21 18:54:43 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.106 2010/05/23 18:44:14 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -138,6 +138,7 @@ parent_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_CONTROL) {
 		switch (imsg->hdr.type) {
 		case IMSG_CONF_RELOAD:
+			reload = imsg->data;
 			reload->ret = 0;
 			if (parse_config(&newenv, env->sc_conffile, 0) == 0) {
 				strlcpy(env->sc_hostname, newenv.sc_hostname,
@@ -867,15 +868,19 @@ forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
 
 #define error(m) { perror(m); _exit(1); }
 	if (seteuid(0) < 0)
-		fatal("forkmda: cannot restore privileges");
-	if (setgroups(1, &pw->pw_gid) ||
-	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
-		fatal("forkmda: cannot drop privileges");
+		error("forkmda: cannot restore privileges");
+	if (chdir(pw->pw_dir) < 0 && chdir("/") < 0)
+		error("chdir");
 	if (dup2(pipefd[0], STDIN_FILENO) < 0 ||
 	    dup2(allout, STDOUT_FILENO) < 0 ||
 	    dup2(allout, STDERR_FILENO) < 0)
-		fatal("forkmda: dup2");
+		error("forkmda: dup2");
+	if (closefrom(STDERR_FILENO + 1) < 0)
+		error("closefrom");
+	if (setgroups(1, &pw->pw_gid) ||
+	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
+	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+		error("forkmda: cannot drop privileges");
 	if (setsid() < 0)
 		error("setsid");
 	if (signal(SIGPIPE, SIG_DFL) == SIG_ERR ||
@@ -884,10 +889,6 @@ forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
 	    signal(SIGCHLD, SIG_DFL) == SIG_ERR ||
 	    signal(SIGHUP, SIG_DFL) == SIG_ERR)
 		error("signal");
-	if (chdir(pw->pw_dir) < 0 && chdir("/") < 0)
-		error("chdir");
-	if (closefrom(STDERR_FILENO + 1) < 0)
-		error("closefrom");
 
 	/* avoid hangs by setting 5m timeout */
 	alarm(300);
@@ -961,7 +962,7 @@ forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
 			error("open");
 		if (fstat(fd, &sb) < 0)
 			error("fstat");
-		if (S_ISREG(sb.st_flags) && flock(fd, LOCK_EX) < 0)
+		if (S_ISREG(sb.st_mode) && flock(fd, LOCK_EX) < 0)
 			error("flock");
 		fp = fdopen(fd, "a");
 		if (fp == NULL)
@@ -990,7 +991,7 @@ forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
 		_exit(0);
 	}
 
-	fatalx("forkmda: unknown mode");
+	error("forkmda: unknown mode");
 }
 #undef error
 #undef error2

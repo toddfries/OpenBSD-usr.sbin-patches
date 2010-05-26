@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.h,v 1.257 2010/04/28 13:07:48 claudio Exp $ */
+/*	$OpenBSD: bgpd.h,v 1.261 2010/05/19 12:44:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/queue.h>
+#include <sys/tree.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -53,13 +54,8 @@
 #define	BGPD_OPT_NOACTION		0x0004
 #define	BGPD_OPT_FORCE_DEMOTE		0x0008
 
-#define	BGPD_FLAG_NO_FIB_UPDATE		0x0001
 #define	BGPD_FLAG_NO_EVALUATE		0x0002
 #define	BGPD_FLAG_REFLECTOR		0x0004
-#define	BGPD_FLAG_REDIST_STATIC		0x0008
-#define	BGPD_FLAG_REDIST_CONNECTED	0x0010
-#define	BGPD_FLAG_REDIST6_STATIC	0x0020
-#define	BGPD_FLAG_REDIST6_CONNECTED	0x0040
 #define	BGPD_FLAG_NEXTHOP_BGP		0x0080
 #define	BGPD_FLAG_NEXTHOP_DEFAULT	0x1000
 #define	BGPD_FLAG_DECISION_MASK		0x0f00
@@ -81,6 +77,8 @@
 #define	F_REJECT		0x0080
 #define	F_BLACKHOLE		0x0100
 #define	F_LONGER		0x0200
+#define	F_MPLS			0x0400
+#define	F_REDISTRIBUTED		0x0800
 #define	F_CTL_DETAIL		0x1000	/* only used by bgpctl */
 #define	F_CTL_ADJ_IN		0x2000
 #define	F_CTL_ADJ_OUT		0x4000
@@ -195,17 +193,12 @@ TAILQ_HEAD(listen_addrs, listen_addr);
 TAILQ_HEAD(filter_set_head, filter_set);
 
 struct bgpd_config {
-	struct filter_set_head			 connectset;
-	struct filter_set_head			 connectset6;
-	struct filter_set_head			 staticset;
-	struct filter_set_head			 staticset6;
 	struct listen_addrs			*listen_addrs;
 	char					*csock;
 	char					*rcsock;
 	int					 opts;
 	int					 flags;
 	int					 log;
-	u_int					 rtableid;
 	u_int32_t				 bgpid;
 	u_int32_t				 clusterid;
 	u_int32_t				 as;
@@ -305,17 +298,26 @@ struct peer_config {
 
 #define PEERFLAG_TRANS_AS	0x01
 
+enum network_type {
+	NETWORK_DEFAULT,
+	NETWORK_STATIC,
+	NETWORK_CONNECTED
+};
+
 struct network_config {
 	struct bgpd_addr	prefix;
 	struct filter_set_head	attrset;
+	u_int			rtableid;
+	enum network_type	type;
 	u_int8_t		prefixlen;
+	u_int8_t		old;	/* used for reloading */
 };
 
 TAILQ_HEAD(network_head, network);
 
 struct network {
-	struct network_config	net;
-	TAILQ_ENTRY(network)	entry;
+	struct network_config		net;
+	TAILQ_ENTRY(network)		entry;
 };
 
 enum imsg_type {
@@ -344,6 +346,7 @@ enum imsg_type {
 	IMSG_CTL_SHOW_TERSE,
 	IMSG_CTL_SHOW_TIMER,
 	IMSG_CTL_LOG_VERBOSE,
+	IMSG_CTL_SHOW_FIB_TABLES,
 	IMSG_NETWORK_ADD,
 	IMSG_NETWORK_REMOVE,
 	IMSG_NETWORK_FLUSH,
@@ -354,6 +357,10 @@ enum imsg_type {
 	IMSG_RECONF_PEER,
 	IMSG_RECONF_FILTER,
 	IMSG_RECONF_LISTENER,
+	IMSG_RECONF_RDOMAIN,
+	IMSG_RECONF_RDOMAIN_EXPORT,
+	IMSG_RECONF_RDOMAIN_IMPORT,
+	IMSG_RECONF_RDOMAIN_DONE,
 	IMSG_RECONF_DONE,
 	IMSG_UPDATE,
 	IMSG_UPDATE_ERR,
@@ -429,6 +436,29 @@ enum suberr_cease {
 	ERR_CEASE_RSRC_EXHAUST
 };
 
+struct kroute_node;
+struct kroute6_node;
+struct knexthop_node;
+RB_HEAD(kroute_tree, kroute_node);
+RB_HEAD(kroute6_tree, kroute6_node);
+RB_HEAD(knexthop_tree, knexthop_node);
+
+struct ktable {
+	char			 descr[PEER_DESCR_LEN];
+	char			 ifmpe[IFNAMSIZ];
+	struct kroute_tree	 krt;
+	struct kroute6_tree	 krt6;
+	struct knexthop_tree	 knt;
+	struct network_head	 krn;
+	u_int			 rtableid;
+	u_int			 nhtableid; /* rdomain id for nexthop lookup */
+	u_int			 ifindex;   /* ifindex of ifmpe */
+	int			 nhrefcnt;  /* refcnt for nexthop table */
+	enum reconf_action	 state;
+	u_int8_t		 fib_conf;  /* configured FIB sync flag */
+	u_int8_t		 fib_sync;  /* is FIB synced with kernel? */
+};
+
 struct kroute_full {
 	struct bgpd_addr	prefix;
 	struct bgpd_addr	nexthop;
@@ -442,6 +472,7 @@ struct kroute_full {
 struct kroute {
 	struct in_addr	prefix;
 	struct in_addr	nexthop;
+	u_int32_t	mplslabel;
 	u_int16_t	flags;
 	u_int16_t	labelid;
 	u_short		ifindex;
@@ -509,10 +540,10 @@ struct ctl_neighbor {
 	int			show_timers;
 };
 
-#define	F_RIB_ELIGIBLE	0x01
-#define	F_RIB_ACTIVE	0x02
-#define	F_RIB_INTERNAL	0x04
-#define	F_RIB_ANNOUNCE	0x08
+#define	F_PREF_ELIGIBLE	0x01
+#define	F_PREF_ACTIVE	0x02
+#define	F_PREF_INTERNAL	0x04
+#define	F_PREF_ANNOUNCE	0x08
 
 struct ctl_show_rib {
 	struct bgpd_addr	true_nexthop;
@@ -550,17 +581,28 @@ enum as_spec {
 	AS_EMPTY
 };
 
+enum aslen_spec {
+	ASLEN_NONE,
+	ASLEN_MAX,
+	ASLEN_SEQ
+};
+
 struct filter_as {
 	u_int32_t	as;
 	u_int16_t	flags;
 	enum as_spec	type;
 };
 
+struct filter_aslen {
+	u_int		aslen;
+	enum aslen_spec	type;
+};
+
 #define AS_FLAG_NEIGHBORAS	0x01
 
 struct filter_community {
-	int			as;
-	int			type;
+	int		as;
+	int		type;
 };
 
 struct filter_extcommunity {
@@ -702,6 +744,7 @@ struct filter_match {
 	struct filter_prefix		prefix;
 	struct filter_prefixlen		prefixlen;
 	struct filter_as		as;
+	struct filter_aslen		aslen;
 	struct filter_community		community;
 	struct filter_extcommunity	ext_community;
 };
@@ -761,14 +804,36 @@ struct filter_set {
 	enum action_types		type;
 };
 
+struct rdomain {
+	SIMPLEQ_ENTRY(rdomain)		entry;
+	char				descr[PEER_DESCR_LEN];
+	char				ifmpe[IFNAMSIZ];
+	struct filter_set_head		import;
+	struct filter_set_head		export;
+	struct network_head		net_l;
+	u_int64_t			rd;
+	u_int				rtableid;
+	u_int				label;
+	int				flags;
+};
+SIMPLEQ_HEAD(rdomain_head, rdomain);
+
 struct rde_rib {
 	SIMPLEQ_ENTRY(rde_rib)	entry;
 	char			name[PEER_DESCR_LEN];
+	u_int			rtableid;
 	u_int16_t		id;
 	u_int16_t		flags;
 };
 SIMPLEQ_HEAD(rib_names, rde_rib);
 extern struct rib_names ribnames;
+
+/* rde_rib flags */
+#define F_RIB_ENTRYLOCK		0x0001
+#define F_RIB_NOEVALUATE	0x0002
+#define F_RIB_NOFIB		0x0004
+#define F_RIB_NOFIBSYNC		0x0008
+#define F_RIB_HASNOFIB		(F_RIB_NOFIB | F_RIB_NOEVALUATE)
 
 /* 4-byte magic AS number */
 #define AS_TRANS	23456
@@ -792,7 +857,8 @@ struct rde_memstats {
 /* bgpd.c */
 void		 send_nexthop_update(struct kroute_nexthop *);
 void		 send_imsg_session(int, pid_t, void *, u_int16_t);
-int		 bgpd_redistribute(int, struct kroute *, struct kroute6 *);
+int		 send_network(int, struct network_config *,
+		     struct filter_set_head *);
 int		 bgpd_filternexthop(struct kroute *, struct kroute6 *);
 
 /* log.c */
@@ -815,17 +881,22 @@ int	 cmdline_symset(char *);
 int	 host(const char *, struct bgpd_addr *, u_int8_t *);
 
 /* kroute.c */
-int		 kr_init(int, u_int);
-int		 kr_change(struct kroute_full *);
-int		 kr_delete(struct kroute_full *);
+int		 kr_init(void);
+int		 ktable_update(u_int, char *, char *, int);
+void		 ktable_preload(void);
+void		 ktable_postload(void);
+int		 ktable_exists(u_int, u_int *);
+int		 kr_change(u_int, struct kroute_full *);
+int		 kr_delete(u_int, struct kroute_full *);
 void		 kr_shutdown(void);
-void		 kr_fib_couple(void);
-void		 kr_fib_decouple(void);
+void		 kr_fib_couple(u_int);
+void		 kr_fib_decouple(u_int);
 int		 kr_dispatch_msg(void);
-int		 kr_nexthop_add(struct bgpd_addr *);
-void		 kr_nexthop_delete(struct bgpd_addr *);
+int		 kr_nexthop_add(u_int32_t, struct bgpd_addr *);
+void		 kr_nexthop_delete(u_int32_t, struct bgpd_addr *);
 void		 kr_show_route(struct imsg *);
 void		 kr_ifinfo(char *);
+int		 kr_net_reload(u_int, struct network_head *);
 int		 kr_reload(void);
 struct in6_addr	*prefixlen2mask6(u_int8_t prefixlen);
 

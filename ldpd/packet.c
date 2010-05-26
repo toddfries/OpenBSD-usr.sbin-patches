@@ -1,4 +1,4 @@
-/*	$OpenBSD: packet.c,v 1.8 2010/04/15 15:37:51 claudio Exp $ */
+/*	$OpenBSD: packet.c,v 1.11 2010/05/14 13:49:09 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -210,22 +210,12 @@ ldp_hdr_sanity_check(struct ldp_hdr *ldp_hdr, u_int16_t len,
 {
 	struct in_addr		 addr;
 
-	if (iface->type != IF_TYPE_VIRTUALLINK) {
-		if (ldp_hdr->lspace_id != iface->lspace_id) {
-			addr.s_addr = ldp_hdr->lspace_id;
-			log_debug("ldp_hdr_sanity_check: invalid label space "
-			    "ID %s, interface %s", inet_ntoa(addr),
-			    iface->name);
-			return (-1);
-		}
-	} else {
-		if (ldp_hdr->lspace_id != 0) {
-			addr.s_addr = ldp_hdr->lspace_id;
-			log_debug("ldp_hdr_sanity_check: invalid label space "
-			    "ID %s, interface %s", inet_ntoa(addr),
-			    iface->name);
-			return (-1);
-		}
+	if (ldp_hdr->lspace_id != iface->lspace_id) {
+		addr.s_addr = ldp_hdr->lspace_id;
+		log_debug("ldp_hdr_sanity_check: invalid label space "
+		    "ID %s, interface %s", inet_ntoa(addr),
+		    iface->name);
+		return (-1);
 	}
 
 	return (ntohs(ldp_hdr->length));
@@ -239,11 +229,6 @@ find_iface(struct ldpd_conf *xconf, unsigned int ifindex, struct in_addr src)
 	/* returned interface needs to be active */
 	LIST_FOREACH(iface, &xconf->iface_list, entry) {
 		switch (iface->type) {
-		case IF_TYPE_VIRTUALLINK:
-			if ((src.s_addr == iface->dst.s_addr) &&
-			    !iface->passive)
-				return (iface);
-			break;
 		case IF_TYPE_POINTOPOINT:
 			if (ifindex == iface->ifindex &&
 			    iface->dst.s_addr == src.s_addr &&
@@ -291,12 +276,14 @@ session_accept(int fd, short event, void *bula)
 		return;
 	}
 
-	/* XXX */
 	nbr = nbr_find_ip(iface, src.sin_addr.s_addr);
 	if (nbr == NULL) {
+		struct buf	*buf;
 		/* If there is no neighbor matching there is no
-		   Hello adjacency: send notification */
-		send_notification(S_NO_HELLO, iface, newfd, 0, 0);
+		   Hello adjacency: try to send notification */
+		buf = send_notification(S_NO_HELLO, iface, 0, 0);
+		write(newfd, buf->buf, buf->wpos);
+		buf_free(buf);
 		close(newfd);
 		return;
 	}
@@ -339,7 +326,8 @@ session_read(int fd, short event, void *arg)
 	nbr->rbuf->wpos += n;
 
 	while ((len = session_get_pdu(nbr->rbuf, &buf)) > 0) {
-		ldp_hdr = (struct ldp_hdr *)pdu = buf;
+		pdu = buf;
+		ldp_hdr = (struct ldp_hdr *)pdu;
 		if (ntohs(ldp_hdr->version) != LDP_VERSION) {
 			session_shutdown(nbr, S_BAD_PROTO_VER, 0, 0);
 			free(buf);
@@ -451,8 +439,9 @@ session_shutdown(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
 	    inet_ntoa(nbr->id), status);
 
 	send_notification_nbr(nbr, status, msgid, type);
-	if (status != S_SHUTDOWN)
-		send_notification_nbr(nbr, S_SHUTDOWN, msgid, type);
+
+	/* try to flush write buffer, if it fails tough shit */
+	msgbuf_write(&nbr->wbuf.wbuf);
 
 	nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
 }
@@ -482,11 +471,6 @@ session_find_iface(struct ldpd_conf *xconf, struct in_addr src)
 	/* returned interface needs to be active */
 	LIST_FOREACH(iface, &xconf->iface_list, entry) {
 		switch (iface->type) {
-		case IF_TYPE_VIRTUALLINK:
-			if ((src.s_addr == iface->dst.s_addr) &&
-			    !iface->passive)
-				return (iface);
-			break;
 		case IF_TYPE_POINTOPOINT:
 			if (iface->dst.s_addr == src.s_addr &&
 			    !iface->passive)
