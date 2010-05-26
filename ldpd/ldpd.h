@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpd.h,v 1.18 2010/05/19 15:28:51 claudio Exp $ */
+/*	$OpenBSD: ldpd.h,v 1.20 2010/05/25 13:29:45 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -91,6 +91,9 @@ enum imsg_type {
 	IMSG_LABEL_MAPPING,
 	IMSG_LABEL_MAPPING_FULL,
 	IMSG_LABEL_REQUEST,
+	IMSG_LABEL_RELEASE,
+	IMSG_LABEL_WITHDRAW,
+	IMSG_LABEL_ABORT,
 	IMSG_REQUEST_ADD,
 	IMSG_REQUEST_ADD_END,
 	IMSG_MAPPING_ADD,
@@ -184,8 +187,13 @@ struct map {
 	u_int32_t	prefix;
 	u_int32_t	label;
 	u_int32_t	messageid;
+	u_int32_t	requestid;
 	u_int8_t	prefixlen;
+	u_int8_t	flags;
 };
+#define F_MAP_WILDCARD	0x01	/* wildcard FEC */
+#define F_MAP_OPTLABEL	0x02	/* optional label present */
+#define F_MAP_REQ_ID	0x04	/* optional request message id present */
 
 struct notify_msg {
 	u_int32_t	messageid;
@@ -267,8 +275,6 @@ struct kroute {
 	u_int32_t	local_label;
 	u_int32_t	remote_label;
 	u_int16_t	flags;
-	u_int16_t	rtlabel;
-	u_int32_t	ext_tag;
 	u_short		ifindex;
 	u_int8_t	prefixlen;
 	u_int8_t	priority;
@@ -291,18 +297,6 @@ struct kif {
 	u_int8_t		 link_state;
 	u_int8_t		 nh_reachable;	/* for nexthop verification */
 };
-
-/* name2id */
-struct n2id_label {
-	TAILQ_ENTRY(n2id_label)	 entry;
-	char			*name;
-	u_int16_t		 id;
-	u_int32_t		 ext_tag;
-	int			 ref;
-};
-
-TAILQ_HEAD(n2id_labels, n2id_label);
-extern struct n2id_labels rt_labels;
 
 /* control data structures */
 struct ctl_iface {
@@ -420,14 +414,6 @@ const char	*nbr_state_name(int);
 const char	*if_state_name(int);
 const char	*if_type_name(enum iface_type);
 const char	*notification_name(u_int32_t);
-
-/* name2id.c */
-u_int16_t	 rtlabel_name2id(const char *);
-const char	*rtlabel_id2name(u_int16_t);
-void		 rtlabel_unref(u_int16_t);
-u_int32_t	 rtlabel_id2tag(u_int16_t);
-u_int16_t	 rtlabel_tag2id(u_int32_t);
-void		 rtlabel_tag(u_int16_t, u_int32_t);
 
 /* ldpd.c */
 void	main_imsg_compose_ldpe(int, pid_t, void *, u_int16_t);
