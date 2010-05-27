@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.182 2010/04/27 10:17:53 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.185 2010/05/27 15:36:04 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -311,16 +311,6 @@ struct cond {
 	enum cond_type			 c_type;
 };
 
-enum opt_type {
-	O_RWUSER,			/* rewrite user */
-	O_RWDOMAIN,			/* rewrite domain */
-};
-
-struct opt {
-	TAILQ_ENTRY(opt)		 o_entry;
-	enum opt_type			 o_type;
-};
-
 enum action_type {
 	A_INVALID,
 	A_RELAY,
@@ -340,7 +330,7 @@ struct rule {
 	char				 r_tag[MAX_TAG_SIZE];
 	int				 r_accept;
 	struct map			*r_sources;
-	TAILQ_HEAD(condlist, cond)	 r_conditions;
+	struct cond			 r_condition;
 	enum action_type		 r_action;
 	union rule_dest {
 		char			 path[MAXPATHLEN];
@@ -348,7 +338,6 @@ struct rule {
 #define	MAXCOMMANDLEN	256
 		char			 command[MAXCOMMANDLEN];
 	}				 r_value;
-	TAILQ_HEAD(optlist, opt)	 r_options;
 
 	char				*r_user;
 	objid_t				 r_amap;
@@ -380,7 +369,6 @@ union path_data {
 struct path {
 	TAILQ_ENTRY(path)		 entry;
 	struct rule			 rule;
-	struct cond			*cond;
 	enum path_flags			 flags;
 	u_int8_t			 forwardcnt;
 	char				 user[MAX_LOCALPART_SIZE];
