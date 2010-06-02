@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.57 2010/05/19 20:57:10 gilles Exp $	*/
+/*	$OpenBSD: parse.y,v 1.60 2010/05/31 23:38:56 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -89,6 +89,7 @@ static int		 errors = 0;
 objid_t			 last_map_id = 1;
 struct map		*map = NULL;
 struct rule		*rule = NULL;
+TAILQ_HEAD(condlist, cond) *conditions = NULL;
 struct mapel_list	*contents = NULL;
 
 struct listener	*host_v4(const char *, in_port_t);
@@ -115,7 +116,7 @@ typedef struct {
 
 %}
 
-%token	QUEUE INTERVAL SIZE LISTEN ON ALL PORT
+%token	SIZE LISTEN ON ALL PORT
 %token	MAP TYPE HASH LIST SINGLE SSL SMTPS CERTIFICATE
 %token	DNS DB PLAIN EXTERNAL DOMAIN CONFIG SOURCE
 %token  RELAY VIA DELIVER TO MAILDIR MBOX HOSTNAME
@@ -265,10 +266,7 @@ tag		: TAG STRING			{
 		| /* empty */			{ $$ = NULL; }
 		;
 
-main		: QUEUE INTERVAL interval	{
-			conf->sc_qintval = $3;
-		}
-	       	| SIZE size {
+main		: SIZE size {
        			conf->sc_maxsize = $2;
 		}
 		| LISTEN ON STRING port ssl certname auth tag {
@@ -785,15 +783,15 @@ condition	: NETWORK mapref		{
 		;
 
 condition_list	: condition comma condition_list	{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		| condition	{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		;
 
 conditions	: condition				{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		| '{' condition_list '}'
 		;
@@ -968,22 +966,45 @@ on		: ON STRING	{
 		| /* empty */	{ $$ = NULL; }
 
 rule		: decision on from			{
-			struct rule	*r;
 
-			if ((r = calloc(1, sizeof(*r))) == NULL)
+			if ((rule = calloc(1, sizeof(*rule))) == NULL)
 				fatal("out of memory");
-			rule = r;
 			rule->r_sources = map_find(conf, $3);
+
+
+			if ((conditions = calloc(1, sizeof(*conditions))) == NULL)
+				fatal("out of memory");
 
 			if ($2)
 				(void)strlcpy(rule->r_tag, $2, sizeof(rule->r_tag));
 			free($2);
 
-			TAILQ_INIT(&rule->r_conditions);
-			TAILQ_INIT(&rule->r_options);
+
+			TAILQ_INIT(conditions);
 
 		} FOR conditions action	tag {
-			TAILQ_INSERT_TAIL(conf->sc_rules, rule, r_entry);
+			struct rule	*subr;
+			struct cond	*cond;
+
+			while ((cond = TAILQ_FIRST(conditions)) != NULL) {
+
+				if ((subr = calloc(1, sizeof(*subr))) == NULL)
+					fatal("out of memory");
+
+				*subr = *rule;
+
+				subr->r_condition = *cond;
+				
+				TAILQ_REMOVE(conditions, cond, c_entry);
+				TAILQ_INSERT_TAIL(conf->sc_rules, subr, r_entry);
+
+				free(cond);
+			}
+
+			free(conditions);
+			free(rule);
+			conditions = NULL;
+			rule = NULL;
 		}
 		;
 %%
@@ -1035,7 +1056,6 @@ lookup(char *s)
 		{ "hash",		HASH },
 		{ "hostname",		HOSTNAME },
 		{ "include",		INCLUDE },
-		{ "interval",		INTERVAL },
 		{ "list",		LIST },
 		{ "listen",		LISTEN },
 		{ "local",		LOCAL },
@@ -1047,7 +1067,6 @@ lookup(char *s)
 		{ "on",			ON },
 		{ "plain",		PLAIN },
 		{ "port",		PORT },
-		{ "queue",		QUEUE },
 		{ "reject",		REJECT },
 		{ "relay",		RELAY },
 		{ "single",		SINGLE },
@@ -1439,8 +1458,6 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 	SPLAY_INIT(conf->sc_ssl);
 	SPLAY_INIT(&conf->sc_sessions);
 
-	conf->sc_qintval.tv_sec = SMTPD_QUEUE_INTERVAL;
-	conf->sc_qintval.tv_usec = 0;
 	conf->sc_opts = opts;
 
 	if ((file = pushfile(filename, 0)) == NULL) {
