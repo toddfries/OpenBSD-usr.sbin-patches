@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.33 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: util.c,v 1.35 2010/06/01 23:06:25 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.

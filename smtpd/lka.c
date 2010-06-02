@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.111 2010/06/01 02:19:56 jacekm Exp $	*/
+/*	$OpenBSD: lka.c,v 1.113 2010/06/01 23:06:23 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -827,6 +827,7 @@ lka_encode_secret(struct map_secret *map_secret)
 		free(src);
 		return NULL;
 	}
+	free(src);
 	dst[sizeof(dst) - 1] = '\0';
 
 	return dst;

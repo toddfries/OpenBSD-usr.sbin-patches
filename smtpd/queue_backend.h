@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_backend.h,v 1.1 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: queue_backend.h,v 1.3 2010/06/01 23:06:23 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2010 Jacek Masiulaniec <jacekm@dobremiasto.net>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.72 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.74 2010/06/01 23:06:23 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,6 +24,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include <ctype.h>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.88 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: mta.c,v 1.91 2010/06/01 23:06:23 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -68,7 +68,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	struct action		*action;
 	struct dns		*dns;
 	struct ssl		*ssl;
-	size_t			 rcpt_sz;
 
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
@@ -97,18 +96,17 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 				 * XXX: queue can batch together actions with
 				 * different relay params.
 				 */
-				s->auxraw = strdup(action->arg);
+				s->auxraw = strdup(action->data);
 				if (s->auxraw == NULL)
 					fatal(NULL);
 				auxsplit(&s->aux, s->auxraw);
 			}
-			auxsplit(&aux, action->arg);
-			rcpt_sz = sizeof *rcpt + strlen(aux.rcpt) + 1;
-			rcpt = malloc(rcpt_sz);
+			auxsplit(&aux, action->data);
+			rcpt = malloc(sizeof *rcpt + strlen(aux.rcpt));
 			if (rcpt == NULL)
 				fatal(NULL);
 			rcpt->action_id = action->id;
-			strlcpy(rcpt->address, aux.rcpt, rcpt_sz - sizeof *rcpt);
+			strlcpy(rcpt->address, aux.rcpt, strlen(aux.rcpt) + 1);
 			strlcpy(rcpt->status, "000 init", sizeof rcpt->status);
  			TAILQ_INSERT_TAIL(&s->recipients, rcpt, entry);
 			return;
@@ -380,7 +378,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 
 			if (connect(s->fd, sa, sa->sa_len) == -1) {
 				if (errno != EINPROGRESS) {
-					mta_status(s, "110 connect error: %s",
+					mta_status(s, "110 connect: %s",
 					    strerror(errno));
 					close(s->fd);
 					continue;
@@ -530,7 +528,7 @@ mta_pickup(struct mta_session *s, void *p)
 		/* Remote accepted/rejected connection. */
 		error = session_socket_error(s->fd);
 		if (error) {
-			mta_status(s, "110 connect error: %s", strerror(error));
+			mta_status(s, "110 connect: %s", strerror(error));
 			close(s->fd);
 			mta_enter_state(s, MTA_CONNECT, NULL);
 		} else
@@ -665,16 +663,14 @@ void
 mta_rcpt_done(struct mta_session *s, struct recipient *rcpt)
 {
 	struct action *action;
-	int action_sz;
 
-	action_sz = sizeof *action + strlen(rcpt->status) + 1;
-	action = malloc(action_sz);
+	action = malloc(sizeof *action + strlen(rcpt->status));
 	if (action == NULL)
 		fatal(NULL);
 	action->id = rcpt->action_id;
-	strlcpy(action->arg, rcpt->status, action_sz - sizeof *action);
+	strlcpy(action->data, rcpt->status, strlen(rcpt->status) + 1);
 	imsg_compose_event(s->env->sc_ievs[PROC_QUEUE], IMSG_BATCH_UPDATE,
-	    s->id, 0, -1, action, action_sz);
+	    s->id, 0, -1, action, sizeof *action + strlen(rcpt->status));
 	TAILQ_REMOVE(&s->recipients, rcpt, entry);
 	free(action);
 	free(rcpt);
