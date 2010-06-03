@@ -1,7 +1,7 @@
-/*	$OpenBSD: parser.h,v 1.13 2010/06/01 23:06:23 jacekm Exp $	*/
+/*	$OpenBSD: parser.h,v 1.1 2010/06/03 16:49:00 reyk Exp $	*/
 
 /*
- * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
+ * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -18,31 +18,39 @@
 
 enum actions {
 	NONE,
-	SHUTDOWN,
+	LOAD,
 	RELOAD,
 	MONITOR,
-	SCHEDULE,
-	REMOVE,
 	LOG_VERBOSE,
 	LOG_BRIEF,
-	SHOW_QUEUE,
-	SHOW_QUEUE_RAW,
-	SHOW_RUNQUEUE,
-	SHOW_STATS,
-	PAUSE_MDA,
-	PAUSE_MTA,
-	PAUSE_SMTP,
-	RESUME_MDA,
-	RESUME_MTA,
-	RESUME_SMTP,
+	RESETALL,
+	RESETCA,
+	RESETPOLICY,
+	RESETSA,
+	RESETUSER,
+	CA,
+	CA_CREATE,
+	CA_DELETE,
+	CA_INSTALL,
+	CA_CERTIFICATE,
+	CA_CERT_CREATE,
+	CA_CERT_DELETE,
+	CA_CERT_INSTALL,
+	CA_CERT_EXPORT,
+	SHOW_CA,
+	SHOW_CA_CERTIFICATES
 };
 
 struct parse_result {
-	struct ctl_id	id;
-	enum actions	action;
-	const char     *data;
+	enum actions	 action;
+	struct imsgbuf	*ibuf;
+	char		*filename;
+	char 		*caname;
+	char		*host;
+	int		 htype;
 };
 
+#define HOST_IPADDR	1
+#define HOST_FQDN	2
+
 struct parse_result	*parse(int, char *[]);
-const struct token      *match_token(const char *, const struct token *);
-void                     show_valid_args(const struct token *);

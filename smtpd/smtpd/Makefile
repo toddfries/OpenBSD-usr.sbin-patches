@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.18 2010/05/31 23:38:56 jacekm Exp $
+#	$OpenBSD: Makefile,v 1.20 2010/06/01 23:06:25 jacekm Exp $
 
 PROG=		smtpd
 SRCS=		aliases.c authenticate.c client.c		\

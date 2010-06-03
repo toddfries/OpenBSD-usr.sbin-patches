@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.50 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.53 2010/06/02 19:16:53 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -217,7 +217,8 @@ control(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 	control_listen(env);
-	event_dispatch();
+	if (event_dispatch() < 0)
+		fatal("event_dispatch");
 	control_shutdown();
 
 	return (0);
@@ -452,13 +453,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 			if (euid)
 				goto badcred;
 
-#if 0
 			if (env->sc_flags & SMTPD_MDA_PAUSED) {
 				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0, -1,
 					NULL, 0);
 				break;
 			}
-#endif
 			env->sc_flags |= SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 			    IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
@@ -496,13 +495,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 			if (euid)
 				goto badcred;
 
-#if 0
 			if (! (env->sc_flags & SMTPD_MDA_PAUSED)) {
 				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0, -1,
 					NULL, 0);
 				break;
 			}
-#endif
 			env->sc_flags &= ~SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 			    IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);

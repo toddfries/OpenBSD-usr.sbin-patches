@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.72 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.75 2010/06/02 19:16:53 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,6 +24,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include <ctype.h>
@@ -336,7 +337,8 @@ smtp(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 
-	event_dispatch();
+	if (event_dispatch() < 0)
+		fatal("event_dispatch");
 	smtp_shutdown();
 
 	return (0);

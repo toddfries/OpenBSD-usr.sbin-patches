@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.82 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: queue.c,v 1.87 2010/06/02 19:16:53 chl Exp $	*/
 
 /*
  * Copyright (c) 2008-2010 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -68,10 +68,20 @@ void		 queue_bounce_event(int, short, void *);
 
 int		 queue_detect_loop(struct incoming *);
 
-struct batch	*batch_it(struct incoming *, char *);
+struct incoming *incoming_alloc(u_int64_t);
+struct batch	*incoming_batch(struct incoming *, char *);
+void		 incoming_schedule(struct incoming *);
+
+struct content	*content_alloc(u_int64_t);
+
+struct batch	*batch_alloc(struct content *, char *);
+
+struct action	*action_alloc(u_int64_t);
+void		 action_insert(struct action *, struct batch *);
+struct action	*action_grow(struct action *, char *);
+void		 action_free(struct action *);
+
 int		 batchsort(const void *, const void *);
-int		 action_grow(struct action **, char *);
-char		*rcpt_pretty(struct aux *);
 
 /* table of batches in larval state */
 void	**incoming;
@@ -84,12 +94,9 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	struct action		*update;
 	struct incoming		*s;
-	struct batch		*batch;
 	struct message		*m;
 	u_int64_t		 content_id;
-	u_int			 rq;
 	int			 i, fd, error;
-	time_t			 now;
 	struct iovec		 iov[2];
 	char			 aux[2048]; /* XXX */
 
@@ -101,20 +108,18 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			 * uniquely identifies entire mail transaction.  Actions
 			 * will refer to the this file as source of mail content.
 			 */
-			s = calloc(1, sizeof *s);
+			if (queue_be_content_create(&content_id) < 0)
+				content_id = INVALID_ID;
+
+			s = incoming_alloc(content_id);
 			if (s == NULL)
 				fatal(NULL);
-			for (rq = 0; rq < nitems(s->batches); rq++)
-				SLIST_INIT(&s->batches[rq]);
-			s->content = calloc(1, sizeof *s->content);
-			if (s->content == NULL)
-				fatal(NULL);
-			if (queue_be_content_create(&s->content->id) < 0)
-				s->content->id = INVALID_ID;
+
 			i = table_alloc(&incoming, &incoming_sz);
 			incoming[i] = s;
-			iov[0].iov_base = &s->content->id;
-			iov[0].iov_len = sizeof s->content->id;
+
+			iov[0].iov_base = &content_id;
+			iov[0].iov_len = sizeof content_id;
 			iov[1].iov_base = &i;
 			iov[1].iov_len = sizeof i;
 			imsg_composev(&iev->ibuf, IMSG_QUEUE_CREATE,
@@ -127,11 +132,13 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			 * Delete failed transaction's content and actions.
 			 */
 			memcpy(&i, imsg->data, sizeof i);
+
 			s = table_lookup(incoming, incoming_sz, i);
 			if (s == NULL)
 				fatalx("queue: bogus delete req");
-			incoming[i] = NULL;
+
 			queue_destroy(s);
+			incoming[i] = NULL;
 			return;
 
 		case IMSG_QUEUE_OPEN:
@@ -139,12 +146,15 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			 * Open the file that will hold mail content.
 			 */
 			memcpy(&i, imsg->data, sizeof i);
+
 			s = table_lookup(incoming, incoming_sz, i);
 			if (s == NULL)
 				fatalx("queue: bogus open req");
+
 			fd = queue_be_content_open(s->content->id, 1);
 			if (fd < 0)
 				fatal("queue: content open error");
+
 			imsg_compose_event(iev, IMSG_QUEUE_OPEN,
 			    imsg->hdr.peerid, 0, fd, NULL, 0);
 			return;
@@ -155,41 +165,35 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			 * performing all requested actions on this content.
 			 */
 			memcpy(&i, imsg->data, sizeof i);
+
 			s = table_lookup(incoming, incoming_sz, i);
 			if (s == NULL)
 				fatalx("queue: bogus commit req");
-			incoming[i] = NULL;
+
 			if (queue_detect_loop(s) < 0) {
 				error = S_MESSAGE_PERMFAILURE;
 				imsg_compose_event(iev, IMSG_QUEUE_CLOSE,
 				    imsg->hdr.peerid, 0, -1, &error, sizeof error);
 				return;
 			}
+
 			if (queue_be_commit(s->content->id) < 0) {
 				error = S_MESSAGE_TEMPFAILURE;
 				imsg_compose_event(iev, IMSG_QUEUE_CLOSE,
 				    imsg->hdr.peerid, 0, -1, &error, sizeof error);
 				return;
 			}
+
 			env->stats->queue.inserts++;
 			env->stats->queue.length++;
-			time(&now);
-			for (rq = 0; rq < nitems(s->batches); rq++) {
-				while ((batch = SLIST_FIRST(&s->batches[rq]))) {
-					SLIST_REMOVE_HEAD(&s->batches[rq], entry);
-					batch = realloc(batch, sizeof *batch);
-					if (batch == NULL)
-						fatal(NULL);
-					batch->retry = now;
-					queue_schedule(rq, batch);
-				}
-			}
+
+			incoming_schedule(s);
+			incoming[i] = NULL;
 			for (i = 0; i < s->nlocal; i++)
 				free(s->local[i]);
 			free(s->local);
 			free(s);
-			queue_sleep(Q_LOCAL);
-			queue_sleep(Q_RELAY);
+
 			error = 0;
 			imsg_compose_event(iev, IMSG_QUEUE_CLOSE,
 			    imsg->hdr.peerid, 0, -1, &error, sizeof error);
@@ -205,6 +209,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		switch (imsg->hdr.type) {
 		case IMSG_QUEUE_APPEND:
 			m = imsg->data;
+
 			s = table_lookup(incoming, incoming_sz, m->queue_id);
 			if (s == NULL)
 				fatalx("queue: bogus append");
@@ -307,10 +312,12 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			default:
 				fatalx("queue: bad r_action");
 			}
+
 			if (queue_append(s, aux) < 0)
 				error = S_MESSAGE_TEMPFAILURE;
 			else
 				error = 0;
+
 			imsg_compose_event(iev, IMSG_QUEUE_APPEND,
 			    imsg->hdr.peerid, 0, -1, &error, sizeof error);
 			return;
@@ -322,7 +329,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		case IMSG_BATCH_UPDATE:
 			update = imsg->data;
 			queue_update(Q_LOCAL, imsg->hdr.peerid, update->id,
-			    update->arg);
+			    update->data);
 			return;
 
 		case IMSG_BATCH_DONE:
@@ -337,7 +344,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		case IMSG_BATCH_UPDATE:
 			update = imsg->data;
 			queue_update(Q_RELAY, imsg->hdr.peerid, update->id,
-			    update->arg);
+			    update->data);
 			return;
 
 		case IMSG_BATCH_DONE:
@@ -416,6 +423,7 @@ queue_append(struct incoming *s, char *auxraw)
 	struct action	*action;
 	char		*copy;
 	struct aux	 aux;
+	u_int64_t	 action_id;
 
 	log_debug("aux %s", auxraw);
 
@@ -447,57 +455,27 @@ queue_append(struct incoming *s, char *auxraw)
 
 	/* assign batch */
 	if (aux.mode[0] != 'R')
-		batch = batch_it(s, "");
+		batch = incoming_batch(s, "");
 	else if (aux.relay_via[0])
-		batch = batch_it(s, aux.relay_via);
+		batch = incoming_batch(s, aux.relay_via);
 	else
-		batch = batch_it(s, strchr(aux.rcpt, '@'));
+		batch = incoming_batch(s, strchr(aux.rcpt, '@'));
+
 	if (batch == NULL)
 		fatal(NULL);
+
 	free(copy);
 
-	action = malloc(sizeof *action);
-	if (action == NULL)
-		fatal(NULL);
-	SLIST_INSERT_HEAD(&batch->actions, action, entry);
-	if (queue_be_action_new(s->content->id, &action->id, auxraw) < 0)
+	if (queue_be_action_new(s->content->id, &action_id, auxraw) < 0)
 		return -1;
 
-	s->content->ref++;
+	action = action_alloc(action_id);
+	if (action == NULL)
+		fatal(NULL);
+
+	action_insert(action, batch);
 
 	return 0;
-}
-
-struct batch *
-batch_it(struct incoming *s, char *sortkey)
-{
-	struct batch	*batch;
-	size_t		 batch_sz;
-	u_int		 rq;
-
-	if (*sortkey) {
-		rq = Q_RELAY;
-		SLIST_FOREACH(batch, &s->batches[rq], entry)
-			if (strcmp(batch->sortkey, sortkey) == 0)
-				break;
-	} else {
-		rq = Q_LOCAL;
-		batch = NULL;
-	}
-
-	if (batch == NULL) {
-		batch_sz = sizeof *batch + strlen(sortkey) + 1;
-		batch = malloc(batch_sz);
-		if (batch == NULL)
-			return NULL;
-		SLIST_INIT(&batch->actions);
-		batch->retry = 0;
-		batch->content = s->content;
-		strlcpy(batch->sortkey, sortkey, batch_sz - sizeof *batch);
-		SLIST_INSERT_HEAD(&s->batches[rq], batch, entry);
-	}
-
-	return batch;
 }
 
 void
@@ -515,12 +493,13 @@ queue_destroy(struct incoming *s)
 				SLIST_REMOVE_HEAD(&batch->actions, entry);
 				queue_be_action_delete(s->content->id,
 				    action->id);
-				free(action);
+				action_free(action);
 			}
 			free(batch);
 		}
 	}
 	queue_be_content_delete(s->content->id);
+
 	free(s->content);
 	for (i = 0; i < s->nlocal; i++)
 		free(s->local[i]);
@@ -565,7 +544,7 @@ queue_control(u_int64_t content_id, int schedule)
 				queue_be_action_delete(b->content->id,
 				    action->id);
 				queue_mem_content_unref(b->content);
-				free(action);
+				action_free(action);
 			}
 			free(b);
 		}
@@ -677,7 +656,8 @@ queue(struct smtpd *env)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
-	event_dispatch();
+	if (event_dispatch() <  0)
+		fatal("event_dispatch");
 	queue_shutdown();
 
 	return (0);
@@ -686,21 +666,21 @@ queue(struct smtpd *env)
 void
 queue_mem_init(struct smtpd *env)
 {
-	SLIST_HEAD(,batch)	  lookup[4096];
-	void			**batch;
+	SLIST_HEAD(,batch)	  bhash[4096];
+	void			**btab;
 	struct content		 *content;
 	struct action		 *action;
-	struct batch		 *b;
+	struct batch		 *batch;
 	char			 *sortkey;
 	struct action_be	  a;
 	struct aux		  aux;
-	int			  batch_sz, batches, rq, sz, i;
+	int			  btab_sz, nbtab, rq, i;
 
 	for (i = 0; i < 4096; i++)
-		SLIST_INIT(&lookup[i]);
-	batch = NULL;
-	batch_sz = 0;
-	batches = 0;
+		SLIST_INIT(&bhash[i]);
+	btab = NULL;
+	btab_sz = 0;
+	nbtab = 0;
 
 	/*
 	 * Sort actions into batches.
@@ -729,21 +709,25 @@ queue_mem_init(struct smtpd *env)
 			asprintf(&sortkey, "L=%s", queue_be_decode(a.action_id));
 
 		content = NULL;
-		SLIST_FOREACH(b, &lookup[a.content_id & 4095], entry) {
-			if (b->content->id == a.content_id) {
-				content = b->content;
-				if (strcmp(b->sortkey, sortkey) == 0)
+		SLIST_FOREACH(batch, &bhash[a.content_id & 4095], entry) {
+			if (batch->content->id == a.content_id) {
+				content = batch->content;
+				if (strcmp(batch->sortkey, sortkey) == 0)
 					break;
 			}
 		}
 
-		if (b == NULL) {
-			sz = sizeof *b + strlen(sortkey) + 1;
-			b = malloc(sz);
-			if (b == NULL)
+		if (batch == NULL) {
+			if (content == NULL) {
+				content = content_alloc(a.content_id);
+				if (content == NULL)
+					fatal("queue_mem_init");
+				env->stats->queue.length++;
+			}
+
+			batch = batch_alloc(content, sortkey);
+			if (batch == NULL)
 				fatal("queue_mem_init");
-			SLIST_INIT(&b->actions);
-			strlcpy(b->sortkey, sortkey, sz - sizeof *b);
 
 			if (*sortkey == 'B')
 				rq = Q_BOUNCE;
@@ -752,62 +736,51 @@ queue_mem_init(struct smtpd *env)
 			else
 				rq = Q_LOCAL;
 
-			b->retry = queue_retry(rq, a.birth, a.birth + 1);
-			while (b->retry < time(NULL))
-				b->retry = queue_retry(rq, a.birth, b->retry);
+			batch->retry = queue_retry(rq, a.birth, a.birth);
+			while (batch->retry < time(NULL))
+				batch->retry = queue_retry(rq, a.birth,
+				    batch->retry);
 
-			if (b->retry > a.birth + SMTPD_EXPIRE)
-				b->retry = NO_RETRY_EXPIRED;
+			if (batch->retry > a.birth + SMTPD_EXPIRE)
+				batch->retry = NO_RETRY_EXPIRED;
 
-			if (content)
-				b->content = content;
-			else {
-				b->content = calloc(1, sizeof *b->content);
-				if (b->content == NULL)
-					fatal("queue_mem_init");
-				b->content->id = a.content_id;
-				b->content->ref = 0;
-				env->stats->queue.length++;
-			}
-
-			SLIST_INSERT_HEAD(&lookup[a.content_id & 4095], b, entry);
-			if (batches == batch_sz) {
-				batch_sz *= 2;
-				batch = realloc(batch, ++batch_sz * sizeof *batch);
-				if (batch == NULL)
+			SLIST_INSERT_HEAD(&bhash[a.content_id & 4095], batch,
+			    entry);
+			if (nbtab == btab_sz) {
+				btab_sz *= 2;
+				btab = realloc(btab, ++btab_sz * sizeof *btab);
+				if (btab == NULL)
 					fatal("queue_mem_init");
 			}
-			batch[batches] = b;
-			batches++;
+			btab[nbtab] = batch;
+			nbtab++;
 		}
 
-		action = malloc(sizeof *action);
+		action = action_alloc(a.action_id);
 		if (action == NULL)
 			fatal("queue_mem_init");
-		action->id = a.action_id;
-		SLIST_INSERT_HEAD(&b->actions, action, entry);
-		b->content->ref++;
+
+		action_insert(action, batch);
+
 		free(sortkey);
 	}
 
 	/*
 	 * Add batches to schedule.
 	 */
-	qsort(batch, batches, sizeof *batch, batchsort);
-	for (i = 0; i < batches; i++) {
-		b = batch[i];
-		if (b->sortkey[0] == 'B')
+	qsort(btab, nbtab, sizeof *btab, batchsort);
+	for (i = 0; i < nbtab; i++) {
+		batch = btab[i];
+		if (batch->sortkey[0] == 'B')
 			rq = Q_BOUNCE;
-		else if (b->sortkey[0] == 'R')
+		else if (batch->sortkey[0] == 'R')
 			rq = Q_RELAY;
 		else
 			rq = Q_LOCAL;
-		b = realloc(b, sizeof *b);
-		if (b == NULL)
-			fatal("queue_mem_init");
-		queue_schedule(rq, b);
+		queue_schedule(rq, batch);
 	}
-	free(batch);
+
+	free(btab);
 }
 
 int
@@ -836,7 +809,7 @@ queue_send(int fd, short event, void *p)
 	struct batch		*batch;
 	struct action		*action;
 	struct action_be	 a;
-	int			 rq, i, to, size;
+	int			 rq, i, to;
 	time_t			 now;
 
 	rq = (struct queue *)p - runqs;
@@ -886,13 +859,19 @@ queue_send(int fd, short event, void *p)
 
 		while ((action = SLIST_FIRST(&batch->actions))) {
 			SLIST_REMOVE_HEAD(&batch->actions, entry);
+
 			if (queue_be_action_read(&a, batch->content->id,
 			    action->id) < 0)
 				fatal("queue: action read error");
-			size = action_grow(&action, a.aux);
+
+			action = action_grow(action, a.aux);
+			if (action == NULL)
+				fatal(NULL);
+
 			imsg_compose_event(env->sc_ievs[to], IMSG_BATCH_APPEND,
-			    i, 0, -1, action, size);
-			free(action);
+			    i, 0, -1, action, sizeof *action + strlen(a.aux));
+
+			action_free(action);
 		}
 
 		imsg_compose_event(env->sc_ievs[to], IMSG_BATCH_CLOSE, i, 0, -1,
@@ -927,12 +906,14 @@ queue_expire(struct batch *batch)
 		    "to: larval bounce)",
 		    queue_be_decode(batch->content->id), aux.mail_from,
 		    time(NULL) - birth);
+
 		while ((action = SLIST_FIRST(&batch->actions))) {
 			SLIST_REMOVE_HEAD(&batch->actions, entry);
 			queue_be_action_delete(batch->content->id, action->id);
 			queue_mem_content_unref(batch->content);
-			free(action);
+			action_free(action);
 		}
+
 		return;
 	}
 
@@ -944,6 +925,7 @@ queue_expire(struct batch *batch)
 			    action->id) < 0)
 				fatal("queue: action read error");
 			auxsplit(&aux, a.aux);
+
 			log_warnx("%s: to=%s, delay=%d, stat=Expired (no bounce "
 			    "due to: double bounce)",
 			    queue_be_decode(batch->content->id),
@@ -951,7 +933,7 @@ queue_expire(struct batch *batch)
 
 			queue_be_action_delete(batch->content->id, action->id);
 			queue_mem_content_unref(batch->content);
-			free(action);
+			action_free(action);
 		}
 		return;
 	}
@@ -978,12 +960,12 @@ queue_expire(struct batch *batch)
 		    action->id) < 0)
 			fatal("queue: action read error");
 		auxsplit(&aux, a.aux);
+
 		log_info("%s: to=%s, delay=%d, stat=Expired",
 		    queue_be_decode(batch->content->id), rcpt_pretty(&aux),
 		    time(NULL) - birth);
 
 		SLIST_INSERT_HEAD(&batch->content->actions, action, entry);
-
 		queue_bounce_wait(batch->content);
 	}
 
@@ -994,6 +976,7 @@ queue_expire(struct batch *batch)
 		    action->id) < 0)
 			fatal("queue: action read error");
 		auxsplit(&aux, a.aux);
+
 		log_warnx("%s: to=%s, delay=%d, stat=Expired (no bounce due "
 		    "to: %s)",
 		    queue_be_decode(batch->content->id), rcpt_pretty(&aux),
@@ -1001,29 +984,8 @@ queue_expire(struct batch *batch)
 
 		queue_be_action_delete(batch->content->id, action->id);
 		queue_mem_content_unref(batch->content);
-		free(action);
+		action_free(action);
 	}
-}
-
-/*
- * Grow action to append auxillary info needed by mta and mda.  To conserve
- * memory, queue calls this routine only for active delivery sessions so that
- * pending actions, potentially many, remain tiny.
- */
-int
-action_grow(struct action **action, char *aux)
-{
-	struct action *p;
-	int size;
-
-	size = sizeof *p + strlen(aux) + 1;
-	p = realloc(*action, size);
-	if (p == NULL)
-		fatal(NULL);
-	strlcpy(p->arg, aux, size - sizeof *p);
-	*action = p;
-
-	return size;
 }
 
 void
@@ -1061,7 +1023,7 @@ queue_update(int rq, int i, u_int64_t action_id, char *new_status)
 			    queue_be_decode(batch->content->id), aux.rcpt_to);
 			queue_be_action_delete(batch->content->id, action_id);
 			queue_mem_content_unref(batch->content);
-			free(action);
+			action_free(action);
 			return;
 		}
 
@@ -1072,7 +1034,7 @@ queue_update(int rq, int i, u_int64_t action_id, char *new_status)
 			    queue_be_decode(batch->content->id), aux.rcpt_to);
 			queue_be_action_delete(batch->content->id, action_id);
 			queue_mem_content_unref(batch->content);
-			free(action);
+			action_free(action);
 			return;
 		}
 
@@ -1355,7 +1317,7 @@ out:
 			queue_be_action_delete(s->batch->content->id,
 			    action->id);
 			queue_mem_content_unref(s->batch->content);
-			free(action);
+			action_free(action);
 		}
 	}
 	queue_done(Q_BOUNCE, s->id);
@@ -1432,4 +1394,140 @@ queue_detect_loop(struct incoming *s)
 	fclose(fp);
 
 	return (buf == NULL ? 0 : -1);
+}
+
+struct incoming *
+incoming_alloc(u_int64_t content_id)
+{
+	struct incoming *s;
+	u_int rq;
+
+	s = calloc(1, sizeof *s);
+	if (s == NULL)
+		return NULL;
+	for (rq = 0; rq < nitems(s->batches); rq++)
+		SLIST_INIT(&s->batches[rq]);
+
+	s->content = content_alloc(content_id);
+	if (s->content == NULL) {
+		free(s);
+		return NULL;
+	}
+
+	return s;
+}
+
+struct batch *
+incoming_batch(struct incoming *s, char *sortkey)
+{
+	struct batch	*batch;
+	u_int		 rq;
+
+	if (*sortkey) {
+		rq = Q_RELAY;
+		SLIST_FOREACH(batch, &s->batches[rq], entry)
+			if (strcmp(batch->sortkey, sortkey) == 0)
+				break;
+	} else {
+		rq = Q_LOCAL;
+		batch = NULL;
+	}
+
+	if (batch == NULL) {
+		batch = batch_alloc(s->content, sortkey);
+		if (batch == NULL)
+			return NULL;
+		SLIST_INSERT_HEAD(&s->batches[rq], batch, entry);
+	}
+
+	return batch;
+}
+
+void
+incoming_schedule(struct incoming *s)
+{
+	struct batch *batch;
+	u_int rq;
+
+	for (rq = 0; rq < nitems(s->batches); rq++) {
+		while ((batch = SLIST_FIRST(&s->batches[rq]))) {
+			SLIST_REMOVE_HEAD(&s->batches[rq], entry);
+			batch->retry = RETRY_NOW;
+			queue_schedule(rq, batch);
+		}
+	}
+
+	queue_sleep(Q_LOCAL);
+	queue_sleep(Q_RELAY);
+}
+
+struct content *
+content_alloc(u_int64_t content_id)
+{
+	struct content *content;
+
+	content = calloc(1, sizeof *content);
+	if (content == NULL)
+		return NULL;
+
+	content->id = content_id;
+
+	return content;
+}
+
+struct batch *
+batch_alloc(struct content *content, char *sortkey)
+{
+	struct batch *batch;
+
+	batch = calloc(1, sizeof *batch + strlen(sortkey));
+	if (batch == NULL)
+		return NULL;
+
+	SLIST_INIT(&batch->actions);
+	batch->content = content;
+	strlcpy(batch->sortkey, sortkey, strlen(sortkey) + 1);
+
+	return batch;
+}
+
+struct action *
+action_alloc(u_int64_t action_id)
+{
+	struct action *action;
+
+	action = malloc(sizeof *action);
+	if (action == NULL)
+		return NULL;
+
+	action->id = action_id;
+
+	return action;
+}
+
+void
+action_free(struct action *action)
+{
+	free(action);
+}
+
+void
+action_insert(struct action *action, struct batch *batch)
+{
+	SLIST_INSERT_HEAD(&batch->actions, action, entry);
+	batch->content->ref++;
+}
+
+struct action *
+action_grow(struct action *action, char *aux)
+{
+	struct action *new;
+
+	new = realloc(action, sizeof *new + strlen(aux));
+	if (new == NULL)
+		return NULL;
+
+	strlcpy(new->data, aux, strlen(aux) + 1);
+
+	return new;
 }

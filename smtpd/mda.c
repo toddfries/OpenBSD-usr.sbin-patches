@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.45 2010/05/31 23:38:56 jacekm Exp $	*/
+/*	$OpenBSD: mda.c,v 1.48 2010/06/02 19:16:53 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -54,7 +54,6 @@ mda_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	struct deliver		 deliver;
 	struct mda_session	*s;
 	struct action		*action;
-	size_t			 action_sz;
 
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
@@ -80,7 +79,7 @@ mda_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 				fatalx("mda: bogus append");
 			action = imsg->data;
 			s->action_id = action->id;
-			s->auxraw = strdup(action->arg);
+			s->auxraw = strdup(action->data);
 			if (s->auxraw == NULL)
 				fatal(NULL);
 			auxsplit(&s->aux, s->auxraw);
@@ -186,14 +185,14 @@ mda_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			}
 
 			/* update queue entry */
-			action_sz = sizeof *action + strlen(error) + 1;
-			action = malloc(action_sz);
+			action = malloc(sizeof *action + strlen(error));
 			if (action == NULL)
 				fatal(NULL);
 			action->id = s->action_id;
-			strlcpy(action->arg, error, action_sz - sizeof *action);
+			strlcpy(action->data, error, strlen(error) + 1);
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_BATCH_UPDATE, s->id, 0, -1, action, action_sz);
+			    IMSG_BATCH_UPDATE, s->id, 0, -1, action,
+			    sizeof *action + strlen(error));
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 			    IMSG_BATCH_DONE, s->id, 0, -1, NULL, 0);
 
@@ -313,7 +312,7 @@ mda(struct smtpd *env)
 
 	mda_setup_events(env);
 	if (event_dispatch() < 0)
-		log_warn("event_dispatch");
+		fatal("event_dispatch");
 	mda_shutdown();
 
 	return (0);

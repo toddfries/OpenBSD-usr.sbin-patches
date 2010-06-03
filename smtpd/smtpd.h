@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.188 2010/05/31 23:50:28 jacekm Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.191 2010/06/01 23:06:25 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -374,7 +374,7 @@ RB_HEAD(expandtree, expandnode);
 struct action {
 	SLIST_ENTRY(action)	 entry;
 	u_int64_t		 id;
-	char			 arg[];
+	char			 data[1];	/* actually bigger */
 };
 
 struct content {
@@ -385,13 +385,14 @@ struct content {
 };
 
 #define NO_RETRY_EXPIRED	 0
+#define RETRY_NOW		 1
 
 struct batch {
 	SLIST_ENTRY(batch)	 entry;
 	SLIST_HEAD(,action)	 actions;
 	struct content		*content;
 	time_t			 retry;
-	char			 sortkey[];
+	char			 sortkey[1];	/* actually bigger */
 };
 
 struct incoming {
@@ -776,7 +777,7 @@ struct recipient {
 	TAILQ_ENTRY(recipient)	 entry;
 	u_int64_t		 action_id;
 	char			 status[128];
-	char			 address[];
+	char			 address[1];	/* actually bigger */
 };
 
 struct mta_session {

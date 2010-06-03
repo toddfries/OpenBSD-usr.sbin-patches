@@ -1,4 +1,4 @@
-/*	$OpenBSD: lsupdate.c,v 1.5 2010/05/26 13:56:08 nicm Exp $ */
+/*	$OpenBSD: lsupdate.c,v 1.7 2010/06/03 10:00:34 bluhm Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -176,7 +176,7 @@ add_ls_update(struct ibuf *buf, struct iface *iface, void *data, int len,
 	size_t		pos;
 	u_int16_t	age;
 
-	if (buf->wpos + len >= buf->max - MD5_DIGEST_LENGTH)
+	if (buf->wpos + len >= buf->max)
 		return (0);
 
 	pos = buf->wpos;
@@ -466,8 +466,20 @@ ls_retrans_timer(int fd, short event, void *bula)
 			d = MAX_AGE;
 
 		if (add_ls_update(buf, nbr->iface, le->le_ref->data,
-		    le->le_ref->len, d) == 0)
-			break;
+		    le->le_ref->len, d) == 0) {
+			if (nlsa)
+				break;
+			/*
+			 * A single lsa is too big to fit into an update
+			 * packet.  In this case drop the lsa, otherwise
+			 * we send empty update packets in an endless loop.
+			 */
+			log_warnx("ls_retrans_timer: cannot send lsa, dropped");
+			log_debug("ls_retrans_timer: type: %04x len: %u",
+			    ntohs(le->le_ref->hdr.type), le->le_ref->len);
+			ls_retrans_list_free(nbr, le);
+			continue;
+		}
 		nlsa++;
 		if (le->le_oneshot)
 			ls_retrans_list_free(nbr, le);
