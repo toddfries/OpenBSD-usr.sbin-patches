@@ -1,11 +1,12 @@
-# $OpenBSD: Makefile,v 1.62 2010/06/04 13:19:39 espie Exp $
+# $OpenBSD: Makefile,v 1.64 2010/06/05 17:15:32 espie Exp $
 
 .include <bsd.own.mk>
 
 MAN1=pkg_add.1 pkg_info.1 pkg_create.1 pkg_delete.1 pkg_merge.1 \
 	pkg.1 pkg_mklocatedb.1
 MAN5=package.5
-MAN=${MAN1} ${MAN5}
+MAN8=pkg_check.8
+MAN=${MAN1} ${MAN5} ${MAN8}
 NOPROG=
 
 POD2MAN=/usr/bin/pod2man
@@ -42,6 +43,7 @@ PACKAGES= \
     OpenBSD/Paths.pm \
     OpenBSD/PkgAdd.pm \
     OpenBSD/PkgCfl.pm \
+    OpenBSD/PkgCheck.pm \
     OpenBSD/PkgConfig.pm \
     OpenBSD/PkgCreate.pm \
     OpenBSD/PkgDelete.pm \
@@ -75,6 +77,7 @@ SCRIPTS= \
 
 SCRIPTS_LNK = \
     pkg pkg_add \
+    pkg pkg_check \
     pkg pkg_create \
     pkg pkg_delete \
     pkg pkg_info
@@ -117,9 +120,11 @@ $p.3p: pod/$p.pod
 .ifndef NOMAN
 MANALL+=${MAN1:S/.1$/.cat1/}
 MANALL+=${MAN5:S/.5$/.cat5/}
+MANALL+=${MAN8:S/.8$/.cat8/}
 .  ifdef MANPS
 PSALL+= ${MAN1:S/.1$/.ps1/}
 PSALL+= ${MAN5:S/.5$/.ps5/}
+PSALL+= ${MAN8:S/.8$/.ps8/}
 .  endif
 .endif
 

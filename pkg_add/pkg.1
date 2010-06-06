@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg.1,v 1.5 2010/06/05 07:11:43 espie Exp $
+.\"	$OpenBSD: pkg.1,v 1.8 2010/06/05 17:15:32 espie Exp $
 .\"
 .\" Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 .\"
@@ -24,6 +24,7 @@
 .Nm
 is the actual script that starts
 .Xr pkg_add 1 ,
+.Xr pkg_check 8 ,
 .Xr pkg_create 1 ,
 .Xr pkg_delete 1 ,
 and
@@ -33,6 +34,7 @@ It can be invoked as a link to those commands, or with
 .Ar add ,
 .Ar create ,
 .Ar delete ,
+.Ar fsck ,
 .Ar info
 as first argument.
 .Pp
@@ -41,6 +43,7 @@ Refer to the documentation of those commands for further info.
 .Xr pkg_add 1 ,
 .Xr pkg_create 1 ,
 .Xr pkg_delete 1 ,
-.Xr pkg_info 1
+.Xr pkg_info 1 ,
+.Xr pkg_check 8
 .Sh AUTHORS
 This program was written by Marc Espie.

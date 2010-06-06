@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Term.pm,v 1.4 2010/06/04 13:19:39 espie Exp $
+# $OpenBSD: Term.pm,v 1.7 2010/06/06 07:27:03 espie Exp $
 #
 # Copyright (c) 2004-2007 Marc Espie <espie@openbsd.org>
 #
@@ -64,6 +64,7 @@ sub init
 	$self->find_window_size;
 	$self->{lastdisplay} = '';
 	$self->{continued} = 0;
+	$self->{work} = 0;
 	return unless defined $ENV{TERM} || defined $ENV{TERMCAP};
 	my $termios = POSIX::Termios->new;
 	$termios->getattr(0);
@@ -143,8 +144,10 @@ sub _show
 {
 	my ($self, $extra, $stars) = @_;
 	my $d = $self->{header};
+	my $prefix = length($d);
 	if (defined $extra) {
 		$d.="|$extra";
+		$prefix++;
 	}
 	return if $d eq $self->{lastdisplay} && !$self->{continued};
 	if ($self->{width} > length($d)) {
@@ -154,15 +157,12 @@ sub _show
 			$d .= ' 'x($self->{width} - length($d) - 1);
 		}
 	}
-	my $prefix;
 	if (!$self->{continued} && defined $self->{hpa}) {
 		if (defined $stars && defined $self->{stars}) {
-			$prefix = length($self->{header})+1+$self->{stars};
-		} else {
-			$prefix = length($self->{header});
+			$prefix += $self->{stars};
 		}
 	}
-	if (defined $prefix && substr($self->{lastdisplay}, 0, $prefix) eq
+	if (defined $self->{hpa} && substr($self->{lastdisplay}, 0, $prefix) eq 
 	    substr($d, 0, $prefix)) {
 		print $self->hmove($prefix), substr($d, $prefix);
 	} else {
@@ -205,6 +205,13 @@ sub show
 	}
 }
 
+sub working
+{
+	my ($self, $slowdown) = @_;
+	$self->{work}++;
+	return if $self->{work} < $slowdown;
+	$self->message(substr("/-\\|", ($self->{work}/$slowdown) % 4, 1));
+}
 sub clear
 {
 	my $self = shift;
