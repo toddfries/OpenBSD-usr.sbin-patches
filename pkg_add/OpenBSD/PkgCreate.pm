@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: pkg_create,v 1.139 2010/05/10 09:17:55 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.6 2010/06/07 13:51:19 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -19,30 +19,18 @@
 use strict;
 use warnings;
 
-use OpenBSD::PackingList;
-use OpenBSD::PackageInfo;
-use OpenBSD::Getopt;
-use OpenBSD::Temp;
-use OpenBSD::Error;
-use OpenBSD::Ustar;
-use OpenBSD::ArcCheck;
-use OpenBSD::Paths;
-use OpenBSD::Subst;
-use OpenBSD::ProgressMeter;
-use File::Basename;
+use OpenBSD::AddCreateDelete;
 
-package OpenBSD::State;
-sub new
-{
-	my $class = shift;
-	bless {progress => OpenBSD::ProgressMeter->new,
-	    errors => 0, stash => {}}, $class;
-}
+package OpenBSD::PkgCreate::State;
+our @ISA = qw(OpenBSD::AddCreateDelete::State);
 
-sub progress
+sub init
 {
 	my $self = shift;
-	return $self->{progress};
+
+	$self->{stash} = {};
+	$self->SUPER::init(@_);
+	$self->{simple_status} = 0;
 }
 
 sub stash
@@ -54,9 +42,48 @@ sub stash
 sub error
 {
 	my $self = shift;
-	$self->{errors}++;
-	$self->progress->errprint(@_, "\n");
+	$self->{bad}++;
+	$self->errsay(@_);
 }
+
+sub set_status
+{
+	my ($self, $status) = @_;
+	if ($self->{simple_status}) {
+		print "\n$status";
+	} else {
+		if ($self->progress->set_header($status)) {
+			$self->progress->message;
+		} else {
+			$| = 1;
+			print "$status...";
+			$self->{simple_status} = 1;
+		}
+	}
+}
+
+sub end_status
+{
+	my $self = shift;
+
+	if ($self->{simple_status}) {
+		print "\n";
+	} else {
+		$self->progress->clear;
+	}
+}
+
+package OpenBSD::PkgCreate;
+
+use OpenBSD::PackingList;
+use OpenBSD::PackageInfo;
+use OpenBSD::Getopt;
+use OpenBSD::Temp;
+use OpenBSD::Error;
+use OpenBSD::Ustar;
+use OpenBSD::ArcCheck;
+use OpenBSD::Paths;
+use File::Basename;
 
 # Extra stuff needed to archive files
 package OpenBSD::PackingElement;
@@ -65,7 +92,7 @@ sub create_package
 	my ($self, $state) = @_;
 
 	$self->archive($state);
-	if ($state->{verbose}) {
+	if ($state->verbose) {
 		$self->comment_create_package;
 	}
 }
@@ -261,7 +288,7 @@ sub archive
 
 	my $o = $self->prepare_for_archival($state);
 
-	$o->write unless $state->{errors};
+	$o->write unless $state->{bad};
 }
 
 sub pretend_to_archive
@@ -346,6 +373,12 @@ sub avert_duplicates_and_other_checks
 	$self->SUPER::avert_duplicates_and_other_checks($state);
 }
 
+package OpenBSD::PackingElement::Conflict;
+sub avert_duplicates_and_other_checks
+{
+	&OpenBSD::PackingElement::Depend::avert_duplicates_and_other_checks;
+}
+
 package OpenBSD::PackingElement::AskUpdate;
 sub avert_duplicates_and_other_checks
 {
@@ -409,23 +442,12 @@ sub close
 	close($self->{fh});
 }
 
-package main;
-
-my $state = OpenBSD::State->new;
-
-
-my $subst = OpenBSD::Subst->new;
-
-$state->{subst} = $subst;
-
-our ($opt_p, $opt_f, $opt_d, $opt_v,
-	$opt_s, $opt_A, $opt_L,
-	$opt_M, $opt_U, $opt_P, $opt_W, $opt_n,
-	$opt_B, $opt_q, $opt_Q, $opt_x);
+package OpenBSD::PkgCreate;
+our @ISA = qw(OpenBSD::AddCreateDelete);
 
 sub deduce_name
 {
-	my ($o, $frag, $not) = @_;
+	my ($state, $o, $frag, $not) = @_;
 
 	my $noto = $o;
 	my $nofrag = "no-$frag";
@@ -439,10 +461,12 @@ sub deduce_name
 		die "Missing fragments for $frag: $o and $noto don't exist";
 	}
 	if ($not) {
-		print "Switching to $noto\n" if !defined $opt_q;
+		$state->set_status("switching to $noto")
+		    if !defined $state->opt('q');
 		return $noto if -e $noto;
     	} else {
-		print "Switching to $o\n" if !defined $opt_q;
+		$state->set_status("switching to $o")
+		    if !defined $state->opt('q');
 		return $o if -e $o;
 	}
 	return;
@@ -450,18 +474,20 @@ sub deduce_name
 
 sub read_fragments
 {
-    my ($plist, $filename) = @_;
+	my ($state, $plist, $filename) = @_;
 
-    my $stack = [];
-    push(@$stack, MyFile->new($filename));
+	my $stack = [];
+	my $subst = $state->{subst};
+	push(@$stack, MyFile->new($filename));
 
-    return $plist->read($stack,
-	sub {
+	return $plist->read($stack,
+	    sub {
 		my ($stack, $cont) = @_;
 		local $_;
 		while(my $file = pop @$stack) {
 			GETLINE:
 			while ($_ = $file->readline) {
+				$state->progress->working(2048);
 				if (my ($not, $frag) = m/^(\!)?\%\%(.*)\%\%$/) {
 					my $def = $frag;
 					if ($frag eq 'SHARED') {
@@ -473,7 +499,7 @@ sub read_fragments
 					} else {
 						next GETLINE unless defined $not;
 					}
-					my $newname = deduce_name($file->name, $frag, $not);
+					my $newname = deduce_name($state, $file->name, $frag, $not);
 					if (defined $newname) {
 						push(@$stack, $file);
 						$file = MyFile->new($newname);
@@ -490,13 +516,13 @@ sub read_fragments
 				&$cont($subst->do($_));
 			}
 		}
-	}
+	    }
 	);
 }
 
 sub add_special_file
 {
-	my ($plist, $name, $opt) = @_;
+	my ($subst, $plist, $name, $opt) = @_;
 	if (defined $opt) {
 	    my $o = OpenBSD::PackingElement::File->add($plist, $name);
 	    $subst->copy($opt, $o->fullname) if defined $o->fullname;
@@ -505,7 +531,7 @@ sub add_special_file
 
 sub add_description
 {
-	my ($plist, $name, $opt_d) = @_;
+	my ($subst, $plist, $name, $opt_d) = @_;
 	my $o = OpenBSD::PackingElement::FDESC->add($plist, $name);
 	my $comment = $subst->value('COMMENT');
 	if (defined $comment) {
@@ -545,158 +571,52 @@ sub add_description
 	}
 }
 
-my (@contents, %dependencies, %wantlib, @signature_params);
+sub add_signature
+{
+	my ($self, $plist, $cert, $privkey) = @_;
+		
+	require OpenBSD::x509;
 
-my $regen_package = 0;
-my $sign_only = 0;
-my ($cert, $privkey);
-
-
-set_usage(
-'pkg_create [-nQqvx] [-A arches] [-B pkg-destdir] [-D name[=value]]',
-'[-L localbase] [-M displayfile] [-P pkg-dependency]',
-'[-s x509 -s cert -s priv] [-U undisplayfile] [-W wantedlib]',
-'-d desc -D COMMENT=value -f packinglist -p prefix pkg-name');
-
-my $plist = new OpenBSD::PackingList;
-try {
-	getopts('p:f:d:vM:U:hs:A:L:B:D:P:W:nqQx',
-	{'D' =>
-		sub {
-			$subst->parse_option(shift);
-		},
-	 'f' =>
-	 	sub {
-			push(@contents, shift);
-		},
-	 'h' => sub {	Usage(); },
-	 'P' => sub {
-	 		my $d = shift;
-	 		$dependencies{$d} = 1;
-		},
-	 'W' => sub {
-	 		my $w = shift;
-	 		$wantlib{$w} = 1;
-		},
-	 's' => sub {
-	 		push(@signature_params, shift);
-		}
-	});
-} catchall {
-	Usage($_);
-};
-
-$state->progress->setup($opt_x);
-$state->{verbose} = $opt_v;
-
-if (@ARGV == 0) {
-	$regen_package = 1;
-} elsif (@ARGV != 1) {
-	if (@contents || @signature_params == 0) {
-		Usage "Exactly one single package name is required: ",
-		    join(' ', @ARGV);
-	}
+	my $sig = OpenBSD::PackingElement::DigitalSignature->new_x509;
+	$sig->add_object($plist);
+	$sig->{b64sig} = OpenBSD::x509::compute_signature($plist,
+	    $cert, $privkey);
 }
 
-try {
-
-if (@signature_params > 0) {
-	if (@signature_params != 3 || $signature_params[0] ne 'x509' ||
-	    !-f $signature_params[1] || !-f $signature_params[2]) {
-		Usage "Signature only works as -s x509 -s cert -s privkey";
-	}
-	$cert = $signature_params[1];
-	$privkey = $signature_params[2];
+sub create_archive
+{
+	my ($self, $filename, $dir) = @_;
+	open(my $fh, "|-", OpenBSD::Paths->gzip, "-f", "-o", $filename);
+	return  OpenBSD::Ustar->new($fh, $dir);
 }
 
-if (defined $opt_Q) {
-	$opt_q = 1;
+sub sign_existing_package
+{
+	my ($self, $pkgname, $cert, $privkey) = @_;
+
+	require OpenBSD::PackageLocator;
+
+	my $true_package = OpenBSD::PackageLocator->find($pkgname);
+	die "No such package $pkgname" unless $true_package;
+	my $dir = $true_package->info;
+	my $plist = OpenBSD::PackingList->fromfile($dir.CONTENTS);
+	$plist->set_infodir($dir);
+	$self->add_signature($plist, $cert, $privkey);
+	$plist->save;
+	my $tmp = OpenBSD::Temp::permanent_file(".", "pkg");
+	my $wrarc = $self->create_archive($tmp, ".");
+	$plist->copy_over($wrarc, $true_package);
+	$wrarc->close;
+	$true_package->wipe_info;
+	unlink($plist->pkgname.".tgz");
+	rename($tmp, $plist->pkgname.".tgz") or
+	    die "Can't create final signed package $!\n";
 }
 
-if (!@contents) {
-	if (@signature_params > 0) {
-		$sign_only = 1;
-	} else {
-		Usage "Packing list required";
-	}
-}
+sub add_extra_info
+{
+	my ($self, $plist, $subst) = @_;
 
-my $cont = 0;
-if ($regen_package) {
-	if (@contents != 1) {
-		Usage "Exactly one single packing list is required";
-	}
-	if (-d $contents[0] && -f $contents[0].'/'.CONTENTS) {
-		$plist->set_infodir($contents[0]);
-		$contents[0] .= '/'.CONTENTS;
-	} else {
-		$plist->set_infodir(dirname($contents[0]));
-	}
-	$plist->fromfile($contents[0]) or
-	    Fatal "Can't read packing list $contents[0]";
-} elsif ($sign_only) {
-	if ($opt_n) {
-		Fatal "Can't pretend to sign existing packages";
-	}
-	for my $pkgname (@ARGV) {
-		require OpenBSD::PackageLocator;
-		require OpenBSD::x509;
-
-		my $true_package = OpenBSD::PackageLocator->find($pkgname);
-		die "No such package $pkgname" unless $true_package;
-		my $dir = $true_package->info;
-		my $plist = OpenBSD::PackingList->fromfile($dir.CONTENTS);
-		$plist->set_infodir($dir);
-		my $sig = OpenBSD::PackingElement::DigitalSignature->new_x509;
-		$sig->add_object($plist);
-		$sig->{b64sig} = OpenBSD::x509::compute_signature($plist,
-		    $cert, $privkey);
-		$plist->save;
-		my $tmp = OpenBSD::Temp::permanent_file(".", "pkg");
-		open( my $outfh, "|-", OpenBSD::Paths->gzip, "-o", $tmp);
-
-		my $wrarc = OpenBSD::Ustar->new($outfh, ".");
-		$plist->copy_over($wrarc, $true_package);
-		$wrarc->close;
-		$true_package->wipe_info;
-		unlink($plist->pkgname.".tgz");
-		rename($tmp, $plist->pkgname.".tgz") or
-		    die "Can't create final signed package $!";
-	}
-	exit(0);
-} else {
-	print "Creating package $ARGV[0]\n" if !(defined $opt_q) && $opt_v;
-	if (!$opt_q) {
-		$plist->set_infodir(OpenBSD::Temp->dir);
-	}
-	add_description($plist, DESC, $opt_d);
-	add_special_file($plist, DISPLAY, $opt_M);
-	add_special_file($plist, UNDISPLAY, $opt_U);
-	if (defined $opt_p) {
-		OpenBSD::PackingElement::Cwd->add($plist, $opt_p);
-	} else {
-		Usage "Prefix required";
-	}
-	for my $d (sort keys %dependencies) {
-		OpenBSD::PackingElement::Dependency->add($plist, $d);
-	}
-
-	for my $w (sort keys %wantlib) {
-		OpenBSD::PackingElement::Wantlib->add($plist, $w);
-	}
-
-	if (defined $opt_A) {
-		OpenBSD::PackingElement::Arch->add($plist, $opt_A);
-	}
-
-	if (defined $opt_L) {
-		OpenBSD::PackingElement::LocalBase->add($plist, $opt_L);
-	}
-	if ($ARGV[0] =~ m|([^/]+)$|o) {
-		my $pkgname = $1;
-		$pkgname =~ s/\.tgz$//o;
-		$plist->set_pkgname($pkgname);
-	}
 	my $fullpkgpath = $subst->value('FULLPKGPATH');
 	my $cdrom = $subst->value('PERMIT_PACKAGE_CDROM') ||
 	    $subst->value('CDROM');;
@@ -714,98 +634,97 @@ if ($regen_package) {
 	} else {
 		Warn "Package without FULLPKGPATH\n";
 	}
-	unless (defined $opt_q && defined $opt_n) {
-		if ($state->progress->set_header("reading plist")) {
-			$state->progress->message;
-		} else {
-			$| = 1;
-			print "Reading plist...";
-			$cont = 1;
-		}
+}
+
+sub add_elements
+{
+	my ($self, $plist, $state, $dep, $want) = @_;
+
+	my $subst = $state->{subst};
+	add_description($subst, $plist, DESC, $state->opt('d'));
+	add_special_file($subst, $plist, DISPLAY, $state->opt('M'));
+	add_special_file($subst, $plist, UNDISPLAY, $state->opt('U'));
+	if (defined $state->opt('p')) {
+		OpenBSD::PackingElement::Cwd->add($plist, $state->opt('p'));
+	} else {
+		Usage "Prefix required";
 	}
-	for my $contentsfile (@contents) {
-		read_fragments($plist, $contentsfile) or
+	for my $d (sort keys %$dep) {
+		OpenBSD::PackingElement::Dependency->add($plist, $d);
+	}
+
+	for my $w (sort keys %$want) {
+		OpenBSD::PackingElement::Wantlib->add($plist, $w);
+	}
+
+	if (defined $state->opt('A')) {
+		OpenBSD::PackingElement::Arch->add($plist, $state->opt('A'));
+	}
+
+	if (defined $state->opt('L')) {
+		OpenBSD::PackingElement::LocalBase->add($plist, $state->opt('L'));
+	}
+	$self->add_extra_info($plist, $subst);
+}
+
+sub create_plist
+{
+	my ($self, $state, $pkgname, $frags, $dep, $want) = @_;
+
+	my $plist = OpenBSD::PackingList->new;
+
+	if ($pkgname =~ m|([^/]+)$|o) {
+		$pkgname = $1;
+		$pkgname =~ s/\.tgz$//o;
+	}
+	$plist->set_pkgname($pkgname);
+	print "Creating package $pkgname\n" 
+	    if !(defined $state->opt('q')) && $state->opt('v');
+	if (!$state->opt('q')) {
+		$plist->set_infodir(OpenBSD::Temp->dir);
+	}
+
+	$self->add_elements($plist, $state, $dep, $want);
+	unless (defined $state->opt('q') && defined $state->opt('n')) {
+		$state->set_status("reading plist");
+	}
+	for my $contentsfile (@$frags) {
+		read_fragments($state, $plist, $contentsfile) or
 		    Fatal "Can't read packing list $contentsfile";
 	}
+	return $plist;
 }
 
-
-my $base = '/';
-if (defined $opt_B) {
-	$base = $opt_B;
-} elsif (defined $ENV{'PKG_PREFIX'}) {
-	$base = $ENV{'PKG_PREFIX'};
+sub make_plist_with_sum
+{
+	my ($self, $state, $plist) = @_;
+	my $p2 = OpenBSD::PackingList->new;
+	$state->progress->visit_with_count($plist, 'makesum_plist', $p2, $state);
+	$p2->set_infodir($plist->infodir);
+	return $p2;
 }
 
-$state->{base} = $base;
+sub read_existing_plist
+{
+	my ($self, $contents) = @_;
 
-unless (defined $opt_q && defined $opt_n) {
-	if ($cont) {
-		print "\nChecksumming...";
-    	} else {
-		$state->progress->set_header("checksumming");
-	}
-	if ($regen_package) {
-		$state->progress->visit_with_count($plist, 'verify_checksum', $state);
+	my $plist = OpenBSD::PackingList->new;
+	if (-d $contents && -f $contents.'/'.CONTENTS) {
+		$plist->set_infodir($contents);
+		$contents .= '/'.CONTENTS;
 	} else {
-		my $p2 = OpenBSD::PackingList->new;
-		$state->progress->visit_with_count($plist, 'makesum_plist', $p2, $state);
-		$p2->set_infodir($plist->infodir);
-		$plist = $p2;
+		$plist->set_infodir(dirname($contents));
 	}
-	if ($cont) {
-		print "\n";
-	}
+	$plist->fromfile($contents) or
+	    Fatal "Can't read packing list $contents";
+	return $plist;
 }
 
-if (!defined $plist->{name}) {
-	$state->error("Can't write unnamed packing list");
-	exit 1;
-}
+sub create_package
+{
+	my ($self, $state, $plist, $wname) = @_;
 
-if (defined $opt_q) {
-	if (defined $opt_Q) {
-		$plist->print_file;
-	} else {
-		$plist->write(\*STDOUT);
-	}
-	exit 0 if defined $opt_n;
-}
-
-if ($plist->{deprecated}) {
-	$state->error("Error: found obsolete constructs");
-	exit 1;
-}
-
-$plist->avert_duplicates_and_other_checks($state);
-$state->{stash} = {};
-
-if ($state->{errors} && $subst->empty('REGRESSION_TESTING')) {
-	exit 1;
-}
-$state->{errors} = 0;
-
-if (defined $cert) {
-	my $sig = OpenBSD::PackingElement::DigitalSignature->new_x509;
-	$sig->add_object($plist);
-	require OpenBSD::x509;
-	$sig->{b64sig} = OpenBSD::x509::compute_signature($plist, $cert, $privkey);
-	$plist->save if $regen_package;
-}
-
-my $wname;
-if ($regen_package) {
-	$wname = $plist->pkgname.".tgz";
-} else {
-	$plist->save or Fatal "Can't write packing list";
-	$wname = $ARGV[0];
-}
-
-if ($opt_n) {
-	$state->{archive} = OpenBSD::Ustar->new(undef, $plist->infodir);
-	$plist->pretend_to_archive($state);
-} else {
-	print "Creating gzip'd tar ball in '$wname'\n" if $opt_v;
+	print "Creating gzip'd tar ball in '$wname'\n" if $state->opt('v');
 	my $h = sub {
 		unlink $wname;
 		my $caught = shift;
@@ -818,26 +737,172 @@ if ($opt_n) {
 	local $SIG{'HUP'} = $h;
 	local $SIG{'KILL'} = $h;
 	local $SIG{'TERM'} = $h;
-	open(my $fh, "|-", OpenBSD::Paths->gzip, "-f", "-o", $wname);
-	$state->{archive} = OpenBSD::Ustar->new($fh, $plist->infodir);
-
-	if ($cont) {
-		print "Archiving...";
-	} else {
-		$state->progress->set_header("archiving");
-	}
+	$state->{archive} = $self->create_archive($wname, $plist->infodir);
+	$state->set_status("archiving");
 	$state->progress->visit_with_size($plist, 'create_package', $state);
-	if ($cont) {
-		print "\n";
-	}
-	$state->progress->clear;
+	$state->end_status;
 	$state->{archive}->close;
-	if ($state->{errors}) {
+	if ($state->{bad}) {
 		unlink($wname);
 		exit(1);
 	}
 }
-} catch {
-	print STDERR "$0: $_\n";
-	exit(1);
-};
+
+sub parse_and_run
+{
+	my $self = shift;
+
+	my ($cert, $privkey);
+	my $regen_package = 0;
+	my $sign_only = 0;
+	my (@contents, %dependencies, %wantlib, @signature_params);
+
+
+	my $state = OpenBSD::PkgCreate::State->new;
+
+	$state->{opt} = {
+	    'f' =>
+		    sub {
+			    push(@contents, shift);
+		    },
+	    'P' => sub {
+			    my $d = shift;
+			    $dependencies{$d} = 1;
+		    },
+	    'W' => sub {
+			    my $w = shift;
+			    $wantlib{$w} = 1;
+		    },
+	    's' => sub {
+			    push(@signature_params, shift);
+		    }
+	};
+	$self->handle_options('p:f:d:M:U:s:A:L:B:P:W:qQ', $state,
+	    'pkg_create [-nQqvx] [-A arches] [-B pkg-destdir] [-D name[=value]]',
+	    '[-L localbase] [-M displayfile] [-P pkg-dependency]',
+	    '[-s x509 -s cert -s priv] [-U undisplayfile] [-W wantedlib]',
+	    '-d desc -D COMMENT=value -f packinglist -p prefix pkg-name');
+
+	if (@ARGV == 0) {
+		$regen_package = 1;
+	} elsif (@ARGV != 1) {
+		if (@contents || @signature_params == 0) {
+			Usage "Exactly one single package name is required: ",
+			    join(' ', @ARGV);
+		}
+	}
+
+	try {
+	if (@signature_params > 0) {
+		if (@signature_params != 3 || $signature_params[0] ne 'x509' ||
+		    !-f $signature_params[1] || !-f $signature_params[2]) {
+			Usage "Signature only works as -s x509 -s cert -s privkey";
+		}
+		$cert = $signature_params[1];
+		$privkey = $signature_params[2];
+	}
+
+	if (defined $state->opt('Q')) {
+		$state->{opt}{q} = 1;
+	}
+
+	if (!@contents) {
+		if (@signature_params > 0) {
+			$sign_only = 1;
+		} else {
+			Usage "Packing list required";
+		}
+	}
+
+	my $plist;
+	if ($regen_package) {
+		if (@contents != 1) {
+			Usage "Exactly one single packing list is required";
+		}
+		$plist = $self->read_existing_plist($contents[0]);
+	} elsif ($sign_only) {
+		if ($state->not) {
+			Fatal "Can't pretend to sign existing packages";
+		}
+		for my $pkgname (@ARGV) {
+			$self->sign_existing($pkgname, $cert, $privkey);
+		}
+		exit(0);
+	} else {
+		$plist = $self->create_plist($state, $ARGV[0], \@contents, 
+		    \%dependencies, \%wantlib);
+	}
+
+
+	my $base = '/';
+	if (defined $state->opt('B')) {
+		$base = $state->opt('B');
+	} elsif (defined $ENV{'PKG_PREFIX'}) {
+		$base = $ENV{'PKG_PREFIX'};
+	}
+
+	$state->{base} = $base;
+
+	unless (defined $state->opt('q') && defined $state->opt('n')) {
+		$state->set_status("checksumming");
+		if ($regen_package) {
+			$state->progress->visit_with_count($plist, 'verify_checksum', $state);
+		} else {
+			$plist = $self->make_plist_with_sum($state, $plist);
+		}
+		$state->end_status;
+	}
+
+	if (!defined $plist->pkgname) {
+		$state->error("Can't write unnamed packing list");
+		exit 1;
+	}
+
+	if (defined $state->opt('q')) {
+		if (defined $state->opt('Q')) {
+			$plist->print_file;
+		} else {
+			$plist->write(\*STDOUT);
+		}
+		exit 0 if defined $state->opt('n');
+	}
+
+	if ($plist->{deprecated}) {
+		$state->error("Error: found obsolete constructs");
+		exit 1;
+	}
+
+	$plist->avert_duplicates_and_other_checks($state);
+	$state->{stash} = {};
+
+	if ($state->{bad} && $state->{subst}->empty('REGRESSION_TESTING')) {
+		exit 1;
+	}
+	$state->{bad} = 0;
+
+	if (defined $cert) {
+		$self->add_signature($plist, $cert, $privkey);
+		$plist->save if $regen_package;
+	}
+
+	my $wname;
+	if ($regen_package) {
+		$wname = $plist->pkgname.".tgz";
+	} else {
+		$plist->save or Fatal "Can't write packing list";
+		$wname = $ARGV[0];
+	}
+
+	if ($state->opt('n')) {
+		$state->{archive} = OpenBSD::Ustar->new(undef, $plist->infodir);
+		$plist->pretend_to_archive($state);
+	} else {
+		$self->create_package($state, $plist, $wname);
+	} 
+	}catch {
+		print STDERR "$0: $_\n";
+		exit(1);
+	};
+}
+
+1;

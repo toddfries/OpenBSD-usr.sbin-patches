@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.176 2010/05/10 09:17:55 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.178 2010/06/04 17:29:53 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -898,6 +898,14 @@ sub keyword() { "conflict" }
 __PACKAGE__->register_with_factory;
 sub category() { "conflict" }
 
+sub spec
+{
+	my $self =shift;
+
+	require OpenBSD::Search;
+	return OpenBSD::Search::PkgSpec->new($self->name);
+}
+
 package OpenBSD::PackingElement::Dependency;
 our @ISA=qw(OpenBSD::PackingElement::Depend);
 use OpenBSD::Error;
@@ -1569,7 +1577,7 @@ sub run
 	return if $state->{not};
 	chmod 0755, $name;
 	return if $state->log->system($name, $pkgname, @args) == 0;
-	if ($state->{defines}->{scripts}) {
+	if ($state->defines('scripts')) {
 		$state->log->warn($self->beautify, " script failed\n");
 	} else {
 		$state->log->fatal($self->beautify." script failed");
