@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCheck.pm,v 1.3 2010/06/06 09:08:44 espie Exp $
+# $OpenBSD: PkgCheck.pm,v 1.9 2010/06/07 13:41:22 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -21,6 +21,7 @@ use strict;
 use warnings;
 
 use OpenBSD::AddCreateDelete;
+use OpenBSD::SharedLibs;
 
 package OpenBSD::PackingElement;
 sub thorough_check
@@ -46,18 +47,26 @@ sub basic_check
 
 	my $name = $state->{destdir}.$self->fullname;
 	$state->{known}{dirname($name)}{basename($name)} = 1;
-	if (!-e $name) {
-		$state->log("$name should exist\n");
-	}
 	if ($self->{symlink}) {
 		if (!-l $name) {
-			$state->log("$name is not a symlink\n");
+			if (!-e $name) {
+				$state->log("$name should be a symlink but does not exist");
+			} else {
+				$state->log("$name is not a symlink\n");
+			}
 		} else {
 			if (readlink($name) ne $self->{symlink}) {
 				$state->log("$name should point to $self->{symlink} but points to ", readlink($name), " instead\n");
 			}
 		}
 		return;
+	}
+	if (!-e $name) {
+		if (-l $name) {
+			$state->log("$name points to non-existent ".readlink($name)."\n");
+		} else {
+			$state->log("$name should exist\n");
+		}
 	}
 	if (!-f _) {
 		$state->log("$name is not a file\n");
@@ -150,7 +159,7 @@ sub basic_check
 package OpenBSD::PackingElement::Dependency;
 sub find_dependencies
 {
-	my ($self, $state, $l, $not_yet, $possible, $others) = @_;
+	my ($self, $state, $l, $checker) = @_;
 	# several ways to failure
 	if (!$self->spec->is_valid) {
 		$state->log("invalid \@", $self->keyword, " ", 
@@ -164,13 +173,38 @@ sub find_dependencies
 	}
 	my $okay = 0;
 	for my $i (@deps) {
-		if ($possible->{$i}) {
-			delete $not_yet->{$i};
+		if ($checker->find($i)) {
 			$okay = 1;
 		}
 	}
 	if (!$okay) {
-		$others->{$deps[0]} = 1;
+		$checker->not_found($deps[0]);
+	}
+}
+
+package OpenBSD::PackingElement::Wantlib;
+sub find_dependencies
+{
+	my ($self, $state, $l, $checker) = @_;
+	my $r = OpenBSD::SharedLibs::lookup_libspec($state->{localbase}, 
+	    $self->spec);
+	if (defined $r) {
+		my $okay = 0;
+		for my $lib (@$r) {
+			my $i = $lib->origin;
+			if ($i eq 'system') {
+				$okay = 1;
+				next;
+			}
+			if ($checker->find($i)) {
+				$okay = 1;
+			}
+		}
+		if (!$okay) {
+			$checker->not_found($r->[0]->origin);
+		}
+	} else {
+		$state->log($self->stringize, " not found\n");
 	}
 }
 
@@ -208,6 +242,131 @@ sub log
 	}
 }
 
+package OpenBSD::DependencyCheck;
+
+sub new
+{
+	my ($class, $state, $name, $req) = @_;
+	my $o = bless {
+		not_yet => {}, 
+		possible => {}, 
+		others => {}, 
+		name => $name,
+		req => $req
+	    }, $class;
+	for my $pkg ($req->list) {
+		$o->{not_yet}{$pkg} = 1;
+		if ($state->{exists}{$pkg}) {
+			$o->{possible}{$pkg} = 1;
+		} else {
+			$state->errsay("$name: bogus ", $o->string($pkg));
+		}
+	}
+	return $o;
+}
+
+sub find
+{
+	my ($self, $name) = @_;
+	if ($self->{possible}{$name}) {
+		delete $self->{not_yet}{$name};
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+sub not_found
+{
+	my ($self, $name) = @_;
+	$self->{others}{$name} = 1;
+}
+
+sub ask_delete_deps
+{
+	my ($self, $state, $l) = @_;
+	if ($state->{force}) {
+		$self->{req}->delete(@$l);
+	} elsif ($state->{interactive}) {
+		require OpenBSD::Interactive;
+		if (OpenBSD::Interactive::confirm("Remove missing ".
+		    $self->string(@$l))) {
+			$self->{req}->delete(@$l);
+		}
+	}
+}
+
+sub ask_add_deps
+{
+	my ($self, $state, $l) = @_;
+	if ($state->{force}) {
+		$self->{req}->add(@$l);
+	} elsif ($state->{interactive}) {
+		require OpenBSD::Interactive;
+		if (OpenBSD::Interactive::confirm("Add missing ".
+		    $self->string(@$l))) {
+			$self->{req}->add(@$l);
+		}
+	}
+}
+
+sub adjust
+{
+	my ($self, $state) = @_;
+	if (keys %{$self->{not_yet}} > 0) {
+		my @todo = sort keys %{$self->{not_yet}};
+		$state->errsay($self->{name}, " is having too many ",
+		    $self->string(@todo));
+		$self->ask_delete_deps($state, \@todo);
+	}
+	if (keys %{$self->{others}} > 0) {
+		my @todo = sort keys %{$self->{others}};
+		$state->errsay($self->{name}, " is missing ",
+		    $self->string(@todo));
+		$self->ask_add_deps($state, \@todo);
+	}
+}
+
+package OpenBSD::DirectDependencyCheck;
+our @ISA = qw(OpenBSD::DependencyCheck);
+use OpenBSD::RequiredBy;
+sub string 
+{ 
+	my $self = shift;
+	if (@_ == 1) {
+		return "dependency: @_";
+	} else {
+		return "dependencies: ". join(' ', @_);
+	}
+}
+
+sub new
+{
+	my ($class, $state, $name) = @_;
+	return $class->SUPER::new($state, $name, 
+	    OpenBSD::Requiring->new($name));
+}
+
+package OpenBSD::ReverseDependencyCheck;
+our @ISA = qw(OpenBSD::DependencyCheck);
+use OpenBSD::RequiredBy;
+sub string 
+{ 
+	my $self = shift;
+	if (@_ == 1) {
+		return "reverse dependency: @_";
+	} else {
+		return "reverse dependencies: ". join(' ', @_);
+	}
+}
+
+sub new
+{
+	my ($class, $state, $name) = @_;
+	return $class->SUPER::new($state, $name, 
+	    OpenBSD::RequiredBy->new($name));
+}
+
 package OpenBSD::PkgCheck;
 our @ISA = qw(OpenBSD::AddCreateDelete);
 
@@ -216,7 +375,6 @@ use OpenBSD::PackingList;
 use File::Find;
 use OpenBSD::Paths;
 use OpenBSD::Mtree;
-use OpenBSD::RequiredBy;
 
 sub remove
 {
@@ -260,46 +418,32 @@ sub may_remove
 		$self->remove($state, $name);
 	} elsif ($state->{interactive}) {
 		require OpenBSD::Interactive;
-		if (OpenBSD::Interactive("Remove wrong package $name ?")) {
+		if (OpenBSD::Interactive::confirm("Remove wrong package $name")) {
 			$self->remove($state, $name);
 		}
 	}
 }
 
-sub ask_delete_deps
+sub for_all_packages
 {
-	my ($self, $state, $name, $l, $req) = @_;
-	if ($state->{force}) {
-		$req->delete(@$l);
-	} elsif ($state->{interactive}) {
-		require OpenBSD::Interactive;
-		if (OpenBSD::Interactive("Remove missing deps ?")) {
-			$req->delete(@$l);
-		}
-	}
-}
+	my ($self, $state, $l, $msg, $code) = @_;
 
-sub ask_add_deps
-{
-	my ($self, $state, $name, $l, $req) = @_;
-	if ($state->{force}) {
-		$req->add(@$l);
-	} elsif ($state->{interactive}) {
-		require OpenBSD::Interactive;
-		if (OpenBSD::Interactive("Add missing deps ?")) {
-			$req->add(@$l);
-		}
+	my $total = scalar @$l;
+	$state->progress->set_header($msg);
+	my $i = 0;
+	for my $name (@$l) {
+		$state->progress->show(++$i, $total);
+		next if $state->{removed}{$name};
+		&$code($name);
 	}
 }
 
 sub sanity_check
 {
 	my ($self, $state, $l) = @_;
-	$state->progress->set_header("Packing-list sanity");
-	my $i = 0;
-	for my $name (@$l) {
+	$self->for_all_packages($state, $l, "Packing-list sanity", sub {
+		my $name = shift;
 		my $info = installed_info($name);
-		$state->progress->show(++$i, scalar @$l);
 		if (-f $info) {
 			$state->errsay("$name: $info should be a directory");
 			if ($info =~ m/\.core$/) {
@@ -330,47 +474,49 @@ sub sanity_check
 			$state->errsay("$name: pkgname does not match");
 			$self->may_remove($state, $name);
 		}
-	}
+		$plist->mark_available_lib($plist->pkgname);
+		$state->{exists}{$plist->pkgname} = 1;
+	});
 }
 
 sub dependencies_check
 {
 	my ($self, $state, $l) = @_;
-	$state->progress->set_header("Dependencies");
-	my $i = 0;
-	for my $name (@$l) {
-		$state->progress->show(++$i, scalar @$l);
+	OpenBSD::SharedLibs::add_libs_from_system($state->{destdir});
+	$self->for_all_packages($state, $l, "Direct dependencies", sub {
+		my $name = shift;
 		my $plist = OpenBSD::PackingList->from_installation($name,
 		    \&OpenBSD::PackingList::DependOnly);
-		my $req = OpenBSD::Requiring->new($name);
-		my @known = $req->list;
-		my %not_yet =map {($_, 1)} @known;
-		my %possible = map {($_, 1)} @known;
-		my %other = ();
-		$plist->find_dependencies($state, $l, \%not_yet, \%possible,
-		    \%other);
-		if (keys %not_yet > 0) {
-			my @todo = sort keys %not_yet;
-			$state->errsay("$name is having too many dependencies: ", join(' ', @todo));
-			$self->ask_delete_deps($state, $name, \@todo, $req);
+		my $checker = OpenBSD::DirectDependencyCheck->new($state, 
+		    $name);
+		$state->{localbase} = $plist->localbase;
+		$plist->find_dependencies($state, $l, $checker);
+		$checker->adjust($state);
+		for my $dep ($checker->{req}->list) {
+			push(@{$state->{reverse}{$dep}}, $name);
 		}
-		if (keys %other > 0) {
-			my @todo = sort keys %other;
-			$state->errsay("$name is missing dependencies: ", 
-			    join(' ', @todo));
-			$self->ask_add_deps($state, $name, \@todo, $req);
+	});
+}
+
+sub reverse_dependencies_check
+{
+	my ($self, $state, $l) = @_;
+	$self->for_all_packages($state, $l, "Reverse dependencies", sub {
+		my $name = shift;
+		my $checker = OpenBSD::ReverseDependencyCheck->new($state, 
+		    $name);
+		for my $i (@{$state->{reverse}{$name}}) {
+			$checker->find($i) or $checker->not_found($i);
 		}
-	}
+		$checker->adjust($state);
+	});
 }
 
 sub package_files_check
 {
 	my ($self, $state, $l) = @_;
-	$state->progress->set_header("Files from packages");
-	my $i = 0;
-	for my $name (@$l) {
-		next if $state->{removed}{$name};
-		$state->progress->show(++$i, scalar @$l);
+	$self->for_all_packages($state, $l, "Files from packages", sub {
+		my $name = shift;
 		my $plist = OpenBSD::PackingList->from_installation($name);
 		$state->log->set_context($name);
 		if ($state->{quick}) {
@@ -378,7 +524,8 @@ sub package_files_check
 		} else {
 			$plist->thorough_check($state);
 		}
-	}
+		$plist->mark_available_lib($plist->pkgname);
+	});
 }
 
 sub localbase_check
@@ -416,8 +563,10 @@ sub run
 
 	my @list = installed_packages(1);
 	$self->sanity_check($state, \@list);
-#	$self->dependencies_check($state, \@list);
-#	$state->log->dump;
+	$self->dependencies_check($state, \@list);
+	$state->log->dump;
+	$self->reverse_dependencies_check($state, \@list);
+	$state->log->dump;
 	$self->package_files_check($state, \@list);
 	$state->log->dump;
 	$self->localbase_check($state);
