@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.h,v 1.1 2010/06/03 16:49:00 reyk Exp $	*/
+/*	$OpenBSD: parser.h,v 1.3 2010/06/10 16:14:04 jsg Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -23,6 +23,10 @@ enum actions {
 	MONITOR,
 	LOG_VERBOSE,
 	LOG_BRIEF,
+	COUPLE,
+	DECOUPLE,
+	ACTIVE,
+	PASSIVE,
 	RESETALL,
 	RESETCA,
 	RESETPOLICY,
@@ -37,6 +41,7 @@ enum actions {
 	CA_CERT_DELETE,
 	CA_CERT_INSTALL,
 	CA_CERT_EXPORT,
+	CA_CERT_REVOKE,
 	SHOW_CA,
 	SHOW_CA_CERTIFICATES
 };
