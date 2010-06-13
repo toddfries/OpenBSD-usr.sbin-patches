@@ -1,4 +1,4 @@
-/*	$OpenBSD: btree.c,v 1.8 2010/06/11 08:40:32 martinh Exp $ */
+/*	$OpenBSD: btree.c,v 1.10 2010/06/13 06:55:33 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -55,6 +55,9 @@
 #define P_INVALID	 0xFFFFFFFF
 
 #define F_ISSET(w, f)	 (((w) & (f)) == (f))
+
+typedef uint32_t	 pgno_t;
+typedef uint16_t	 indx_t;
 
 /* There are four page types: meta, index, leaf and overflow.
  * They all share the same page header.
@@ -236,6 +239,7 @@ static int		 btree_is_meta_page(struct page *p);
 static int		 btree_read_meta(struct btree *bt, pgno_t *p_next);
 static int		 btree_write_meta(struct btree *bt, pgno_t root,
 			    unsigned int flags);
+static void		 btree_ref(struct btree *bt);
 
 static struct node	*btree_search_node(struct btree *bt, struct mpage *mp,
 			    struct btval *key, int *exactp, unsigned int *kip);
@@ -642,7 +646,7 @@ btree_txn_begin(struct btree *bt, int rdonly)
 	}
 
 	txn->bt = bt;
-	bt->ref++;
+	btree_ref(bt);
 
 	if ((rc = btree_read_meta(bt, &txn->next_pgno)) == BT_FAIL ||
 	    rc == BT_DEAD) {
@@ -956,7 +960,7 @@ fail:
 }
 
 struct btree *
-btree_open_fd(int fd, uint32_t flags)
+btree_open_fd(int fd, unsigned int flags)
 {
 	int		 fl, rc;
 	struct btree	*bt;
@@ -970,6 +974,7 @@ btree_open_fd(int fd, uint32_t flags)
 	bt->fd = fd;
 	bt->flags = flags;
 	bt->flags &= ~BT_FIXPADDING;
+	bt->ref = 1;
 
 	if ((bt->page_cache = calloc(1, sizeof(*bt->page_cache))) == NULL)
 		goto fail;
@@ -1019,7 +1024,7 @@ fail:
 }
 
 struct btree *
-btree_open(const char *path, uint32_t flags, mode_t mode)
+btree_open(const char *path, unsigned int flags, mode_t mode)
 {
 	int		 fd, oflags;
 	struct btree	*bt;
@@ -1036,11 +1041,17 @@ btree_open(const char *path, uint32_t flags, mode_t mode)
 		close(fd);
 	else {
 		bt->path = strdup(path);
-		bt->ref = 1;
 		DPRINTF("opened btree %p", bt);
 	}
 
 	return bt;
+}
+
+static void
+btree_ref(struct btree *bt)
+{
+	bt->ref++;
+	DPRINTF("ref is now %d on btree %p", bt->ref, bt);
 }
 
 void
@@ -1056,7 +1067,7 @@ btree_close(struct btree *bt)
 		free(bt->page_cache);
 		free(bt);
 	} else
-		DPRINTF("ref is now %d", bt->ref);
+		DPRINTF("ref is now %d on btree %p", bt->ref, bt);
 }
 
 /* Search for key within a leaf page, using binary search.
@@ -1930,7 +1941,7 @@ btree_txn_cursor_open(struct btree *bt, struct btree_txn *txn)
 		SLIST_INIT(&cursor->stack);
 		cursor->bt = bt;
 		cursor->txn = txn;
-		bt->ref++;
+		btree_ref(bt);
 	}
 
 	return cursor;
