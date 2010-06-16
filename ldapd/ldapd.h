@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldapd.h,v 1.3 2010/06/11 12:02:03 martinh Exp $ */
+/*	$OpenBSD: ldapd.h,v 1.6 2010/06/15 19:30:26 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -24,6 +24,7 @@
 #include <sys/tree.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/param.h>
 
 #include <event.h>
 #include <imsg.h>
@@ -343,6 +344,11 @@ struct auth_res
 	long long		 msgid;
 };
 
+struct open_req {
+	char			 path[MAXPATHLEN+1];
+	unsigned int		 rdonly;
+};
+
 enum imsg_type {
 	IMSG_NONE,
 	IMSG_CTL_OK,
@@ -358,6 +364,8 @@ enum imsg_type {
 
 	IMSG_LDAPD_AUTH,
 	IMSG_LDAPD_AUTH_RESULT,
+	IMSG_LDAPD_OPEN,
+	IMSG_LDAPD_OPEN_RESULT,
 };
 
 struct ns_stat {
@@ -469,6 +477,8 @@ struct namespace	*namespace_new(const char *suffix);
 int			 namespace_open(struct namespace *ns);
 int			 namespace_reopen_data(struct namespace *ns);
 int			 namespace_reopen_indx(struct namespace *ns);
+int			 namespace_set_data_fd(struct namespace *ns, int fd);
+int			 namespace_set_indx_fd(struct namespace *ns, int fd);
 struct namespace	*namespace_init(const char *suffix, const char *dir);
 void			 namespace_close(struct namespace *ns);
 void			 namespace_remove(struct namespace *ns);
@@ -482,14 +492,15 @@ int			 namespace_del(struct namespace *ns, char *dn);
 struct namespace	*namespace_for_base(const char *basedn);
 int			 namespace_has_index(struct namespace *ns,
 				const char *attr, enum index_type type);
+int			 namespace_begin_txn(struct namespace *ns,
+				struct btree_txn **data_txn,
+				struct btree_txn **indx_txn, int rdonly);
 int			 namespace_begin(struct namespace *ns);
 int			 namespace_commit(struct namespace *ns);
 void			 namespace_abort(struct namespace *ns);
 int			 namespace_queue_request(struct namespace *ns,
 				struct request *req);
 void			 namespace_queue_schedule(struct namespace *ns);
-int			 namespace_should_queue(struct namespace *ns,
-				struct request *req);
 void			 namespace_cancel_conn(struct conn *conn);
 
 int			 namespace_ber2db(struct namespace *ns,
@@ -583,6 +594,9 @@ int			 bsnprintf(char *str, size_t size,
 int			 has_suffix(struct btval *key, const char *suffix);
 int			 has_prefix(struct btval *key, const char *prefix);
 void			 normalize_dn(char *dn);
+int			 ber2db(struct ber_element *root, struct btval *val,
+			    int compression_level);
+struct ber_element	*db2ber(struct btval *val, int compression_level);
 
 /* index.c */
 int			 index_namespace(struct namespace *ns);
