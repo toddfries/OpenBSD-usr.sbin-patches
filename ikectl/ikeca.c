@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikeca.c,v 1.6 2010/06/21 10:48:12 jsg Exp $	*/
+/*	$OpenBSD: ikeca.c,v 1.9 2010/06/23 19:28:18 jsg Exp $	*/
 /*	$vantronix: ikeca.c,v 1.13 2010/06/03 15:52:52 reyk Exp $	*/
 
 /*
@@ -41,17 +41,11 @@
 #define X509_CNF	"/etc/ssl/x509v3.cnf"
 #define IKECA_CNF	"/etc/ssl/ikeca.cnf"
 #define KEYBASE		"/etc/iked"
+#define EXPDIR		"/usr/share/iked"
 
 #define PATH_OPENSSL	"/usr/sbin/openssl"
 #define PATH_ZIP	"/usr/local/bin/zip"
 #define PATH_TAR	"/bin/tar"
-
-const char *cafiles[] = {
-	"ca.crt",
-	"ca.pfx",
-	"private/ca.key",
-	"private/ca.pfx"
-};
 
 struct ca {
 	char		 sslpath[PATH_MAX];
@@ -60,7 +54,6 @@ struct ca {
 	char		 extcnf[PATH_MAX];
 	char		*caname;
 };
-
 
 struct ca	*ca_setup(char *, int);
 int		 ca_create(struct ca *);
@@ -75,7 +68,7 @@ int		 ca_key_create(struct ca *, char *);
 int		 ca_key_delete(struct ca *, char *);
 int		 ca_key_import(struct ca *, char *, char *);
 int		 ca_newpass(char *);
-int		 ca_export(struct ca *, char *);
+int		 ca_export(struct ca *, char *, char *);
 int		 ca_revoke(struct ca *, char *);
 int		 ca_install(struct ca *);
 int		 ca_show_certs(struct ca *);
@@ -250,7 +243,7 @@ ca_key_install(struct ca *ca, char *keyname)
 	system(cmd);
 
 
-	return (1);
+	return (0);
 }
 
 int
@@ -450,8 +443,10 @@ rm_dir(char *path)
 }
 
 int
-ca_export(struct ca *ca, char *keyname)
+ca_export(struct ca *ca, char *keyname, char *myname)
 {
+	DIR		*dexp;
+	struct dirent	*de;
 	struct stat	 st;
 	char		*pass;
 	char		 prev[_PASSWORD_LEN + 1];
@@ -461,12 +456,28 @@ ca_export(struct ca *ca, char *keyname)
 	char		 dst[PATH_MAX];
 	char		*p;
 	char		 tpl[] = "/tmp/ikectl.XXXXXXXXXX";
-	const char	*exdirs[] = { "/ca", "/certs", "/crls", "/private",
-	    		              "/export" };
 	u_int		 i;
+	int		 fd;
+
+	struct {
+		char	*dir;
+		mode_t	 mode;
+	} exdirs[] = {
+		{ "/ca",	0755 },
+		{ "/certs",	0755 },
+		{ "/crls",	0755 },
+		{ "/export",	0755 },
+		{ "/private",	0700 }
+	};
+
+	if (keyname != NULL) {
+		if (strlcpy(oname, keyname, sizeof(oname)) >= sizeof(oname))
+			err(1, "name too long");
+	} else {
+		strlcpy(oname, "ca", sizeof(oname));
+	}
 
 	/* colons are not valid characters in windows filenames... */
-	strlcpy(oname, keyname, sizeof(oname));
 	while ((p = strchr(oname, ':')) != NULL)
 		*p = '_';
 
@@ -479,13 +490,15 @@ ca_export(struct ca *ca, char *keyname)
 	if (pass == NULL || strcmp(prev, pass) != 0)
 		errx(1, "passphrase does not match!");
 
-	snprintf(cmd, sizeof(cmd), "env EXPASS=%s %s pkcs12 -export"
-	    " -name %s -CAfile %s/ca.crt -inkey %s/private/%s.key"
-	    " -in %s/%s.crt -out %s/private/%s.pfx -passout env:EXPASS"
-	    " -passin file:%s", pass, PATH_OPENSSL, keyname, ca->sslpath,
-	    ca->sslpath, keyname, ca->sslpath, keyname, ca->sslpath,
-	    oname, ca->passfile);
-	system(cmd);
+	if (keyname != NULL) {
+		snprintf(cmd, sizeof(cmd), "env EXPASS=%s %s pkcs12 -export"
+		    " -name %s -CAfile %s/ca.crt -inkey %s/private/%s.key"
+		    " -in %s/%s.crt -out %s/private/%s.pfx -passout env:EXPASS"
+		    " -passin file:%s", pass, PATH_OPENSSL, keyname, ca->sslpath,
+		    ca->sslpath, keyname, ca->sslpath, keyname, ca->sslpath,
+		    oname, ca->passfile);
+		system(cmd);
+	}
 
 	snprintf(cmd, sizeof(cmd), "env EXPASS=%s %s pkcs12 -export"
 	    " -caname '%s' -name '%s' -cacerts -nokeys"
@@ -499,14 +512,19 @@ ca_export(struct ca *ca, char *keyname)
 
 	for (i = 0; i < nitems(exdirs); i++) {
 		strlcpy(dst, p, sizeof(dst));
-		strlcat(dst, exdirs[i], sizeof(dst));
-		if (mkdir(dst, 0700) != 0)
+		strlcat(dst, exdirs[i].dir, sizeof(dst));
+		if (mkdir(dst, exdirs[i].mode) != 0)
 			err(1, "failed to create dir %s", dst);
 	}
 
-	snprintf(src, sizeof(src), "%s/private/%s.pfx", ca->sslpath, oname);
-	snprintf(dst, sizeof(dst), "%s/export/%s.pfx", p, oname);
-	fcopy(src, dst, 0644);
+	/* create a file with the address of the peer to connect to */
+	if (myname != NULL) {
+		snprintf(dst, sizeof(dst), "%s/export/peer.txt", p);
+		if ((fd = open(dst, O_WRONLY|O_CREAT, 0644)) == -1)
+			err(1, "open %s", dst);
+		write(fd, myname, strlen(myname));
+		close(fd);
+	}
 
 	snprintf(src, sizeof(src), "%s/ca.pfx", ca->sslpath);
 	snprintf(dst, sizeof(dst), "%s/export/ca.pfx", p);
@@ -516,30 +534,42 @@ ca_export(struct ca *ca, char *keyname)
 	snprintf(dst, sizeof(dst), "%s/ca/ca.crt", p);
 	fcopy(src, dst, 0644);
 
-	snprintf(src, sizeof(src), "%s/private/%s.key", ca->sslpath, keyname);
-	snprintf(dst, sizeof(dst), "%s/private/%s.key", p, keyname);
-	fcopy(src, dst, 0600);
-	snprintf(dst, sizeof(dst), "%s/private/local.key", p);
-	fcopy(src, dst, 0600);
-
-	snprintf(src, sizeof(src), "%s/%s.crt", ca->sslpath, keyname);
-	snprintf(dst, sizeof(dst), "%s/certs/%s.crt", p, keyname);
-	fcopy(src, dst, 0644);
-
 	snprintf(src, sizeof(src), "%s/ca.crl", ca->sslpath);
 	if (stat(src, &st) == 0) {
 		snprintf(dst, sizeof(dst), "%s/crls/ca.crl", p);
 		fcopy(src, dst, 0644);
 	}
 
-	snprintf(cmd, sizeof(cmd), "%s rsa -out %s/local.pub"
-	    " -in %s/private/%s.key -pubout", PATH_OPENSSL, p, ca->sslpath,
-	    keyname);
-	system(cmd);
+	if (keyname != NULL) {
+		snprintf(src, sizeof(src), "%s/private/%s.pfx", ca->sslpath,
+		    oname);
+		snprintf(dst, sizeof(dst), "%s/export/%s.pfx", p, oname);
+		fcopy(src, dst, 0644);
+
+		snprintf(src, sizeof(src), "%s/private/%s.key", ca->sslpath,
+		    keyname);
+		snprintf(dst, sizeof(dst), "%s/private/%s.key", p, keyname);
+		fcopy(src, dst, 0600);
+		snprintf(dst, sizeof(dst), "%s/private/local.key", p);
+		fcopy(src, dst, 0600);
+
+		snprintf(src, sizeof(src), "%s/%s.crt", ca->sslpath, keyname);
+		snprintf(dst, sizeof(dst), "%s/certs/%s.crt", p, keyname);
+		fcopy(src, dst, 0644);
+
+		snprintf(cmd, sizeof(cmd), "%s rsa -out %s/local.pub"
+		    " -in %s/private/%s.key -pubout", PATH_OPENSSL, p,
+		    ca->sslpath, keyname);
+		system(cmd);
+	}
 
 	if (stat(PATH_TAR, &st) == 0) {
-		snprintf(cmd, sizeof(cmd), "%s -zcf %s.tgz -C %s .", PATH_TAR,
-		    oname, p);
+		if (keyname == NULL)
+			snprintf(cmd, sizeof(cmd), "%s -zcf %s.tgz -C %s .",
+			    PATH_TAR, oname, ca->sslpath);
+		else
+			snprintf(cmd, sizeof(cmd), "%s -zcf %s.tgz -C %s .",
+			    PATH_TAR, oname, p);
 		system(cmd);
 		snprintf(src, sizeof(src), "%s.tgz", oname);
 		if (realpath(src, dst) != NULL)
@@ -547,6 +577,21 @@ ca_export(struct ca *ca, char *keyname)
 	}
 
 	if (stat(PATH_ZIP, &st) == 0) {
+		dexp = opendir(EXPDIR);
+		if (dexp) {
+			while ((de = readdir(dexp)) != NULL) {
+				if (!strcmp(de->d_name, ".") ||
+				    !strcmp(de->d_name, ".."))
+					continue;
+				snprintf(src, sizeof(src), "%s/%s", EXPDIR,
+				    de->d_name);
+				snprintf(dst, sizeof(dst), "%s/export/%s", p,
+				    de->d_name);
+				fcopy(src, dst, 644);
+			}
+			closedir(dexp);
+		}
+
 		snprintf(dst, sizeof(dst), "%s/export", p);
 		if (getcwd(src, sizeof(src)) == NULL)
 			err(1, "could not get cwd");

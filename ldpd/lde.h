@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde.h,v 1.11 2010/06/02 11:56:29 claudio Exp $ */
+/*	$OpenBSD: lde.h,v 1.13 2010/06/23 16:26:47 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -81,14 +81,13 @@ struct rt_node {
 	struct fec		fec;
 	struct in_addr		nexthop;
 
-	LIST_HEAD(, lde_map)	upstream;	/* recv mappings */
-	LIST_HEAD(, lde_map)	downstream;	/* sent mappings */
+	LIST_HEAD(, lde_map)	downstream;	/* recv mappings */
+	LIST_HEAD(, lde_map)	upstream;	/* sent mappings */
 
 	u_int32_t		local_label;
 	u_int32_t		remote_label;
 	u_int16_t		lspace;
 	u_int8_t		flags;
-	u_int8_t		invalid;
 	u_int8_t		present;	/* Is it present in fib? */
 };
 
