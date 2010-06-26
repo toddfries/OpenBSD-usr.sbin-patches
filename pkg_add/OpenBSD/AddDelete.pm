@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.27 2010/06/18 10:55:58 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.29 2010/06/25 11:12:14 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -28,37 +28,6 @@ use OpenBSD::Error;
 use OpenBSD::Paths;
 use OpenBSD::PackageInfo;
 use OpenBSD::AddCreateDelete;
-
-our @ISA = qw(OpenBSD::AddCreateDelete);
-
-sub handle_options
-{
-	my ($self, $opt_string, $hash, $cmd, @usage) = @_;
-
-	my $state = $self->new_state($cmd);
-	$state->{opt} = $hash;
-	$hash->{F} = sub {
-		for my $o (split /\,/o, shift) {
-			$state->{subst}->add($o, 1);
-		}
-	};
-	$self->SUPER::handle_options($opt_string.'ciInqsB:F:',
-	    $state, @usage);
-
-	if ($state->opt('s')) {
-		$state->{not} = 1;
-	}
-	# XXX RequiredBy
-	$main::not = $state->{not};
-	$state->{interactive} = $state->opt('i');
-	$state->{localbase} = $state->opt('L') // OpenBSD::Paths->localbase;
-	$state->{size_only} = $state->opt('s');
-	$state->{quick} = $state->opt('q');
-	$state->{extra} = $state->opt('c');
-	$state->{dont_run_scripts} = $state->opt('I');
-	$ENV{'PKG_DELETE_EXTRA'} = $state->{extra} ? "Yes" : "No";
-	return $state;
-}
 
 sub do_the_main_work
 {
@@ -123,7 +92,8 @@ sub parse_and_run
 {
 	my ($self, $cmd) = @_;
 
-	my $state = $self->handle_options($cmd);
+	my $state = $self->new_state($cmd);
+	$state->handle_options;
 	local $SIG{'INFO'} = sub { $state->status->print($state); };
 
 	$self->framework($state);
@@ -156,6 +126,33 @@ package OpenBSD::AddDelete::State;
 use OpenBSD::Vstat;
 use OpenBSD::Log;
 our @ISA = qw(OpenBSD::AddCreateDelete::State);
+
+sub handle_options
+{
+	my ($state, $opt_string, @usage) = @_;
+
+	# backward compatibility
+	$state->{opt}{F} = sub {
+		for my $o (split /\,/o, shift) {
+			$state->{subst}->add($o, 1);
+		}
+	};
+	$state->{no_exports} = 1;
+	$state->SUPER::handle_options($opt_string.'ciInqsB:F:', @usage);
+
+	if ($state->opt('s')) {
+		$state->{not} = 1;
+	}
+	# XXX RequiredBy
+	$main::not = $state->{not};
+	$state->{interactive} = $state->opt('i');
+	$state->{localbase} = $state->opt('L') // OpenBSD::Paths->localbase;
+	$state->{size_only} = $state->opt('s');
+	$state->{quick} = $state->opt('q');
+	$state->{extra} = $state->opt('c');
+	$state->{dont_run_scripts} = $state->opt('I');
+	$ENV{'PKG_DELETE_EXTRA'} = $state->{extra} ? "Yes" : "No";
+}
 
 sub init
 {
@@ -210,7 +207,7 @@ sub vsystem
 		if ($r != 0) {
 			$self->say("... failed: #1", $self->child_error);
 		} else {
-			$self->say;
+			$self->say("");
 		}
 	}
 }
