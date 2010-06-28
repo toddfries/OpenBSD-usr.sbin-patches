@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldapd.h,v 1.8 2010/06/23 13:34:53 martinh Exp $ */
+/*	$OpenBSD: ldapd.h,v 1.11 2010/06/27 18:31:12 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -376,9 +376,6 @@ struct imsgev {
 	short			 events;
 };
 
-struct ctl_conn;
-typedef void (*ctl_close_func)(struct ctl_conn *);
-
 struct ctl_conn {
 	TAILQ_ENTRY(ctl_conn)	 entry;
 	u_int8_t		 flags;
@@ -417,7 +414,7 @@ void			 conn_err(struct bufferevent *bev, short w, void *data);
 void			 conn_accept(int fd, short why, void *data);
 void			 conn_close(struct conn *conn);
 void			 conn_disconnect(struct conn *conn);
-int			 request_dispatch(struct request *req);
+void			 request_dispatch(struct request *req);
 void			 request_free(struct request *req);
 
 /* ldape.c */
@@ -493,9 +490,7 @@ void			 control_init(struct control_sock *);
 void			 control_listen(struct control_sock *);
 void			 control_accept(int, short, void *);
 void			 control_dispatch_imsg(int, short, void *);
-void			 control_imsg_forward(struct imsg *);
 void			 control_cleanup(struct control_sock *);
-void			 control_end(struct ctl_conn *c);
 
 /* filter.c */
 int			 ldap_matches_filter(struct ber_element *root,
