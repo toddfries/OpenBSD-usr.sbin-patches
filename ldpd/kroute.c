@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.15 2010/06/30 02:09:22 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.18 2010/06/30 05:27:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -62,8 +62,8 @@ struct kif_node {
 	struct kif		 k;
 };
 
-void	kr_redist_remove(struct kroute_node *);
-int	kr_redist_eval(struct kroute *, struct kroute *);
+void	kr_redist_remove(struct kroute *);
+int	kr_redist_eval(struct kroute *);
 void	kr_redistribute(struct kroute_node *);
 int	kroute_compare(struct kroute_node *, struct kroute_node *);
 int	kif_compare(struct kif_node *, struct kif_node *);
@@ -190,17 +190,10 @@ kr_init(int fs)
 int
 kr_change_fib(struct kroute_node *kr, struct kroute *kroute, int action)
 {
-	/* nexthop within 127/8 -> ignore silently */
-	if ((kroute->nexthop.s_addr & htonl(IN_CLASSA_NET)) ==
-	    htonl(INADDR_LOOPBACK & IN_CLASSA_NET))
-		return (0);
-
-	kr->r.prefix.s_addr = kroute->prefix.s_addr;
-	kr->r.prefixlen = kroute->prefixlen;
 	kr->r.local_label = kroute->local_label;
 	kr->r.remote_label = kroute->remote_label;
 	kr->r.nexthop.s_addr = kroute->nexthop.s_addr;
-	kr->r.flags = kroute->flags | F_LDPD_INSERTED;
+	kr->r.flags = kr->r.flags | F_LDPD_INSERTED;
 
 	/* send update */
 	if (send_rtmsg(kr_state.fd, action, &kr->r, AF_MPLS) == -1)
@@ -415,23 +408,20 @@ kr_ifinfo(char *ifname, pid_t pid)
 }
 
 void
-kr_redist_remove(struct kroute_node *kn)
+kr_redist_remove(struct kroute *kr)
 {
 	/* was the route redistributed? */
-	if ((kn->r.flags & F_REDISTRIBUTED) == 0)
+	if ((kr->flags & F_REDISTRIBUTED) == 0)
 		return;
 
 	/* remove redistributed flag */
-	kn->r.flags &= ~F_REDISTRIBUTED;
-
-	if (kn == NULL) {
-		main_imsg_compose_lde(IMSG_NETWORK_DEL, 0, &kn->r,
-		    sizeof(struct kroute));
-	}
+	kr->flags &= ~F_REDISTRIBUTED;
+	main_imsg_compose_lde(IMSG_NETWORK_DEL, 0, kr,
+	    sizeof(struct kroute));
 }
 
 int
-kr_redist_eval(struct kroute *kr, struct kroute *orig)
+kr_redist_eval(struct kroute *kr)
 {
 	u_int32_t	 a;
 
@@ -465,39 +455,25 @@ kr_redist_eval(struct kroute *kr, struct kroute *orig)
 
 	/* prefix should be redistributed */
 	kr->flags |= F_REDISTRIBUTED;
-	*orig = *kr;
+	main_imsg_compose_lde(IMSG_NETWORK_ADD, 0, kr, sizeof(struct kroute));
 	return (1);
 
 dont_redistribute:
-	/* was the route redistributed? */
-	if ((kr->flags & F_REDISTRIBUTED) == 0)
-		return (0);
-
-	kr->flags &= ~F_REDISTRIBUTED;
+	kr_redist_remove(kr);
 	return (1);
 }
 
 void
 kr_redistribute(struct kroute_node *kh)
 {
-	struct kroute		 kr;
+	struct kroute_node	*kn;
 
 	/* only the highest prio route can be redistributed */
 	if (kroute_find(kh->r.prefix.s_addr, kh->r.prefixlen, RTP_ANY) != kh)
 		return;
 
-	bzero(&kr, sizeof(kr));
-	if (!kr_redist_eval(&kh->r, &kr))
-		return;
-
-	if (kr.flags & F_REDISTRIBUTED) {
-		main_imsg_compose_lde(IMSG_NETWORK_ADD, 0, &kr,
-		    sizeof(struct kroute));
-	} else {
-		kr = kh->r;
-		main_imsg_compose_lde(IMSG_NETWORK_DEL, 0, &kr,
-		    sizeof(struct kroute));
-	}
+	for (kn = kh; kn; kn = kn->next)
+		kr_redist_eval(&kn->r);
 }
 
 void
@@ -634,30 +610,6 @@ kroute_insert(struct kroute_node *kr)
 }
 
 int
-kroute_insert_label(struct kroute *kr)
-{
-	struct kroute_node *krn;
-
-	krn = kroute_find(kr->prefix.s_addr, kr->prefixlen, RTP_ANY);
-	if (krn == NULL) {
-		log_debug("kroute_insert_label: prefix %s/%d not present",
-		    inet_ntoa(kr->prefix), kr->prefixlen);
-		return (-1);
-	}
-
-	krn->r.flags |= F_LDPD_INSERTED;
-	krn->r.local_label = kr->local_label;
-	krn->r.remote_label = kr->remote_label;
-
-	send_rtmsg(kr_state.fd, RTM_ADD, kr, AF_MPLS);
-
-	if (kr->nexthop.s_addr != INADDR_ANY && kr->remote_label != NO_LABEL)
-		send_rtmsg(kr_state.fd, RTM_CHANGE, kr, AF_INET);
-
-	return (0);
-}
-
-int
 kroute_remove(struct kroute_node *kr)
 {
 	struct kroute_node	*krm;
@@ -695,7 +647,7 @@ kroute_remove(struct kroute_node *kr)
 		krm->next = kr->next;
 	}
 
-	kr_redist_remove(kr);
+	kr_redist_remove(&kr->r);
 
 	free(kr);
 	return (0);
