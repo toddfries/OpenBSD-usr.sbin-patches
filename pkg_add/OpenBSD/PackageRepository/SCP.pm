@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SCP.pm,v 1.21 2010/05/10 09:17:55 espie Exp $
+# $OpenBSD: SCP.pm,v 1.23 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #

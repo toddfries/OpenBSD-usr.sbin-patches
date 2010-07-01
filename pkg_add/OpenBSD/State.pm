@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: State.pm,v 1.6 2010/06/25 10:34:03 espie Exp $
+# $OpenBSD: State.pm,v 1.10 2010/06/30 11:32:20 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -19,11 +19,67 @@
 use strict;
 use warnings;
 
+package OpenBSD::PackageRepositoryFactory;
+sub new
+{
+	my ($class, $state) = @_;
+	bless {state => $state}, $class;
+}
+
+sub installed
+{
+	my ($self, $all) = @_;
+	require OpenBSD::PackageRepository::Installed;
+
+	return OpenBSD::PackageRepository::Installed->new($all);
+}
+
+sub path_parse
+{
+	my ($self, $pkgname) = @_;
+	require OpenBSD::PackageLocator;
+
+	return OpenBSD::PackageLocator->path_parse($pkgname);
+}
+
+sub find
+{
+	my ($self, $pkg, $arch) = @_;
+	require OpenBSD::PackageLocator;
+
+	return OpenBSD::PackageLocator->find($pkg, $arch);
+}
+
+sub match_locations
+{
+	my $self = shift;
+	require OpenBSD::PackageLocator;
+
+	return OpenBSD::PackageLocator->match_locations(@_);
+}
+
+sub grabPlist
+{
+	my $self = shift;
+	require OpenBSD::PackageLocator;
+
+	return OpenBSD::PackageLocator->grabPlist(@_);
+}
+
+sub path
+{
+	my $self = shift;
+	require OpenBSD::PackageRepositoryList;
+
+	return OpenBSD::PackageRepositoryList->new;
+}
+
 # common routines to everything state.
 # in particular, provides "singleton-like" access to UI.
 package OpenBSD::State;
 use Carp;
 use OpenBSD::Subst;
+use OpenBSD::Error;
 require Exporter;
 our @ISA = qw(Exporter);
 our @EXPORT = ();
@@ -40,6 +96,13 @@ sub init
 {
 	my $self = shift;
 	$self->{subst} = OpenBSD::Subst->new;
+	$self->{repo} = OpenBSD::PackageRepositoryFactory->new($self);
+}
+
+sub repo
+{
+	my $self = shift;
+	return $self->{repo};
 }
 
 sub usage_is
@@ -123,7 +186,11 @@ sub print
 sub say
 {
 	my $self = shift;
-	$self->_print($self->f(@_), "\n");
+	if (@_ == 0) {
+		$self->_print("\n");
+	} else {
+		$self->_print($self->f(@_), "\n");
+	}
 }
 
 sub errprint
@@ -135,17 +202,23 @@ sub errprint
 sub errsay
 {
 	my $self = shift;
-	$self->_errprint($self->f(@_), "\n");
+	if (@_ == 0) {
+		$self->_errprint("\n");
+	} else {
+		$self->_errprint($self->f(@_), "\n");
+	}
 }
 
 sub do_options
 {
 	my ($state, $sub) = @_;
-	require OpenBSD::Error;
 	# this could be nicer...
-	eval { &$sub; };
-	OpenBSD::Error::dienow($@, 
-	    bless sub { $state->usage("#1", $_)}, "OpenBSD::Error::catchall");
+
+	try {
+		&$sub;
+	} catchall {
+		$state->usage("#1", $_);
+	};
 }
 
 sub handle_options
@@ -227,7 +300,7 @@ sub child_error
 		$extra = $self->f(" (core dumped)");
 	}
 	if ($error & 127) {
-		return $self->f("killed by signal #1#2", 
+		return $self->f("killed by signal #1#2",
 		    find_signal($error & 127), $extra);
 	} else {
 		return $self->f("exit(#1)#2", ($error >> 8), $extra);
@@ -239,10 +312,23 @@ sub system
 	my $self = shift;
 	my $r = CORE::system(@_);
 	if ($r != 0) {
-		$self->say("system(#1) failed: #2", 
+		$self->say("system(#1) failed: #2",
 		    join(", ", @_), $self->child_error);
 	}
 	return $r;
+}
+
+sub verbose_system
+{
+	my $self = shift;
+
+	$self->print("Running #1", join(' ', @_));
+	my $r = CORE::system(@_);
+	if ($r != 0) {
+		$self->say("... failed: #1", $self->child_error);
+	} else {
+		$self->say;
+	}
 }
 
 sub copy_file

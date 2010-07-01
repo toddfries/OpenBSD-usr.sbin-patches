@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Handle.pm,v 1.20 2010/06/09 07:26:01 espie Exp $
+# $OpenBSD: Handle.pm,v 1.23 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
 #
@@ -148,9 +148,7 @@ sub create_old
 	my $self= $class->new;
 	$self->{name} = $pkgname;
 
-	require OpenBSD::PackageRepository::Installed;
-
-	my $location = OpenBSD::PackageRepository::Installed->new->find($pkgname, $state->{arch});
+	my $location = $state->repo->installed->find($pkgname, $state->{arch});
 	if (defined $location) {
 		$self->{location} = $location;
 	}
@@ -199,7 +197,7 @@ sub get_plist
 		OpenBSD::PackingElement::Url->add($plist, $location->url);
 	}
 	if ($plist->localbase ne $state->{localbase}) {
-		$state->say("Localbase mismatch: package has: #1, user wants: #2", 
+		$state->say("Localbase mismatch: package has: #1, user wants: #2",
 		    $plist->localbase, $state->{localbase});
 		$location->close_with_client_error;
 		$location->wipe_info;
@@ -226,7 +224,7 @@ sub get_location
 
 	my $name = $handle->{name};
 
-	my $location = OpenBSD::PackageLocator->find($name, $state->{arch});
+	my $location = $state->repo->find($name, $state->{arch});
 	if (!$location) {
 		$state->print("#1", $state->deptree_header($name));
 		$handle->set_error(NOT_FOUND);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: schema.c,v 1.2 2010/06/30 04:14:59 martinh Exp $ */
+/*	$OpenBSD: schema.c,v 1.6 2010/07/01 18:37:12 martinh Exp $ */
 
 /*
  * Copyright (c) 2010 Martin Hedenfalk <martinh@openbsd.org>
@@ -59,7 +59,7 @@ RB_GENERATE(symoid_tree, symoid, link, symoid_cmp);
 
 static struct attr_list	*push_attr(struct attr_list *alist, struct attr_type *a);
 static struct obj_list	*push_obj(struct obj_list *olist, struct object *obj);
-static struct name_list *push_name(struct name_list *nl, const char *name);
+static struct name_list *push_name(struct name_list *nl, char *name);
 int			 is_oidstr(const char *oidstr);
 
 struct attr_type *
@@ -251,7 +251,7 @@ is_oidstr(const char *oidstr)
 }
 
 static struct name_list *
-push_name(struct name_list *nl, const char *name)
+push_name(struct name_list *nl, char *name)
 {
 	struct name	*n;
 
@@ -553,6 +553,19 @@ fail:
 	return NULL;
 }
 
+static void
+schema_free_name_list(struct name_list *nlist)
+{
+	struct name	*name;
+
+	while ((name = SLIST_FIRST(nlist)) != NULL) {
+		SLIST_REMOVE_HEAD(nlist, next);
+		free(name->name);
+		free(name);
+	}
+	free(nlist);
+}
+
 static struct attr_list *
 schema_parse_attrlist(struct schema *schema)
 {
@@ -586,8 +599,10 @@ schema_parse_attrlist(struct schema *schema)
 		}
 		if (token != STRING)
 			goto fail;
-		if ((attr = lookup_attribute(schema, kw)) == NULL)
+		if ((attr = lookup_attribute(schema, kw)) == NULL) {
+			schema_err(schema, "%s: no such attribute", kw);
 			goto fail;
+		}
 		alist = push_attr(alist, attr);
 		want_dollar = 1;
 	}
@@ -651,7 +666,8 @@ static int
 schema_parse_attributetype(struct schema *schema)
 {
 	struct attr_type	*attr = NULL, *prev;
-	char			*kw, *arg = NULL;
+	struct name_list	*xnames;
+	char			*kw = NULL, *arg = NULL;
 	int			 token, ret = 0, c;
 
 	if (schema_lex(schema, NULL) != '(')
@@ -744,14 +760,23 @@ schema_parse_attributetype(struct schema *schema)
 				schema_err(schema, "invalid usage '%s'", arg);
 				goto fail;
 			}
+		} else if (strncmp(kw, "X-", 2) == 0) {
+			/* unknown extension, eat argument(s) */
+			xnames = schema_parse_names(schema);
+			if (xnames == NULL)
+				goto fail;
+			schema_free_name_list(xnames);
+		} else {
+			schema_err(schema, "syntax error at token '%s'", kw);
+			goto fail;
 		}
+		free(kw);
 	}
 
 	return 0;
 
 fail:
 	free(kw);
-	free(arg);
 	if (attr != NULL) {
 		if (attr->oid != NULL) {
 			RB_REMOVE(attr_type_tree, &schema->attr_types, attr);
@@ -768,7 +793,8 @@ schema_parse_objectclass(struct schema *schema)
 {
 	struct object		*obj = NULL, *prev;
 	struct obj_ptr		*optr;
-	char			*kw;
+	struct name_list	*xnames;
+	char			*kw = NULL;
 	int			 token, ret = 0;
 
 	if (schema_lex(schema, NULL) != '(')
@@ -833,7 +859,17 @@ schema_parse_objectclass(struct schema *schema)
 			obj->may = schema_parse_attrlist(schema);
 			if (obj->may == NULL)
 				goto fail;
+		} else if (strncasecmp(kw, "X-", 2) == 0) {
+			/* unknown extension, eat argument(s) */
+			xnames = schema_parse_names(schema);
+			if (xnames == NULL)
+				goto fail;
+			schema_free_name_list(xnames);
+		} else {
+			schema_err(schema, "syntax error at token '%s'", kw);
+			goto fail;
 		}
+		free(kw);
 	}
 
 	/* Verify the subclassing is allowed.
@@ -848,7 +884,7 @@ schema_parse_objectclass(struct schema *schema)
 			if (obj->kind == KIND_STRUCTURAL &&
 			    optr->object->kind == KIND_AUXILIARY) {
 				log_warnx("structural object class '%s' cannot"
-				    " subclass auxiliary object class '%s'", 
+				    " subclass auxiliary object class '%s'",
 				    OBJ_NAME(obj), OBJ_NAME(optr->object));
 				goto fail;
 			}
@@ -856,7 +892,7 @@ schema_parse_objectclass(struct schema *schema)
 			if (obj->kind == KIND_AUXILIARY &&
 			    optr->object->kind == KIND_STRUCTURAL) {
 				log_warnx("auxiliary object class '%s' cannot"
-				    " subclass structural object class '%s'", 
+				    " subclass structural object class '%s'",
 				    OBJ_NAME(obj), OBJ_NAME(optr->object));
 				goto fail;
 			}
@@ -864,7 +900,7 @@ schema_parse_objectclass(struct schema *schema)
 			if (obj->kind == KIND_ABSTRACT &&
 			    optr->object->kind != KIND_ABSTRACT) {
 				log_warnx("abstract object class '%s' cannot"
-				    " subclass non-abstract object class '%s'", 
+				    " subclass non-abstract object class '%s'",
 				    OBJ_NAME(obj), OBJ_NAME(optr->object));
 				goto fail;
 			}
