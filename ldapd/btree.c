@@ -1,4 +1,4 @@
-/*	$OpenBSD: btree.c,v 1.15 2010/06/29 04:27:15 martinh Exp $ */
+/*	$OpenBSD: btree.c,v 1.20 2010/07/01 06:11:59 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -486,7 +486,6 @@ mpage_add(struct btree *bt, struct mpage *mp)
 	assert(RB_INSERT(page_cache, bt->page_cache, mp) == NULL);
 	bt->stat.cache_size++;
 	TAILQ_INSERT_TAIL(bt->lru_queue, mp, lru_next);
-	mpage_prune(bt);
 }
 
 static void
@@ -1279,7 +1278,6 @@ cursor_push_page(struct cursor *cursor, struct mpage *mp)
 static struct mpage *
 btree_get_mpage(struct btree *bt, pgno_t pgno)
 {
-	int		 rc;
 	struct mpage	*mp;
 
 	mp = mpage_lookup(bt, pgno);
@@ -1290,7 +1288,7 @@ btree_get_mpage(struct btree *bt, pgno_t pgno)
 			free(mp);
 			return NULL;
 		}
-		if ((rc = btree_read_page(bt, pgno, mp->page)) != BT_SUCCESS) {
+		if (btree_read_page(bt, pgno, mp->page) != BT_SUCCESS) {
 			mpage_free(mp);
 			return NULL;
 		}
@@ -1374,8 +1372,7 @@ btree_search_page_root(struct btree *bt, struct mpage *root, struct btval *key,
 
 		DPRINTF("branch page %u has %lu keys", mp->pgno, NUMKEYS(mp));
 		assert(NUMKEYS(mp) > 1);
-		node = NODEPTR(mp, 0);
-		DPRINTF("found index 0 to page %u", NODEPGNO(node));
+		DPRINTF("found index 0 to page %u", NODEPGNO(NODEPTR(mp, 0)));
 
 		if (key == NULL)	/* Initialize cursor to first page. */
 			i = 0;
@@ -1527,7 +1524,7 @@ btree_read_data(struct btree *bt, struct mpage *mp, struct node *leaf,
 	for (sz = 0; sz < data->size; ) {
 		if ((omp = btree_get_mpage(bt, pgno)) == NULL ||
 		    !F_ISSET(omp->page->flags, P_OVERFLOW)) {
-			DPRINTF("read overflow page failed (%02x)", omp->page->flags);
+			DPRINTF("read overflow page %u failed", pgno);
 			free(data->data);
 			mpage_free(omp);
 			return BT_FAIL;
@@ -1893,6 +1890,8 @@ btree_write_overflow_data(struct btree *bt, struct page *p, struct btval *data)
 	max = bt->head.psize - PAGEHDRSZ;
 
 	while (done < data->size) {
+		if (next != NULL)
+			p = next->page;
 		linkp = &p->p_next_pgno;
 		if (data->size - done > max) {
 			/* need another overflow page */
@@ -1908,7 +1907,6 @@ btree_write_overflow_data(struct btree *bt, struct page *p, struct btval *data)
 		DPRINTF("copying %zu bytes to overflow page %u", sz, p->pgno);
 		bcopy((char *)data->data + done, p->ptrs, sz);
 		done += sz;
-		p = next->page;
 	}
 
 	return BT_SUCCESS;
@@ -1989,6 +1987,7 @@ btree_add_node(struct btree *bt, struct mpage *mp, indx_t indx,
 		bcopy(key->data, NODEKEY(node), key->size);
 
 	if (IS_LEAF(mp)) {
+		assert(key);
 		if (ofp == NULL) {
 			if (F_ISSET(flags, F_BIGDATA))
 				bcopy(data->data, node->data + key->size,
@@ -2182,7 +2181,7 @@ btree_move_node(struct btree *bt, struct mpage *src, indx_t srcindx,
 {
 	int			 rc;
 	unsigned int		 pfxlen, mp_pfxlen = 0;
-	struct node		*node, *srcnode;
+	struct node		*srcnode;
 	struct mpage		*mp = NULL;
 	struct btkey		 tmpkey, srckey;
 	struct btval		 key, data;
@@ -2270,11 +2269,6 @@ btree_move_node(struct btree *bt, struct mpage *src, indx_t srcindx,
 	/* Update the parent separators.
 	 */
 	if (srcindx == 0 && src->parent_index != 0) {
-		node = NODEPTR(src->parent, src->parent_index);
-		DPRINTF("current parent separator for source page %u is [%.*s]",
-		    src->pgno,
-		    (int)node->ksize, (char *)NODEKEY(node));
-
 		expand_prefix(bt, src, 0, &tmpkey);
 		key.size = tmpkey.len;
 		key.data = tmpkey.str;
@@ -2294,11 +2288,6 @@ btree_move_node(struct btree *bt, struct mpage *src, indx_t srcindx,
 	}
 
 	if (dstindx == 0 && dst->parent_index != 0) {
-		node = NODEPTR(dst->parent, dst->parent_index);
-		DPRINTF("current parent separator for destination page %u is [%.*s]",
-		    dst->pgno,
-		    (int)node->ksize, (char *)NODEKEY(node));
-
 		expand_prefix(bt, dst, 0, &tmpkey);
 		key.size = tmpkey.len;
 		key.data = tmpkey.str;
@@ -2337,6 +2326,7 @@ btree_move_node(struct btree *bt, struct mpage *src, indx_t srcindx,
 	}
 
 	if (IS_BRANCH(dst)) {
+		assert(mp);
 		mp->parent = dst;
 		mp->parent_index = dstindx;
 		find_common_prefix(bt, mp);
@@ -3033,6 +3023,7 @@ btree_compact_tree(struct btree *bt, pgno_t pgno, struct btree *btc)
 	free(p);
 	if (rc != (ssize_t)bt->head.psize)
 		return P_INVALID;
+	mpage_prune(bt);
 	return pgno;
 }
 
@@ -3067,6 +3058,8 @@ btree_compact(struct btree *bt)
 
 	if ((btc = btree_open_fd(fd, 0)) == NULL)
 		goto failed;
+	bcopy(&bt->meta, &btc->meta, sizeof(bt->meta));
+	btc->meta.revisions = 0;
 
 	if ((txnc = btree_txn_begin(btc, 0)) == NULL)
 		goto failed;
@@ -3095,6 +3088,7 @@ btree_compact(struct btree *bt)
 	btree_txn_abort(txnc);
 	free(compact_path);
 	btree_close(btc);
+	mpage_prune(bt);
 	return 0;
 
 failed:
@@ -3103,6 +3097,7 @@ failed:
 	unlink(compact_path);
 	free(compact_path);
 	btree_close(btc);
+	mpage_prune(bt);
 	return BT_FAIL;
 }
 

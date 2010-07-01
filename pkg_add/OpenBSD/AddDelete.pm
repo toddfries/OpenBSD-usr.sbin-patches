@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.29 2010/06/25 11:12:14 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.33 2010/07/01 19:15:59 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -56,7 +56,8 @@ sub do_the_main_work
 sub framework
 {
 	my ($self, $state) = @_;
-	try {
+
+	my $do = sub {
 		lock_db($state->{not}) unless $state->defines('nolock');
 		$state->check_root;
 		$self->process_parameters($state);
@@ -74,14 +75,21 @@ sub framework
 		}
 		# show any error, and show why we died...
 		rethrow $dielater;
-	} catch {
-		print STDERR "$0: $_\n";
-		OpenBSD::Handler->reset;
-		if ($_ =~ m/^Caught SIG(\w+)/o) {
-			kill $1, $$;
-		}
-		exit(1);
 	};
+	if ($state->defines('debug')) {
+		&$do;
+	} else {
+		try {
+			&$do;
+		} catch {
+			print STDERR "$0: $_\n";
+			OpenBSD::Handler->reset;
+			if ($_ =~ m/^Caught SIG(\w+)/o) {
+				kill $1, $$;
+			}
+			exit(1);
+		};
+	}
 
 	if ($state->{bad}) {
 		exit(1);
@@ -202,13 +210,7 @@ sub vsystem
 	if ($self->verbose < 2) {
 		$self->system(@_);
 	} else {
-		$self->print("Running #1", join(' ', @_));
-		my $r = CORE::system(@_);
-		if ($r != 0) {
-			$self->say("... failed: #1", $self->child_error);
-		} else {
-			$self->say("");
-		}
+		$self->verbose_system(@_);
 	}
 }
 
@@ -285,6 +287,30 @@ sub defines
 {
 	my ($self, $k) = @_;
 	return $self->{subst}->value($k);
+}
+
+sub updateset
+{
+	my $self = shift;
+	require OpenBSD::UpdateSet;
+
+	return OpenBSD::UpdateSet->new($self);
+}
+
+sub updateset_with_new
+{
+	my ($self, $pkgname) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->create_new($pkgname));
+}
+
+sub updateset_from_location
+{
+	my ($self, $location) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->from_location($location));
 }
 
 # the object that gets displayed during status updates

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.29 2010/05/26 13:56:08 nicm Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.31 2010/07/01 19:47:04 bluhm Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -250,6 +250,8 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 {
 	static struct area	*narea;
 	static struct iface	*niface;
+	struct ifaddrchange	*ifc;
+	struct iface_addr	*ia, *nia;
 	struct imsg	 imsg;
 	struct imsgev	*iev = bula;
 	struct imsgbuf	*ibuf = &iev->ibuf;
@@ -320,6 +322,50 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 
 			LIST_REMOVE(iface, entry);
 			if_del(iface);
+			break;
+		case IMSG_IFADDRNEW:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRNEW imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRNEW interface lost in ospfe");
+
+			if ((ia = calloc(1, sizeof(struct iface_addr))) ==
+			    NULL)
+				fatal("ospfe_dispatch_main IFADDRNEW");
+			ia->addr = ifc->addr;
+			ia->dstbrd = ifc->dstbrd;
+			ia->prefixlen = ifc->prefixlen;
+
+			TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
+			orig_link_lsa(iface);
+			break;
+		case IMSG_IFADDRDEL:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRDEL imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRDEL interface lost in ospfe");
+
+			for (ia = TAILQ_FIRST(&iface->ifa_list); ia != NULL;
+			    ia = nia) {
+				nia = TAILQ_NEXT(ia, entry);
+
+				if (IN6_ARE_ADDR_EQUAL(&ia->addr,
+				    &ifc->addr)) {
+					TAILQ_REMOVE(&iface->ifa_list, ia,
+					    entry);
+					free(ia);
+					break;
+				}
+			}
+			orig_link_lsa(iface);
 			break;
 		case IMSG_RECONF_CONF:
 			if ((nconf = malloc(sizeof(struct ospfd_conf))) ==
@@ -964,7 +1010,7 @@ void
 orig_link_lsa(struct iface *iface)
 {
 	struct lsa_hdr		 lsa_hdr;
-	struct lsa_link	 	 lsa_link;
+	struct lsa_link		 lsa_link;
 	struct lsa_prefix	 lsa_prefix;
 	struct ibuf		*buf;
 	struct iface_addr	*ia;
@@ -1000,7 +1046,7 @@ orig_link_lsa(struct iface *iface)
 	/* reserve space for LSA header and LSA link header */
 	if (ibuf_reserve(buf, sizeof(lsa_hdr) + sizeof(lsa_link)) == NULL)
 		fatal("orig_link_lsa: ibuf_reserve failed");
-	
+
 	/* link-local address, and all prefixes configured on interface */
 	TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
 		if (IN6_IS_ADDR_LINKLOCAL(&ia->addr)) {

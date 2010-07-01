@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.42 2010/06/28 15:05:01 bluhm Exp $ */
+/*	$OpenBSD: rde.c,v 1.45 2010/07/01 21:19:57 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -65,7 +65,6 @@ struct lsa	*orig_asext_lsa(struct rroute *, u_int16_t);
 struct lsa	*orig_sum_lsa(struct rt_node *, struct area *, u_int8_t, int);
 struct lsa	*orig_intra_lsa_net(struct iface *, struct vertex *);
 struct lsa	*orig_intra_lsa_rtr(struct area *, struct vertex *);
-void		 orig_intra_area_prefix_lsas(struct area *);
 void		 append_prefix_lsa(struct lsa **, u_int16_t *,
 		    struct lsa_prefix *);
 int		 link_lsa_from_full_nbr(struct lsa *, struct iface *);
@@ -689,6 +688,8 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				 */
 				if (v)
 					lsa_merge(nbrself, lsa, v);
+				else
+					free(lsa);
 			}
 			break;
 		case IMSG_KROUTE_GET:
@@ -1216,7 +1217,7 @@ append_prefix_lsa(struct lsa **lsa, u_int16_t *len, struct lsa_prefix *prefix)
 	struct lsa_prefix	*copy;
 	unsigned int		 lsa_prefix_len;
 	unsigned int		 new_len;
-	char  			*new_lsa;
+	char			*new_lsa;
 
 	lsa_prefix_len = sizeof(struct lsa_prefix)
 	    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -1241,7 +1242,7 @@ prefix_compare(struct prefix_node *a, struct prefix_node *b)
 {
 	struct lsa_prefix	*p;
 	struct lsa_prefix	*q;
-	int		 	 i;
+	int			 i;
 	int			 len;
 
 	p = a->prefix;
@@ -1276,7 +1277,7 @@ prefix_tree_add(struct prefix_tree *tree, struct lsa_link *lsa)
 			fatal("prefix_tree_add");
 		new->prefix = (struct lsa_prefix *)cur_prefix;
 
-		len = sizeof(*new->prefix) 
+		len = sizeof(*new->prefix)
 		    + LSA_PREFIXSIZE(new->prefix->prefixlen);
 
 		bzero(&addr, sizeof(addr));
@@ -1321,7 +1322,7 @@ link_lsa_from_full_nbr(struct lsa *lsa, struct iface *iface)
 	if (nbr->state & NBR_STA_FULL &&
 	    ntohl(lsa->hdr.ls_id) == nbr->iface_id)
 		return 1;
-	
+
 	return 0;
 }
 
@@ -1455,7 +1456,7 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 		TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
 			if (IN6_IS_ADDR_LINKLOCAL(&ia->addr))
 				continue;
-			
+
 			bzero(lsa_prefix_buf, sizeof(lsa_prefix_buf));
 
 			if (iface->type == IF_TYPE_POINTOMULTIPOINT ||

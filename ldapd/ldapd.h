@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldapd.h,v 1.14 2010/06/29 21:54:38 martinh Exp $ */
+/*	$OpenBSD: ldapd.h,v 1.16 2010/07/01 20:09:34 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -241,6 +241,8 @@ struct ldapd_config
 	struct referrals		 referrals;
 	struct acl			 acl;
 	struct schema			*schema;
+	char				*rootdn;
+	char				*rootpw;
 };
 
 struct ldapd_stats
@@ -351,6 +353,7 @@ pid_t			 ldape(struct passwd *pw, char *csockpath,
 				int pipe_parent2ldap[2]);
 int			 ldap_abandon(struct request *req);
 int			 ldap_unbind(struct request *req);
+int			 ldap_compare(struct request *req);
 int			 ldap_extended(struct request *req);
 
 void			 send_ldap_result(struct conn *conn, int msgid,

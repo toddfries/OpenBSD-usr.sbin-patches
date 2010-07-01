@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.5 2010/06/25 11:12:14 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.9 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -68,7 +68,7 @@ our @ISA = qw(OpenBSD::AddDelete::State);
 sub handle_options
 {
 	my $state = shift;
-	$state->SUPER::handle_options('aruUzl:A:P:Q:', 
+	$state->SUPER::handle_options('aruUzl:A:P:Q:',
 	    '[-acIinqrsUuvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
 	    '[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
 
@@ -112,7 +112,7 @@ sub handle_options
 	$state->{automatic} = $state->opt('a');
 	$state->{hard_replace} = $state->opt('r');
 	$state->{newupdates} = $state->opt('u') || $state->opt('U');
-	$state->{allow_replacing} = $state->{hard_replace} || 
+	$state->{allow_replacing} = $state->{hard_replace} ||
 	    $state->{newupdates};
 	$state->{pkglist} = $state->opt('l');
 	$state->{update} = $state->opt('u');
@@ -440,7 +440,7 @@ sub try_merging
 
 	my $s = $state->tracker->is_to_update($m);
 	if (!defined $s) {
-		$s = OpenBSD::UpdateSet->new->add_older(
+		$s = $state->updateset->add_older(
 		    OpenBSD::Handle->create_old($m, $state));
 	}
 	if ($state->updater->process_set($s, $state)) {
@@ -448,7 +448,7 @@ sub try_merging
 		$set->merge($state->tracker, $s);
 		return 1;
 	} else {
-		$state->errsay("NOT MERGING: can't find update for #1 (#2)", 
+		$state->errsay("NOT MERGING: can't find update for #1 (#2)",
 		    $s->print, $state->ntogo);
 		return 0;
 	}
@@ -500,7 +500,7 @@ sub recheck_conflicts
 		for my $h2 ($set->newer, $set->kept) {
 			next if $h2 == $h;
 			if ($h->plist->conflict_list->conflicts_with($h2->pkgname)) {
-				$state->errsay("#1: internal conflict between #2 and #3", 
+				$state->errsay("#1: internal conflict between #2 and #3",
 				    $set->print, $h->pkgname, $h2->pkgname);
 				return 0;
 			}
@@ -516,7 +516,6 @@ our @ISA = qw(OpenBSD::AddDelete);
 use OpenBSD::Dependencies;
 use OpenBSD::PackingList;
 use OpenBSD::PackageInfo;
-use OpenBSD::PackageLocator;
 use OpenBSD::PackageName;
 use OpenBSD::PkgCfl;
 use OpenBSD::Add;
@@ -618,7 +617,7 @@ sub check_x509_signature
 
 				if (!OpenBSD::x509::check_signature($plist,
 				    $state)) {
-					$state->fatal("#1 is corrupted", 
+					$state->fatal("#1 is corrupted",
 					    $set->print);
 				}
 				$state->{check_digest} = 1;
@@ -798,7 +797,7 @@ sub newer_has_errors
 		}
 		if ($handle->has_error) {
 			$state->set_name_from_handle($handle);
-			$state->log("Can't install #1: #2", 
+			$state->log("Can't install #1: #2",
 			    $handle->pkgname, $handle->error_message);
 			$state->{bad}++;
 			$set->cleanup($handle->has_error);
@@ -878,7 +877,7 @@ sub install_set
 	my @baddeps = $set->solver->check_depends;
 
 	if (@baddeps) {
-		$state->errsay("Can't install #1: can't resolve #2", 
+		$state->errsay("Can't install #1: can't resolve #2",
 		    $set->print, join(',', @baddeps));
 		$state->{bad}++;
 		$set->cleanup(OpenBSD::Handle::CANT_INSTALL,"bad dependencies");
@@ -949,12 +948,12 @@ sub inform_user_of_problems
 # if we already have quirks, we update it. If not, we try to install it.
 sub quirk_set
 {
-	require OpenBSD::PackageRepository::Installed;
+	my $state = shift;
 	require OpenBSD::Search;
 
-	my $set = OpenBSD::UpdateSet->new;
+	my $set = $state->updateset;
 	$set->{quirks} = 1;
-	my $l = OpenBSD::PackageRepository::Installed->new->match_locations(OpenBSD::Search::Stem->new('quirks'));
+	my $l = $state->repo->installed->match_locations(OpenBSD::Search::Stem->new('quirks'));
 	if (@$l > 0) {
 		$set->add_older(map {OpenBSD::Handle->from_location($_)} @$l);
 	} else {
@@ -967,7 +966,7 @@ sub do_quirks
 {
 	my $state = shift;
 
-	install_set(quirk_set(), $state);
+	install_set(quirk_set($state), $state);
 	eval {
 		require OpenBSD::Quirks;
 		# interface version number.
@@ -983,26 +982,25 @@ sub process_parameters
 
 	# match against a list
 	if ($state->{pkglist}) {
-		open my $f, '<', $state->{pkglist} or 
+		open my $f, '<', $state->{pkglist} or
 		    $state->fatal("bad list #1: #2", $state->{pkglist}, $!);
 		my $_;
 		while (<$f>) {
 			chomp;
 			s/\s.*//;
-			push(@{$state->{setlist}}, 
-			    OpenBSD::UpdateSet->new->$add_hints($_));
+			push(@{$state->{setlist}},
+			    $state->updateset->$add_hints($_));
 		}
 	}
 
 	# update existing stuff
 	if ($state->{update}) {
-		require OpenBSD::PackageRepository::Installed;
 
 		if (@ARGV == 0) {
 			@ARGV = sort(installed_packages());
 			$state->{allupdates} = 1;
 		}
-		my $inst = OpenBSD::PackageRepository::Installed->new;
+		my $inst = $state->repo->installed;
 		for my $pkgname (@ARGV) {
 			my $l;
 
@@ -1015,8 +1013,8 @@ sub process_parameters
 			if (!defined $l) {
 				$state->say("Problem finding #1", $pkgname);
 			} else {
-				push(@{$state->{setlist}}, 
-				    OpenBSD::UpdateSet->new->add_older(OpenBSD::Handle->from_location($l)));
+				push(@{$state->{setlist}},
+				    $state->updateset->add_older(OpenBSD::Handle->from_location($l)));
 			}
 		}
 	} else {
@@ -1025,7 +1023,7 @@ sub process_parameters
 		for my $pkgname (@ARGV) {
 			next if $pkgname =~ m/^quirks\-\d/;
 			push(@{$state->{setlist}},
-			    OpenBSD::UpdateSet->new->$add_hints($pkgname));
+			    $state->updateset->$add_hints($pkgname));
 		}
 	}
 }

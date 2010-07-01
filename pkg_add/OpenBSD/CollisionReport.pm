@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: CollisionReport.pm,v 1.35 2010/06/09 07:26:01 espie Exp $
+# $OpenBSD: CollisionReport.pm,v 1.37 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -104,7 +104,7 @@ sub collision_report($$)
 				    $state->errsay(" (different checksum)");
 			    }
 		    } else {
-			    $state->errsay("");
+			    $state->errsay;
 		    }
 	    	}
 	}
