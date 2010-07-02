@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: State.pm,v 1.10 2010/06/30 11:32:20 espie Exp $
+# $OpenBSD: State.pm,v 1.12 2010/07/02 12:42:49 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -19,6 +19,70 @@
 use strict;
 use warnings;
 
+package OpenBSD::Configuration;
+sub new
+{
+	my ($class, $state) = @_;
+	my $self = bless {}, $class;
+	require OpenBSD::Paths;
+	$self->read_file(OpenBSD::Paths->pkgconf, $state);
+	return $self;
+}
+
+sub read_file
+{
+	my ($self, $filename, $state) = @_;
+	open(my $fh, '<', $filename) or return;
+	my $_;
+	while (<$fh>) {
+		chomp;
+		next if m/^\s*\#/;
+		next if m/^\s*$/;
+		my ($cmd, $k, $v, $add);
+		my $h = $self;
+		if (($cmd, $k, $add, $v) = m/^\s*(.*?)\.(.*?)\s*(\+?)\=\s*(.*)\s*$/) {
+			next unless $cmd eq $state->{cmd};
+			my $h = $self->{cmd} = {};
+		} elsif (($k, $add, $v) = m/^\s*(.*?)\s*(\+?)\=\s*(.*)\s*$/) {
+		} else {
+			# bad line: should we say so ?
+			$state->errsay("Bad line in #1: #2 (#3)", 
+			    $filename, $_, $.);
+		}
+		# remove caps
+		$k =~ tr/A-Z/a-z/;
+		if ($add eq '') {
+			$h->{$k} = [$v];
+		} else {
+			push(@{$h->{$k}}, $v);
+		}
+	}
+}
+
+sub ref
+{
+	my ($self, $k) = @_;
+	if (defined $self->{cmd}{$k}) {
+		return $self->{cmd}{$k};
+	} else {
+		return $self->{$k};
+	}
+}
+
+sub value
+{
+	my ($self, $k) = @_;
+	my $r = $self->ref($k);
+	if (!defined $r) {
+		return $r;
+	}
+	if (wantarray) {
+		return @$r;
+	} else {
+		return $r->[0];
+	}
+}
+
 package OpenBSD::PackageRepositoryFactory;
 sub new
 {
@@ -31,7 +95,7 @@ sub installed
 	my ($self, $all) = @_;
 	require OpenBSD::PackageRepository::Installed;
 
-	return OpenBSD::PackageRepository::Installed->new($all);
+	return OpenBSD::PackageRepository::Installed->new($all, $self->{state});
 }
 
 sub path_parse
@@ -39,7 +103,7 @@ sub path_parse
 	my ($self, $pkgname) = @_;
 	require OpenBSD::PackageLocator;
 
-	return OpenBSD::PackageLocator->path_parse($pkgname);
+	return OpenBSD::PackageLocator->path_parse($pkgname, $self->{state});
 }
 
 sub find
@@ -47,7 +111,7 @@ sub find
 	my ($self, $pkg, $arch) = @_;
 	require OpenBSD::PackageLocator;
 
-	return OpenBSD::PackageLocator->find($pkg, $arch);
+	return OpenBSD::PackageLocator->find($pkg, $arch, $self->{state});
 }
 
 sub match_locations
@@ -55,15 +119,15 @@ sub match_locations
 	my $self = shift;
 	require OpenBSD::PackageLocator;
 
-	return OpenBSD::PackageLocator->match_locations(@_);
+	return OpenBSD::PackageLocator->match_locations(@_, $self->{state});
 }
 
 sub grabPlist
 {
-	my $self = shift;
+	my ($self, $url, $arch, $code) = @_;
 	require OpenBSD::PackageLocator;
 
-	return OpenBSD::PackageLocator->grabPlist(@_);
+	return OpenBSD::PackageLocator->grabPlist($url, $arch, $code, $self->{state});
 }
 
 sub path
@@ -71,7 +135,7 @@ sub path
 	my $self = shift;
 	require OpenBSD::PackageRepositoryList;
 
-	return OpenBSD::PackageRepositoryList->new;
+	return OpenBSD::PackageRepositoryList->new($self->{state});
 }
 
 # common routines to everything state.
@@ -104,6 +168,11 @@ sub repo
 	my $self = shift;
 	return $self->{repo};
 }
+
+OpenBSD::Auto::cache(config,
+	sub {
+		return OpenBSD::Configuration->new(shift);
+	});
 
 sub usage_is
 {

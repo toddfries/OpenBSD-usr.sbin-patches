@@ -1,4 +1,4 @@
-/*	$OpenBSD: modify.c,v 1.7 2010/07/01 00:43:56 martinh Exp $ */
+/*	$OpenBSD: modify.c,v 1.9 2010/07/02 02:42:02 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -30,9 +30,11 @@
 int
 ldap_delete(struct request *req)
 {
+	struct btval		 key;
 	char			*dn;
 	struct namespace	*ns;
 	struct referrals	*refs;
+	struct cursor		*cursor;
 
 	++stats.req_mod;
 
@@ -62,16 +64,36 @@ ldap_delete(struct request *req)
 		return ldap_respond(req, LDAP_OTHER);
 	}
 
+	/* Check that this is a leaf node by getting a cursor to the DN
+	 * we're about to delete. If there is a next entry with the DN
+	 * as suffix (ie, a child node), the DN can't be deleted.
+	 */
+	if ((cursor = btree_txn_cursor_open(NULL, ns->data_txn)) == NULL)
+		goto fail;
+
+	bzero(&key, sizeof(key));
+	key.data = dn;
+	key.size = strlen(dn);
+	if (btree_cursor_get(cursor, &key, NULL, BT_CURSOR_EXACT) != 0)
+		goto fail;
+	if (btree_cursor_get(cursor, &key, NULL, BT_NEXT) != 0) {
+		if (errno != ENOENT)
+			goto fail;
+	} else if (has_suffix(&key, dn)) {
+		namespace_abort(ns);
+		return ldap_respond(req, LDAP_NOT_ALLOWED_ON_NONLEAF);
+	}
+
 	if (namespace_del(ns, dn) == 0) {
 		namespace_commit(ns);
 		return ldap_respond(req, LDAP_SUCCESS);
-	} else {
-		namespace_abort(ns);
-		if (errno == ENOENT)
-			return ldap_respond(req, LDAP_NO_SUCH_OBJECT);
-		else
-			return ldap_respond(req, LDAP_OTHER);
 	}
+
+fail:
+	namespace_abort(ns);
+	if (errno == ENOENT)
+		return ldap_respond(req, LDAP_NO_SUCH_OBJECT);
+	return ldap_respond(req, LDAP_OTHER);
 }
 
 int
@@ -114,14 +136,19 @@ ldap_add(struct request *req)
 		attr = elm->be_sub;
 		if (attr == NULL || ber_get_string(attr, &s) != 0)
 			return ldap_respond(req, LDAP_PROTOCOL_ERROR);
-		at = lookup_attribute(conf->schema, s);
-		if (at == NULL) {
-			log_debug("unknown attribute type %s", s);
-			return ldap_respond(req, LDAP_NO_SUCH_ATTRIBUTE);
-		}
-		if (at->immutable) {
-			log_debug("attempt to add immutable attribute %s", s);
-			return ldap_respond(req, LDAP_CONSTRAINT_VIOLATION);
+		if (!ns->relax) {
+			at = lookup_attribute(conf->schema, s);
+			if (at == NULL) {
+				log_debug("unknown attribute type %s", s);
+				return ldap_respond(req,
+				    LDAP_NO_SUCH_ATTRIBUTE);
+			}
+			if (at->immutable) {
+				log_debug("attempt to add immutable"
+				    " attribute %s", s);
+				return ldap_respond(req,
+				    LDAP_CONSTRAINT_VIOLATION);
+			}
 		}
 	}
 
@@ -232,17 +259,19 @@ ldap_modify(struct request *req)
 			goto done;
 		}
 
-		if ((at = lookup_attribute(conf->schema, attr)) == NULL &&
-		    !ns->relax) {
-			log_debug("unknown attribute type %s", attr);
-			rc = LDAP_NO_SUCH_ATTRIBUTE;
-			goto done;
-		}
-		if (at != NULL && at->immutable) {
-			log_debug("attempt to modify immutable attribute %s",
-			    attr);
-			rc = LDAP_CONSTRAINT_VIOLATION;
-			goto done;
+		if (!ns->relax) {
+			at = lookup_attribute(conf->schema, attr);
+			if (at == NULL) {
+				log_debug("unknown attribute type %s", attr);
+				rc = LDAP_NO_SUCH_ATTRIBUTE;
+				goto done;
+			}
+			if (at->immutable) {
+				log_debug("attempt to modify immutable"
+				    " attribute %s", attr);
+				rc = LDAP_CONSTRAINT_VIOLATION;
+				goto done;
+			}
 		}
 
 		a = ldap_get_attribute(entry, attr);
