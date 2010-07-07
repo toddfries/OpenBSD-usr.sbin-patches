@@ -1,4 +1,4 @@
-/*	$OpenBSD: modify.c,v 1.10 2010/07/05 14:27:06 martinh Exp $ */
+/*	$OpenBSD: modify.c,v 1.12 2010/07/06 20:02:33 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -81,6 +81,7 @@ ldap_delete(struct request *req)
 		goto done;
 	}
 
+	btval_reset(&key);
 	if (btree_cursor_get(cursor, &key, NULL, BT_NEXT) != 0) {
 		if (errno != ENOENT)
 			goto done;
@@ -89,13 +90,12 @@ ldap_delete(struct request *req)
 		goto done;
 	}
 
-	if (namespace_del(ns, dn) == 0) {
-		namespace_commit(ns);
+	if (namespace_del(ns, dn) == 0 && namespace_commit(ns) == 0)
 		rc = LDAP_SUCCESS;
-	}
 
 done:
 	btree_cursor_close(cursor);
+	btval_reset(&key);
 	namespace_abort(ns);
 	return ldap_respond(req, rc);
 }
@@ -212,7 +212,7 @@ fail:
 int
 ldap_modify(struct request *req)
 {
-	int			 rc;
+	int			 rc = LDAP_OTHER;
 	char			*dn;
 	long long		 op;
 	char			*attr;
@@ -323,19 +323,13 @@ ldap_modify(struct request *req)
 	else
 		ldap_add_attribute(entry, "modifyTimestamp", set);
 
-	if (namespace_update(ns, dn, entry) == 0)
+	if (namespace_update(ns, dn, entry) == 0 && namespace_commit(ns) == 0)
 		rc = LDAP_SUCCESS;
 	else
 		rc = LDAP_OTHER;
 
 done:
-	if (rc == LDAP_SUCCESS)
-		namespace_commit(ns);
-	else
-		namespace_abort(ns);
-
-	if (rc >= 0)
-		ldap_respond(req, rc);
-	return rc;
+	namespace_abort(ns);
+	return ldap_respond(req, rc);
 }
 

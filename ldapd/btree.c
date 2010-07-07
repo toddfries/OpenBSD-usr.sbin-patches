@@ -1,4 +1,4 @@
-/*	$OpenBSD: btree.c,v 1.24 2010/07/05 21:06:45 martinh Exp $ */
+/*	$OpenBSD: btree.c,v 1.27 2010/07/06 20:10:57 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -2216,6 +2216,8 @@ btree_move_node(struct btree *bt, struct mpage *src, indx_t srcindx,
 	    src->pgno,
 	    dstindx, dst->pgno);
 
+	find_common_prefix(bt, src);
+
 	if (IS_BRANCH(src)) {
 		/* Need to check if the page the moved node points to
 		 * changes prefix.
@@ -2546,8 +2548,7 @@ btree_rebalance(struct btree *bt, struct mpage *mp)
 	 * possible, even if both are below threshold, as prefix expansion
 	 * might make keys larger. FIXME: detect this
 	 */
-	if (PAGEFILL(bt, neighbor) >= FILL_THRESHOLD &&
-	    NUMKEYS(neighbor) >= NUMKEYS(mp) + 2)
+	if (PAGEFILL(bt, neighbor) >= FILL_THRESHOLD && NUMKEYS(neighbor) >= 2)
 		return btree_move_node(bt, neighbor, si, mp, di);
 	else { /* FIXME: if (has_enough_room()) */
 		if (mp->parent_index == 0)
@@ -3156,6 +3157,9 @@ btree_get_path(struct btree *bt)
 const struct btree_stat *
 btree_stat(struct btree *bt)
 {
+	if (bt == NULL)
+		return NULL;
+
 	bt->stat.branch_pages = bt->meta.branch_pages;
 	bt->stat.leaf_pages = bt->meta.leaf_pages;
 	bt->stat.overflow_pages = bt->meta.overflow_pages;
