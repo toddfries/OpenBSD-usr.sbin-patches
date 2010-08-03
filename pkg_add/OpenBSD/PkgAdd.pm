@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.10 2010/07/30 10:06:44 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.12 2010/08/01 10:04:24 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -379,7 +379,7 @@ sub install_issues
 	}
 
 	if (!$state->{allow_replacing}) {
-		if (grep { !/^.libs\d*\-/ && !/^partial\-/ } @conflicts) {
+		if (grep { !/^\.libs\d*\-/ && !/^partial\-/ } @conflicts) {
 			if (!$set->is_an_update_from(@conflicts)) {
 				$state->errsay("Can't install #1 because of conflicts (#2)",
 				    $set->print, join(',', @conflicts));
@@ -656,6 +656,7 @@ sub delete_old_packages
 		}
 		OpenBSD::PkgCfl::unregister($o->plist, $state);
 	});
+	$set->cleanup_old_shared($state);
 	# Here there should be code to handle old libs
 }
 
