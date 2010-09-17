@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.9 2010/06/30 10:51:04 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.15 2010/08/13 11:13:25 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -379,7 +379,7 @@ sub install_issues
 	}
 
 	if (!$state->{allow_replacing}) {
-		if (grep { !/^.libs\d*\-/ && !/^partial\-/ } @conflicts) {
+		if (grep { !/^\.libs\d*\-/ && !/^partial\-/ } @conflicts) {
 			if (!$set->is_an_update_from(@conflicts)) {
 				$state->errsay("Can't install #1 because of conflicts (#2)",
 				    $set->print, join(',', @conflicts));
@@ -656,6 +656,7 @@ sub delete_old_packages
 		}
 		OpenBSD::PkgCfl::unregister($o->plist, $state);
 	});
+	$set->cleanup_old_shared($state);
 	# Here there should be code to handle old libs
 }
 
@@ -828,6 +829,8 @@ sub install_set
 
 	$set = $set->real_set;
 
+	$state->progress->set_header('Checking packages');
+
 	if ($set->{finished}) {
 		return ();
 	}
@@ -874,11 +877,11 @@ sub install_set
 	}
 
 	# verify dependencies have been installed
-	my @baddeps = $set->solver->check_depends;
+	my $baddeps = $set->solver->check_depends;
 
-	if (@baddeps) {
+	if (@$baddeps) {
 		$state->errsay("Can't install #1: can't resolve #2",
-		    $set->print, join(',', @baddeps));
+		    $set->print, join(',', @$baddeps));
 		$state->{bad}++;
 		$set->cleanup(OpenBSD::Handle::CANT_INSTALL,"bad dependencies");
 		$state->tracker->cant($set);
@@ -988,6 +991,7 @@ sub process_parameters
 		while (<$f>) {
 			chomp;
 			s/\s.*//;
+			s/\.tgz$//;
 			push(@{$state->{setlist}},
 			    $state->updateset->$add_hints($_));
 		}
@@ -1056,7 +1060,7 @@ sub main
 {
 	my ($self, $state) = @_;
 
-	$state->progress->set_header("Checking packages");
+	$state->progress->set_header('');
 	if ($state->{allow_replacing}) {
 		do_quirks($state);
 	}

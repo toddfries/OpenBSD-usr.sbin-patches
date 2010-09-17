@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.143 2010/07/26 23:28:06 espie Exp $
+# $OpenBSD: Update.pm,v 1.145 2010/08/03 14:08:49 espie Exp $
 #
 # Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
@@ -158,22 +158,26 @@ sub process_handle
 		    }
 		    if ($p2->has('arch')) {
 			unless ($p2->{arch}->check($state->{arch})) {
+			    $loc->forget;
 			    next;
 			}
 		    }
+		    if (!$plist->match_pkgpath($p2)) {
+		    	$loc->forget;
+			next
+		    }
 		    if ($p2->has('explicit-update') && $state->{allupdates}) {
 			$oldfound = 1;
+			$loc->forget;
 			next;
 		    }
 		    my $r = $plist->signature->compare($p2->signature);
 		    if (defined $r && $r > 0 && !$state->defines('downgrade')) {
 		    	$oldfound = 1;
+			$loc->forget;
 			next;
 		    }
-		    if ($plist->match_pkgpath($p2)) {
-			push(@l2, $loc);
-			next
-		    }
+		    push(@l2, $loc);
 		}
 		return \@l2;
 	    }));

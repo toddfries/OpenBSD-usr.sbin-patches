@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.63 2010/06/10 19:34:51 chl Exp $	*/
+/*	$OpenBSD: parse.y,v 1.65 2010/09/08 23:32:27 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -978,6 +978,10 @@ rule		: decision on from			{
 			struct rule	*subr;
 			struct cond	*cond;
 
+			if ($8)
+				(void)strlcpy(rule->r_tag, $8, sizeof(rule->r_tag));
+			free($8);
+
 			while ((cond = TAILQ_FIRST(conditions)) != NULL) {
 
 				if ((subr = calloc(1, sizeof(*subr))) == NULL)
@@ -1237,9 +1241,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';

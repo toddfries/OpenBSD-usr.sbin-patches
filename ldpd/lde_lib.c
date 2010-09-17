@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde_lib.c,v 1.24 2010/06/30 22:15:02 claudio Exp $ */
+/*	$OpenBSD: lde_lib.c,v 1.26 2010/08/27 12:22:46 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -355,7 +355,7 @@ lde_check_mapping(struct map *map, struct lde_nbr *ln)
 	struct lde_nbr_address	*addr = NULL;
 	struct lde_map		*me;
 
-	log_debug("label mapping from nbr %s, FEC %s/%u, label %u",
+	log_debug("label mapping from nbr %s, FEC %s, label %u",
 	    inet_ntoa(ln->id), log_fec(map), map->label);
 
 	rn = (struct rt_node *)fec_find_prefix(&rt, map->prefix.s_addr,
@@ -480,9 +480,11 @@ lde_check_request(struct map *map, struct lde_nbr *ln)
 		lre->fec = rn->fec;
 		lre->msgid = map->messageid;
 
-		if (fec_insert(&ln->recv_req, &lre->fec))
+		if (fec_insert(&ln->recv_req, &lre->fec)) {
 			log_warnx("failed to add %s/%u to recv req",
 			    inet_ntoa(lre->fec.prefix), lre->fec.prefixlen);
+			free(lre);
+		}
 	}
 }
 

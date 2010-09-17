@@ -1,4 +1,4 @@
-/*	$OpenBSD: neighbor.c,v 1.18 2010/06/30 01:47:11 claudio Exp $ */
+/*	$OpenBSD: neighbor.c,v 1.21 2010/09/06 08:36:33 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -67,7 +67,7 @@ struct {
     /* current state	event that happened	action to take		resulting state */
 /* Discovery States */
     {NBR_STA_DOWN,	NBR_EVT_HELLO_RCVD,	NBR_ACT_STRT_ITIMER,	NBR_STA_PRESENT},
-    {NBR_STA_UP,	NBR_EVT_HELLO_RCVD,	NBR_ACT_RST_ITIMER,	0},
+    {NBR_STA_SESSION,	NBR_EVT_HELLO_RCVD,	NBR_ACT_RST_ITIMER,	0},
 /* Passive Role */
     {NBR_STA_PRESENT,	NBR_EVT_SESSION_UP,	NBR_ACT_SESSION_EST,	NBR_STA_INITIAL},
     {NBR_STA_INITIAL,	NBR_EVT_INIT_RCVD,	NBR_ACT_INIT_SEND,	NBR_STA_OPENREC},
@@ -79,7 +79,7 @@ struct {
     {NBR_STA_OPER,	NBR_EVT_PDU_RCVD,	NBR_ACT_RST_KTIMEOUT,	0},
 /* Session Close */
     {NBR_STA_SESSION,	NBR_EVT_CLOSE_SESSION,	NBR_ACT_CLOSE_SESSION,	NBR_STA_PRESENT},
-    {NBR_STA_UP,	NBR_EVT_DOWN,		NBR_ACT_CLOSE_SESSION,	},
+    {NBR_STA_SESSION,	NBR_EVT_DOWN,		NBR_ACT_CLOSE_SESSION,	},
     {-1,		NBR_EVT_NOTHING,	NBR_ACT_NOTHING,	0},
 };
 
@@ -137,16 +137,14 @@ nbr_fsm(struct nbr *nbr, enum nbr_event event)
 
 	switch (nbr_fsm_tbl[i].action) {
 	case NBR_ACT_RST_ITIMER:
-		nbr_reset_itimer(nbr);
-		break;
 	case NBR_ACT_STRT_ITIMER:
 		nbr_start_itimer(nbr);
 		break;
 	case NBR_ACT_RST_KTIMEOUT:
-		nbr_reset_ktimeout(nbr);
+		nbr_start_ktimeout(nbr);
 		break;
 	case NBR_ACT_RST_KTIMER:
-		nbr_reset_ktimer(nbr);
+		nbr_start_ktimer(nbr);
 		break;
 	case NBR_ACT_STRT_KTIMER:
 		nbr_act_session_operational(nbr);
@@ -308,7 +306,7 @@ nbr_find_peerid(u_int32_t peerid)
 struct nbr *
 nbr_find_ip(struct iface *iface, u_int32_t rtr_id)
 {
-	struct nbr	*nbr = NULL;
+	struct nbr	*nbr;
 
 	LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 		if (nbr->addr.s_addr == rtr_id)
@@ -321,7 +319,7 @@ nbr_find_ip(struct iface *iface, u_int32_t rtr_id)
 struct nbr *
 nbr_find_ldpid(struct iface *iface, u_int32_t rtr_id, u_int16_t lspace)
 {
-	struct nbr	*nbr = NULL;
+	struct nbr	*nbr;
 
 	LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 		if (nbr->id.s_addr == rtr_id && nbr->lspace == lspace)
@@ -365,18 +363,6 @@ nbr_stop_itimer(struct nbr *nbr)
 		fatal("nbr_stop_itimer");
 }
 
-void
-nbr_reset_itimer(struct nbr *nbr)
-{
-	struct timeval	tv;
-
-	timerclear(&tv);
-	tv.tv_sec = nbr->holdtime;
-
-	if (evtimer_add(&nbr->inactivity_timer, &tv) == -1)
-		fatal("nbr_reset_itimer");
-}
-
 /* Keepalive timer: timer to send keepalive message to neighbors */
 
 void
@@ -414,20 +400,6 @@ nbr_stop_ktimer(struct nbr *nbr)
 		fatal("nbr_stop_ktimer");
 }
 
-void
-nbr_reset_ktimer(struct nbr *nbr)
-{
-	struct timeval	tv;
-
-	timerclear(&tv);
-
-	/* XXX: just to be sure it will send three keepalives per period */
-	tv.tv_sec = (time_t)(nbr->keepalive / KEEPALIVE_PER_PERIOD);
-
-	if (evtimer_add(&nbr->keepalive_timer, &tv) == -1)
-		fatal("nbr_reset_ktimer");
-}
-
 /* Keepalive timeout: if the nbr hasn't sent keepalive */
 
 void
@@ -462,24 +434,15 @@ nbr_stop_ktimeout(struct nbr *nbr)
 		fatal("nbr_stop_ktimeout");
 }
 
-void
-nbr_reset_ktimeout(struct nbr *nbr)
-{
-	struct timeval	tv;
-
-	timerclear(&tv);
-	tv.tv_sec = nbr->keepalive;
-
-	if (evtimer_add(&nbr->keepalive_timeout, &tv) == -1)
-		fatal("nbr_reset_ktimeout");
-}
-
 /* Init delay timer: timer to retry to iniziatize session */
 
 void
 nbr_idtimer(int fd, short event, void *arg)
 {
 	struct nbr *nbr = arg;
+
+	if (ntohl(nbr->addr.s_addr) >= ntohl(nbr->iface->addr.s_addr))
+		return;
 
 	log_debug("nbr_idtimer: neighbor ID %s peerid %lu", inet_ntoa(nbr->id),
 	    nbr->peerid);
@@ -513,19 +476,6 @@ nbr_pending_idtimer(struct nbr *nbr)
 		return (1);
 
 	return (0);
-}
-
-
-void
-nbr_reset_idtimer(struct nbr *nbr)
-{
-	struct timeval	tv;
-
-	timerclear(&tv);
-	tv.tv_sec = INIT_DELAY_TMR;
-
-	if (evtimer_add(&nbr->initdelay_timer, &tv) == -1)
-		fatal("nbr_reset_idtimer");
 }
 
 int
@@ -572,7 +522,6 @@ nbr_act_session_establish(struct nbr *nbr, int active)
 		send_init(nbr);
 		nbr_fsm(nbr, NBR_EVT_INIT_SENT);
 	}
-
 
 	return (0);
 }
