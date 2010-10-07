@@ -1,4 +1,4 @@
-/*	$OpenBSD$ */
+/*	$OpenBSD: iscsid.c,v 1.3 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -6,7 +6,7 @@
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -15,6 +15,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
@@ -23,8 +24,6 @@
 
 #include <err.h>
 #include <event.h>
-#include <fcntl.h>
-#include <netdb.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
@@ -38,25 +37,29 @@
 void		main_sig_handler(int, short, void *);
 __dead void	usage(void);
 
+struct initiator *initiator;
 
 int
 main(int argc, char *argv[])
 {
 	struct event ev_sigint, ev_sigterm, ev_sighup;
 	struct passwd *pw;
-	struct initiator *i;
-	const char *ip = "127.0.0.1";
-	const char *port = "3260";
+	char *ctrlsock = ISCSID_CONTROL;
+	char *vscsidev = ISCSID_DEVICE;
 	int ch, debug = 0;
 
 	log_init(1);    /* log to stderr until daemonized */
 
-	while ((ch = getopt(argc, argv, "dn:")) != -1) {
+	while ((ch = getopt(argc, argv, "dn:s:")) != -1) {
 		switch (ch) {
 		case 'd':
 			debug = 1;
 			break;
 		case 'n':
+			vscsidev = optarg;
+			break;
+		case 's':
+			ctrlsock = optarg;
 			break;
 		default:
 			usage();
@@ -67,17 +70,8 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	/* XXX hack for now to do config less startup */
-	if (argc > 2)
+	if (argc > 0)
 		usage();
-	if (argc > 0) {
-		ip = *argv++;
-		argc--;
-	}
-	if (argc > 0) {
-		port = *argv++;
-		argc--;
-	}
 
 	/* check for root privileges  */
 	if (geteuid())
@@ -89,7 +83,9 @@ main(int argc, char *argv[])
 	log_info("startup");
 
 	event_init();
-	vscsi_open("/dev/vscsi0");
+	vscsi_open(vscsidev);
+	if (control_init(ctrlsock) == -1)
+		fatalx("control socket setup failed");
 
 	/* chroot and drop to iscsid user */
 	if ((pw = getpwnam(ISCSID_USER)) == NULL)
@@ -113,12 +109,16 @@ main(int argc, char *argv[])
 	signal_add(&ev_sighup, NULL);
 	signal(SIGPIPE, SIG_IGN);
 
-	i = initiator_init();
-	session_new(i, ip, port);
+	if (control_listen() == -1)
+		fatalx("control socket listen failed");
+
+	initiator = initiator_init();
 
 	event_dispatch();
 
 	/* CLEANUP XXX */
+	control_cleanup(ctrlsock);
+	initiator_cleanup(initiator);
 	log_info("exiting.");
 	return 0;
 }
@@ -145,47 +145,82 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s [-dv] [-n vscsi] hostname port\n",
+	fprintf(stderr, "usage: %s [-d] [-n device] [-s socket]\n",
 	    __progname);
 	exit(1);
 }
 
-int
-parse_host(struct sockaddr_storage *sa, const char *s, const char *p)
+void
+iscsid_ctrl_dispatch(void *ch, struct pdu *pdu)
 {
-	struct addrinfo	hints, *res;
-	int rv;
+	struct ctrlmsghdr *cmh;
+	struct initiator_config *ic;
+	struct session_config *sc;
+	struct session *s;
 
-	bzero(&hints, sizeof(hints));
-	hints.ai_family = PF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_NUMERICHOST;
-	if ((rv = getaddrinfo(s, p, &hints, &res)) == 0) {
-		if (sizeof(*sa) < res->ai_addrlen)
-			fatalx("parse_host: bork bork bork");
-		bcopy(res->ai_addr, sa, res->ai_addrlen);
-		freeaddrinfo(res);
-		return 0;
+	cmh = pdu_getbuf(pdu, NULL, 0);
+	if (cmh == NULL)
+		goto done;
+
+	switch (cmh->type) {
+	case CTRL_INITIATOR_CONFIG:
+log_debug("CTRL_INITIATOR_CONFIG");
+		if (cmh->len[0] != sizeof(*ic)) {
+			log_warnx("CTRL_INITIATOR_CONFIG bad size");
+			control_compose(ch, CTRL_FAILURE, NULL, 0);
+			break;
+		}
+		ic = pdu_getbuf(pdu, NULL, 1);
+		bcopy(ic, &initiator->config, sizeof(initiator->config));
+		control_compose(ch, CTRL_SUCCESS, NULL, 0);
+		break;
+	case CTRL_SESSION_CONFIG:
+log_debug("CTRL_SESSION_CONFIG");
+		if (cmh->len[0] != sizeof(*sc)) {
+			log_warnx("CTRL_INITIATOR_CONFIG bad size");
+			control_compose(ch, CTRL_FAILURE, NULL, 0);
+			break;
+		}
+		sc = pdu_getbuf(pdu, NULL, 1);
+		if (cmh->len[1])
+			sc->TargetName = pdu_getbuf(pdu, NULL, 2);
+		else if (sc->SessionType != SESSION_TYPE_DISCOVERY) {
+log_debug("no TargetName but not discovery");
+			control_compose(ch, CTRL_FAILURE, NULL, 0);
+			goto done;
+		} else
+			sc->TargetName = NULL;
+		if (cmh->len[2])
+			sc->InitiatorName = pdu_getbuf(pdu, NULL, 3);
+		else
+			sc->InitiatorName = NULL;
+
+log_debug("session %s to %s", sc->SessionName, log_sockaddr(&sc->connection.TargetAddr));
+		s = session_find(initiator, sc->SessionName);
+		if (s == NULL) {
+			s = session_new(initiator, sc->SessionType);
+			if (s == NULL) {
+				control_compose(ch, CTRL_FAILURE, NULL, 0);
+				goto done;
+			}
+		}
+
+		session_config(s, sc);
+
+		if (s->state == SESS_FREE) {
+			log_debug("new connection to %s",
+			    log_sockaddr(&s->config.connection.TargetAddr));
+			conn_new(s, &s->config.connection);
+		}
+
+		control_compose(ch, CTRL_SUCCESS, NULL, 0);
+		break;
+	default:
+		log_warnx("unknown control message type %d", cmh->type);
+		control_compose(ch, CTRL_FAILURE, NULL, 0);
+		break;
 	}
 
-	log_warn("parse_host: %s", gai_strerror(rv));
-	return -1;
-}
-
-int
-socket_setblockmode(int fd, int nonblocking)
-{
-	int     flags;
-
-	if ((flags = fcntl(fd, F_GETFL, 0)) == -1)
-		return -1;
-
-	if (nonblocking)
-		flags |= O_NONBLOCK;
-	else
-		flags &= ~O_NONBLOCK;     
-
-	if ((flags = fcntl(fd, F_SETFL, flags)) == -1)
-		return -1;
-	return 0;
+done:
+	pdu_free(pdu);
 }

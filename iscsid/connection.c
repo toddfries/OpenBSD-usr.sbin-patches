@@ -1,4 +1,4 @@
-/*	$OpenBSD$ */
+/*	$OpenBSD: connection.c,v 1.4 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -6,7 +6,7 @@
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -17,13 +17,17 @@
  */
 
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include <scsi/iscsi.h>
+#include <scsi/scsi_all.h>
+#include <dev/vscsivar.h>
 
 #include <errno.h>
 #include <event.h>
@@ -40,15 +44,17 @@ void	conn_write_dispatch(int, short, void *);
 
 int	c_do_connect(struct connection *, enum c_event);
 int	c_do_login(struct connection *, enum c_event);
-int	c_do_close(struct connection *, enum c_event);
+int	c_do_loggedin(struct connection *, enum c_event);
+int	c_do_logout(struct connection *, enum c_event);
 
 const char *conn_state(int);
 const char *conn_event(enum c_event);
 
 void
-conn_new(struct session *s, const char *ip, const char *port)
+conn_new(struct session *s, struct connection_config *cc)
 {
 	struct connection *c;
+	int nodelay = 1;
 
 	if (!(c = calloc(1, sizeof(*c))))
 		fatal("session_add_conn");
@@ -57,14 +63,10 @@ conn_new(struct session *s, const char *ip, const char *port)
 	c->state = CONN_FREE;
 	c->session = s;
 	c->cid = arc4random();
+	c->config = *cc;
 	TAILQ_INIT(&c->pdu_w);
 	TAILQ_INIT(&c->tasks);
 	TAILQ_INSERT_TAIL(&s->connections, c, entry);
-
-	if (parse_host(&c->target, ip, port)) {
-		free(c);
-		return;
-	}
 
 	if (pdu_readbuf_set(&c->prbuf, PDU_READ_SIZE)) {
 		log_warn("conn_new");
@@ -73,7 +75,7 @@ conn_new(struct session *s, const char *ip, const char *port)
 	}
 
 	/* create socket */
-	c->fd = socket(c->target.ss_family, SOCK_STREAM, 0);
+	c->fd = socket(c->config.TargetAddr.ss_family, SOCK_STREAM, 0);
 	if (c->fd == -1) {
 		log_warn("conn_new: socket");
 		conn_free(c);
@@ -84,6 +86,13 @@ conn_new(struct session *s, const char *ip, const char *port)
 		conn_free(c);
 		return;
 	}
+
+	/* try to turn off TCP Nagle */
+	if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &nodelay,
+	    sizeof(nodelay)) == -1)
+		log_warn("conn_new: setting TCP_NODELAY");
+
+
 
 	event_set(&c->ev, c->fd, EV_READ|EV_PERSIST, conn_dispatch, c);
 	event_set(&c->wev, c->fd, EV_WRITE, conn_write_dispatch, c);
@@ -146,7 +155,8 @@ conn_write_dispatch(int fd, short event, void *arg)
 		len = sizeof(error);
 		if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR,
 		    &error, &len) == -1 || (errno = error)) {
-			log_warn("cwd connect(%s)", log_sockaddr(&c->target));
+			log_warn("cwd connect(%s)",
+			    log_sockaddr(&c->config.TargetAddr));
 			conn_fail(c);
 			return;
 		}
@@ -163,11 +173,15 @@ conn_write_dispatch(int fd, short event, void *arg)
 		}
 
 		/* check if there is more to send */
-		if (pdu_pending(c)) {
-log_debug("conn_write_dispatch, stuff pending");
+		if (pdu_pending(c))
 			event_add(&c->wev, NULL);
-		}
 	}
+}
+
+void
+conn_close(struct connection *c)
+{
+	conn_fsm(c, CONN_EV_CLOSE);
 }
 
 void
@@ -176,13 +190,21 @@ conn_fail(struct connection *c)
 	conn_fsm(c, CONN_EV_FAIL);
 }
 
+void
+conn_loggedin(struct connection *c)
+{
+	if (c->session->config.SessionType == SESSION_TYPE_DISCOVERY)
+		conn_fsm(c, CONN_EV_DISCOVERY);
+	else
+		conn_fsm(c, CONN_EV_LOGGED_IN);
+}
+
 int
 conn_task_issue(struct connection *c, struct task *t)
 {
 	/* XXX need to verify that we're in the right state for the task */
 
-log_debug("conn_task_issue");
-	if (!TAILQ_EMPTY(&c->tasks))  
+	if (!TAILQ_EMPTY(&c->tasks))
 		return 0;
 
 	TAILQ_INSERT_TAIL(&c->tasks, t, entry);
@@ -201,7 +223,6 @@ conn_task_schedule(struct connection *c)
 		return;
 	}
 
-log_debug("conn_task_schedule, adding shitz");
 	/* move pdus to the write queue */
 	for (p = TAILQ_FIRST(&t->sendq); p != NULL; p = np) {
 		np = TAILQ_NEXT(p, entry);
@@ -216,7 +237,7 @@ conn_pdu_write(struct connection *c, struct pdu *p)
 	struct iscsi_pdu *ipdu;
 
 /* XXX I GUESS THIS SHOULD BE MOVED TO PDU SOMEHOW... */
-	ipdu = pdu_gethdr(p, 0);
+	ipdu = pdu_getbuf(p, NULL, PDU_HEADER);
 	switch (ISCSI_PDU_OPCODE(ipdu->opcode)) {
 	case ISCSI_OP_TASK_REQUEST:
 		ipdu->expstatsn = ntohl(c->expstatsn);
@@ -235,7 +256,9 @@ struct {
 } fsm[] = {
 	{ CONN_FREE, CONN_EV_CONNECT, c_do_connect },
 	{ CONN_XPT_WAIT, CONN_EV_CONNECTED, c_do_login },
-	{ CONN_IN_LOGIN, CONN_EV_CLOSE, c_do_close },
+	{ CONN_IN_LOGIN, CONN_EV_LOGGED_IN, c_do_loggedin },
+	{ CONN_IN_LOGIN, CONN_EV_DISCOVERY, c_do_loggedin },
+	{ CONN_LOGGED_IN, CONN_EV_CLOSE, c_do_logout },
 	{ 0, 0, NULL }
 };
 
@@ -268,13 +291,14 @@ c_do_connect(struct connection *c, enum c_event ev)
 	if (c->fd == -1)
 		fatalx("c_do_connect, lost socket");
 
-	if (connect(c->fd, (struct sockaddr *)&c->target,
-	    c->target.ss_len) == -1) {
+	if (connect(c->fd, (struct sockaddr *)&c->config.TargetAddr,
+	    c->config.TargetAddr.ss_len) == -1) {
 		if (errno == EINPROGRESS) {
 			event_add(&c->wev, NULL);
 			return (CONN_XPT_WAIT);
 		} else {
-			log_warn("connect(%s)", log_sockaddr(&c->target));
+			log_warn("connect(%s)",
+			    log_sockaddr(&c->config.TargetAddr));
 			return (-1);
 		}
 	}
@@ -291,9 +315,20 @@ c_do_login(struct connection *c, enum c_event ev)
 }
 
 int
-c_do_close(struct connection *c, enum c_event ev)
+c_do_loggedin(struct connection *c, enum c_event ev)
 {
-	return (CONN_XPT_UP);
+	if (ev == CONN_EV_LOGGED_IN)
+		vscsi_event(VSCSI_REQPROBE, c->session->target, 0);
+	else
+		initiator_discovery(c->session);
+	return (CONN_LOGGED_IN);
+}
+
+int
+c_do_logout(struct connection *c, enum c_event ev)
+{
+	/* do full logout */
+	return (CONN_FREE);
 }
 
 const char *
@@ -339,6 +374,10 @@ conn_event(enum c_event e)
 		return "connect";
 	case CONN_EV_CONNECTED:
 		return "connected";
+	case CONN_EV_LOGGED_IN:
+		return "logged in";
+	case CONN_EV_DISCOVERY:
+		return "discovery";
 	case CONN_EV_CLOSE:
 		return "close";
 	}

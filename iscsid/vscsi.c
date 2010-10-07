@@ -1,4 +1,4 @@
-/*	$OpenBSD$ */
+/*	$OpenBSD: vscsi.c,v 1.2 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -6,7 +6,7 @@
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -78,7 +78,6 @@ vscsi_dispatch(int fd, short event, void *arg)
 		return;
 	}
 
-log_debug("VSCSI IS AMAZING!..");
 	if (ioctl(v.fd, VSCSI_I2T, &i2t) == -1)
 		fatal("vscsi_dispatch");
 
@@ -95,7 +94,7 @@ log_debug("VSCSI IS AMAZING!..");
 
 	if (!(p = pdu_new()))
 		fatal("vscsi_dispatch");
-	if (!(sreq = pdu_gethdr(p, 1)))
+	if (!(sreq = pdu_gethdr(p)))
 		fatal("vscsi_dispatch");
 
 	sreq->opcode = ISCSI_OP_SCSI_REQUEST;
@@ -105,7 +104,6 @@ log_debug("VSCSI IS AMAZING!..");
 		sreq->flags |= ISCSI_SCSI_F_W;
 	if (i2t.direction == VSCSI_DIR_READ)
 		sreq->flags |= ISCSI_SCSI_F_R;
-log_debug("I2T bytes %zd", i2t.datalen);
 	sreq->bytes = htonl(i2t.datalen);
 
 	/* XXX LUN HANDLING !!!! */
@@ -119,7 +117,7 @@ log_debug("I2T bytes %zd", i2t.datalen);
 		t32 = htonl(i2t.datalen);
 		bcopy(&t32, &sreq->ahslen, sizeof(t32));
 		vscsi_data(VSCSI_DATA_WRITE, i2t.tag, buf, i2t.datalen);
-		pdu_addbuf(p, buf, i2t.datalen);
+		pdu_addbuf(p, buf, i2t.datalen, PDU_DATA);
 	}
 #endif
 
@@ -155,7 +153,6 @@ vscsi_status(int tag, int status, void *buf, size_t len)
 			    "I'm afraid I can't do that.");
 		bcopy(buf, &t2i.sense, len);
 	}
-	t2i.senselen = len;
 
 	if (ioctl(v.fd, VSCSI_T2I, &t2i) == -1)
 		fatal("vscsi_status");
@@ -170,7 +167,7 @@ vscsi_event(unsigned long req, u_int target, u_int lun)
 	devev.lun = lun;
 
 	if (ioctl(v.fd, req, &devev) == -1)
-		fatal("vscsi_devent");
+		fatal("vscsi_event");
 }
 
 void
@@ -182,17 +179,20 @@ vscsi_callback(struct connection *c, void *arg, struct pdu *p)
 	int status = VSCSI_STAT_DONE;
 	u_char *buf = NULL;
 	size_t size = 0, n;
+	int tag;
 
-	sresp = pdu_gethdr(p, 0);
+	sresp = pdu_getbuf(p, NULL, PDU_HEADER);
 	switch (ISCSI_PDU_OPCODE(sresp->opcode)) {
 	case ISCSI_OP_SCSI_RESPONSE:
 		task_cleanup(&t->task, c);
+		tag = t->tag;
+		free(t);
 
 		if (!(sresp->flags & 0x80) || (sresp->flags & 0x06) == 0x06 ||
 		    (sresp->flags & 0x18) == 0x18) {
 			log_debug("vscsi_callback: bad scsi response");
 			conn_fail(c);
-			return;
+			break;
 		}
 		/* XXX handle the various serial numbers */
 		if (sresp->response) {
@@ -205,7 +205,7 @@ vscsi_callback(struct connection *c, void *arg, struct pdu *p)
 		case ISCSI_SCSI_STAT_CHCK_COND:
 			status = VSCSI_STAT_SENSE;
 			/* stupid encoding of sense data in the data segment */
-			buf = pdu_getbuf(p, &n);
+			buf = pdu_getbuf(p, &n, PDU_DATA);
 			if (buf) {
 				size = buf[0] << 8 | buf[1];
 				buf += 2;
@@ -216,17 +216,21 @@ vscsi_callback(struct connection *c, void *arg, struct pdu *p)
 			break;
 		}
 send_status:
-log_debug("doing a vscsi_status(tag=%d, status=%d)", t->tag, status);
-		vscsi_status(t->tag, status, buf, size);
+		vscsi_status(tag, status, buf, size);
 		break;
 	case ISCSI_OP_DATA_IN:
-		buf = pdu_getbuf(p, &n);
+		buf = pdu_getbuf(p, &n, PDU_DATA);
 		size = sresp->datalen[0] << 16 | sresp->datalen[1] << 8 |
 		    sresp->datalen[2];
 		if (size > n)
 			fatal("This does not work as it should");
-log_debug("doing a vscsi_data(VSCSI_DATA_READ tag=%d)", t->tag);
 		vscsi_data(VSCSI_DATA_READ, t->tag, buf, size);
+		if (sresp->flags & 1) {
+			log_debug("and a vscsi_status");
+			task_cleanup(&t->task, c);
+			vscsi_status(t->tag, status, NULL, 0);
+			free(t);
+		}
 		break;
 	case ISCSI_OP_R2T:
 		task_cleanup(&t->task, c);
@@ -240,8 +244,9 @@ log_debug("doing a vscsi_data(VSCSI_DATA_READ tag=%d)", t->tag);
 	default:
 		log_debug("scsi task: tag %d, target %d lun %d", t->tag,
 		    t->target, t->lun);
-		log_pdu(p);
+		log_pdu(p, 1);
 	}
+	pdu_free(p);
 }
 
 void
@@ -258,24 +263,23 @@ vscsi_dataout(struct session *s, struct scsi_task *t, u_int32_t ttt, size_t len)
 
 		if (!(p = pdu_new()))
 			fatal("vscsi_r2t");
-		if (!(dout = pdu_gethdr(p, 1)))
+		if (!(dout = pdu_gethdr(p)))
 			fatal("vscsi_r2t");
 
 		dout->opcode = ISCSI_OP_DATA_OUT;
-		if (off + len == size)
-			dout->flags = 0x80; /* XXX F flag*/
+		if (off + size == len)
+			dout->flags = 0x80; /* XXX magic value: F flag*/
 		dout->ttt = ttt;
-		dout->datasn = dsn++;
+		dout->datasn = htonl(dsn++);
 		t32 = htonl(size);
 		bcopy(&t32, &dout->ahslen, sizeof(t32));
 
-		dout->buffer_offs = off;
+		dout->buffer_offs = htonl(off);
 		if (!(buf = pdu_alloc(size)))
 			fatal("vscsi_r2t");
 
 		vscsi_data(VSCSI_DATA_WRITE, t->tag, buf, size);
-		pdu_addbuf(p, buf, size);
-log_debug("doing a vscsi_data(VSCSI_DATA_READ tag=%d, size=%zd)", t->tag, size);
+		pdu_addbuf(p, buf, size, PDU_DATA);
 		task_pdu_add(&t->task, p);
 	}
 	session_task_issue(s, &t->task);
