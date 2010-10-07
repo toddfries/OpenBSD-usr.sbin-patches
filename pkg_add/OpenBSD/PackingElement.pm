@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.173 2010/01/19 14:26:24 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.183 2010/08/03 14:07:27 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -45,7 +45,7 @@ sub create
 	}
 }
 
-sub register_with_factory 
+sub register_with_factory
 {
 	my ($class, $k, $o) = @_;
 	if (!defined $k) {
@@ -53,7 +53,7 @@ sub register_with_factory
 	}
 	if (!defined $o) {
 		$o = $class;
-	} 
+	}
 	$keyword{$k} = $o;
 }
 
@@ -72,7 +72,7 @@ sub clone
 	my %h = %$object;
 	bless \%h, ref($object);
 }
-	
+
 
 sub register_manpage
 {
@@ -99,7 +99,7 @@ sub add
 }
 
 sub needs_keyword() { 1 }
-	
+
 sub write
 {
 	my ($self, $fh) = @_;
@@ -394,16 +394,16 @@ sub check_digest
 	my ($self, $file, $state) = @_;
 	return if $self->{link} or $self->{symlink};
 	if (!defined $self->{d}) {
-		$state->log->fatal($self->fullname, 
-		    " does not have a signature");
+		$state->log->fatal($state->f("#1 does not have a signature",
+		    $self->fullname));
 	}
 	my $d = $self->compute_digest($file->{destdir}.$file->name);
 	if (!$d->equals($self->{d})) {
-		$state->log->fatal("checksum for ", $self->fullname, 
-		    " does not match");
+		$state->log->fatal($state->f("checksum for #1 does not match",
+		    $self->fullname));
 	}
 	if ($state->verbose >= 3) {
-		$state->say("Checksum match for ", $self->fullname);
+		$state->say("Checksum match for #1", $self->fullname);
 	}
 }
 
@@ -534,6 +534,12 @@ sub format
 	open STDOUT, '>&', $oldout;
 }
 
+package OpenBSD::PackingElement::Mandoc;
+our @ISA=qw(OpenBSD::PackingElement::Manpage);
+
+sub keyword() { "mandoc" }
+__PACKAGE__->register_with_factory;
+
 package OpenBSD::PackingElement::Lib;
 our @ISA=qw(OpenBSD::PackingElement::FileBase);
 
@@ -547,7 +553,7 @@ sub mark_ldconfig_directory
 	require OpenBSD::SharedLibs;
 
 	my ($self, $destdir) = @_;
-	OpenBSD::SharedLibs::mark_ldconfig_directory($self->fullname, 
+	OpenBSD::SharedLibs::mark_ldconfig_directory($self->fullname,
 	    $destdir);
 }
 
@@ -632,7 +638,7 @@ __PACKAGE__->register_with_factory('md5');
 sub add
 {
 	my ($class, $plist, $args) = @_;
-	
+
 	require OpenBSD::md5;
 
 	$plist->{state}->{lastchecksummable}->add_digest(OpenBSD::md5->fromstring($args));
@@ -647,7 +653,7 @@ __PACKAGE__->register_with_factory('sha');
 sub add
 {
 	my ($class, $plist, $args) = @_;
-	
+
 	require OpenBSD::md5;
 
 	$plist->{state}->{lastchecksummable}->add_digest(OpenBSD::sha->fromstring($args));
@@ -685,9 +691,9 @@ sub new
 {
 	my ($class, $args) = @_;
 	my ($tag, $condition, @command) = split(/\s+/, $args);
-	bless { 
-		name => $tag, 
-		when => $condition, 
+	bless {
+		name => $tag,
+		when => $condition,
 		command => join(' ', @command)
 	}, $class;
 }
@@ -695,7 +701,7 @@ sub new
 sub stringize
 {
 	my $self = shift;
-	return join(' ', map { $self->{$_}} 
+	return join(' ', map { $self->{$_}}
 		(qw(name when command)));
 }
 
@@ -777,10 +783,10 @@ sub new
 package OpenBSD::PackingElement::UniqueOption;
 our @ISA=qw(OpenBSD::PackingElement::Unique OpenBSD::PackingElement::Option);
 
-sub stringize 
-{ 
+sub stringize
+{
 	my $self = shift;
-	return $self->category; 
+	return $self->category;
 }
 
 sub new
@@ -892,6 +898,14 @@ sub keyword() { "conflict" }
 __PACKAGE__->register_with_factory;
 sub category() { "conflict" }
 
+sub spec
+{
+	my $self =shift;
+
+	require OpenBSD::Search;
+	return OpenBSD::Search::PkgSpec->new($self->name);
+}
+
 package OpenBSD::PackingElement::Dependency;
 our @ISA=qw(OpenBSD::PackingElement::Depend);
 use OpenBSD::Error;
@@ -904,14 +918,14 @@ sub new
 {
 	my ($class, $args) = @_;
 	my ($pkgpath, $pattern, $def) = split /\:/o, $args;
-	bless { name => $def, pkgpath => $pkgpath, pattern => $pattern, 
+	bless { name => $def, pkgpath => $pkgpath, pattern => $pattern,
 	    def => $def }, $class;
 }
 
 sub stringize
 {
 	my $self = shift;
-	return join(':', map { $self->{$_}} 
+	return join(':', map { $self->{$_}}
 	    (qw(pkgpath pattern def)));
 }
 
@@ -972,6 +986,35 @@ sub keyword() { "incompatibility" }
 __PACKAGE__->register_with_factory;
 sub category() { "incompatibility" }
 
+package OpenBSD::PackingElement::AskUpdate;
+our @ISA=qw(OpenBSD::PackingElement::Meta);
+
+sub new
+{
+	my ($class, $args) = @_;
+	my ($pattern, $message) = split /\s+/o, $args, 2;
+	bless { pattern => $pattern, message => $message}, $class;
+}
+
+sub stringize
+{
+	my $self = shift;
+	return join(' ', map { $self->{$_}}
+	    (qw(pattern message)));
+}
+
+sub keyword() { "ask-update" }
+__PACKAGE__->register_with_factory;
+sub category() { "ask-update" }
+
+OpenBSD::Auto::cache(spec,
+    sub {
+	require OpenBSD::PkgSpec;
+
+	my $self = shift;
+	return OpenBSD::PkgSpec->new($self->{pattern})
+    });
+
 package OpenBSD::PackingElement::UpdateSet;
 our @ISA=qw(OpenBSD::PackingElement::Meta);
 
@@ -993,17 +1036,17 @@ __PACKAGE__->register_with_factory;
 sub new
 {
 	my ($class, $args) = @_;
-	my ($name, $uid, $group, $loginclass, $comment, $home, $shell) = 
+	my ($name, $uid, $group, $loginclass, $comment, $home, $shell) =
 	    split /\:/o, $args;
-	bless { name => $name, uid => $uid, group => $group, 
-	    class => $loginclass, 
+	bless { name => $name, uid => $uid, group => $group,
+	    class => $loginclass,
 	    comment => $comment, home => $home, shell => $shell }, $class;
 }
 
 sub check
 {
 	my $self = shift;
-	my ($name, $passwd, $uid, $gid, $quota, $class, $gcos, $dir, $shell, 
+	my ($name, $passwd, $uid, $gid, $quota, $class, $gcos, $dir, $shell,
 	    $expire) = getpwnam($self->name);
 	return unless defined $name;
 	if ($self->{uid} =~ m/^\!(.*)$/o) {
@@ -1035,7 +1078,7 @@ sub check
 sub stringize
 {
 	my $self = shift;
-	return join(':', map { $self->{$_}} 
+	return join(':', map { $self->{$_}}
 	    (qw(name uid group class comment home shell)));
 }
 
@@ -1069,7 +1112,7 @@ sub check
 sub stringize($)
 {
 	my $self = $_[0];
-	return join(':', map { $self->{$_}} 
+	return join(':', map { $self->{$_}}
 	    (qw(name gid)));
 }
 
@@ -1215,9 +1258,9 @@ sub run
 	my ($self, $state) = @_;
 
 	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
-	$state->say($self->keyword, " ", $self->{expanded}) 
+	$state->say("#1 #2", $self->keyword, $self->{expanded})
 	    if $state->verbose >= 2;
-	$state->log->system(OpenBSD::Paths->sh, '-c', $self->{expanded}) 
+	$state->log->system(OpenBSD::Paths->sh, '-c', $self->{expanded})
 	    unless $state->{not};
 }
 
@@ -1287,7 +1330,7 @@ sub destate
 	$state->{lastdir} = $self;
 	$self->SUPER::destate($state);
 }
-	
+
 
 sub stringize
 {
@@ -1385,7 +1428,7 @@ sub run_if_exists
 	if (-x $cmd) {
 		$state->vsystem($cmd, @l);
 	} else {
-		$state->errsay("$cmd not found");
+		$state->errsay("#1 not found", $cmd);
 	}
 }
 
@@ -1397,7 +1440,7 @@ sub finish_fontdirs
 		require OpenBSD::Error;
 
 		map { update_fontalias($_) } @l unless $state->{not};
-		$state->say("You may wish to update your font path for ", 
+		$state->say("You may wish to update your font path for #1",
 		    join(' ', @l));
 		return if $state->{not};
 		run_if_exists($state, OpenBSD::Paths->mkfontscale, '--', @l);
@@ -1529,13 +1572,13 @@ sub run
 	return if $state->{dont_run_scripts};
 
 	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
-	$state->say($self->beautify, " script: $name $pkgname ", 
+	$state->say("#1 script: #2 #3 #4", $self->beautify, $name, $pkgname,
 	    join(' ', @args)) if $state->verbose >= 2;
 	return if $state->{not};
 	chmod 0755, $name;
 	return if $state->log->system($name, $pkgname, @args) == 0;
-	if ($state->{defines}->{scripts}) {
-		$state->log->warn($self->beautify, " script failed\n");
+	if ($state->defines('scripts')) {
+		$state->log->say($self->beautify." script failed");
 	} else {
 		$state->log->fatal($self->beautify." script failed");
 	}
@@ -1576,12 +1619,13 @@ sub prepare
 	my $fname = $self->fullname;
 	if (open(my $src, '<', $fname)) {
 		while (<$src>) {
+			chomp;
 			next if m/^\+\-+\s*$/o;
 			s/^[+-] //o;
-			$state->log($_);
-		} 
+			$state->log("#1", $_);
+		}
 	} else {
-		$state->errsay("Can't open $fname: $!");
+		$state->errsay("Can't open #1: #2", $fname, $!);
     	}
 }
 
@@ -1660,7 +1704,7 @@ sub time_to_iso8601
 {
 	my $time = shift;
 	my ($sec, $min, $hour, $day, $month, $year, @rest) = gmtime($time);
-	return sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", 
+	return sprintf("%04d-%02d-%02dT%02d:%02d:%02dZ",
 	    $year+1900, $month+1, $day, $hour, $min, $sec);
 }
 
@@ -1698,19 +1742,19 @@ sub new_x509
 	my ($class) = @_;
 	bless { key => 'x509', timestamp => time, b64sig => '' }, $class;
 }
- 
+
 
 sub stringize
 {
 	my $self = shift;
-	return join(':', $self->{key}, time_to_iso8601($self->{timestamp}), 
+	return join(':', $self->{key}, time_to_iso8601($self->{timestamp}),
 	    $self->{b64sig});
 }
 
 sub write_no_sig
 {
 	my ($self, $fh) = @_;
-	print $fh "\@", $self->keyword, " ", $self->{key}, ":", 
+	print $fh "\@", $self->keyword, " ", $self->{key}, ":",
 	    time_to_iso8601($self->{timestamp}), "\n";
 }
 
@@ -1750,7 +1794,7 @@ sub register_old_keyword
 	$class->register_with_factory($k, bless \$k, $class);
 }
 
-for my $k (qw(src display mtree ignore_inst dirrm pkgcfl pkgdep newdepend 
+for my $k (qw(src display mtree ignore_inst dirrm pkgcfl pkgdep newdepend
     libdepend ignore)) {
 	__PACKAGE__->register_old_keyword($k);
 }

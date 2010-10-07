@@ -1,3 +1,5 @@
+/* $OpenBSD: l2tp_ctrl.c,v 1.5 2010/09/24 14:50:30 yasuoka Exp $	*/
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,10 +25,8 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/**@file
- * L2TP LNS のコントロールコネクションの処理を提供します。
- */
-// $Id: l2tp_ctrl.c,v 1.2 2010/01/13 07:49:44 yasuoka Exp $
+/**@file Control connection processing functions for L2TP LNS */
+/* $Id: l2tp_ctrl.c,v 1.5 2010/09/24 14:50:30 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/time.h>
@@ -92,14 +92,14 @@ static inline const char  *l2tp_ctrl_state_string (l2tp_ctrl *);
 #define	L2TP_CTRL_DBG(x)
 #endif
 
-/** l2tp_ctrl の ID番号のシーケンス番号 */
+/* Sequence # of l2tp_ctrl ID */
 static unsigned l2tp_ctrl_id_seq = 0;
 
 #define SEQ_LT(a,b)	((int16_t)((a) - (b)) <  0)
 #define SEQ_GT(a,b)	((int16_t)((a) - (b)) >  0)
 
 /**
- * {@link ::_l2tp_ctrl L2TP LNS コントロールコネクション}のインスタンス生成
+ * Build instance of {@link ::_l2tp_ctrl L2TP LNS control connection}
  */
 l2tp_ctrl *
 l2tp_ctrl_create(void)
@@ -114,8 +114,8 @@ l2tp_ctrl_create(void)
 }
 
 /**
- * {@link ::_l2tp_ctrl L2TP LNS コントロールコネクション}のインスタンスの
- * 初期化と開始を行います。
+ * initialize and startup of {@link ::_l2tp_ctrl L2TP LNS control connection}
+ * instance
  */
 static int
 l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
@@ -133,9 +133,8 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 	_this->last_snd_ctrl = curr_time;
 
 	slist_init(&_this->call_list);
-	/*
-	 * 空いているトンネルIDを探す
-	 */
+
+	/* seek a free tunnel ID */
 	i = 0;
 	_this->id = ++l2tp_ctrl_id_seq;
 	for (i = 0, tunid = _this->id; ; i++, tunid++) {
@@ -146,7 +145,7 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 		if (l2tpd_get_ctrl(_l2tpd, tunid) == NULL)
 			break;
 		if (i > 80000) {
-			// バグに違いない
+			/* this must be happen, just log it. */
 			l2tpd_log(_l2tpd, LOG_ERR, "Too many l2tp controls");
 			return -1;
 		}
@@ -159,19 +158,19 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 	memcpy(&_this->peer, peer, peer->sa_len);
 	memcpy(&_this->sock, sock, sock->sa_len);
 
-	/* 送信バッファの準備 */
+	/* prepare send buffer */
 	_this->winsz = L2TPD_DEFAULT_SEND_WINSZ;
 	if ((_this->snd_buffers = calloc(_this->winsz, sizeof(bytebuffer *)))
 	    == NULL) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "calloc() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 	for (i = 0; i < _this->winsz; i++) {
 		if ((bytebuf = bytebuffer_create(L2TPD_SND_BUFSIZ)) == NULL) {
 			l2tpd_log(_l2tpd, LOG_ERR,
 			    "bytebuffer_create() failed in %s(): %m", __func__);
-			goto reigai;
+			goto fail;
 		}
 		_this->snd_buffers[i] = bytebuf;
 	}
@@ -179,7 +178,7 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 	    + 128)) == NULL) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "bytebuffer_create() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 #ifdef USE_LIBSOCKUTIL
 	if (nat_t_ctx != NULL) {
@@ -190,7 +189,7 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 		} else {
 			l2tpd_log(_l2tpd, LOG_ERR,
 			    "creating sa_cookie failed: %m");
-			goto reigai;
+			goto fail;
 		}
 	}
 #endif
@@ -198,20 +197,19 @@ l2tp_ctrl_init(l2tp_ctrl *_this, l2tpd *_l2tpd, struct sockaddr *peer,
 	_this->hello_timeout = L2TP_CTRL_DEFAULT_HELLO_TIMEOUT;
 	_this->hello_io_time = curr_time;
 
-	/* タイマーのセット */
+	/* initialize timeout timer */
 	l2tp_ctrl_reset_timeout(_this);
 
-	/* 登録 */
+	/* register l2tp context */
 	l2tpd_add_ctrl(_l2tpd, _this);
 	return 0;
-reigai:
+fail:
 	l2tp_ctrl_stop(_this, 0);
 	return -1;
 }
 
-/**
- * {@link ::_l2tp_ctrl L2TP LNS コントロールコネクション} のインスタンスの
- * 設定を行います。
+/*
+ * setup {@link ::_l2tp_ctrl L2TP LNS control connection} instance
  */
 static void
 l2tp_ctrl_reload(l2tp_ctrl *_this)
@@ -229,9 +227,8 @@ l2tp_ctrl_reload(l2tp_ctrl *_this)
 	return;
 }
 
-/**
- * {@link ::_l2tp_ctrl L2TP LNS コントロールコネクション}のインスタンスを解放
- * します。
+/*
+ * free {@link ::_l2tp_ctrl L2TP LNS control connection} instance
  */
 void
 l2tp_ctrl_destroy(l2tp_ctrl *_this)
@@ -244,12 +241,13 @@ l2tp_ctrl_destroy(l2tp_ctrl *_this)
 	free(_this);
 }
 
-/**
- * 切断を先方に通知します。
+/*
+ * nortify disconnection to peer
  *
- * @return	CDN、StopCCN を送信済みの場合には 0。CDN を送信できていない
- *		コールが存在する場合にはその数、StopCCN の送信に失敗した場合
- *		-1 が返ります。
+ * @return 	0: all CDN and StopCCN have been sent.
+ *		N: if the remaining calls which still not sent CDN exist,
+ *		   return # of the calls.
+ *		-1: when try to send of StopCCN failed.
  */
 static int
 l2tp_ctrl_send_disconnect_notify(l2tp_ctrl *_this)
@@ -260,19 +258,18 @@ l2tp_ctrl_send_disconnect_notify(l2tp_ctrl *_this)
 	L2TP_CTRL_ASSERT(_this->state == L2TP_CTRL_STATE_ESTABLISHED ||
 	    _this->state == L2TP_CTRL_STATE_CLEANUP_WAIT);
 
-	// アクティブじゃなかったり、StopCCN を送信済み。
+	/* the contexts is not active or StopCCN have been sent */
 	if (_this->active_closing == 0)
 		return 0;
 
-	// すべての Call に CDN 
+	/* CDN have been sent for all Calls */
 	ncalls = 0;
 	if (slist_length(&_this->call_list) != 0) {
 		ncalls = l2tp_ctrl_disconnect_all_calls(_this);
 		if (ncalls > 0) {
 			/*
-			 * 送信 Window が埋まっているかどうかを検査するために
-			 * 再度呼び出す。ゼロになれば、すべての call に CDN を
-			 * 送信し終わった。
+			 * Call l2tp_ctrl_disconnect_all_calls() to check
+			 * the send window still filled.
 			 */
 			ncalls = l2tp_ctrl_disconnect_all_calls(_this);
 		}
@@ -287,19 +284,21 @@ l2tp_ctrl_send_disconnect_notify(l2tp_ctrl *_this)
 	return 0;
 }
 
-/**
- * コントロールコネクションを終了します。
+/*
+ * Terminate the control connection
  *
  * <p>
- * アクティブクローズの (StopCCN を送信する) 場合には、StopCCN の
- * ResultCode AVP ように result に 1 以上の適切な値を指定してください。</p>
+ * please spcify an appropriate value to result( >0 ) for
+ * StopCCN ResultCode AVP, when to sent Active Close (which
+ * require StopCCN sent).</p>
  * <p>
- * 戻り値が 0 の場合、_this は解放されていますので、l2tp_ctrl の処理を
- * 続行することはできません。また、1 の場合(解放されていない場合) は、
- * タイマはリセットされています。</p>
+ * When the return value of this function is zero, the _this
+ * is already released. The lt2p_ctrl process that was bound to it
+ * could not contine.
+ * When the return value of this function is one, the timer
+ * is reset.</p>
  *
- * @return	完全に終了した場合には 0 を、まだ完全に終了していない場合
- *		には、0 以外を返します。
+ * @return	return 0 if terminate process was completed.
  */
 int
 l2tp_ctrl_stop(l2tp_ctrl *_this, int result)
@@ -321,13 +320,13 @@ l2tp_ctrl_stop(l2tp_ctrl *_this, int result)
 	default:
 		l2tp_ctrl_log(_this, LOG_DEBUG, "%s() unexpected state=%s",
 		    __func__, l2tp_ctrl_state_string(_this));
-		// FALL THROUGH;
+		/* FALLTHROUGH */
 	case L2TP_CTRL_STATE_WAIT_CTL_CONN:
-		// FALL THROUGH;
+		/* FALLTHROUGH */
 	case L2TP_CTRL_STATE_CLEANUP_WAIT:
 cleanup:
 		if (slist_length(&_this->call_list) != 0) {
-			if (l2tp_ctrl_disconnect_all_calls(_this) > 0) 
+			if (l2tp_ctrl_disconnect_all_calls(_this) > 0)
 				break;
 		}
 #if 0
@@ -339,7 +338,7 @@ cleanup:
 
 		evtimer_del(&_this->ev_timeout);
 
-		/* 送信バッファの解放 */
+		/* free send buffer */
 		if (_this->snd_buffers != NULL) {
 			for (i = 0; i < _this->winsz; i++)
 				bytebuffer_destroy(_this->snd_buffers[i]);
@@ -350,7 +349,8 @@ cleanup:
 			bytebuffer_destroy(_this->zlb_buffer);
 			_this->zlb_buffer = NULL;
 		}
-		/* l2tp_call の解放 */
+
+		/* free l2tp_call */
 		l2tp_ctrl_destroy_all_calls(_this);
 		slist_fini(&_this->call_list);
 
@@ -360,7 +360,7 @@ cleanup:
 		l2tp_ctrl_destroy(_this);
 
 		l2tpd_ctrl_finished_notify(_l2tpd);
-		return 0;	// stopped
+		return 0;	/* stopped */
 	}
 	l2tp_ctrl_reset_timeout(_this);
 
@@ -373,15 +373,12 @@ static void
 l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 {
 	int is_natt, proto;
-	struct sockaddr_in peer, sock;
+	struct sockaddr_storage peer, sock;
 	hash_link *hl;
 #ifdef USE_LIBSOCKUTIL
 	struct in_ipsec_sa_cookie *ipsec_sa_cookie;
 #endif
 	l2tp_ctrl *anot;
-
-	L2TP_CTRL_ASSERT(_this->peer.ss_family == AF_INET);
-	L2TP_CTRL_ASSERT(_this->sock.ss_family == AF_INET);
 
 	/*
 	 * Search another tunnel that uses the same IPsec SA
@@ -392,20 +389,21 @@ l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 		anot = hl->item;
 		if (anot == _this)
 			continue;
-		switch (_this->peer.ss_family) {
-		case AF_INET:
-			if (SIN(&_this->peer)->sin_addr.s_addr ==
-			    SIN(&anot->peer)->sin_addr.s_addr)
-				break;
-			continue;
 
-		default:
-			L2TP_CTRL_ASSERT(0);
-			/* Not implemented yet */
+		if (_this->peer.ss_family != anot->peer.ss_family)
+			continue;
+		if (_this->peer.ss_family == AF_INET) {
+			if (SIN(&_this->peer)->sin_addr.s_addr !=
+			    SIN(&anot->peer)->sin_addr.s_addr)
+				continue;
+		} else if (_this->peer.ss_family == AF_INET6) {
+			if (!IN6_ARE_ADDR_EQUAL(
+			    &(SIN6(&_this->peer)->sin6_addr),
+			    &(SIN6(&anot->peer)->sin6_addr)))
+				continue;
 		}
 #ifdef USE_LIBSOCKUTIL
-		if (_this->sa_cookie != NULL &&
-		    anot->sa_cookie != NULL) {
+		if (_this->sa_cookie != NULL && anot->sa_cookie != NULL) {
 			/* Both tunnels belong the same NAT box.  */
 
 			if (memcmp(_this->sa_cookie, anot->sa_cookie,
@@ -416,11 +414,9 @@ l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 			/* The SA is shared by another tunnels by one host. */
 			return;	/* don't purge the sa */
 
-		} else if (_this->sa_cookie != NULL ||
-		    anot->sa_cookie != NULL) {
+		} else if (_this->sa_cookie != NULL || anot->sa_cookie != NULL)
 			/* Only one is behind the NAT */
 			continue;
-		}
 #endif
 		return;	/* don't purge the sa */
 	}
@@ -430,17 +426,17 @@ l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 #else
 	is_natt = 0;
 #endif
-	memcpy(&peer, &_this->peer, sizeof(peer));
-	memcpy(&sock, &_this->sock, sizeof(sock));
+	memcpy(&peer, &_this->peer, _this->peer.ss_len);
+	memcpy(&sock, &_this->sock, _this->sock.ss_len);
 	if (!is_natt) {
 		proto = 0;
-		peer.sin_port = sock.sin_port = 0;
+		SIN(&peer)->sin_port = SIN(&sock)->sin_port = 0;
 	}
 #ifdef USE_LIBSOCKUTIL
 	else {
 		ipsec_sa_cookie = _this->sa_cookie;
-		peer.sin_port = ipsec_sa_cookie->remote_port;
-		sock.sin_port = ipsec_sa_cookie->local_port;
+		SIN(&peer)->sin_port = ipsec_sa_cookie->remote_port;
+		SIN(&sock)->sin_port = ipsec_sa_cookie->local_port;
 #if 1
 		/*
 		 * XXX: As RFC 2367, protocol sould be specified if the port
@@ -453,13 +449,12 @@ l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 	}
 #endif
 	if (ipsec_util_purge_transport_sa((struct sockaddr *)&peer,
-	    (struct sockaddr *)&sock, proto, IPSEC_UTIL_DIRECTION_BOTH) != 0) {
+	    (struct sockaddr *)&sock, proto, IPSEC_UTIL_DIRECTION_BOTH) != 0)
 		l2tp_ctrl_log(_this, LOG_NOTICE, "failed to purge IPSec SA");
-	}
 }
 #endif
 
-/** タイマー関連処理 */
+/* timeout processing */
 static void
 l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 {
@@ -469,9 +464,9 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 	l2tp_call *call;
 
 	/*
-	 * この関数から抜ける場合は、タイマをリセットしなければならない。
-	 * l2tp_ctrl_stop は、l2tp_ctrl_stop 内でタイマをリセットする。
-	 * l2tp_ctrl_stop は、_this を解放する可能性がある点にも注意。
+	 * the timer must be reset, when leave this function.
+	 * MEMO: l2tp_ctrl_stop() will reset the timer in it.
+	 * and please remember that the l2tp_ctrl_stop() may free _this.
 	 */
 	_this = ctx;
 	L2TP_CTRL_ASSERT(_this != NULL);
@@ -484,7 +479,7 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 	if (l2tp_ctrl_txwin_size(_this) > 0)  {
 		if (_this->state == L2TP_CTRL_STATE_ESTABLISHED) {
 			if (_this->hello_wait_ack != 0) {
-				/* Hello 応答待ち */
+				/* wait Hello reply */
 				if (curr_time - _this->hello_io_time >=
 				    _this->hello_timeout) {
 					l2tp_ctrl_log(_this, LOG_NOTICE,
@@ -518,8 +513,8 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 	switch (_this->state) {
 	case L2TP_CTRL_STATE_IDLE:
 		/*
-		 * idle の場合
-		 *	この実装ではあり得ない。
+		 * idle:
+		 * XXX: never happen in current implementation
 		 */
 		l2tp_ctrl_log(_this, LOG_ERR,
 		    "Internal error, timeout on illegal state=idle");
@@ -527,10 +522,11 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 		break;
 	case L2TP_CTRL_STATE_WAIT_CTL_CONN:
 		/*
-		 * wait-ctrl-conn の場合
-		 *	SCCRP に対する確認応答がない場合は、先方は SCCRQ
-		 *	を再送するが、この実装側で「再送」であることを検知
-		 *	できない。こちらからは再送しない。
+		 * wait-ctrl-conn:
+		 * 	if there is no ack for SCCRP, the peer will
+		 * 	resend SCCRQ. however this implementation can
+		 *	not recognize that the SCCRQ was resent or not.
+		 *	Therefore, never resent from this side.
 		 */
 		need_resend = 0;
 		break;
@@ -539,7 +535,7 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 		    curr_time - _this->last_snd_ctrl >=
 			    L2TP_CTRL_WAIT_CALL_TIMEOUT) {
 			if (_this->ncalls == 0)
-				/* 最初の call がこない。 */
+				/* fail to recieve first call */
 				l2tp_ctrl_log(_this, LOG_WARNING,
 				    "timeout waiting call");
 			l2tp_ctrl_stop(_this,
@@ -547,13 +543,11 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 			return;
 		}
 		if (_this->hello_wait_ack == 0 && _this->hello_interval > 0) {
-			/*
-			 * Hello 送信
-			 */
+			/* send Hello */
 			if (curr_time - _this->hello_interval >=
 			    _this->hello_io_time) {
 				if (l2tp_ctrl_send_HELLO(_this) == 0)
-					/* 成功した場合 */
+					/* success */
 					_this->hello_wait_ack = 1;
 				_this->hello_io_time = curr_time;
 				need_resend = 0;
@@ -571,14 +565,14 @@ l2tp_ctrl_timeout(int fd, short evtype, void *ctx)
 		if (_this->active_closing != 0)
 			l2tp_ctrl_send_disconnect_notify(_this);
 		break;
-	default:	
+	default:
 		l2tp_ctrl_log(_this, LOG_ERR,
 		    "Internal error, timeout on illegal state=%d",
 			_this->state);
 		l2tp_ctrl_stop(_this, L2TP_STOP_CCN_RCODE_GENERAL);
 		return;
 	}
-	/* 再送の必要があれば、再送 */
+	/* resend if required */
 	if (need_resend)
 		l2tp_ctrl_resend_una_packets(_this);
 	l2tp_ctrl_reset_timeout(_this);
@@ -605,7 +599,7 @@ l2tp_ctrl_send(l2tp_ctrl *_this, const void *msg, int len)
 	return rval;
 }
 
-/** 確認応答待ちのパケットを再送する。 */
+/* resend una packets */
 static int
 l2tp_ctrl_resend_una_packets(l2tp_ctrl *_this)
 {
@@ -639,9 +633,7 @@ l2tp_ctrl_resend_una_packets(l2tp_ctrl *_this)
 	return nsend;
 }
 
-/**
- * すべてのコールを解放します。
- */
+/* free all calls */
 static void
 l2tp_ctrl_destroy_all_calls(l2tp_ctrl *_this)
 {
@@ -653,9 +645,9 @@ l2tp_ctrl_destroy_all_calls(l2tp_ctrl *_this)
 		l2tp_call_destroy(call, 1);
 }
 
-/**
- * このコントロールの全ての call を切断します。
- * @return 解放待ちになっていない call の数を返します。
+
+/* disconnect all calls on the control context
+ * @return return # of calls that is not waiting cleanup.
  */
 static int
 l2tp_ctrl_disconnect_all_calls(l2tp_ctrl *_this)
@@ -664,7 +656,7 @@ l2tp_ctrl_disconnect_all_calls(l2tp_ctrl *_this)
 	l2tp_call *call;
 
 	L2TP_CTRL_ASSERT(_this != NULL);
-	
+
 	ncalls = 0;
 	len = slist_length(&_this->call_list);
 	for (i = 0; i < len; i++) {
@@ -684,9 +676,7 @@ l2tp_ctrl_disconnect_all_calls(l2tp_ctrl *_this)
 	return ncalls;
 }
 
-/**
- * タイムアウトを再設定します。
- */
+/* reset timeout */
 static void
 l2tp_ctrl_reset_timeout(l2tp_ctrl *_this)
 {
@@ -713,19 +703,16 @@ l2tp_ctrl_reset_timeout(l2tp_ctrl *_this)
 	evtimer_add(&_this->ev_timeout, &tv0);
 }
 
-/***********************************************************************
- * プロトコル - 送受信
- ***********************************************************************/
-/**
- * パケット受信
+/*
+ * protocols / send and receive
  */
+/* Recieve packet */
 void
 l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
     struct sockaddr *sock, void *nat_t_ctx, u_char *pkt, int pktlen)
 {
 	int i, len, offsiz, reqlen, is_ctrl;
 	uint16_t mestype;
-	struct sockaddr_in *peersin, *socksin;
 	struct l2tp_avp *avp, *avp0;
 	l2tp_ctrl *ctrl;
 	l2tp_call *call;
@@ -734,23 +721,15 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 	u_char *pkt0;
 	char ifname[IF_NAMESIZE], phy_label[256];
 	struct l2tp_header hdr;
+	char hbuf[NI_MAXHOST + NI_MAXSERV + 16];
 
 	ctrl = NULL;
 	curr_time = get_monosec();
 	pkt0 = pkt;
 
-	L2TP_CTRL_ASSERT(peer->sa_family == AF_INET);
-	L2TP_CTRL_ASSERT(sock->sa_family == AF_INET);
-
-	if (peer->sa_family != AF_INET) {
-		l2tpd_log(_this, LOG_ERR,
-		    "Received a packet peer unknown address "
-		    "family=%d", peer->sa_family);
-		return;	// ここまでは reigai に飛ばさない
-	}
-	peersin = (struct sockaddr_in *)peer;
-	socksin = (struct sockaddr_in *)sock;
-
+	L2TP_CTRL_ASSERT(peer->sa_family == sock->sa_family);
+	L2TP_CTRL_ASSERT(peer->sa_family == AF_INET ||
+	    peer->sa_family == AF_INET6)
     /*
      * Parse L2TP Header
      */
@@ -763,13 +742,13 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 	memcpy(&hdr, pkt, 2);
 	pkt += 2;
 	if (hdr.ver != L2TP_HEADER_VERSION_RFC2661) {
-		/* 現在 RFC2661 のみサポートします */
+		/* XXX: only RFC2661 is supported */
 		snprintf(errmsg, sizeof(errmsg),
 		    "Unsupported version at header = %d", hdr.ver);
 		goto bad_packet;
 	}
 	is_ctrl = (hdr.t != 0)? 1 : 0;
-	
+
 	/* calc required length */
 	reqlen = 6;		/* for Flags, Tunnel-Id, Session-Id field */
 	if (hdr.l) reqlen += 2;	/* for Length field (opt) */
@@ -824,7 +803,7 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 	ctrl = l2tpd_get_ctrl(_this, hdr.tunnel_id);
 
 	if (ctrl == NULL) {
-		/* 新しいコントロール */
+		/* new control */
 		if (!is_ctrl) {
 			snprintf(errmsg, sizeof(errmsg),
 			    "bad data message: tunnelId=%d is not "
@@ -847,34 +826,34 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 				l2tpd_log_access_deny(_this,
 				    "could not get interface informations",
 				    peer);
-				goto reigai;
+				goto fail;
 			}
-			if (l2tpd_config_str_equal(_this, 
+			if (l2tpd_config_str_equal(_this,
 			    config_key_prefix("l2tpd.interface", ifname),
 			    "accept", 0)){
 				strlcat(phy_label, "%", sizeof(phy_label));
 				strlcat(phy_label, ifname, sizeof(phy_label));
-			} else if (l2tpd_config_str_equal(_this, 
+			} else if (l2tpd_config_str_equal(_this,
 			    config_key_prefix("l2tpd.interface", "any"),
 			    "accept", 0)){
 			} else {
-				/* このインタフェースは許可されていない。*/
+				/* the interface is not permited */
 				snprintf(errmsg, sizeof(errmsg),
 				    "'%s' is not allowed by config.", ifname);
 				l2tpd_log_access_deny(_this, errmsg, peer);
-				goto reigai;
+				goto fail;
 			}
 		}
 
 		if ((ctrl = l2tp_ctrl_create()) == NULL) {
 			l2tp_ctrl_log(ctrl, LOG_ERR,
 			    "l2tp_ctrl_create() failed: %m");
-			goto reigai;
+			goto fail;
 		}
 		if (l2tp_ctrl_init(ctrl, _this, peer, sock, nat_t_ctx) != 0) {
 			l2tp_ctrl_log(ctrl, LOG_ERR,
 			    "l2tp_ctrl_start() failed: %m");
-			goto reigai;
+			goto fail;
 		}
 
 		ctrl->listener_index = listener_index;
@@ -882,34 +861,39 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		l2tp_ctrl_reload(ctrl);
 	} else {
 		/*
-		 * 始点アドレス/ポートが異なる場合には、エラーとする。(DoS
-		 * の可能性があるので)
+		 * treat as an error if src address and port is not
+		 * match. (because it is potentially DoS attach)
 		 */
-		L2TP_CTRL_ASSERT(ctrl->peer.ss_family == peer->sa_family);
+		int notmatch = 0;
 
-		switch (peer->sa_family) {
-		case AF_INET: 
-		    {
-			struct sockaddr_in *peersin1;
-
-			peersin1 = (struct sockaddr_in *)&ctrl->peer;
-			if (peersin1->sin_addr.s_addr !=
-			    peersin->sin_addr.s_addr ||
-			    peersin1->sin_port != peersin->sin_port) {
-				snprintf(errmsg, sizeof(errmsg),
-				    "tunnelId=%u is already assigned for %s:%u",
-				    hdr.tunnel_id,
-				    inet_ntoa(peersin1->sin_addr),
-				    ntohs(peersin1->sin_port));
-				goto bad_packet;
-			}
-		    }
+		if (ctrl->peer.ss_family != peer->sa_family)
+			notmatch = 1;
+		else if (peer->sa_family == AF_INET) {
+			if (SIN(peer)->sin_addr.s_addr != 
+			    SIN(&ctrl->peer)->sin_addr.s_addr ||
+			    SIN(peer)->sin_port != SIN(&ctrl->peer)->sin_port)
+				notmatch = 1;
+		} else if (peer->sa_family == AF_INET6) {
+			if (!IN6_ARE_ADDR_EQUAL(&(SIN6(peer)->sin6_addr),
+				    &(SIN6(&ctrl->peer)->sin6_addr)) ||
+			    SIN6(peer)->sin6_port !=
+				    SIN6(&ctrl->peer)->sin6_port)
+				notmatch = 1;
+ 		}
+		if (notmatch) {
+			snprintf(errmsg, sizeof(errmsg),
+			    "tunnelId=%u is already assigned for %s",
+			    hdr.tunnel_id, addrport_tostring(
+				(struct sockaddr *)&ctrl->peer,
+				ctrl->peer.ss_len, hbuf, sizeof(hbuf)));
+			goto bad_packet;
 		}
 	}
 	ctrl->last_rcv = curr_time;
 	call = NULL;
 	if (hdr.session_id != 0) {
-		/* Session Id から l2tp_call を探す。リニアサーチ */
+		/* search l2tp_call by Session ID */
+		/* linear search is enough for this purpose */
 		len = slist_length(&ctrl->call_list);
 		for (i = 0; i < len; i++) {
 			call = slist_get(&ctrl->call_list, i);
@@ -919,20 +903,18 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		}
 	}
 	if (!is_ctrl) {
-		/*
-		 * L2TP データ
-		 */
+		/* L2TP data */
 		if (ctrl->state != L2TP_CTRL_STATE_ESTABLISHED) {
 			l2tp_ctrl_log(ctrl, LOG_WARNING,
 			    "Received Data packet in '%s'",
 			    l2tp_ctrl_state_string(ctrl));
-			goto reigai;
+			goto fail;
 		}
 		if (call == NULL) {
 			l2tp_ctrl_log(ctrl, LOG_WARNING,
 			    "Received a data packet but it has no call.  "
 			    "session_id=%u",  hdr.session_id);
-			goto reigai;
+			goto fail;
 		}
 		L2TP_CTRL_DBG((ctrl, DEBUG_LEVEL_2,
 		    "call=%u RECV   ns=%u nr=%u snd_nxt=%u rcv_nxt=%u len=%d",
@@ -942,13 +924,13 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 			l2tp_ctrl_log(ctrl, LOG_WARNING,
 			    "Received a data packet but call is not "
 			    "established");
-			goto reigai;
+			goto fail;
 		}
-		
+
 		if (hdr.s != 0) {
 			if (SEQ_LT(hdr.ns, call->rcv_nxt)) {
-				/* シーケンスが戻った。*/
-				/* 統計情報に残すべきかもしれない */
+				/* sequence number seems to rewind */
+				/* XXX: need to log? */
 				L2TP_CTRL_DBG((ctrl, LOG_DEBUG,
 				    "receive a out of sequence data packet: "
 				    "%u < %u.  ", hdr.ns, call->rcv_nxt));
@@ -978,15 +960,15 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 				    "Received message has bad Nr field: "
 				    "%u < %u.", hdr.ns, ctrl->snd_nxt);
 				/* XXX Drop with ZLB? */
-				goto reigai;
+				goto fail;
 			}
 		}
 		if (l2tp_ctrl_txwin_size(ctrl) <= 0) {
-			/* 確認応答待ちなし */
+			/* no waiting ack */
 			if (ctrl->hello_wait_ack != 0) {
 				/*
-				 * Hello に対する Ack が返ったので、Hello
-				 * の状態をリセット
+				 * Reset Hello state, as an ack for the Hello
+				 * is recived.
 				 */
 				ctrl->hello_wait_ack = 0;
 				ctrl->hello_io_time = curr_time;
@@ -998,13 +980,13 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 			}
 		}
 		if (hdr.ns != ctrl->rcv_nxt) {
-			// 受信してないパケットがある
+			/* there are remaining packet */
 			if (l2tp_ctrl_resend_una_packets(ctrl) <= 0) {
-				// 再送または ZLB 送信
+				/* resend or sent ZLB */
 				l2tp_ctrl_send_ZLB(ctrl);
 			}
 #ifdef	L2TP_CTRL_DEBUG
-			if (pktlen != 0) {	// ZLB ではない。
+			if (pktlen != 0) {	/* not ZLB */
 				L2TP_CTRL_DBG((ctrl, LOG_DEBUG,
 				    "receive out of sequence %u must be %u.  "
 				    "mestype=%s", hdr.ns, ctrl->rcv_nxt,
@@ -1028,12 +1010,12 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		if (avp == NULL) {
 			l2tpd_log(_this, LOG_WARNING,
 			    "bad control message: no message-type AVP.");
-			goto reigai;
+			goto fail;
 		}
 	}
 
     /*
-     * ステートマシン (RFC2661 pp. 56-57)
+     * state machine (RFC2661 pp. 56-57)
      */
 	switch (ctrl->state) {
 	case L2TP_CTRL_STATE_IDLE:
@@ -1041,28 +1023,28 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		case L2TP_AVP_MESSAGE_TYPE_SCCRQ:
 			if (l2tp_ctrl_recv_SCCRQ(ctrl, pkt, pktlen, _this,
 			    peer) == 0) {
-				// acceptable
+				/* acceptable */
 				l2tp_ctrl_send_SCCRP(ctrl);
 				ctrl->state = L2TP_CTRL_STATE_WAIT_CTL_CONN;
 				return;
 			}
 			/*
-			 * un-accectable な場合は、l2tp_ctrl_recv_SCCRQ 側で
-			 * 処理済みです。
+			 * in case un-acceptable, it was already processed
+			 * at l2tcp_ctrl_recv_SCCRQ
 			 */
 			return;
 		case L2TP_AVP_MESSAGE_TYPE_SCCRP:
 			/*
-			 * RFC上は StopCCN を送信するが、この LNS の実装では、
-			 * Passive Open だけなので、 このパケットは受け取らな
-			 * いはず。
+			 * RFC specifies that sent of StopCCN in the state,
+			 * However as this implementation only support Passive
+			 * open, this packet will not recieved.
 			 */
-			// FALL THROUGH
+			/* FALLTHROUGH */
 		case L2TP_AVP_MESSAGE_TYPE_SCCCN:
 		default:
 			break;
 		}
-		goto fsm_reigai;
+		goto fsm_fail;
 
 	case L2TP_CTRL_STATE_WAIT_CTL_CONN:
 	    /* Wait-Ctl-Conn */
@@ -1080,7 +1062,7 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		default:
 			break;
 		}
-		break;	/* fsm_reigai */
+		break;	/* fsm_fail */
 	case L2TP_CTRL_STATE_ESTABLISHED:
 	    /* Established */
 		switch (mestype) {
@@ -1112,9 +1094,9 @@ receive_stop_ccn:
 				l2tp_ctrl_log(ctrl, LOG_INFO,
 				    "Unknown call message: %s",
 				    avp_mes_type_string(mestype));
-				goto reigai;
+				goto fail;
 			}
-			// FALL THROUGH
+			/* FALLTHROUGH */
 		case L2TP_AVP_MESSAGE_TYPE_ICRQ:
 			l2tp_call_recv_packet(ctrl, call, mestype, pkt,
 			    pktlen);
@@ -1122,26 +1104,25 @@ receive_stop_ccn:
 		default:
 			break;
 		}
-		break;	/* fsm_reigai */
+		break;	/* fsm_fail */
 	case L2TP_CTRL_STATE_CLEANUP_WAIT:
 		if (mestype == L2TP_AVP_MESSAGE_TYPE_StopCCN) {
 			/*
-			 * StopCCN が交錯したか、Window が埋まっていて
-			 * StopCCN が送信できない間に、StopCCN を受信
+			 * We left ESTABLISHED state, but the peer sent StopCCN.
 			 */
 			goto receive_stop_ccn;
 		}
-		break;	/* fsm_reigai */
+		break;	/* fsm_fail */
 	}
 
-fsm_reigai:
-	/* ステートマシンのエラー */
+fsm_fail:
+	/* state machine error */
 	l2tp_ctrl_log(ctrl, LOG_WARNING, "Received %s in '%s' state",
 	    avp_mes_type_string(mestype), l2tp_ctrl_state_string(ctrl));
 	l2tp_ctrl_stop(ctrl, L2TP_STOP_CCN_RCODE_FSM_ERROR);
 
 	return;
-reigai:
+fail:
 	if (ctrl != NULL && mestype != 0) {
 		l2tp_ctrl_log(ctrl, LOG_WARNING, "Received %s in '%s' state",
 		    avp_mes_type_string(mestype), l2tp_ctrl_state_string(ctrl));
@@ -1150,8 +1131,9 @@ reigai:
 	return;
 
 bad_packet:
-	l2tpd_log(_this, LOG_INFO, "Received from=%s:%u: %s", 
-	    inet_ntoa(peersin->sin_addr), ntohs(peersin->sin_port), errmsg);
+	l2tpd_log(_this, LOG_INFO, "Received from=%s: %s",
+	    addrport_tostring(peer, peer->sa_len, hbuf, sizeof(hbuf)), errmsg);
+
 	return;
 }
 
@@ -1173,7 +1155,7 @@ l2tp_ctrl_txwin_is_full(l2tp_ctrl *_this)
 	return (l2tp_ctrl_txwin_size(_this) >= _this->winsz)? 1 : 0;
 }
 
-/** パケットの送信 */
+/* send control packet */
 int
 l2tp_ctrl_send_packet(l2tp_ctrl *_this, int call_id, bytebuffer *bytebuf,
     int is_ctrl)
@@ -1232,8 +1214,8 @@ l2tp_ctrl_send_packet(l2tp_ctrl *_this, int call_id, bytebuffer *bytebuf,
 	return (rval == bytebuffer_remaining(bytebuf))? 0 : 1;
 }
 
-/**
- * SCCRQ の受信
+/*
+ * receiver SCCRQ
  */
 static int
 l2tp_ctrl_recv_SCCRQ(l2tp_ctrl *_this, u_char *pkt, int pktlen, l2tpd *_l2tpd,
@@ -1293,8 +1275,8 @@ l2tp_ctrl_recv_SCCRQ(l2tp_ctrl *_this, u_char *pkt, int pktlen, l2tpd *_l2tpd,
 		case L2TP_AVP_TYPE_TIE_BREAKER:
 			AVP_SIZE_CHECK(avp, ==, 14);
 			/*
-			 * この実装からは SCCRQ は送らないので常に peer が
-			 * winner。
+			 * As the implementation never send SCCRQ,
+			 * the peer is always winner
 			 */
 			continue;
 		case L2TP_AVP_TYPE_FIRMWARE_REVISION:
@@ -1329,7 +1311,7 @@ l2tp_ctrl_recv_SCCRQ(l2tp_ctrl *_this, u_char *pkt, int pktlen, l2tpd *_l2tpd,
 			    avp->attr_type);
 #ifdef L2TP_CTRL_DEBUG
 		} else {
-			L2TP_CTRL_DBG((_this, LOG_DEBUG, 
+			L2TP_CTRL_DBG((_this, LOG_DEBUG,
 			    "AVP (%s/%d) is not handled",
 			    avp_attr_type_string(avp->attr_type),
 			    avp->attr_type));
@@ -1359,8 +1341,8 @@ size_check_failed:
 	return 1;
 }
 
-/**
- * StopCCN を送信します。
+/*
+ * send StopCCN
  */
 static int
 l2tp_ctrl_send_StopCCN(l2tp_ctrl *_this, int result)
@@ -1406,8 +1388,8 @@ l2tp_ctrl_send_StopCCN(l2tp_ctrl *_this, int result)
 	return 0;
 }
 
-/**
- * StopCCN の受信
+/*
+ * Receiver StopCCN
  */
 static int
 l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
@@ -1475,7 +1457,7 @@ l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 				    avp->attr_type);
 #ifdef L2TP_CTRL_DEBUG
 			} else {
-				L2TP_CTRL_DBG((_this, LOG_DEBUG, 
+				L2TP_CTRL_DBG((_this, LOG_DEBUG,
 				    "AVP (%s/%d) is not handled",
 				    avp_attr_type_string(avp->attr_type),
 				    avp->attr_type));
@@ -1487,15 +1469,12 @@ l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 	if (rcode == L2TP_CDN_RCODE_ERROR_CODE &&
 	    ecode == L2TP_ECODE_NO_RESOURCE) {
 		/*
-		 * 現在観測された状況
-		 *
-		 *  (1) IDGWとWindows が同一 LAN セグメント上にあり、
-		 *	Windows の(そのLAN  IP アドレスが、ナチュラルマスク
-		 *	で評価した場合のブロードキャストアドレスだった場合
-		 *	(192.168.0.255/23など)
-		 *  (2) Windows 2000 を起動しっぱなしで、L2TPの接続切断を繰り
-		 *	返すと、あるタイミングからこの状況に陥り、接続できない。
-		 *	Windows が再起動するまで、問題は継続。
+		 * Memo:
+		 * This state may be happen in following state.
+		 * - lots of connect/disconect by long-running
+		 *   windows2000, sometimes it fall to this state.
+		 *   Once it fall to here, connection will fail till
+		 *   the windows rebooted
 		 */
 		l2tp_ctrl_log(_this, LOG_WARNING,
 		    "Peer indicates \"No Resource\" error.");
@@ -1514,8 +1493,8 @@ size_check_failed:
 	return -1;
 }
 
-/**
- * SCCRP の送信
+/*
+ * send SCCRP
  */
 static void
 l2tp_ctrl_send_SCCRP(l2tp_ctrl *_this)
@@ -1563,7 +1542,7 @@ l2tp_ctrl_send_SCCRP(l2tp_ctrl *_this)
 	if ((val = l2tp_ctrl_config_str(_this, "l2tp.host_name")) == NULL)
 		val = _this->l2tpd->default_hostname;
 	if (val[0] == '\0')
-		val = "G";	/* おまじない。ask yasuoka */
+		val = "G";	/* XXX magic word, why? ask yasuoka */
 	len = strlen(val);
 	memcpy(avp->attr_value, val, len);
 	bytebuf_add_avp(bytebuf, avp, len);
@@ -1576,8 +1555,7 @@ l2tp_ctrl_send_SCCRP(l2tp_ctrl *_this)
 	bytebuf_add_avp(bytebuf, avp, 2);
 
 	/* Bearer Capability
-	 *
-	 * この実装は LAC になり得ない LNS なので。
+	 * This implementation never act as LAC.
 	 *
 	memset(avp, 0, sizeof(*avp));
 	avp->is_mandatory = 1;
@@ -1652,7 +1630,7 @@ l2tp_ctrl_send_HELLO(l2tp_ctrl *_this)
 	return 0;
 }
 
-/** ZLB の送信 */
+/* Send  ZLB */
 static int
 l2tp_ctrl_send_ZLB(l2tp_ctrl *_this)
 {
@@ -1668,12 +1646,13 @@ l2tp_ctrl_send_ZLB(l2tp_ctrl *_this)
 	return l2tp_ctrl_send_packet(_this, 0, _this->zlb_buffer, 1);
 }
 
-/***********************************************************************
- * ユーティリティ関数
- ***********************************************************************/
+/*
+ * Utitlity
+ */
+
 /**
- * 送信バッファの準備
- * @return 送信バッファが Window を越えている場合には NULL が返ります。
+ * Prepare send buffer
+ * @return return Null when the send buffer exceed Window.
  */
 bytebuffer *
 l2tp_ctrl_prepare_snd_buffer(l2tp_ctrl *_this, int with_seq)
@@ -1699,7 +1678,7 @@ l2tp_ctrl_prepare_snd_buffer(l2tp_ctrl *_this, int with_seq)
 }
 
 /**
- * 現在のステータスの文字列表現を返します。
+ * return current state as strings
  */
 static inline const char *
 l2tp_ctrl_state_string(l2tp_ctrl *_this)
@@ -1714,9 +1693,7 @@ l2tp_ctrl_state_string(l2tp_ctrl *_this)
 	return "unknown";
 }
 
-/**
- * このインスタンスに基づいたラベルから始まるログを記録します。
- */
+/* logging with the label of the l2tp instance. */
 void
 l2tp_ctrl_log(l2tp_ctrl *_this, int prio, const char *fmt, ...)
 {

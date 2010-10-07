@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.c,v 1.95 2010/02/04 13:00:20 jsg Exp $	*/
+/*	$OpenBSD: relayd.c,v 1.98 2010/09/02 14:03:22 sobrado Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -104,6 +104,9 @@ main_sig_handler(int sig, short event, void *arg)
 	case SIGHUP:
 		reconfigure();
 		break;
+	case SIGPIPE:
+		/* ignore */
+		break;
 	default:
 		fatalx("unexpected signal");
 	}
@@ -128,10 +131,6 @@ main(int argc, char *argv[])
 	u_int32_t		 opts;
 	struct relayd		*env;
 	const char		*conffile;
-	struct event		 ev_sigint;
-	struct event		 ev_sigterm;
-	struct event		 ev_sigchld;
-	struct event		 ev_sighup;
 	struct imsgev		*iev;
 
 	opts = 0;
@@ -237,15 +236,17 @@ main(int argc, char *argv[])
 
 	event_init();
 
-	signal_set(&ev_sigint, SIGINT, main_sig_handler, env);
-	signal_set(&ev_sigterm, SIGTERM, main_sig_handler, env);
-	signal_set(&ev_sigchld, SIGCHLD, main_sig_handler, env);
-	signal_set(&ev_sighup, SIGHUP, main_sig_handler, env);
-	signal_add(&ev_sigint, NULL);
-	signal_add(&ev_sigterm, NULL);
-	signal_add(&ev_sigchld, NULL);
-	signal_add(&ev_sighup, NULL);
-	signal(SIGPIPE, SIG_IGN);
+	signal_set(&env->sc_evsigint, SIGINT, main_sig_handler, env);
+	signal_set(&env->sc_evsigterm, SIGTERM, main_sig_handler, env);
+	signal_set(&env->sc_evsigchld, SIGCHLD, main_sig_handler, env);
+	signal_set(&env->sc_evsighup, SIGHUP, main_sig_handler, env);
+	signal_set(&env->sc_evsigpipe, SIGPIPE, main_sig_handler, env);
+
+	signal_add(&env->sc_evsigint, NULL);
+	signal_add(&env->sc_evsigterm, NULL);
+	signal_add(&env->sc_evsigchld, NULL);
+	signal_add(&env->sc_evsighup, NULL);
+	signal_add(&env->sc_evsigpipe, NULL);
 
 	close(pipe_parent2pfe[1]);
 	close(pipe_parent2hce[1]);
@@ -301,6 +302,8 @@ main(int argc, char *argv[])
 
 	event_dispatch();
 
+	main_shutdown(env);
+	/* NOTREACHED */
 	return (0);
 }
 
@@ -1088,7 +1091,7 @@ canonicalize_host(const char *host, char *name, size_t len)
 	 * Canonicalize a hostname
 	 */
 
-	/* 1. remove repeated dots and convert upper case to lower case */	
+	/* 1. remove repeated dots and convert upper case to lower case */
 	plen = strlen(host);
 	bzero(name, len);
 	for (i = j = 0; i < plen; i++) {

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntpd.c,v 1.66 2009/06/06 18:14:25 pyr Exp $ */
+/*	$OpenBSD: ntpd.c,v 1.68 2010/07/01 22:16:20 eric Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -23,7 +23,6 @@
 #include <errno.h>
 #include <poll.h>
 #include <pwd.h>
-#include <resolv.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,7 +96,6 @@ main(int argc, char *argv[])
 	bzero(&lconf, sizeof(lconf));
 
 	log_init(1);		/* log to stderr until daemonized */
-	res_init();		/* XXX */
 
 	while ((ch = getopt(argc, argv, "df:nsSv")) != -1) {
 		switch (ch) {
@@ -266,7 +264,7 @@ dispatch_imsg(struct ntpd_conf *lconf)
 	double			 d;
 	char			*name;
 	struct ntp_addr		*h, *hn;
-	struct buf		*buf;
+	struct ibuf		*buf;
 
 	if ((n = imsg_read(ibuf)) == -1)
 		return (-1);

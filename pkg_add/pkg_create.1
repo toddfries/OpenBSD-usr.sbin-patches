@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_create.1,v 1.57 2010/02/04 07:49:15 jmc Exp $
+.\"	$OpenBSD: pkg_create.1,v 1.64 2010/06/25 09:00:56 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -21,7 +21,7 @@
 .\" [jkh] Took John's changes back and made some additional extensions for
 .\" better integration with FreeBSD's new ports collection.
 .\"
-.Dd $Mdocdate: February 4 2010 $
+.Dd $Mdocdate: June 25 2010 $
 .Dt PKG_CREATE 1
 .Os
 .Sh NAME
@@ -30,7 +30,7 @@
 .Sh SYNOPSIS
 .Nm pkg_create
 .Bk -words
-.Op Fl nQqv
+.Op Fl mnQqvx
 .Op Fl A Ar arches
 .Op Fl B Ar pkg-destdir
 .Oo Fl D Ar name
@@ -142,7 +142,7 @@ or, if preceded by
 the argument itself.
 .It Fl f Ar packinglist
 Fetch
-.Dq packing list
+.Dq packing-list
 for package from the file
 .Ar packinglist .
 Several packing-lists can be mentioned, in which case they will be
@@ -163,6 +163,10 @@ Display the file (using
 after installing the package.
 Useful for things like
 legal notices on almost-free software, etc.
+.It Fl m
+Causes
+.Nm
+to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually create a package.
 .It Fl P Ar pkg-dependency
@@ -218,6 +222,8 @@ Turn on verbose output.
 Specify a
 .Cm @wantlib
 requirement on the command line.
+.It Fl x
+Disable progress meter.
 .El
 .Pp
 .Nm
@@ -231,9 +237,9 @@ package:
 .Bd -literal -offset indent
 pkg_create -f /var/db/pkg/kdelibs-3.4.3/+CONTENTS
 .Ed
-.Sh PACKING LIST DETAILS
+.Sh PACKING-LIST DETAILS
 The
-.Dq packing list
+.Dq packing-list
 format (see
 .Fl f )
 is fairly simple, being basically a list of filenames and directory names
@@ -250,7 +256,6 @@ All these commands start with an
 Here is a list:
 .Pp
 .Bl -tag -width Ds -compact
-.Pp
 .It Cm @arch Ar arches
 List of architectures for which this package is intended.
 .Pp
@@ -260,7 +265,7 @@ Describe the file as an
 binary executable (not a script).
 .Pp
 .It Cm @comment Ar string
-Imbed a comment in the packing list.
+Imbed a comment in the packing-list.
 Useful in trying to document some particularly hairy sequence that
 may trip someone up later.
 Can also be used to comment out elements that update-plist
@@ -675,7 +680,7 @@ it refers to a configuration directory instead.
 Added after a file entry by
 .Nm
 to record the files's cryptographic checksum,
-as a sha25 digest encoded in base64.
+as a sha256 digest encoded in base64.
 .Pp
 .It Cm @shell Ar filename
 Specialized version of

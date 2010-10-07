@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageName.pm,v 1.43 2010/01/27 15:57:16 espie Exp $
+# $OpenBSD: PackageName.pm,v 1.48 2010/07/02 12:41:43 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -105,11 +105,6 @@ sub compile_stemlist
 sub avail2stems
 {
 	my @avail = @_;
-	if (@avail == 0) {
-		require OpenBSD::Error;
-
-		OpenBSD::Error::Warn("No packages available in the PKG_PATH\n");
-	}
 	return OpenBSD::PackageName::compile_stemlist(@avail);
 }
 
@@ -148,7 +143,7 @@ sub find_partial
 	}
 	return @result;
 }
-	
+
 package OpenBSD::PackageName::dewey;
 
 my $cache = {};
@@ -199,7 +194,7 @@ sub suffix_compare
 		return -suffix_compare($b, $a);
 	}
 	# order is '', beta, pre, rc
-	# we know that a < b, 
+	# we know that a < b,
 	if ($a->{suffix} eq '') {
 		return 1;
 	}
@@ -313,7 +308,7 @@ sub compare
 	# Simple case: only p number differs
 	if ($a->{dewey} eq $b->{dewey}) {
 		return $a->pnum_compare($b);
-	} 
+	}
 
 	return $a->{dewey}->compare($b->{dewey});
 }
@@ -332,11 +327,11 @@ package OpenBSD::PackageName::versionspec;
 our @ISA = qw(OpenBSD::PackageName::version);
 
 my $ops = {
-	'<' => 'lt', 
-	'<=' => 'le', 
+	'<' => 'lt',
+	'<=' => 'le',
 	'>' => 'gt',
 	'>=' => 'ge',
-	'=' => 'eq' 
+	'=' => 'eq'
 };
 
 sub from_string
@@ -346,7 +341,7 @@ sub from_string
 	if ($s =~ m/^(\>\=|\>|\<\=|\<|\=)(.*)$/) {
 		($op, $version) = ($1, $2);
 	}
-	bless $class->SUPER::from_string($version), 
+	bless $class->SUPER::from_string($version),
 		"OpenBSD::PackageName::version::$ops->{$op}";
 }
 
@@ -438,7 +433,7 @@ sub flavor_string
 sub to_string
 {
 	my $o = shift;
-	return join('-', $o->{stem}, $o->{version}->to_string, 
+	return join('-', $o->{stem}, $o->{version}->to_string,
 	    sort keys %{$o->{flavors}});
 }
 
@@ -460,8 +455,8 @@ sub compare
 sub has_issues
 {
 	my $self = shift;
-	return ((map {"flavor $_ can't start with digit"} 
-	    	grep { /^\d/ } keys %{$self->{flavors}}), 
+	return ((map {"flavor $_ can't start with digit"}
+	    	grep { /^\d/ } keys %{$self->{flavors}}),
 		$self->{version}->has_issues);
 }
 

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageRepository.pm,v 1.78 2010/01/10 11:32:41 espie Exp $
+# $OpenBSD: PackageRepository.pm,v 1.89 2010/08/13 11:12:04 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -22,7 +22,7 @@ use warnings;
 # to get all methods.
 
 use OpenBSD::PackageRepository::Installed;
-$OpenBSD::PackageRepository::Installed::ISA=(qw(OpenBSD::PackageRepository));
+$OpenBSD::PackageRepository::Installed::ISA = qw(OpenBSD::PackageRepository);
 
 package OpenBSD::PackageRepository;
 our @ISA=(qw(OpenBSD::PackageRepositoryBase));
@@ -39,12 +39,19 @@ sub baseurl
 
 sub new
 {
-	my ($class, $baseurl) = @_;
-	my $o = $class->parse(\$baseurl);
+	my ($class, $baseurl, $state) = @_;
+	my $o = $class->parse(\$baseurl, $state);
 	if ($baseurl ne '') {
 		return undef;
 	}
 	return $o;
+}
+
+sub can_be_empty
+{
+	my $self = shift;
+	$self->{empty_okay} = 1;
+	return $self;
 }
 
 my $cache = {};
@@ -73,40 +80,49 @@ OpenBSD::Handler->register($cleanup);
 
 sub parse_fullurl
 {
-	my ($class, $r) = @_;
+	my ($class, $r, $state) = @_;
 
 	$class->strip_urlscheme($r) or return undef;
-	return $class->unique($class->parse_url($r));
+	return $class->unique($class->parse_url($r, $state));
 }
+
+sub ftp() { 'OpenBSD::PackageRepository::FTP' }
+sub http() { 'OpenBSD::PackageRepository::HTTP' }
+sub https() { 'OpenBSD::PackageRepository::HTTPS' }
+sub scp() { 'OpenBSD::PackageRepository::SCP' }
+sub source() { 'OpenBSD::PackageRepository::Source' }
+sub file() { 'OpenBSD::PackageRepository::Local' }
+sub installed() { 'OpenBSD::PackageRepository::Installed' }
+sub pipe() { 'OpenBSD::PackageRepository::Local::Pipe' }
 
 sub parse
 {
-	my ($class, $r) = @_;
+	my ($class, $r, $state) = @_;
 	my $_ = $$r;
 	return undef if $_ eq '';
 
 	if (m/^ftp\:/io) {
-		return OpenBSD::PackageRepository::FTP->parse_fullurl($r);
+		return $class->ftp->parse_fullurl($r, $state);
 	} elsif (m/^http\:/io) {
-		return OpenBSD::PackageRepository::HTTP->parse_fullurl($r);
+		return $class->http->parse_fullurl($r, $state);
 	} elsif (m/^https\:/io) {
-		return OpenBSD::PackageRepository::HTTPS->parse_fullurl($r);
+		return $class->https->parse_fullurl($r, $state);
 	} elsif (m/^scp\:/io) {
 		require OpenBSD::PackageRepository::SCP;
 
-		return OpenBSD::PackageRepository::SCP->parse_fullurl($r);
+		return $class->scp->parse_fullurl($r, $state);
 	} elsif (m/^src\:/io) {
 		require OpenBSD::PackageRepository::Source;
 
-		return OpenBSD::PackageRepository::Source->parse_fullurl($r);
+		return $class->source->parse_fullurl($r, $state);
 	} elsif (m/^file\:/io) {
-		return OpenBSD::PackageRepository::Local->parse_fullurl($r);
+		return $class->file->parse_fullurl($r, $state);
 	} elsif (m/^inst\:$/io) {
-		return OpenBSD::PackageRepository::Installed->parse_fullurl($r);
+		return $class->installed->parse_fullurl($r, $state);
 	} elsif (m/^pipe\:$/io) {
-		return OpenBSD::PackageRepository::Local::Pipe->parse_fullurl($r);
+		return $class->pipe->parse_fullurl($r, $state);
 	} else {
-		return OpenBSD::PackageRepository::Local->parse_fullurl($r);
+		return $class->file->parse_fullurl($r, $state);
 	}
 }
 
@@ -122,8 +138,11 @@ sub stemlist
 	my $self = shift;
 	if (!defined $self->{stemlist}) {
 		require OpenBSD::PackageName;
-
-		$self->{stemlist} = OpenBSD::PackageName::avail2stems($self->available);
+		my @l = $self->available;
+		if (@l == 0 && !$self->{empty_okay}) {
+			$self->{state}->errsay("#1 is empty", $self->url);
+		}
+		$self->{stemlist} = OpenBSD::PackageName::avail2stems(@l);
 	}
 	return $self->{stemlist};
 }
@@ -169,7 +188,7 @@ sub close
 		waitpid($object->{pid2}, 0);
 		alarm(0);
 	}
-	$self->parse_problems($object->{errors}, $hint, $object) 
+	$self->parse_problems($object->{errors}, $hint, $object)
 	    if defined $object->{errors};
 	undef $object->{errors};
 	$object->deref;
@@ -253,6 +272,34 @@ sub relative_url
 	}
 }
 
+sub add_to_list
+{
+	my ($self, $list, $filename) = @_;
+	if ($filename =~ m/^(.*\-\d.*)\.tgz$/o) {
+		push(@$list, $1);
+	}
+}
+
+sub did_it_fork
+{
+	my ($self, $pid) = @_;
+	if (!defined $pid) {
+		$self->{state}->fatal("Cannot fork: #1", $!);
+	}
+}
+
+sub exec_gunzip
+{
+	my $self = shift;
+	exec {OpenBSD::Paths->gzip}
+	    ("gzip",
+	    "-d",
+	    "-c",
+	    "-q",
+	    @_)
+	or $self->{state}->fatal("Can't run gzip: #1", $!);
+}
+
 package OpenBSD::PackageRepository::Local;
 our @ISA=qw(OpenBSD::PackageRepository);
 use OpenBSD::Error;
@@ -275,12 +322,12 @@ sub pkg_db
 
 sub parse_fullurl
 {
-	my ($class, $r) = @_;
+	my ($class, $r, $state) = @_;
 
 	my $ok = $class->strip_urlscheme($r);
-	my $o = $class->parse_url($r);
-	if (!$ok && $o->{path} eq $class->pkg_db()."/") {
-		return OpenBSD::PackageRepository::Installed->new;
+	my $o = $class->parse_url($r, $state);
+	if (!$ok && $o->{path} eq $class->pkg_db."/") {
+		return $class->installed->new(0, $state);
 	} else {
 		return $class->unique($o);
 	}
@@ -314,21 +361,12 @@ sub open_pipe
 		$self->may_copy($object, $ENV{'PKG_CACHE'});
 	}
 	my $pid = open(my $fh, "-|");
-	if (!defined $pid) {
-		die "Cannot fork: $!";
-	}
+	$self->did_it_fork($pid);
 	if ($pid) {
 		return $fh;
 	} else {
 		open STDERR, ">/dev/null";
-		exec {OpenBSD::Paths->gzip} 
-		    "gzip", 
-		    "-d", 
-		    "-c", 
-		    "-q", 
-		    "-f", 
-		    $self->relative_url($object->{name})
-		or die "Can't run gzip";
+		$self->exec_gunzip("-f", $self->relative_url($object->{name}));
 	}
 }
 
@@ -345,9 +383,8 @@ sub list
 	my $dname = $self->baseurl;
 	opendir(my $dir, $dname) or return $l;
 	while (my $e = readdir $dir) {
-		next unless $e =~ m/^(.*)\.tgz$/o;
 		next unless -f "$dname/$e";
-		push(@$l, $1);
+		$self->add_to_list($l, $e);
 	}
 	close($dir);
 	return $l;
@@ -371,32 +408,22 @@ sub may_exist
 	return 1;
 }
 
-my $s = bless {}, __PACKAGE__;
-
 sub new
 {
-	return $s;
+	my ($class, $state) = @_;
+	return bless { state => $state}, $class;
 }
 
 sub open_pipe
 {
 	my ($self, $object) = @_;
 	my $pid = open(my $fh, "-|");
-	if (!defined $pid) {
-		die "Cannot fork: $!";
-	}
+	$self->did_it_fork($pid);
 	if ($pid) {
 		return $fh;
 	} else {
 		open STDERR, ">/dev/null";
-		exec {OpenBSD::Paths->gzip} 
-		    "gzip", 
-		    "-d", 
-		    "-c", 
-		    "-q", 
-		    "-f", 
-		    "-"
-		or die "can't run gzip";
+		$self->exec_gunzip("-f", "-");
 	}
 }
 
@@ -412,13 +439,13 @@ sub baseurl
 
 sub parse_url
 {
-	my ($class, $r) = @_;
+	my ($class, $r, $state) = @_;
 	# same heuristics as ftp(1):
 	# find host part, rest is parsed as a local url
 	if (my ($host, $path) = $$r =~ m/^\/\/(.*?)(\/.*)$/) {
-		
+
 		$$r = $path;
-		my $o = $class->SUPER::parse_url($r);
+		my $o = $class->SUPER::parse_url($r, $state);
 		$o->{host} = $host;
 		return $o;
 	} else {
@@ -463,7 +490,7 @@ sub pkg_copy
 	do {
 		$n = sysread($in, $buffer, $buffsize);
 		if (!defined $n) {
-			die "Error reading: $!";
+			$self->{state}->fatal("Error reading: #1", $!);
 		}
 		if ($n > 0) {
 			$nonempty = 1;
@@ -500,41 +527,33 @@ sub open_pipe
 	pipe($rdfh, $wrfh);
 
 	my $pid = open(my $fh, "-|");
-	if (!defined $pid) {
-		die "Cannot fork: $!";
-	}
+	$self->did_it_fork($pid);
 	if ($pid) {
 		$object->{pid} = $pid;
 	} else {
-		open(STDIN, '<&', $rdfh) or die "Bad dup";
+		open(STDIN, '<&', $rdfh) or
+		    $self->{state}->fatal("Bad dup: #1", $!);
 		close($rdfh);
 		close($wrfh);
-		exec {OpenBSD::Paths->gzip} 
-		    "gzip", 
-		    "-d", 
-		    "-c", 
-		    "-q", 
-		    "-" 
-		or die "can't run gzip";
+		$self->exec_gunzip("-f", "-");
 	}
 	my $pid2 = fork();
 
-	if (!defined $pid2) {
-		die "Cannot fork: $!";
-	}
+	$self->did_it_fork($pid2);
 	if ($pid2) {
 		$object->{pid2} = $pid2;
 	} else {
+		undef $SIG{'WINCH'};
+		undef $SIG{'CONT'};
 		open STDERR, '>', $object->{errors};
-		open(STDOUT, '>&', $wrfh) or die "Bad dup";
+		open(STDOUT, '>&', $wrfh) or
+		    $self->{state}->fatal("Bad dup: #1", $!);
 		close($rdfh);
 		close($wrfh);
 		close($fh);
 		if (defined $object->{cache_dir}) {
 			my $pid3 = open(my $in, "-|");
-			if (!defined $pid3) {
-				die "Cannot fork: $!";
-			}
+			$self->did_it_fork($pid3);
 			if ($pid3) {
 				$self->pkg_copy($in, $object);
 			} else {
@@ -570,12 +589,12 @@ sub grab_object
 {
 	my ($self, $object) = @_;
 	my ($ftp, @extra) = split(/\s+/, OpenBSD::Paths->ftp);
-	exec {$ftp} 
+	exec {$ftp}
 	    $ftp,
 	    @extra,
-	    "-o", 
+	    "-o",
 	    "-", $self->url($object->{name})
-	or die "can't run ".OpenBSD::Paths->ftp;
+	or $self->{state}->fatal("Can't run ".OpenBSD::Paths->ftp.": #1", $!);
 }
 
 sub maxcount
@@ -618,7 +637,8 @@ sub try_until_success
 			last;
 		}
 		if ($self->should_have($pkgname)) {
-			print STDERR "Temporary error, sleeping $retry seconds\n";
+			$self->errsay("Temporary error, sleeping #1 seconds",
+				$retry);
 			sleep($retry);
 		}
 	}
@@ -629,8 +649,8 @@ sub find
 {
 	my ($self, $pkgname, @extra) = @_;
 
-	return $self->try_until_success($pkgname, 
-	    sub { 
+	return $self->try_until_success($pkgname,
+	    sub {
 	    	return $self->SUPER::find($pkgname, @extra); });
 
 }
@@ -639,8 +659,8 @@ sub grabPlist
 {
 	my ($self, $pkgname, @extra) = @_;
 
-	return $self->try_until_success($pkgname, 
-	    sub { 
+	return $self->try_until_success($pkgname,
+	    sub {
 	    	return $self->SUPER::grabPlist($pkgname, @extra); });
 }
 
@@ -676,7 +696,7 @@ sub parse_problems
 			next if m/^421\s+/o;
 		}
 		if ($notyet) {
-			print STDERR "Error from $url:\n" if $notyet;
+			$self->{state}->errsay("Error from #1", $url);
 			$notyet = 0;
 		}
 		if (m/^421\s+/o ||
@@ -687,7 +707,7 @@ sub parse_problems
 		if (m/^550\s+/o) {
 			$self->{lasterror} = 550;
 		}
-		print STDERR  $_;
+		$self->{state}->errprint("#1", $_);
 	}
 	CORE::close($fh);
 	$self->SUPER::parse_problems($filename, $hint, $object);
@@ -702,9 +722,9 @@ sub list
 		$self->{list} = $self->obtain_list($error);
 		$self->parse_problems($error);
 		if ($self->{no_such_dir}) {
-			print STDERR $self->{path}, 
-			    ": Directory does not exist on ", $self->{host}, 
-			    "\n";
+			$self->{state}->errsay(
+			    "#1: Directory does not exist on #2",
+			    $self->{path}, $self->{host});
 		    	$self->{lasterror} = 404;
 		}
 	}
@@ -722,11 +742,11 @@ sub get_http_list
 	    or return;
 	while(<$fh>) {
 		chomp;
-		for my $pkg (m/\<A\s+HREF=\"(.*?)\.tgz\"\>/gio) {
+		for my $pkg (m/\<A\s+HREF=\"(.*?\.tgz)\"\>/gio) {
 			$pkg = $1 if $pkg =~ m|^.*/(.*)$|;
 			# decode uri-encoding; from URI::Escape
 			$pkg =~ s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
-			push(@$l, $pkg);
+			$self->add_to_list($l, $pkg);
 		}
 	}
 	close($fh);
@@ -775,8 +795,8 @@ sub _list
 		if (m/No such file or directory|Failed to change directory/i) {
 			$self->{no_such_dir} = 1;
 		}
-		next unless m/^(?:\.\/)?(\S+)\.tgz\s*$/;
-		push(@$l, $1);
+		next unless m/^(?:\.\/)?(\S+\.tgz)\s*$/;
+		$self->add_to_list($l, $1);
 	}
 	close($fh);
 	return $l;

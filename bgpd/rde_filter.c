@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_filter.c,v 1.61 2009/12/18 15:51:37 claudio Exp $ */
+/*	$OpenBSD: rde_filter.c,v 1.64 2010/05/17 16:08:20 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Claudio Jeker <claudio@openbsd.org>
@@ -269,11 +269,21 @@ int
 rde_filter_match(struct filter_rule *f, struct rde_aspath *asp,
     struct bgpd_addr *prefix, u_int8_t plen, struct rde_peer *peer)
 {
-	int	as, type;
+	u_int32_t	pas;
+	int		cas, type;
 
-	if (asp != NULL && f->match.as.type != AS_NONE)
-		if (aspath_match(asp->aspath, f->match.as.type,
-		    f->match.as.as) == 0)
+	if (asp != NULL && f->match.as.type != AS_NONE) {
+		if (f->match.as.flags & AS_FLAG_NEIGHBORAS)
+			pas = peer->conf.remote_as;
+		else
+			pas = f->match.as.as;
+		if (aspath_match(asp->aspath, f->match.as.type, pas) == 0)
+			return (0);
+	}
+
+	if (asp != NULL && f->match.aslen.type != ASLEN_NONE)
+		if (aspath_lenmatch(asp->aspath, f->match.aslen.type,
+		    f->match.aslen.aslen) == 0)
 			return (0);
 
 	if (asp != NULL && f->match.community.as != COMMUNITY_UNSET) {
@@ -281,10 +291,10 @@ rde_filter_match(struct filter_rule *f, struct rde_aspath *asp,
 		case COMMUNITY_ERROR:
 			fatalx("rde_apply_set bad community string");
 		case COMMUNITY_NEIGHBOR_AS:
-			as = peer->conf.remote_as;
+			cas = peer->conf.remote_as;
 			break;
 		default:
-			as = f->match.community.as;
+			cas = f->match.community.as;
 			break;
 		}
 
@@ -299,9 +309,14 @@ rde_filter_match(struct filter_rule *f, struct rde_aspath *asp,
 			break;
 		}
 
-		if (community_match(asp, as, type) == 0)
+		if (community_match(asp, cas, type) == 0)
 			return (0);
 	}
+	if (asp != NULL &&
+	    (f->match.ext_community.flags & EXT_COMMUNITY_FLAG_VALID))
+		if (community_ext_match(asp, &f->match.ext_community,
+		    peer->conf.remote_as) == 0)
+			return (0);
 
 	if (f->match.prefix.addr.aid != 0) {
 		if (f->match.prefix.addr.aid != prefix->aid)

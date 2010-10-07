@@ -1,4 +1,4 @@
-/*	$OpenBSD: ber.c,v 1.4 2009/12/16 22:17:53 deraadt Exp $ */
+/*	$OpenBSD: ber.c,v 1.7 2010/06/14 13:46:08 martinh Exp $ */
 
 /*
  * Copyright (c) 2007 Reyk Floeter <reyk@vantronix.net>
@@ -101,7 +101,7 @@ ber_unlink_elements(struct ber_element *prev)
 
 	if ((prev->be_encoding == BER_TYPE_SEQUENCE ||
 	    prev->be_encoding == BER_TYPE_SET) &&
-	    prev->be_sub == NULL) {
+	    prev->be_sub != NULL) {
 		elm = prev->be_sub;
 		prev->be_sub = NULL;
 	} else {
@@ -738,10 +738,7 @@ ber_scanf_elements(struct ber_element *ber, char *fmt, ...)
  *	root	fully populated element tree
  *
  * returns:
- *	0	on success
- *
- * returns:
- *	0	on success
+ *      >=0     number of bytes written
  *	-1	on failure and sets errno
  */
 int
@@ -826,10 +823,6 @@ ber_free_elements(struct ber_element *root)
 	free(root);
 }
 
-/*
- * internal functions
- */
-
 size_t
 ber_calc_len(struct ber_element *root)
 {
@@ -860,6 +853,10 @@ ber_calc_len(struct ber_element *root)
 
 	return (root->be_len + size);
 }
+
+/*
+ * internal functions
+ */
 
 static int
 ber_dump_element(struct ber *ber, struct ber_element *root)
@@ -1139,18 +1136,18 @@ ber_read_element(struct ber *ber, struct ber_element *elm)
 				return -1;
 		}
 		next = elm->be_sub;
-		do {
+		while (len > 0) {
 			r = ber_read_element(ber, next);
 			if (r == -1)
 				return -1;
-			if (next->be_next == NULL) {
+			len -= r;
+			if (len > 0 && next->be_next == NULL) {
 				if ((next->be_next = ber_get_element(0)) ==
 				    NULL)
 					return -1;
 			}
 			next = next->be_next;
-			len -= r;
-		} while (len > 0);
+		}
 		break;
 	}
 	return totlen;

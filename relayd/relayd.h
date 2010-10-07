@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.133 2010/01/11 06:40:14 jsg Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.137 2010/08/01 22:18:35 sthen Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -116,7 +116,7 @@ struct ctl_icmp_event {
 struct ctl_tcp_event {
 	int			 s;
 	char			*req;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct host		*host;
 	struct table		*table;
 	struct timeval		 tv_start;
@@ -536,6 +536,7 @@ struct relay_config {
 	int			 dstmode;
 	int			 dstretry;
 	objid_t			 dsttable;
+	objid_t			 backuptable;
 	struct sockaddr_storage	 ss;
 	struct sockaddr_storage	 dstss;
 	struct sockaddr_storage	 dstaf;
@@ -556,6 +557,7 @@ struct relay {
 	struct bufferevent	*rl_dstbev;
 
 	struct table		*rl_dsttable;
+	struct table		*rl_backuptable;
 	u_int32_t		 rl_dstkey;
 	struct host		*rl_dsthost[RELAY_MAXHOSTS];
 	int			 rl_dstnhosts;
@@ -671,6 +673,13 @@ struct relayd {
 	struct ctl_icmp_event	 sc_icmp_recv;
 	struct ctl_icmp_event	 sc_icmp6_send;
 	struct ctl_icmp_event	 sc_icmp6_recv;
+
+	/* Event and signal handlers */
+	struct event		 sc_evsigint;
+	struct event		 sc_evsigterm;
+	struct event		 sc_evsigchld;
+	struct event		 sc_evsighup;
+	struct event		 sc_evsigpipe;
 };
 
 #define RELAYD_OPT_VERBOSE		0x01
@@ -837,7 +846,6 @@ int	 relay_from_table(struct rsession *);
 int	 relay_socket_af(struct sockaddr_storage *, in_port_t);
 int	 relay_cmp_af(struct sockaddr_storage *,
 		 struct sockaddr_storage *);
-
 
 RB_PROTOTYPE(proto_tree, protonode, se_nodes, relay_proto_cmp);
 SPLAY_PROTOTYPE(session_tree, rsession, se_nodes, relay_session_cmp);

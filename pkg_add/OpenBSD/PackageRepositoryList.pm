@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageRepositoryList.pm,v 1.21 2010/01/09 14:49:53 espie Exp $
+# $OpenBSD: PackageRepositoryList.pm,v 1.26 2010/07/02 11:17:46 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -22,24 +22,39 @@ package OpenBSD::PackageRepositoryList;
 
 sub new
 {
-	my $class = shift;
-	return bless {l => [], c => {}, k => {}}, $class;
+	my ($class, $state) = @_;
+	return bless {l => [], k => {}, state => $state}, $class;
+}
+
+sub filter_new
+{
+	my $self = shift;
+	my @l = ();
+	for my $r (@_) {
+		next if $self->{k}{$r};
+		$self->{k}{$r} = 1;
+		push @l, $r;
+	}
+	return @l;
 }
 
 sub add
 {
 	my $self = shift;
-	for my $r (@_) {
-		next if $self->{k}{$r};
-		push @{$self->{l}}, $r;
-	}
+	push @{$self->{l}}, $self->filter_new(@_);
+}
+
+sub prepend
+{
+	my $self = shift;
+	unshift @{$self->{l}}, $self->filter_new(@_);
 }
 
 sub do_something
 {
 	my ($self, $do, $pkgname, @args) = @_;
 	if ($pkgname eq '-') {
-		return OpenBSD::PackageRepository::Local::Pipe->new->$do($pkgname, @args);
+		return OpenBSD::PackageRepository->pipe->new($self->{state})->$do($pkgname, @args);
 	}
 	for my $repo (@{$self->{l}}) {
 		my $r = $repo->$do($pkgname, @args);

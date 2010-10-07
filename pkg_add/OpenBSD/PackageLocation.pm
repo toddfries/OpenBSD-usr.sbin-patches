@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageLocation.pm,v 1.18 2010/01/12 10:14:37 espie Exp $
+# $OpenBSD: PackageLocation.pm,v 1.25 2010/09/14 10:02:37 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -28,7 +28,7 @@ sub new
 {
 	my ($class, $repository, $name, $arch) = @_;
 
-	my $self = { repository => $repository, name => $repository->canonicalize($name)};
+	my $self = { repository => $repository, name => $repository->canonicalize($name), state => $repository->{state} };
 	if (defined $arch) {
 		$self->{arch} = $arch;
 	}
@@ -66,7 +66,7 @@ OpenBSD::Auto::cache(pkgname,
 OpenBSD::Auto::cache(update_info,
     sub {
 	my $self = shift;
-	return $self->grabPlist(\&OpenBSD::PackingList::UpdateInfoOnly);
+	return $self->plist(\&OpenBSD::PackingList::UpdateInfoOnly);
     });
 
 
@@ -80,13 +80,13 @@ sub _opened
 	}
 	my $fh = $self->{repository}->open($self);
 	if (!defined $fh) {
-		$self->{repository}->parse_problems($self->{errors}) 
+		$self->{repository}->parse_problems($self->{errors})
 		    if defined $self->{errors};
 		undef $self->{errors};
 		return;
 	}
 	require OpenBSD::Ustar;
-	my $archive = new OpenBSD::Ustar $fh;
+	my $archive = OpenBSD::Ustar->new($fh, $self->{state});
 	$self->{_archive} = $archive;
 
 	if (defined $self->{_current}) {
@@ -128,7 +128,7 @@ sub find_fat_contents
 		my $contents = $e->contents;
 		require OpenBSD::PackingList;
 
-		my $plist = OpenBSD::PackingList->fromfile(\$contents, 
+		my $plist = OpenBSD::PackingList->fromfile(\$contents,
 		    \&OpenBSD::PackingList::FatOnly);
 		if (defined $self->name) {
 			next if $plist->pkgname ne $self->name;
@@ -149,7 +149,7 @@ sub contents
 		if (!$self->_opened) {
 			return;
 		}
-		$self->{contents} = $self->find_contents || 
+		$self->{contents} = $self->find_contents ||
 		    $self->find_fat_contents;
 	}
 
@@ -175,6 +175,8 @@ sub grab_info
 	while (my $e = $self->_next) {
 		if ($e->isFile && is_info_name($e->{name})) {
 			$e->{name} = $dir.$e->{name};
+			undef $e->{mtime};
+			undef $e->{atime};
 			eval { $e->create; };
 			if ($@) {
 				unlink($e->{name});
@@ -204,6 +206,13 @@ sub grabPlist
 	}
 }
 
+sub forget
+{
+	my $self = shift;
+	$self->wipe_info;
+	$self->close_now;
+}
+
 sub wipe_info
 {
 	my $self = shift;
@@ -226,8 +235,8 @@ sub plist
 	require OpenBSD::PackingList;
 
 	if (defined $self->{dir} && -f $self->{dir}.CONTENTS) {
-		my $plist = 
-		    OpenBSD::PackingList->fromfile($self->{dir}.CONTENTS, 
+		my $plist =
+		    OpenBSD::PackingList->fromfile($self->{dir}.CONTENTS,
 		    $code);
 		$plist->set_infodir($self->{dir});
 		return $plist;
@@ -307,7 +316,7 @@ sub _next
 }
 
 sub unput
-{ 	
+{
 	my $self = shift;
 	$self->{_unput} = 1;
 }

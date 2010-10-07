@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpd.h,v 1.9 2010/01/02 14:56:02 michele Exp $ */
+/*	$OpenBSD: ldpd.h,v 1.26 2010/09/02 14:34:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -46,16 +46,20 @@
 #define	MAX_RTSOCK_BUF		128 * 1024
 #define	LDP_BACKLOG		128
 
-#define	LDPD_FLAG_NO_LFIB_UPDATE	0x0001
+#define	LDPD_FLAG_NO_FIB_UPDATE	0x0001
 
 #define	F_LDPD_INSERTED		0x0001
-#define	F_KERNEL		0x0002
-#define	F_BGPD_INSERTED		0x0004
-#define	F_CONNECTED		0x0008
-#define	F_DOWN			0x0010
-#define	F_STATIC		0x0020
-#define	F_DYNAMIC		0x0040
-#define	F_REDISTRIBUTED		0x0100
+#define	F_CONNECTED		0x0002
+#define	F_STATIC		0x0004
+#define	F_DYNAMIC		0x0008
+#define	F_REJECT		0x0010
+#define	F_BLACKHOLE		0x0020
+#define	F_REDISTRIBUTED		0x0040
+
+struct evbuf {
+	struct msgbuf		wbuf;
+	struct event		ev;
+};
 
 struct imsgev {
 	struct imsgbuf		 ibuf;
@@ -71,20 +75,22 @@ enum imsg_type {
 	IMSG_CTL_SHOW_INTERFACE,
 	IMSG_CTL_SHOW_NBR,
 	IMSG_CTL_SHOW_LIB,
-	IMSG_CTL_LFIB_COUPLE,
-	IMSG_CTL_LFIB_DECOUPLE,
+	IMSG_CTL_FIB_COUPLE,
+	IMSG_CTL_FIB_DECOUPLE,
 	IMSG_CTL_KROUTE,
 	IMSG_CTL_KROUTE_ADDR,
 	IMSG_CTL_IFINFO,
 	IMSG_CTL_END,
 	IMSG_CTL_LOG_VERBOSE,
-	IMSG_KLABEL_INSERT,
 	IMSG_KLABEL_CHANGE,
 	IMSG_KLABEL_DELETE,
 	IMSG_IFINFO,
 	IMSG_LABEL_MAPPING,
 	IMSG_LABEL_MAPPING_FULL,
 	IMSG_LABEL_REQUEST,
+	IMSG_LABEL_RELEASE,
+	IMSG_LABEL_WITHDRAW,
+	IMSG_LABEL_ABORT,
 	IMSG_REQUEST_ADD,
 	IMSG_REQUEST_ADD_END,
 	IMSG_MAPPING_ADD,
@@ -100,7 +106,6 @@ enum imsg_type {
 	IMSG_NETWORK_ADD,
 	IMSG_NETWORK_DEL,
 	IMSG_RECONF_CONF,
-	IMSG_RECONF_AREA,
 	IMSG_RECONF_IFACE,
 	IMSG_RECONF_END
 };
@@ -109,11 +114,8 @@ enum imsg_type {
 #define	IF_STA_NEW		0x00	/* dummy state for reload */
 #define	IF_STA_DOWN		0x01
 #define	IF_STA_LOOPBACK		0x02
-#define	IF_STA_POINTTOPOINT	0x04
-#define	IF_STA_DROTHER		0x08
-#define	IF_STA_MULTI		(IF_STA_DROTHER | IF_STA_BACKUP | IF_STA_DR)
-#define	IF_STA_ANY		0x7f
-#define	IF_STA_ACTIVE		(~IF_STA_DOWN)
+#define	IF_STA_ACTIVE		0x04
+#define	IF_STA_ANY		0x07
 
 /* interface events */
 enum iface_event {
@@ -132,10 +134,7 @@ enum iface_action {
 /* interface types */
 enum iface_type {
 	IF_TYPE_POINTOPOINT,
-	IF_TYPE_BROADCAST,
-	IF_TYPE_NBMA,
-	IF_TYPE_POINTOMULTIPOINT,
-	IF_TYPE_VIRTUALLINK
+	IF_TYPE_BROADCAST
 };
 
 /* neighbor states */
@@ -145,12 +144,9 @@ enum iface_type {
 #define	NBR_STA_OPENREC		0x0008
 #define	NBR_STA_OPENSENT	0x0010
 #define	NBR_STA_OPER		0x0020
-#define	NBR_STA_ACTIVE		(~NBR_STA_DOWN)
-#define	NBR_STA_SESSION		(NBR_STA_PRESENT | NBR_STA_PRESENT | \
-				NBR_STA_INITIAL | NBR_STA_OPENREC | \
-				NBR_STA_OPER | NBR_STA_OPENSENT | \
-				NBR_STA_ACTIVE)
-#define	NBR_STA_UP		(NBR_STA_PRESENT | NBR_STA_SESSION)
+#define	NBR_STA_SESSION		(NBR_STA_PRESENT | NBR_STA_INITIAL | \
+				NBR_STA_OPENREC | NBR_STA_OPENSENT | \
+				NBR_STA_OPER)
 
 /* neighbor events */
 enum nbr_event {
@@ -182,11 +178,16 @@ enum nbr_action {
 TAILQ_HEAD(mapping_head, mapping_entry);
 
 struct map {
+	struct in_addr	prefix;
 	u_int32_t	label;
-	u_int32_t	prefix;
-	u_int8_t	prefixlen;
 	u_int32_t	messageid;
+	u_int32_t	requestid;
+	u_int8_t	prefixlen;
+	u_int8_t	flags;
 };
+#define F_MAP_WILDCARD	0x01	/* wildcard FEC */
+#define F_MAP_OPTLABEL	0x02	/* optional label present */
+#define F_MAP_REQ_ID	0x04	/* optional request message id present */
 
 struct notify_msg {
 	u_int32_t	messageid;
@@ -205,7 +206,6 @@ struct iface {
 	struct in_addr		 addr;
 	struct in_addr		 dst;
 	struct in_addr		 mask;
-	struct nbr		*self;
 
 	u_int16_t		 lspace_id;
 
@@ -233,6 +233,11 @@ enum {
 	PROC_LDP_ENGINE,
 	PROC_LDE_ENGINE
 } ldpd_process;
+
+enum blockmodes {
+	BM_NORMAL,
+	BM_NONBLOCK
+};
 
 #define	MODE_DIST_INDEPENDENT	0x01
 #define	MODE_DIST_ORDERED	0x02
@@ -264,15 +269,9 @@ struct kroute {
 	u_int32_t	local_label;
 	u_int32_t	remote_label;
 	u_int16_t	flags;
-	u_int16_t	rtlabel;
-	u_int32_t	ext_tag;
 	u_short		ifindex;
 	u_int8_t	prefixlen;
-};
-
-struct rroute {
-	struct kroute	kr;
-	u_int32_t	metric;
+	u_int8_t	priority;
 };
 
 struct kif_addr {
@@ -290,20 +289,7 @@ struct kif {
 	u_short			 ifindex;
 	u_int8_t		 media_type;
 	u_int8_t		 link_state;
-	u_int8_t		 nh_reachable;	/* for nexthop verification */
 };
-
-/* name2id */
-struct n2id_label {
-	TAILQ_ENTRY(n2id_label)	 entry;
-	char			*name;
-	u_int16_t		 id;
-	u_int32_t		 ext_tag;
-	int			 ref;
-};
-
-TAILQ_HEAD(n2id_labels, n2id_label);
-extern struct n2id_labels rt_labels;
 
 /* control data structures */
 struct ctl_iface {
@@ -389,6 +375,9 @@ struct ctl_sum_lspace {
 struct ldpd_conf	*parse_config(char *, int);
 int			 cmdline_symset(char *);
 
+/* control.c */
+void	session_socket_blockmode(int, enum blockmodes);
+
 /* in_cksum.c */
 u_int16_t	 in_cksum(void *, size_t);
 
@@ -401,14 +390,13 @@ int		 kr_init(int);
 int		 kr_change(struct kroute *);
 int		 kr_delete(struct kroute *);
 void		 kr_shutdown(void);
-void		 kr_lfib_couple(void);
-void		 kr_lfib_decouple(void);
+void		 kr_fib_couple(void);
+void		 kr_fib_decouple(void);
 void		 kr_dispatch_msg(int, short, void *);
 void		 kr_show_route(struct imsg *);
 void		 kr_ifinfo(char *, pid_t);
 struct kif	*kif_findname(char *, struct in_addr, struct kif_addr **);
 void		 kr_reload(void);
-int		 kroute_insert_label(struct kroute *);
 
 u_int8_t	mask2prefixlen(in_addr_t);
 in_addr_t	prefixlen2mask(u_int8_t);
@@ -417,14 +405,7 @@ in_addr_t	prefixlen2mask(u_int8_t);
 const char	*nbr_state_name(int);
 const char	*if_state_name(int);
 const char	*if_type_name(enum iface_type);
-
-/* name2id.c */
-u_int16_t	 rtlabel_name2id(const char *);
-const char	*rtlabel_id2name(u_int16_t);
-void		 rtlabel_unref(u_int16_t);
-u_int32_t	 rtlabel_id2tag(u_int16_t);
-u_int16_t	 rtlabel_tag2id(u_int32_t);
-void		 rtlabel_tag(u_int16_t, u_int32_t);
+const char	*notification_name(u_int32_t);
 
 /* ldpd.c */
 void	main_imsg_compose_ldpe(int, pid_t, void *, u_int16_t);
@@ -433,7 +414,10 @@ void	merge_config(struct ldpd_conf *, struct ldpd_conf *);
 int	imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t, pid_t,
 	    int, void *, u_int16_t);
 void	imsg_event_add(struct imsgev *);
-
+void	evbuf_enqueue(struct evbuf *, struct ibuf *);
+void	evbuf_event_add(struct evbuf *);
+void	evbuf_init(struct evbuf *, int, void (*)(int, short, void *), void *);
+void	evbuf_clear(struct evbuf *);
 
 /* printconf.c */
 void	print_config(struct ldpd_conf *);

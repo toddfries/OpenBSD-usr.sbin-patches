@@ -1,4 +1,4 @@
-/*	$OpenBSD$ */
+/*	$OpenBSD: pdu.c,v 1.2 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -6,7 +6,7 @@
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -35,86 +35,20 @@
 size_t	pdu_readbuf_read(struct pdu_readbuf *, void *, size_t);
 size_t	pdu_readbuf_len(struct pdu_readbuf *);
 
-void	task_pdu_cb(struct connection *, struct pdu *);
-
 #define PDU_MIN(_x, _y)		((_x) < (_y) ? (_x) : (_y))
 
-struct pdu *
-pdu_new(void)
-{
-	struct pdu *p;
-
-	if (!(p = calloc(1, sizeof(*p))))
-		return NULL;
-	return p;
-}
-
 void *
-pdu_gethdr(struct pdu *p, int alloc)
+pdu_gethdr(struct pdu *p)
 {
-	if (p->iov[0].iov_base)
-		return p->iov[0].iov_base;
-	if (!alloc)
+	void *hdr;
+
+	if (!(hdr = calloc(1, sizeof(struct iscsi_pdu))))
 		return NULL;
-
-	if (!(p->iov[0].iov_base = calloc(1, sizeof(struct iscsi_pdu))))
+	if (pdu_addbuf(p, hdr, sizeof(struct iscsi_pdu), PDU_HEADER)) {
+		free(hdr);
 		return NULL;
-	p->iov[0].iov_len = sizeof(struct iscsi_pdu);
-
-	return p->iov[0].iov_base;
-}
-
-void *
-pdu_alloc(size_t len)
-{
-	return malloc(((len + 3)/4)*4);
-}
-
-int
-pdu_addbuf(struct pdu *p, void *buf, size_t len)
-{
-	unsigned int j;
-
-	if (len & 0x3) {
-		bzero((char *)buf + len, 4 - (len & 0x3));
-		len += 4 - (len & 0x3);
 	}
-
-	for (j = 0; j < PDU_MAXIOV; j++)
-		if (!p->iov[j].iov_base) {
-			p->iov[j].iov_base = buf;
-			p->iov[j].iov_len = len;
-			return 0;
-		}
-
-	/* no space left */
-	log_debug("pdu_addbuf: I'm sorry, Dave. I'm afraid I can't do that.");
-	return -1;
-}
-
-void *
-pdu_getbuf(struct pdu *p, size_t *len)
-{
-	unsigned int j;
-
-	*len = 0;
-	for (j = 1; j < PDU_MAXIOV; j++)
-		if (p->iov[j].iov_base) {
-			*len = p->iov[j].iov_len;
-			return p->iov[j].iov_base;
-		}
-
-	return NULL;
-}
-
-void
-pdu_free(struct pdu *p)
-{
-	unsigned int j;
-
-	for (j = 0; j < PDU_MAXIOV; j++)
-		free(p->iov[j].iov_base);
-	free(p);
+	return hdr;
 }
 
 int
@@ -143,8 +77,8 @@ text_to_pdu(struct kvp *k, struct pdu *p)
 		s += n + 1;
 		nk++;
 	}
-	
-	if (pdu_addbuf(p, buf, len))
+
+	if (pdu_addbuf(p, buf, len, PDU_DATA))
 		return -1;
 	return len;
 }
@@ -156,9 +90,6 @@ pdu_to_text(char *buf, size_t len)
 	size_t n;
 	char *eq;
 	unsigned int nkvp = 0, i;
-
-log_debug("pdu_to_text:");
-log_hexdump(buf, len);
 
 	if (buf[len - 1]) {
 		log_debug("pdu_to_text: badly terminated text data");
@@ -175,12 +106,13 @@ log_hexdump(buf, len);
 		eq = strchr(buf, '=');
 		if (!eq) {
 			log_debug("pdu_to_text: badly encoded text data");
+			free(k);
 			return NULL;
 		}
 		*eq++ = '\0';
 		k[i].key = buf;
 		k[i].value = eq;
-		buf += strlen(eq) + 1;
+		buf = eq + strlen(eq) + 1;
 	}
 	return k;
 }
@@ -246,14 +178,14 @@ pdu_write(struct connection *c)
 	struct iovec iov[PDU_WRIOV];
 	struct pdu *b, *nb;
 	unsigned int niov = 0, j;
-	size_t off;
+	size_t off, resid, size;
 	ssize_t n;
 
 	TAILQ_FOREACH(b, &c->pdu_w, entry) {
 		if (niov >= PDU_WRIOV)
 			break;
 		off = b->resid;
-		for (j = 0; j < PDU_MAXIOV; j++) {
+		for (j = 0; j < PDU_MAXIOV && niov < PDU_WRIOV; j++) {
 			if (!b->iov[j].iov_len)
 				continue;
 			if (off >= b->iov[j].iov_len) {
@@ -278,24 +210,27 @@ pdu_write(struct connection *c)
 	if (n == 0)
 		return 0;
 
-	off = n;
-        for (b = TAILQ_FIRST(&c->pdu_w); b != NULL && n > 0; b = nb) {
+	size = n;
+        for (b = TAILQ_FIRST(&c->pdu_w); b != NULL && size > 0; b = nb) {
 		nb = TAILQ_NEXT(b, entry);
+		resid = b->resid;
 		for (j = 0; j < PDU_MAXIOV; j++) {
-			 if (off >= b->iov[j].iov_len) {
-				off -=  b->iov[j].iov_len;
-				b->resid += b->iov[j].iov_len;
-				if (j == PDU_MAXIOV - 1) {
-					/* all written */
-					TAILQ_REMOVE(&c->pdu_w, b, entry);
-					pdu_free(b);
-					break;
-				}
-			 } else {
-				b->resid += off;
-				off = 0;
+			if (resid >= b->iov[j].iov_len)
+				resid -= b->iov[j].iov_len;
+			else if (size >= b->iov[j].iov_len - resid) {
+				size -= b->iov[j].iov_len - resid;
+				b->resid += b->iov[j].iov_len - resid;
+				resid = 0;
+			} else {
+				b->resid += size;
+				size = 0;
 				break;
 			}
+		}
+		if (j == PDU_MAXIOV) {
+			/* all written */
+			TAILQ_REMOVE(&c->pdu_w, b, entry);
+			pdu_free(b);
 		}
 	}
 	return n;
@@ -329,7 +264,7 @@ pdu_parse(struct connection *c)
 				return;
 			if (!(p = pdu_new()))
 				goto fail;
-			if (!(ipdu = pdu_gethdr(p, 1)))
+			if (!(ipdu = pdu_gethdr(p)))
 				goto fail;
 
 			c->prbuf.wip = p;
@@ -342,7 +277,7 @@ pdu_parse(struct connection *c)
 			ahslen = ipdu->ahslen * sizeof(u_int32_t);
 			if (ahslen != 0) {
 				if (!(ahb = pdu_alloc(ahslen)) ||
-				    pdu_addbuf(p, ahb, ahslen))
+				    pdu_addbuf(p, ahb, ahslen, PDU_AHS))
 					goto fail;
 			}
 
@@ -350,7 +285,7 @@ pdu_parse(struct connection *c)
 			    ipdu->datalen[2];
 			if (dlen != 0) {
 				if (!(db = pdu_alloc(dlen)) ||
-				    pdu_addbuf(p, db, dlen))
+				    pdu_addbuf(p, db, dlen, PDU_DATA))
 					goto fail;
 			}
 
@@ -366,7 +301,7 @@ pdu_parse(struct connection *c)
 					     p->iov[j].iov_len - off);
 					p->resid += n;
 					if (n == 0 || off + n !=
-						p->iov[j].iov_len)
+					    p->iov[j].iov_len)
 						return;
 				}
 			}
@@ -433,95 +368,4 @@ void
 pdu_readbuf_free(struct pdu_readbuf *rb)
 {
 	free(rb->buf);
-}
-
-/*
- * Task handling, PDU are attached to tasks and task are scheduled accross
- * all connections of a session.
- */
-
-void
-task_init(struct task *t, struct session *s, int immediate, void *carg,
-    void (*c)(struct connection *, void *, struct pdu *))
-{
-	TAILQ_INIT(&t->sendq);
-	TAILQ_INIT(&t->recvq);
-	t->callback = c;
-	t->callarg = carg;
-	t->itt = s->itt++; /* XXX we could do better here */
-	t->cmdseqnum = s->cmdseqnum;
-	if (!immediate)
-		s->cmdseqnum++;
-}
-
-void
-task_cleanup(struct task *t, struct connection *c)
-{
-/* XXX THIS FEELS WRONG FOR NOW */
-	pdu_free_queue(&t->sendq);
-	pdu_free_queue(&t->recvq);
-	/* XXX need some state to know if queued or not */
-	TAILQ_REMOVE(&c->tasks, t, entry);
-}
-
-void
-task_pdu_add(struct task *t, struct pdu *p)
-{
-	struct iscsi_pdu *ipdu;
-
-	/* fixup the pdu by setting the itt and seqnum if needed */
-	ipdu = pdu_gethdr(p, 0);
-	ipdu->itt = ntohl(t->itt);
-	switch (ISCSI_PDU_OPCODE(ipdu->opcode)) {
-	case ISCSI_OP_I_NOP:
-	case ISCSI_OP_SCSI_REQUEST:
-	case ISCSI_OP_TASK_REQUEST:
-	case ISCSI_OP_LOGIN_REQUEST:
-	case ISCSI_OP_TEXT_REQUEST:
-	case ISCSI_OP_LOGOUT_REQUEST:
-log_debug("task_pdu_add: cmdsn %x", t->cmdseqnum);
-		ipdu->cmdsn = ntohl(t->cmdseqnum);
-		break;
-	}
-
-	TAILQ_INSERT_TAIL(&t->sendq, p, entry);
-}
-
-void
-task_pdu_cb(struct connection *c, struct pdu *p)
-{
-	struct task *t;
-	struct iscsi_pdu *ipdu;
-	u_int32_t itt;
-
-	ipdu = pdu_gethdr(p, 0);
-	switch (ISCSI_PDU_OPCODE(ipdu->opcode)) {
-	case ISCSI_OP_T_NOP:
-	case ISCSI_OP_SCSI_RESPONSE:
-	case ISCSI_OP_R2T:
-	case ISCSI_OP_LOGIN_RESPONSE:
-	case ISCSI_OP_TEXT_RESPONSE:
-	case ISCSI_OP_LOGOUT_RESPONSE:
-	case ISCSI_OP_DATA_IN:
-		itt = ntohl(ipdu->itt);
-		c->expstatsn = ntohl(ipdu->cmdsn) + 1;
-
-		/* XXX for now search the task on the connection queue
-		   later on this should be moved to a per session RB tree but
-		   now I do the quick ugly thing. */
-		TAILQ_FOREACH(t, &c->tasks, entry) {
-			if (itt == t->itt)
-				break;
-		}
-		if (t)
-			t->callback(c, t->callarg, p);
-		else {
-			log_debug("no task for PDU found");
-			pdu_free(p);
-		}
-		break;
-	default:
-log_pdu(p);
-		fatalx("not handled yet. fix me");
-	}
 }

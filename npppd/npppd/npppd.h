@@ -1,3 +1,5 @@
+/* $OpenBSD: npppd.h,v 1.5 2010/07/02 21:20:57 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -28,7 +30,7 @@
 
 #define	NPPPD_USER			"_npppd"
 
-#ifndef	NPPPD_DEFAULT_TUN_IFNAME	
+#ifndef	NPPPD_DEFAULT_TUN_IFNAME
 #define	NPPPD_DEFAULT_TUN_IFNAME	"tun0"
 #endif
 
@@ -39,13 +41,13 @@
 
 #define	DEFAULT_AUTH_TIMEOUT		30
 
-/** 固定割り当て */
+/** assign fixed IP address */
 #define NPPPD_IP_ASSIGN_FIXED		0x0001
 
-/** 先方が提案したアドレスを受け入れる */
+/** accept IP address which is proposed by peer and assign it */
 #define NPPPD_IP_ASSIGN_USER_SELECT	0x0002
 
-/** RADIUS の Framed-IP-Address を使う */
+/** use RADIUS Framed-IP-Address */
 #define NPPPD_IP_ASSIGN_RADIUS		0x0004
 
 /** sockaddr_npppd */
@@ -57,9 +59,9 @@ struct sockaddr_npppd {
 #define			snp_addr	sin4.sin_addr
 	int		snp_type;	/* SNP_POOL or SNP_PPP */
 #define			snp_mask	sin4mask.sin_addr
-	/** 次のエントリ */
+	/** next entry */
 	struct sockaddr_npppd *snp_next;
-	/** エントリの中身 */
+	/** contents of entry */
 	void 		*snp_data_ptr;
 };
 #define	SNP_POOL		1

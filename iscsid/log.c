@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.5 2006/03/09 16:58:40 claudio Exp $ */
+/*	$OpenBSD: log.c,v 1.2 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -159,26 +159,6 @@ fatalx(const char *emsg)
 	fatal(emsg);
 }
 
-const char *
-log_sockaddr(void *arg)
-{
-	struct sockaddr *sa = arg;
-	char port[6];
-	char host[NI_MAXHOST];
-	static char buf[NI_MAXHOST + 8];
-
-	if (getnameinfo(sa, sa->sa_len, host, sizeof(host), port, sizeof(port),
-	    NI_NUMERICHOST))
-		return "unkown";
-	if (port[0] == '0')
-		strlcpy(buf, host, sizeof(buf));
-	else if (sa->sa_family == AF_INET)
-		snprintf(buf, sizeof(buf), "%s:%s", host, port);
-	else
-		snprintf(buf, sizeof(buf), "[%s]:%s", host, port);
-	return buf;
-}
-
 void
 log_hexdump(void *buf, size_t len)
 {
@@ -192,7 +172,7 @@ log_hexdump(void *buf, size_t len)
 		fprintf(stderr, "%4zi:", i);
 		l = sizeof(b) < len - i ? sizeof(b) : len - i;
 		bcopy((char *)buf + i, b, l);
-		
+
 		for (j = 0; j < sizeof(b); j++) {
 			if (j % 2 == 0)
 				fprintf(stderr, " ");
@@ -215,7 +195,7 @@ log_hexdump(void *buf, size_t len)
 }
 
 void
-log_pdu(struct pdu *p)
+log_pdu(struct pdu *p, int all)
 {
 	struct iscsi_pdu *pdu;
 	void *b;
@@ -224,7 +204,7 @@ log_pdu(struct pdu *p)
 	if (!debug)
 		return;
 
-	if (!(pdu = pdu_gethdr(p, 0))) {
+	if (!(pdu = pdu_getbuf(p, NULL, PDU_HEADER))) {
 		log_debug("empty pdu");
 		return;
 	}
@@ -239,6 +219,7 @@ log_pdu(struct pdu *p)
 	    pdu->lun[3], pdu->lun[4], pdu->lun[5], pdu->lun[6], pdu->lun[7],
 	    ntohl(pdu->itt), ntohl(pdu->cmdsn), ntohl(pdu->expstatsn));
 	log_hexdump(pdu, sizeof(*pdu));
-	if ((b = pdu_getbuf(p, &s)))
+
+	if (all && (b = pdu_getbuf(p, &s, PDU_DATA)))
 		log_hexdump(b, s);
 }

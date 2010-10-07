@@ -1,3 +1,5 @@
+/* $OpenBSD: npppd_pool.h,v 1.3 2010/07/02 21:20:57 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -28,11 +30,11 @@
 
 typedef struct _npppd_pool npppd_pool;
 
-#define	ADDRESS_OK		0	/** 割り当て可能 */
-#define	ADDRESS_RESERVED	1	/** 予約アドレス */
-#define	ADDRESS_BUSY		2	/** 使用中 */
-#define	ADDRESS_INVALID		3	/** 利用不能アドレス */
-#define	ADDRESS_OUT_OF_POOL	4	/** 管理外 */
+#define	ADDRESS_OK		0	/** address is assignable. */
+#define	ADDRESS_RESERVED	1	/** address is reserved. */
+#define	ADDRESS_BUSY		2	/** address is busy. */
+#define	ADDRESS_INVALID		3	/** address is unusable. */
+#define	ADDRESS_OUT_OF_POOL	4	/** address is out of pool. */
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,4 +1,4 @@
-/*	$OpenBSD$ */
+/*	$OpenBSD: initiator.c,v 1.3 2010/09/25 16:20:06 sobrado Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -6,7 +6,7 @@
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
  * copyright notice and this permission notice appear in all copies.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
  * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -16,24 +16,27 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <sys/param.h>
 #include <sys/types.h>
-#include <sys/ioctl.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 
 #include <scsi/iscsi.h>
-#include <scsi/scsi_all.h>
-#include <dev/vscsivar.h>
 
 #include <event.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "iscsid.h"
 #include "log.h"
 
 struct initiator *initiator;
+
+struct kvp	*initiator_login_kvp(struct session *);
+char		*default_initiator_name(void);
 
 struct initiator *
 initiator_init(void)
@@ -41,10 +44,23 @@ initiator_init(void)
 	if (!(initiator = calloc(1, sizeof(*initiator))))
 		fatal("initiator_init");
 
-	initiator->isid_base = arc4random_uniform(0xffffff) | ISCSI_ISID_RAND;
-	initiator->isid_qual = arc4random_uniform(0xffff);
+	initiator->config.isid_base =
+	    arc4random_uniform(0xffffff) | ISCSI_ISID_RAND;
+	initiator->config.isid_qual = arc4random_uniform(0xffff);
 	TAILQ_INIT(&initiator->sessions);
 	return (initiator);
+}
+
+void
+initiator_cleanup(struct initiator *i)
+{
+	struct session *s;
+
+	while ((s = TAILQ_FIRST(&i->sessions)) != NULL) {
+		TAILQ_REMOVE(&i->sessions, s, entry);
+		session_close(s);
+	}
+	free(initiator);
 }
 
 struct session *
@@ -59,29 +75,82 @@ initiator_t2s(u_int target)
 	return NULL;
 }
 
-void
-session_new(struct initiator *i, const char *ip, const char *port)
+struct session *
+session_find(struct initiator *i, char *name)
+{
+	struct session *s;
+
+	TAILQ_FOREACH(s, &initiator->sessions, entry) {
+		if (strcmp(s->config.SessionName, name) == 0)
+			return s;
+	}
+	return NULL;
+}
+
+struct session *
+session_new(struct initiator *i, u_int8_t st)
 {
 	struct session *s;
 
 	if (!(s = calloc(1, sizeof(*s))))
-		fatal("session_new");
-	
+		return NULL;
+
 	/* use the same qualifier unless there is a conflict */
-	s->isid_qual = i->isid_qual;
+	s->isid_base = i->config.isid_base;
+	s->isid_qual = i->config.isid_qual;
 	s->cmdseqnum = arc4random();
 	s->itt = arc4random();
 	s->initiator = i;
-	s->target = i->target++;
+	s->state = SESS_FREE;
+
+	if (st == SESSION_TYPE_DISCOVERY)
+		s->target = 0;
+	else
+		s->target = s->initiator->target++;
 
 	TAILQ_INSERT_HEAD(&i->sessions, s, entry);
 	TAILQ_INIT(&s->connections);
 	TAILQ_INIT(&s->tasks);
 
-	log_debug("new connection to %s port %s", ip, port);
-	conn_new(s, ip, port);
+	return s;
+}
 
-	/* login task, enumeration task, logout task */
+void
+session_close(struct session *s)
+{
+	struct connection *c;
+
+	while ((c = TAILQ_FIRST(&s->connections)) != NULL)
+		conn_free(c);
+
+	free(s->config.TargetName);
+	free(s->config.InitiatorName);
+	free(s);
+}
+
+void
+session_config(struct session *s, struct session_config *sc)
+{
+	if (s->config.TargetName)
+		free(s->config.TargetName);
+	s->config.TargetName = NULL;
+	if (s->config.InitiatorName)
+		free(s->config.InitiatorName);
+	s->config.InitiatorName = NULL;
+
+	s->config = *sc;
+
+	if (sc->TargetName) {
+		s->config.TargetName = strdup(sc->TargetName);
+		if (s->config.TargetName == NULL)
+			fatal("strdup");
+	}
+	if (sc->InitiatorName) {
+		s->config.InitiatorName = strdup(sc->InitiatorName);
+		if (s->config.InitiatorName == NULL)
+			fatal("strdup");
+	} else
+		s->config.InitiatorName = default_initiator_name();
 }
 
 void
@@ -122,22 +191,38 @@ struct task_login {
 struct pdu *initiator_login_build(struct task_login *, struct kvp *);
 void	initiator_login_cb(struct connection *, void *, struct pdu *);
 
-void	initiator_discovery(struct session *);
 void	initiator_discovery_cb(struct connection *, void *, struct pdu *);
 struct pdu *initiator_text_build(struct task *, struct session *, struct kvp *);
+
+struct kvp *
+initiator_login_kvp(struct session *s)
+{
+	struct kvp *kvp;
+
+	if (!(kvp = calloc(4, sizeof(*kvp))))
+		return NULL;
+	kvp[0].key = "AuthMethod";
+	kvp[0].value = "None";
+	kvp[1].key = "InitiatorName";
+	kvp[1].value = s->config.InitiatorName;
+
+	if (s->config.SessionType == SESSION_TYPE_DISCOVERY) {
+		kvp[2].key = "SessionType";
+		kvp[2].value = "Discovery";
+	} else {
+		kvp[2].key = "TargetName";
+		kvp[2].value = s->config.TargetName;
+	}
+
+	return kvp;
+}
 
 void
 initiator_login(struct connection *c)
 {
 	struct task_login *tl;
 	struct pdu *p;
-	struct kvp kvp[] = {
-		{ "AuthMethod", "None" },
-		{ "InitiatorName", "iqn.t41.hostid.66d48107:plemplem" },
-		{ "TargetName", "iqn.2001-05.com.equallogic:0-8a0906-ca7423603-900e8298d6f4b7a1-test0" },
-//		{ "SessionType", "Discovery" },
-		{ NULL, NULL }
-	};
+	struct kvp *kvp;
 
 	if (!(tl = calloc(1, sizeof(*tl)))) {
 		log_warn("initiator_login");
@@ -147,11 +232,21 @@ initiator_login(struct connection *c)
 	tl->c = c;
 	tl->stage = ISCSI_LOGIN_STG_SECNEG;
 
-	if (!(p = initiator_login_build(tl, kvp))) {
-		log_warnx("initiator_login_build failed");
+	if (!(kvp = initiator_login_kvp(c->session))) {
+		log_warnx("initiator_login_kvp failed");
+		free(tl);
 		conn_fail(c);
 		return;
 	}
+
+	if (!(p = initiator_login_build(tl, kvp))) {
+		log_warnx("initiator_login_build failed");
+		free(tl);
+		conn_fail(c);
+		return;
+	}
+
+	free(kvp);
 
 	task_init(&tl->task, c->session, 1, tl, initiator_login_cb);
 	task_pdu_add(&tl->task, p);
@@ -168,7 +263,7 @@ initiator_login_build(struct task_login *tl, struct kvp *kvp)
 
 	if (!(p = pdu_new()))
 		return NULL;
-	if (!(lreq = pdu_gethdr(p, 1)))
+	if (!(lreq = pdu_gethdr(p)))
 		return NULL;
 
 	lreq->opcode = ISCSI_OP_LOGIN_REQUEST | ISCSI_OP_F_IMMEDIATE;
@@ -181,7 +276,7 @@ initiator_login_build(struct task_login *tl, struct kvp *kvp)
 		    ISCSI_LOGIN_F_CSG(ISCSI_LOGIN_STG_OPNEG) |
 		    ISCSI_LOGIN_F_NSG(ISCSI_LOGIN_STG_FULL);
 
-	lreq->isid_base = htonl(tl->c->session->initiator->isid_base);
+	lreq->isid_base = htonl(tl->c->session->isid_base);
 	lreq->isid_qual = htons(tl->c->session->isid_qual);
 	lreq->tsih = tl->tsih;
 	lreq->cid = htons(tl->c->cid);
@@ -201,15 +296,17 @@ initiator_login_cb(struct connection *c, void *arg, struct pdu *p)
 	struct task_login *tl = arg;
 	struct iscsi_pdu_login_response *lresp;
 
-	lresp = pdu_gethdr(p, 0);
-	log_pdu(p);
+	lresp = pdu_getbuf(p, NULL, PDU_HEADER);
+	/* XXX handle packet would be great */
+	log_pdu(p, 1);
 	if (ISCSI_PDU_OPCODE(lresp->opcode) != ISCSI_OP_LOGIN_RESPONSE) {
-		log_debug("Unkown crap");
+		log_debug("Unknown crap");
 	}
 
 	task_cleanup(&tl->task, c);
-	initiator_discovery(c->session);
-	vscsi_event(VSCSI_REQPROBE, c->session->target, 0);
+	conn_loggedin(c);
+	free(tl);
+	pdu_free(p);
 }
 
 void
@@ -246,7 +343,7 @@ initiator_text_build(struct task *t, struct session *s, struct kvp *kvp)
 
 	if (!(p = pdu_new()))
 		return NULL;
-	if (!(lreq = pdu_gethdr(p, 1)))
+	if (!(lreq = pdu_gethdr(p)))
 		return NULL;
 
 	lreq->opcode = ISCSI_OP_TEXT_REQUEST;
@@ -264,6 +361,49 @@ initiator_text_build(struct task *t, struct session *s, struct kvp *kvp)
 void
 initiator_discovery_cb(struct connection *c, void *arg, struct pdu *p)
 {
-	log_debug("DISCO DISCO");
-	log_pdu(p);
+	struct iscsi_pdu_text_response *lresp;
+	u_char *buf = NULL;
+	struct kvp *kvp, *k;
+	size_t n, size;
+
+	lresp = pdu_getbuf(p, NULL, PDU_HEADER);
+	switch (ISCSI_PDU_OPCODE(lresp->opcode)) {
+	case ISCSI_OP_TEXT_RESPONSE:
+		buf = pdu_getbuf(p, &n, PDU_DATA);
+		if (buf == NULL)
+			goto fail;
+		size = lresp->datalen[0] << 16 | lresp->datalen[1] << 8 |
+		    lresp->datalen[2];
+		if (size > n)
+			goto fail;
+		kvp = pdu_to_text(buf, size);
+		if (kvp == NULL)
+			goto fail;
+		log_debug("ISCSI_OP_TEXT_RESPONSE");
+		for (k = kvp; k->key; k++) {
+			log_debug("%s\t=>\t%s", k->key, k->value);
+		}
+		free(kvp);
+		free(arg);
+		conn_close(c);
+		break;
+	default:
+fail:
+		conn_fail(c);
+	}
+	pdu_free(p);
+}
+
+char *
+default_initiator_name(void)
+{
+	char *s, hostname[MAXHOSTNAMELEN];
+
+	if (gethostname(hostname, sizeof(hostname)))
+		strlcpy(hostname, "initiator", sizeof(hostname));
+	if ((s = strchr(hostname, '.')))
+		*s = '\0';
+	if (asprintf(&s, "%s:%s", ISCSID_BASE_NAME, hostname) == -1)
+		return ISCSID_BASE_NAME ":initiator";
+	return s;
 }

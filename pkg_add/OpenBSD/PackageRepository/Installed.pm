@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Installed.pm,v 1.20 2010/01/10 11:32:41 espie Exp $
+# $OpenBSD: Installed.pm,v 1.26 2010/07/02 11:17:46 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -28,28 +28,28 @@ package OpenBSD::PackageRepositoryBase;
 
 sub parse_url
 {
-	my ($class, $r) = @_;
+	my ($class, $r, $state) = @_;
 
 	my $path;
 
 	if ($$r =~ m/^(.*?)\:(.*)/) {
 		$path = $1;
-		$$r = 2;
+		$$r = $2;
 	} else {
 		$path = $$r;
 		$$r = '';
 	}
-		
+
 	$path .= '/' unless $path =~ m/\/$/;
-	bless { path => $path }, $class;
+	bless { path => $path, state => $state }, $class;
 }
 
 sub parse_fullurl
 {
-	my ($class, $_) = @_;
+	my ($class, $r, $state) = @_;
 
-	$class->strip_urlscheme($_) or return undef;
-	return $class->parse_url($_);
+	$class->strip_urlscheme($r) or return undef;
+	return $class->parse_url($r, $state);
 }
 
 sub strip_urlscheme
@@ -150,15 +150,13 @@ sub urlscheme
 	return 'inst';
 }
 
-use OpenBSD::PackageInfo (qw(is_installed installed_info 
+use OpenBSD::PackageInfo (qw(is_installed installed_info
     installed_packages installed_stems installed_name));
-
-my $singleton = bless {}, __PACKAGE__;
-my $s2 = bless {all => 1}, __PACKAGE__;
 
 sub new
 {
-	return $_[1] ? $s2 : $singleton;
+	my ($class, $all, $state) = @_;
+	return bless { all => $all, state => $state }, $class;
 }
 
 sub relative_url
