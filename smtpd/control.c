@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.43 2009/12/13 22:02:55 jacekm Exp $	*/
+/*	$OpenBSD: control.c,v 1.53 2010/06/02 19:16:53 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "smtpd.h"
+#include "queue_backend.h"
 
 #define CONTROL_BACKLOG 5
 
@@ -45,6 +46,7 @@ struct {
 	int			 fd;
 } control_state;
 
+void		 control_imsg(struct smtpd *, struct imsgev *, struct imsg *);
 __dead void	 control_shutdown(void);
 int		 control_init(void);
 void		 control_listen(struct smtpd *);
@@ -54,14 +56,63 @@ struct ctl_conn	*control_connbyfd(int);
 void		 control_close(struct smtpd *, int);
 void		 control_sig_handler(int, short, void *);
 void		 control_dispatch_ext(int, short, void *);
-void		 control_dispatch_lka(int, short, void *);
-void		 control_dispatch_mfa(int, short, void *);
-void		 control_dispatch_queue(int, short, void *);
-void		 control_dispatch_runner(int, short, void *);
-void		 control_dispatch_smtp(int, short, void *);
-void		 control_dispatch_parent(int, short, void *);
 
 struct ctl_connlist	ctl_conns;
+
+void
+control_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
+{
+	struct ctl_conn	*c;
+	struct reload	*reload;
+	int		 error;
+
+	if (iev->proc == PROC_SMTP) {
+		switch (imsg->hdr.type) {
+		case IMSG_SMTP_ENQUEUE:
+			c = control_connbyfd(imsg->hdr.peerid);
+			if (c == NULL)
+				return;
+			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0,
+			    imsg->fd, NULL, 0);
+			return;
+		}
+	}
+
+	if (iev->proc == PROC_QUEUE) {
+		switch (imsg->hdr.type) {
+		case IMSG_QUEUE_SCHEDULE:
+		case IMSG_QUEUE_REMOVE:
+			c = control_connbyfd(imsg->hdr.peerid);
+			if (c == NULL)
+				return;
+			memcpy(&error, imsg->data, sizeof error);
+			if (error)
+				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0,
+				    -1, NULL, 0);
+			else
+				imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0,
+				    -1, NULL, 0);
+			return;
+		}
+	}
+
+	if (iev->proc == PROC_PARENT) {
+		switch (imsg->hdr.type) {
+		case IMSG_CONF_RELOAD:
+			env->sc_flags &= ~SMTPD_CONFIGURING;
+			reload = imsg->data;
+			c = control_connbyfd(reload->fd);
+			if (c == NULL)
+				return;
+			imsg_compose_event(&c->iev,
+			    reload->ret ? IMSG_CTL_OK : IMSG_CTL_FAIL, 0, 0,
+			    -1, NULL, 0);
+			return;
+		}
+	}
+
+	fatalx("control_imsg: unexpected imsg");
+}
 
 void
 control_sig_handler(int sig, short event, void *p)
@@ -88,11 +139,10 @@ control(struct smtpd *env)
 	struct event		 ev_sigint;
 	struct event		 ev_sigterm;
 	struct peer		 peers [] = {
-		{ PROC_QUEUE,	 control_dispatch_queue },
-		{ PROC_RUNNER,	 control_dispatch_runner },
-		{ PROC_SMTP,	 control_dispatch_smtp },
-		{ PROC_MFA,	 control_dispatch_mfa },
-		{ PROC_PARENT,	 control_dispatch_parent },
+		{ PROC_QUEUE,	 imsg_dispatch },
+		{ PROC_SMTP,	 imsg_dispatch },
+		{ PROC_MFA,	 imsg_dispatch },
+		{ PROC_PARENT,	 imsg_dispatch },
 	};
 
 	switch (pid = fork()) {
@@ -139,25 +189,20 @@ control(struct smtpd *env)
 	session_socket_blockmode(fd, BM_NONBLOCK);
 	control_state.fd = fd;
 
-#ifndef DEBUG
 	if (chroot(pw->pw_dir) == -1)
 		fatal("control: chroot");
 	if (chdir("/") == -1)
 		fatal("control: chdir(\"/\")");
-#else
-#warning disabling privilege revocation and chroot in DEBUG MODE
-#endif
 
 	smtpd_process = PROC_CONTROL;
 	setproctitle("%s", env->sc_title[smtpd_process]);
 
-#ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("control: cannot drop privileges");
-#endif
 
+	imsg_callback = control_imsg;
 	event_init();
 
 	signal_set(&ev_sigint, SIGINT, control_sig_handler, env);
@@ -172,7 +217,8 @@ control(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 	control_listen(env);
-	event_dispatch();
+	if (event_dispatch() < 0)
+		fatal("event_dispatch");
 	control_shutdown();
 
 	return (0);
@@ -343,26 +389,14 @@ control_dispatch_ext(int fd, short event, void *arg)
 			imsg_compose_event(&c->iev, IMSG_STATS, 0, 0, -1,
 			    env->stats, sizeof(struct stats));
 			break;
-		case IMSG_RUNNER_SCHEDULE: {
-			struct sched *s = imsg.data;
-
-			if (euid)
+		case IMSG_QUEUE_SCHEDULE:
+		case IMSG_QUEUE_REMOVE:
+			if (euid || IMSG_DATA_SIZE(&imsg) != sizeof(u_int64_t))
 				goto badcred;
-	
-			if (IMSG_DATA_SIZE(&imsg) != sizeof(*s))
-				goto badcred;
-
-			s->fd = fd;
-
-			if (! valid_message_id(s->mid) && ! valid_message_uid(s->mid)) {
-				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0, -1,
-				    NULL, 0);
-				break;
-			}
-
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_RUNNER_SCHEDULE, 0, 0, -1, s, sizeof(*s));
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    imsg.hdr.type, fd, 0, -1, imsg.data,
+			    sizeof(u_int64_t));
 			break;
-		}
 /*
 		case IMSG_CONF_RELOAD: {
 			struct reload r;
@@ -399,7 +433,23 @@ control_dispatch_ext(int fd, short event, void *arg)
 			env->sc_flags |= SMTPD_EXITING;
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MDA_PAUSE:
+		case IMSG_CTL_VERBOSE: {
+			int verbose;
+
+			if (euid)
+				goto badcred;
+
+			if (IMSG_DATA_SIZE(&imsg) != sizeof(verbose))
+				goto badcred;
+
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
+			imsg_compose_event(env->sc_ievs[PROC_PARENT], IMSG_CTL_VERBOSE,
+			    0, 0, -1, &verbose, sizeof(verbose));
+			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+			break;
+		}
+		case IMSG_QUEUE_PAUSE_LOCAL:
 			if (euid)
 				goto badcred;
 
@@ -409,11 +459,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags |= SMTPD_MDA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MDA_PAUSE,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MTA_PAUSE:
+		case IMSG_QUEUE_PAUSE_RELAY:
 			if (euid)
 				goto badcred;
 
@@ -423,8 +473,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags |= SMTPD_MTA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MTA_PAUSE,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_PAUSE_RELAY, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_PAUSE:
@@ -441,7 +491,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			    0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MDA_RESUME:
+		case IMSG_QUEUE_RESUME_LOCAL:
 			if (euid)
 				goto badcred;
 
@@ -451,11 +501,11 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags &= ~SMTPD_MDA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MDA_RESUME,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_MTA_RESUME:
+		case IMSG_QUEUE_RESUME_RELAY:
 			if (euid)
 				goto badcred;
 
@@ -465,8 +515,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 				break;
 			}
 			env->sc_flags &= ~SMTPD_MTA_PAUSED;
-			imsg_compose_event(env->sc_ievs[PROC_RUNNER], IMSG_MTA_RESUME,
-			    0, 0, -1, NULL, 0);
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
+			    IMSG_QUEUE_RESUME_RELAY, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_RESUME:
@@ -497,326 +547,4 @@ badcred:
 	}
 
 	imsg_event_add(&c->iev);
-}
-
-void
-control_dispatch_parent(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_PARENT];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_parent: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_CONF_RELOAD: {
-			struct reload *r = imsg.data;
-			struct ctl_conn	*c;
-
-			IMSG_SIZE_CHECK(r);
-
-			env->sc_flags &= ~SMTPD_CONFIGURING;
-			if ((c = control_connbyfd(r->fd)) == NULL) {
-				log_warn("control_dispatch_parent: fd %d not found", r->fd);
-				return;
-			}
-
-			if (r->ret)
-				imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
-			else
-				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0, -1, NULL, 0);
-			break;
-		}
-		default:
-			log_warnx("control_dispatch_parent: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_parent: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
-}
-
-void
-control_dispatch_lka(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_LKA];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_lka: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		default:
-			log_warnx("control_dispatch_lka: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_lka: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
-}
-
-void
-control_dispatch_mfa(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_MFA];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_mfa: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		default:
-			log_warnx("control_dispatch_mfa: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_mfa: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
-}
-
-void
-control_dispatch_queue(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_QUEUE];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_queue: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		default:
-			log_warnx("control_dispatch_queue: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_queue: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
-}
-
-void
-control_dispatch_runner(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_RUNNER];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_runner: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_RUNNER_SCHEDULE: {
-			struct sched	*s = imsg.data;
-			struct ctl_conn	*c;
-
-			IMSG_SIZE_CHECK(s);
-
-			if ((c = control_connbyfd(s->fd)) == NULL) {
-				log_warn("control_dispatch_runner: fd %d not found", s->fd);
-				imsg_free(&imsg);
-				return;
-			}
-
-			if (s->ret)
-				imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
-			else
-				imsg_compose_event(&c->iev, IMSG_CTL_FAIL, 0, 0, -1, NULL, 0);
-			break;
-		}
-		default:
-			log_warnx("control_dispatch_runner: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_runner: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
-}
-
-void
-control_dispatch_smtp(int sig, short event, void *p)
-{
-	struct smtpd		*env = p;
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
-
-	iev = env->sc_ievs[PROC_SMTP];
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("control_dispatch_smtp: imsg_get error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_SMTP_ENQUEUE: {
-			struct ctl_conn	*c;
-			int		client_fd;
-
-			client_fd = imsg.hdr.peerid;
-
-			if ((c = control_connbyfd(client_fd)) == NULL) {
-				log_warn("control_dispatch_smtp: fd %d not found", client_fd);
-				imsg_free(&imsg);
-				return;
-			}
-
-			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0,
-			    imsg.fd, NULL, 0);
-			break;
-		}
-		default:
-			log_warnx("control_dispatch_smtp: got imsg %d",
-			    imsg.hdr.type);
-			fatalx("control_dispatch_smtp: unexpected imsg");
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfctl.c,v 1.50 2009/11/02 20:23:29 claudio Exp $ */
+/*	$OpenBSD: ospfctl.c,v 1.55 2010/09/25 13:29:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -220,6 +220,11 @@ main(int argc, char *argv[])
 		printf("decouple request sent.\n");
 		done = 1;
 		break;
+	case FIB_RELOAD:
+		imsg_compose(ibuf, IMSG_CTL_FIB_RELOAD, 0, 0, -1, NULL, 0);
+		printf("reload request sent.\n");
+		done = 1;
+		break;
 	case LOG_VERBOSE:
 		verbose = 1;
 		/* FALLTHROUGH */
@@ -296,6 +301,7 @@ main(int argc, char *argv[])
 			case FIB:
 			case FIB_COUPLE:
 			case FIB_DECOUPLE:
+			case FIB_RELOAD:
 			case LOG_VERBOSE:
 			case LOG_BRIEF:
 			case RELOAD:
@@ -327,9 +333,10 @@ show_summary_msg(struct imsg *imsg)
 		else
 			printf("disabled\n");
 
-		printf("SPF delay is %d sec(s), hold time between two SPFs "
-		    "is %d sec(s)\n", sum->spf_delay, sum->spf_hold_time);
-		printf("Number of external LSA(s) %d\n", sum->num_ext_lsa);
+		printf("SPF delay is %d msec(s), hold time between two SPFs "
+		    "is %d msec(s)\n", sum->spf_delay, sum->spf_hold_time);
+		printf("Number of external LSA(s) %d (Checksum sum 0x%x)\n",
+		    sum->num_ext_lsa, sum->ext_lsa_cksum);
 		printf("Number of areas attached to this router: %d\n",
 		    sum->num_area);
 		break;
@@ -342,7 +349,8 @@ show_summary_msg(struct imsg *imsg)
 		    "area: %d\n", sumarea->num_adj_nbr);
 		printf("  SPF algorithm executed %d time(s)\n",
 		    sumarea->num_spf_calc);
-		printf("  Number LSA(s) %d\n", sumarea->num_lsa);
+		printf("  Number LSA(s) %d (Checksum sum 0x%x)\n",
+		    sumarea->num_lsa, sumarea->lsa_cksum);
 		break;
 	case IMSG_CTL_END:
 		printf("\n");
@@ -386,8 +394,8 @@ show_interface_msg(struct imsg *imsg)
 			err(1, NULL);
 		printf("%-11s %-18s %-6s %-10s %-10s %s %3d %3d\n",
 		    iface->name, netid, if_state_name(iface->state),
-		    iface->hello_timer < 0 ? "-" :
-		    fmt_timeframe_core(iface->hello_timer),
+		    iface->hello_timer.tv_sec < 0 ? "-" :
+		    fmt_timeframe_core(iface->hello_timer.tv_sec),
 		    get_linkstate(iface->mediatype, iface->linkstate),
 		    fmt_timeframe_core(iface->uptime),
 		    iface->nbr_cnt, iface->adj_cnt);
@@ -432,17 +440,26 @@ show_interface_detail_msg(struct imsg *imsg)
 		printf("  Backup Designated Router (ID) %s, ",
 		    inet_ntoa(iface->bdr_id));
 		printf("interface address %s\n", inet_ntoa(iface->bdr_addr));
-		printf("  Timer intervals configured, "
-		    "hello %d, dead %d, wait %d, retransmit %d\n",
-		     iface->hello_interval, iface->dead_interval,
-		     iface->dead_interval, iface->rxmt_interval);
+		if (iface->dead_interval == FAST_RTR_DEAD_TIME) {
+			printf("  Timer intervals configured, "
+			    "hello %d msec, dead %d, wait %d, retransmit %d\n",
+			     iface->fast_hello_interval, iface->dead_interval,
+			     iface->dead_interval, iface->rxmt_interval);
+
+		} else {
+			printf("  Timer intervals configured, "
+			    "hello %d, dead %d, wait %d, retransmit %d\n",
+			     iface->hello_interval, iface->dead_interval,
+			     iface->dead_interval, iface->rxmt_interval);
+		}
 		if (iface->passive)
 			printf("    Passive interface (No Hellos)\n");
-		else if (iface->hello_timer < 0)
+		else if (iface->hello_timer.tv_sec < 0)
 			printf("    Hello timer not running\n");
 		else
-			printf("    Hello timer due in %s\n",
-			    fmt_timeframe_core(iface->hello_timer));
+			printf("    Hello timer due in %s+%ldmsec\n",
+			    fmt_timeframe_core(iface->hello_timer.tv_sec),
+			    iface->hello_timer.tv_usec / 1000);
 		printf("    Uptime %s\n", fmt_timeframe_core(iface->uptime));
 		printf("  Neighbor count is %d, adjacent neighbor count is "
 		    "%d\n", iface->nbr_cnt, iface->adj_cnt);
@@ -772,6 +789,7 @@ show_db_msg_detail(struct imsg *imsg)
 		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
 		    - sizeof(u_int32_t)) / sizeof(struct lsa_net_link);
 		off = sizeof(lsa->hdr) + sizeof(u_int32_t);
+		printf("Number of Routers: %d\n", nlinks);
 
 		for (i = 0; i < nlinks; i++) {
 			addr.s_addr = lsa->data.net.att_rtr[i];

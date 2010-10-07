@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.c,v 1.38 2008/05/29 19:02:47 deraadt Exp $ */
+/*	$OpenBSD: dhcpd.c,v 1.40 2010/07/03 04:44:51 guenther Exp $ */
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@cvs.openbsd.org>
@@ -71,7 +71,7 @@ struct syslog_data sdata = SYSLOG_DATA_INIT;
 int
 main(int argc, char *argv[])
 {
-	int ch, cftest = 0, daemonize = 1;
+	int ch, cftest = 0, daemonize = 1, rdomain = -1;
 	extern char *__progname;
 	char *sync_iface = NULL;
 	char *sync_baddr = NULL;
@@ -168,16 +168,20 @@ main(int argc, char *argv[])
 	if (cftest)
 		exit(0);
 
+	db_startup();
+	discover_interfaces(&rdomain);
+
+	if (rdomain != -1)
+		if (setrtable(rdomain) == -1)
+			error("setrtable (%m)");
+
+	icmp_startup(1, lease_pinged);
+
 	if (syncsend || syncrecv) {
 		syncfd = sync_init(sync_iface, sync_baddr, sync_port);
 		if (syncfd == -1)
 			err(1, "sync init");
 	}
-
-	db_startup();
-	discover_interfaces();
-	icmp_startup(1, lease_pinged);
-
 
 	if ((pw = getpwnam("_dhcp")) == NULL)
 		error("user \"_dhcp\" not found");

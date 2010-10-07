@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Search.pm,v 1.18 2009/12/05 10:53:04 espie Exp $
+# $OpenBSD: Search.pm,v 1.24 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -23,7 +23,7 @@ sub match_locations
 {
 	my ($self, $o) = @_;
 	require OpenBSD::PackageLocation;
-	
+
 	my @l = map {$o->new_location($_)} $self->match($o);
 	return \@l;
 }
@@ -61,10 +61,17 @@ sub add_pkgpath_hint
 {
 	my ($self, $pkgpath) = @_;
 	$self->{pkgpath} = $pkgpath;
+	return $self;
 }
 
 sub spec_class
 { "OpenBSD::PkgSpec" }
+
+sub is_valid
+{
+	my $self = shift;
+	return $self->{spec}->is_valid;
+}
 
 package OpenBSD::Search::Exact;
 our @ISA=(qw(OpenBSD::Search::PkgSpec));
@@ -126,7 +133,7 @@ sub filter
 	require OpenBSD::PackageName;
 	for my $pkg (@l) {
 		if ($self->_keep(OpenBSD::PackageName::splitstem($pkg))) {
-			push(@result, $pkg); 
+			push(@result, $pkg);
 		}
 	}
 	return @result;
@@ -138,14 +145,22 @@ our @ISA=(qw(OpenBSD::Search::Stem));
 sub match
 {
 	my ($self, $o) = @_;
-	return $o->stemlist->find_partial($self->{stem});
+	my @r = ();
+	for my $k (keys %$self) {
+		push(@r, $o->stemlist->find_partial($k));
+	}
+	return @r;
 }
 
 sub _keep
 {
 	my ($self, $stem) = @_;
-	my $partial = $self->{stem};
-	return $stem =~ /\Q$partial\E/;
+	for my $partial (keys %$self) {
+		if ($stem =~ /\Q$partial\E/) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 package OpenBSD::Search::FilterLocation;
@@ -215,7 +230,7 @@ sub {
 
 			if ($f->pkgname->{version}->compare($e->pkgname->{version}) < 0) {
 			    $f = $e;
-			} 
+			}
 			$keep = 0;
 			last;
 
