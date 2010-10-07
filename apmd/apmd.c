@@ -474,7 +474,7 @@ suspend(int ctl_fd)
 {
 	do_etc_file(_PATH_APM_ETC_SUSPEND);
 	sync();
-	sleep(10);
+	sleep(1);
 	ioctl(ctl_fd, APM_IOC_SUSPEND, 0);
 }
 
@@ -483,7 +483,7 @@ stand_by(int ctl_fd)
 {
 	do_etc_file(_PATH_APM_ETC_STANDBY);
 	sync();
-	sleep(10);
+	sleep(1);
 	ioctl(ctl_fd, APM_IOC_STANDBY, 0);
 }
 
