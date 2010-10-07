@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.28 2009/11/02 20:20:54 claudio Exp $ */
+/*	$OpenBSD: control.c,v 1.34 2010/09/02 14:03:22 sobrado Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -33,8 +33,6 @@
 #include "control.h"
 
 #define	CONTROL_BACKLOG	5
-
-int control_imsg_relay(struct imsg *imsg);
 
 struct ctl_conn	*control_connbyfd(int);
 struct ctl_conn	*control_connbypid(pid_t);
@@ -121,13 +119,13 @@ control_accept(int listenfd, short event, void *bula)
 	if ((connfd = accept(listenfd,
 	    (struct sockaddr *)&sun, &len)) == -1) {
 		if (errno != EWOULDBLOCK && errno != EINTR)
-			log_warn("control_accept");
+			log_warn("control_accept: accept");
 		return;
 	}
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		log_warn("control_accept");
 		close(connfd);
 		return;
@@ -227,6 +225,7 @@ control_dispatch_imsg(int fd, short event, void *bula)
 		case IMSG_CTL_FIB_DECOUPLE:
 			ospfe_fib_update(imsg.hdr.type);
 			/* FALLTHROUGH */
+		case IMSG_CTL_FIB_RELOAD:
 		case IMSG_CTL_RELOAD:
 			c->iev.ibuf.pid = imsg.hdr.pid;
 			ospfe_imsg_compose_parent(imsg.hdr.type, 0, NULL, 0);
@@ -268,7 +267,7 @@ control_dispatch_imsg(int fd, short event, void *bula)
 			    sizeof(verbose))
 				break;
 
-			/* forward to other porcesses */
+			/* forward to other processes */
 			ospfe_imsg_compose_parent(imsg.hdr.type, imsg.hdr.pid,
 			    imsg.data, imsg.hdr.len - IMSG_HEADER_SIZE);
 			ospfe_imsg_compose_rde(imsg.hdr.type, 0, imsg.hdr.pid,
@@ -276,7 +275,7 @@ control_dispatch_imsg(int fd, short event, void *bula)
 
 			memcpy(&verbose, imsg.data, sizeof(verbose));
 			log_verbose(verbose);
-			break;		
+			break;
 		default:
 			log_debug("control_dispatch_imsg: "
 			    "error handling imsg %d", imsg.hdr.type);

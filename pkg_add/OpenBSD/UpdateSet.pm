@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.23 2009/11/11 13:00:40 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.62 2010/08/01 10:03:24 espie Exp $
 #
-# Copyright (c) 2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -16,204 +16,12 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
-# these things don't really live here, they're just stuff that's shared
-# between pkg_add and pkg_delete, so to avoid yes another header...
-
-use strict;
-use warnings;
-
-package OpenBSD::SharedItemsRecorder;
-sub new
-{
-	my $class = shift;
-	return bless {}, $class;
-}
-
-sub is_empty
-{
-	my $self = shift;
-	return !(defined $self->{dirs} or defined $self->{users} or
-		defined $self->{groups});
-}
-
-sub cleanup
-{
-	my ($self, $state) = @_;
-	return if $self->is_empty or $state->{not};
-
-	require OpenBSD::SharedItems;
-	OpenBSD::SharedItems::cleanup($self, $state);
-}
-
-package OpenBSD::Log;
-use OpenBSD::Error;
-our @ISA = qw(OpenBSD::Error);
-
-sub set_context
-{
-	&OpenBSD::Error::set_pkgname;
-}
-
-sub dump
-{
-	&OpenBSD::Error::delayed_output;
-}
-
-
-package OpenBSD::pkg_foo::State;
-use OpenBSD::Error;
-
-sub new
-{
-	my $class = shift;
-	my $o = bless {}, $class;
-	$o->init(@_);
-	return $o;
-}
-
-sub init
-{
-	my $self = shift;
-	$self->{l} = OpenBSD::Log->new;
-	$self->{progressmeter} = bless {}, "OpenBSD::StubProgress";
-}
-
-sub log
-{
-	my $self = shift;
-	if (@_ == 0) {
-		return $self->{l};
-	} else {
-		$self->{l}->print(@_);
-	}
-}
-
-sub print
-{
-	my $self = shift;
-	$self->progress->print(@_);
-}
-
-sub say
-{
-	my $self = shift;
-	$self->progress->print(@_, "\n");
-}
-
-sub errprint
-{
-	my $self = shift;
-	$self->progress->errprint(@_);
-}
-
-sub errsay
-{
-	my $self = shift;
-	$self->progress->errprint(@_, "\n");
-}
-
-sub progress
-{
-	my $self = shift;
-	return $self->{progressmeter};
-}
-
-sub vsystem
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::VSystem($self->{very_verbose}, @_);
-}
-
-sub system
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::System(@_);
-}
-
-sub unlink
-{
-	my $self = shift;
-	$self->progress->clear;
-	OpenBSD::Error::Unlink(@_);
-}
-
-# we always have a progressmeter we can print to...
-sub setup_progressmeter
-{
-	my ($self, $opt_x) = @_;
-	if (!$opt_x && !$self->{beverbose}) {
-		require OpenBSD::ProgressMeter;
-		$self->{progressmeter} = OpenBSD::ProgressMeter->new;
-	}
-}
-
-sub check_root
-{
-	my $state = shift;
-	if ($< && !$state->{defines}->{nonroot}) {
-		if ($state->{not}) {
-			$state->errsay("$0 should be run as root");
-		} else {
-			Fatal "$0 must be run as root";
-		}
-	}
-}
-
-sub choose_location
-{
-	my ($state, $name, $list) = @_;
-	if (@$list == 0) {
-		$state->say("Can't find $name");
-		return undef;
-	} elsif (@$list == 1) {
-		return $list->[0];
-	}
-
-	my %h = map {($_->name, $_)} @$list;
-	if ($state->{interactive}) {
-		require OpenBSD::Interactive;
-
-		$h{'<None>'} = undef;
-		$state->progress->clear;
-		my $result = OpenBSD::Interactive::ask_list("Ambiguous: choose package for $name", 1, sort keys %h);
-		return $h{$result};
-	} else {
-		$state->say("Ambiguous: $name could be ", join(' ', keys %h));
-		return undef;
-	}
-}
-
-# stub class when no actual progressmeter that still prints out.
-package OpenBSD::StubProgress;
-sub clear {}
-
-sub show {}
-
-sub message {}
-
-sub next {}
-
-sub set_header {}
-
-sub print
-{
-	shift;
-	print @_;
-}
-
-sub errprint
-{
-	shift;
-	print STDERR @_;
-}
-
 # an UpdateSet is a list of packages to remove/install.
-# it contains three things:
+# it contains several things:
 # -> a list of older packages to remove (installed locations)
 # -> a list of newer packages to add (might be very simple locations)
 # -> a list of "hints", as package names to install
+# -> a list of packages that are kept throughout an update
 # every add/remove operations manipulate UpdateSet.
 #
 # Since older packages are always installed, they're organized as a hash.
@@ -225,24 +33,110 @@ sub errprint
 # Normal UpdateSets contain one newer package at most.
 # Bigger UpdateSets can be created through the merge operation, which
 # will be used only when necessary.
-package OpenBSD::UpdateSet;
+#
+# kept packages are needed after merges, where some dependencies may
+# not need updating, and to distinguish from old packages that will be
+# removed.
+#
+# for instance, package installation will check UpdateSets for internal
+# dependencies and for conflicts. For that to work, we need kept stuff
+#
+use strict;
+use warnings;
+
+# hints should behave like locations
+package OpenBSD::hint;
 sub new
 {
-	my $class = shift;
-	return bless {newer => [], older => {}, hints => []}, $class;
+	my ($class, $name) = @_;
+	bless {name => $name}, $class;
+}
+
+sub pkgname
+{
+	return shift->{name};
+}
+
+package OpenBSD::hint2;
+our @ISA = qw(OpenBSD::hint);
+
+package OpenBSD::UpdateSet;
+
+sub new
+{
+	my ($class, $state) = @_;
+	return bless {newer => {}, older => {}, kept => {},
+	    hints => [], updates => 0, repo => $state->repo}, $class;
+}
+
+sub path
+{
+	my $set = shift;
+
+	return $set->{path};
+}
+
+sub add_repositories
+{
+	my ($set, @repos) = @_;
+
+	if (!defined $set->{path}) {
+		$set->{path} = $set->{repo}->path;
+	}
+	$set->{path}->add(@repos);
+}
+
+sub merge_paths
+{
+	my ($set, $other) = @_;
+
+	if (defined $other->path) {
+		if (!defined $set->path) {
+			$set->{path} = $other->path;
+		} elsif ($set->{path} ne $other->path) {
+			$set->add_path(@{$other->{path}});
+		}
+	}
+}
+
+sub match_locations
+{
+	my ($set, @spec) = @_;
+	my $r = [];
+	if (defined $set->{path}) {
+		$r = $set->{path}->match_locations(@spec);
+	}
+	if (@$r == 0) {
+		$r = $set->{repo}->match_locations(@spec);
+	}
+	return $r;
+}
+
+sub cleanup
+{
+	my ($self, $error, $errorinfo) = @_;
+	for my $h ($self->older, $self->newer) {
+		$h->cleanup($error, $errorinfo);
+	}
+	$self->{error} //= $error;
+	$self->{errorinfo} //= $errorinfo;
+	delete $self->{solver};
+	delete $self->{conflict_cache};
+	$self->{finished} = 1;
+}
+
+sub has_error
+{
+	&OpenBSD::Handle::has_error;
 }
 
 sub add_newer
 {
-	my ($self, @handles) = @_;
-	push(@{$self->{newer}}, @handles);
-	return $self;
-}
-
-sub add_hints
-{
-	my ($self, @hints) = @_;
-	push(@{$self->{hints}}, @hints);
+	my $self = shift;
+	for my $h (@_) {
+		$self->{newer}->{$h->pkgname} = $h;
+		$self->{updates}++;
+	}
 	return $self;
 }
 
@@ -255,10 +149,48 @@ sub add_older
 	return $self;
 }
 
+sub add_kept
+{
+	my $self = shift;
+	for my $h (@_) {
+		$self->{kept}->{$h->pkgname} = $h;
+	}
+	return $self;
+}
+
+sub move_kept
+{
+	my $self = shift;
+	for my $h (@_) {
+		delete $self->{older}->{$h->pkgname};
+		delete $self->{newer}->{$h->pkgname};
+		$self->{kept}->{$h->pkgname} = $h;
+	}
+	return $self;
+}
+
+sub add_hints
+{
+	my $self = shift;
+	for my $h (@_) {
+		push(@{$self->{hints}}, OpenBSD::hint->new($h));
+	}
+	return $self;
+}
+
+sub add_hints2
+{
+	my $self = shift;
+	for my $h (@_) {
+		push(@{$self->{hints}}, OpenBSD::hint2->new($h));
+	}
+	return $self;
+}
+
 sub newer
 {
-	my $self =shift;
-	return @{$self->{newer}};
+	my $self = shift;
+	return values %{$self->{newer}};
 }
 
 sub older
@@ -267,9 +199,15 @@ sub older
 	return values %{$self->{older}};
 }
 
+sub kept
+{
+	my $self = shift;
+	return values %{$self->{kept}};
+}
+
 sub hints
 {
-	my $self =shift;
+	my $self = shift;
 	return @{$self->{hints}};
 }
 
@@ -281,15 +219,27 @@ sub older_names
 
 sub newer_names
 {
-	my $self =shift;
-	return map {$_->pkgname} $self->newer;
+	my $self = shift;
+	return keys %{$self->{newer}};
+}
+
+sub kept_names
+{
+	my $self = shift;
+	return keys %{$self->{kept}};
+}
+
+sub hint_names
+{
+	my $self = shift;
+	return map {$_->pkgname} $self->hints;
 }
 
 sub older_to_do
 {
 	my $self = shift;
-	# XXX in `combined' updates, some dependencies may remove extra 
-	# packages, so we do a double-take on the list of packages we 
+	# XXX in `combined' updates, some dependencies may remove extra
+	# packages, so we do a double-take on the list of packages we
 	# are actually replacing... for now, until we merge update sets.
 	require OpenBSD::PackageInfo;
 	my @l = ();
@@ -304,39 +254,39 @@ sub older_to_do
 sub print
 {
 	my $self = shift;
-	my @l = ();
-	if ($self->newer > 0) {
-		push(@l, "installing", $self->newer_names);
+	my $result = "";
+	if ($self->kept > 0) {
+		$result = "[".join('+', sort $self->kept_names)."]";
 	}
 	if ($self->older > 0) {
-		push(@l, "deinstalling", $self->older_names);
+		$result .= join('+',sort $self->older_names)."->";
 	}
-	return join(' ', @l);
+	if ($self->newer > 0) {
+		$result .= join('+', sort $self->newer_names);
+	} elsif ($self->hints > 0) {
+		$result .= join('+', sort $self->hint_names);
+	}
+	return $result;
 }
 
 sub short_print
 {
 	my $self = shift;
-	my @l = ();
-	if ($self->older > 0) {
-		push(@l, join('+',$self->older_names));
+	my $result = join('+', sort $self->newer_names);
+	if (length $result > 30) {
+		return substr($result, 0, 27)."...";
+	} else {
+		return $result;
 	}
-	if ($self->newer > 0) {
-		push(@l, join('+', $self->newer_names));
-	}
-	return join('->', @l);
-}
-
-sub shorter_print
-{
-	my $self = shift;
-	return join('+', $self->newer_names);
 }
 
 sub validate_plists
 {
 	my ($self, $state) = @_;
 	$state->{problems} = 0;
+	delete $state->{overflow};
+
+	$state->{current_set} = $self;
 
 	for my $o ($self->older_to_do) {
 		require OpenBSD::Delete;
@@ -345,28 +295,43 @@ sub validate_plists
 	$state->{colliding} = [];
 	for my $n ($self->newer) {
 		require OpenBSD::Add;
-		OpenBSD::Add::validate_plist($n->{plist}, $state);
+		OpenBSD::Add::validate_plist($n->{plist}, $state, $self);
 	}
 	if (@{$state->{colliding}} > 0) {
 		require OpenBSD::CollisionReport;
 
-		OpenBSD::CollisionReport::collision_report($state->{colliding}, $state);
+		OpenBSD::CollisionReport::collision_report($state->{colliding}, $state, $self);
 	}
 	if (defined $state->{overflow}) {
-		OpenBSD::Vstat::tally();
+		$state->vstat->tally;
+		# okay, let's retry the other way around if we haven't yet
+		if (!defined $state->{delete_first}) {
+			if ($state->defines('deletefirst') ||
+			    $state->confirm("Delete older packages first", 0)) {
+				$state->{delete_first} = 1;
+				$state->vstat->drop_changes;
+				return $self->validate_plists($state);
+			}
+		}
 	}
 	if ($state->{problems}) {
-		require OpenBSD::Error;
-		OpenBSD::Error::Fatal "fatal issues in ", $self->print;
+		$state->vstat->drop_changes;
+		return 0;
+	} else {
+		$state->vstat->synchronize;
+		return 1;
 	}
-	OpenBSD::Vstat::synchronize();
 }
 
-sub compute_size
+sub cleanup_old_shared
 {
-	my ($self, $state) = @_;
-	for my $h ($self->older_to_do, $self->newer) {
-		$h->{totsize} = $h->{plist}->compute_size;
+	my ($set, $state) = @_;
+	my $h = $set->{old_shared};
+
+	for my $d (sort {$b cmp $a} keys %$h) {
+		OpenBSD::SharedItems::wipe_directory($state, $h, $d) ||
+		    $state->fatal("Can't continue");
+		delete $state->{recorder}{dirs}{$d};
 	}
 }
 
@@ -386,67 +351,55 @@ sub from_location
 	return $set;
 }
 
+sub merge_if_exists
+{
+	my ($self, $k, @extra) = @_;
+
+	my @list = ();
+	for my $s (@extra) {
+		if ($s ne $self && defined $s->{$k}) {
+			push(@list, $s->{$k});
+		}
+	}
+	$self->$k->merge(@list);
+}
+
 # Merge several updatesets together
 sub merge
 {
 	my ($self, $tracker, @sets) = @_;
+
+	$self->merge_if_exists('solver', @sets);
+	$self->merge_if_exists('conflict_cache', @sets);
 	# Apparently simple, just add the missing parts
 	for my $set (@sets) {
-		for my $p ($set->newer) {
-			$self->add_newer($p);
-		}
-		for my $p ($set->older) {
-			$self->add_older($p);
-		}
-		# BUT XXX tell the tracker we killed the set
-		$tracker->remove_set($set);
+		next if $set eq $self;
+		$self->add_newer($set->newer);
+		$self->add_older($set->older);
+		$self->add_kept($set->kept);
+		$self->merge_paths($set);
 		# ... and mark it as already done
 		$set->{finished} = 1;
+		$tracker->handle_set($set);
+		$self->{updates} += $set->{updates};
+		$set->{updates} = 0;
+		# XXX and mark it as merged, for eventual updates
+		$set->{merged} = $self;
+		delete $set->{solver};
+		delete $set->{conflict_cache};
 	}
 	# then regen tracker info for $self
-	$tracker->add_set($self);
+	$tracker->todo($self);
 	return $self;
 }
 
-package OpenBSD::PackingList;
-sub compute_size
+sub real_set
 {
-	my $plist = shift;
-	my $totsize = 0;
-	$plist->visit('compute_size', \$totsize);
-	$totsize = 1 if $totsize == 0;
-	$plist->{totsize} = $totsize;
-}
-
-package OpenBSD::PackingElement;
-sub mark_progress
-{
-}
-
-sub compute_size
-{
-}
-
-package OpenBSD::PackingElement::FileBase;
-sub mark_progress
-{
-	my ($self, $progress, $donesize, $totsize) = @_;
-	return unless defined $self->{size};
-	$$donesize += $self->{size};
-	$progress->show($$donesize, $totsize);
-}
-
-sub compute_size
-{
-	my ($self, $totsize) = @_;
-
-	$$totsize += $self->{size} if defined $self->{size};
-}
-
-package OpenBSD::PackingElement::Sample;
-sub compute_size
-{
-	&OpenBSD::PackingElement::FileBase::compute_size;
+	my $set = shift;
+	while (defined $set->{merged}) {
+		$set = $set->{merged};
+	}
+	return $set;
 }
 
 1;

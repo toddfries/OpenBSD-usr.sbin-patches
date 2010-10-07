@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6ctl.c,v 1.30 2009/11/02 20:25:27 claudio Exp $ */
+/*	$OpenBSD: ospf6ctl.c,v 1.35 2010/06/12 09:48:39 bluhm Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -54,6 +54,8 @@ char		*print_ls_type(u_int16_t);
 void		 show_db_hdr_msg_detail(struct lsa_hdr *);
 char		*print_rtr_link_type(u_int8_t);
 const char	*print_ospf_flags(u_int8_t);
+const char	*print_asext_flags(u_int32_t);
+const char	*print_prefix_opt(u_int8_t);
 int		 show_db_msg_detail(struct imsg *imsg);
 int		 show_nbr_msg(struct imsg *);
 const char	*print_ospf_options(u_int32_t);
@@ -696,12 +698,42 @@ print_ospf_flags(u_int8_t opts)
 	return (optbuf);
 }
 
+const char *
+print_asext_flags(u_int32_t opts)
+{
+	static char	optbuf[32];
+
+	snprintf(optbuf, sizeof(optbuf), "*|*|*|*|*|%s|%s|%s",
+	    opts & LSA_ASEXT_E_FLAG ? "E" : "-",
+	    opts & LSA_ASEXT_F_FLAG ? "F" : "-",
+	    opts & LSA_ASEXT_T_FLAG ? "T" : "-");
+	return (optbuf);
+}
+
+const char *
+print_prefix_opt(u_int8_t opts)
+{
+	static char	optbuf[32];
+
+	if (opts) {
+		snprintf(optbuf, sizeof(optbuf),
+		    " Options: *|*|*|%s|%s|x|%s|%s",
+		    opts & OSPF_PREFIX_DN ? "DN" : "-",
+		    opts & OSPF_PREFIX_P ? "P" : "-",
+		    opts & OSPF_PREFIX_LA ? "LA" : "-",
+		    opts & OSPF_PREFIX_NU ? "NU" : "-");
+		return (optbuf);
+	}
+	return ("");
+}
+
 int
 show_db_msg_detail(struct imsg *imsg)
 {
 	static struct in_addr	 area_id;
 	static char		 ifname[IF_NAMESIZE];
 	static u_int16_t	 lasttype;
+	struct in6_addr		 ia6;
 	struct in_addr		 addr, data;
 	struct area		*area;
 	struct iface		*iface;
@@ -710,6 +742,7 @@ show_db_msg_detail(struct imsg *imsg)
 	struct lsa_net_link	*net_link;
 	struct lsa_prefix	*prefix;
 	struct lsa_asext	*asext;
+	u_int32_t		 ext_tag;
 	u_int16_t		 i, nlinks, off;
 
 	/* XXX sanity checks! */
@@ -720,22 +753,36 @@ show_db_msg_detail(struct imsg *imsg)
 		if (lsa->hdr.type != lasttype)
 			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
-		addr.s_addr = lsa->data.asext.mask;
-		printf("Network Mask: %s\n", inet_ntoa(addr));
 
 		asext = (struct lsa_asext *)((char *)lsa + sizeof(lsa->hdr));
 
-		printf("    Metric type: ");
+		printf("    Flags: %s\n",
+		    print_asext_flags(ntohl(lsa->data.asext.metric)));
+		printf("    Metric: %d Type: ", ntohl(asext->metric)
+		    & LSA_METRIC_MASK);
 		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_E_FLAG)
 			printf("2\n");
 		else
 			printf("1\n");
-		printf("    Metric: %d\n", ntohl(asext->metric)
-		    & LSA_METRIC_MASK);
-		addr.s_addr = asext->fw_addr;
-		printf("    Forwarding Address: %s\n", inet_ntoa(addr));
-		printf("    External Route Tag: %d\n\n", ntohl(asext->ext_tag));
 
+		prefix = &asext->prefix;
+		bzero(&ia6, sizeof(ia6));
+		bcopy(prefix + 1, &ia6, LSA_PREFIXSIZE(prefix->prefixlen));
+		printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+		    prefix->prefixlen, print_prefix_opt(prefix->options));
+
+		off = sizeof(*asext) + LSA_PREFIXSIZE(prefix->prefixlen);
+		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_F_FLAG) {
+			bcopy((char *)asext + off, &ia6, sizeof(ia6));
+			printf("    Forwarding Address: %s\n",
+			    log_in6addr(&ia6));
+			off += sizeof(ia6);
+		}
+		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_T_FLAG) {
+			bcopy((char *)asext + off, &ext_tag, sizeof(ext_tag));
+			printf("    External Route Tag: %d\n", ntohl(ext_tag));
+		}
+		printf("\n");
 		lasttype = lsa->hdr.type;
 		break;
 	case IMSG_CTL_SHOW_DB_LINK:
@@ -753,15 +800,14 @@ show_db_msg_detail(struct imsg *imsg)
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_link);
 
 		for (i = 0; i < nlinks; i++) {
-			struct in6_addr	ia6;
 			prefix = (struct lsa_prefix *)((char *)lsa + off);
 			bzero(&ia6, sizeof(ia6));
 			bcopy(prefix + 1, &ia6,
 			    LSA_PREFIXSIZE(prefix->prefixlen));
 
-			printf("    Prefix Address: %s\n", log_in6addr(&ia6));
-			printf("    Prefix Length: %d, Options: %x\n",
-			    prefix->prefixlen, prefix->options);
+			printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+			    prefix->prefixlen,
+			    print_prefix_opt(prefix->options));
 
 			off += sizeof(struct lsa_prefix)
 			    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -805,7 +851,7 @@ show_db_msg_detail(struct imsg *imsg)
 
 		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
 		    - sizeof(u_int32_t)) / sizeof(struct lsa_rtr_link);
-		printf("Number of Links: %d\n", nlinks);
+		printf("Number of Links: %d\n\n", nlinks);
 
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_rtr);
 
@@ -864,15 +910,14 @@ show_db_msg_detail(struct imsg *imsg)
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_intra_prefix);
 
 		for (i = 0; i < nlinks; i++) {
-			struct in6_addr	ia6;
 			prefix = (struct lsa_prefix *)((char *)lsa + off);
 			bzero(&ia6, sizeof(ia6));
 			bcopy(prefix + 1, &ia6,
 			    LSA_PREFIXSIZE(prefix->prefixlen));
 
-			printf("    Prefix Address: %s\n", log_in6addr(&ia6));
-			printf("    Prefix Length: %d, Options: %x\n",
-			    prefix->prefixlen, prefix->options);
+			printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+			    prefix->prefixlen,
+			    print_prefix_opt(prefix->options));
 
 			off += sizeof(struct lsa_prefix)
 			    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -1026,8 +1071,9 @@ show_rib_msg(struct imsg *imsg)
 		}
 
 		printf("%-20s %-17s %-12s %-9s %-7d %s\n", dstnet,
-		    log_in6addr(&rt->nexthop), path_type_name(rt->p_type),
-		    dst_type_name(rt->d_type), rt->cost,
+		    log_in6addr_scope(&rt->nexthop, rt->ifindex),
+		    path_type_name(rt->p_type), dst_type_name(rt->d_type),
+		    rt->cost,
 		    rt->uptime == 0 ? "-" : fmt_timeframe_core(rt->uptime));
 		free(dstnet);
 		break;
@@ -1137,7 +1183,7 @@ show_rib_detail_msg(struct imsg *imsg)
 				errx(1, "unknown route type");
 			}
 			printf("%-18s %-15s ", dstnet,
-			    log_in6addr(&rt->nexthop));
+			    log_in6addr_scope(&rt->nexthop, rt->ifindex));
 			printf("%-15s %-12s %-7d", inet_ntoa(rt->adv_rtr),
 			    path_type_name(rt->p_type), rt->cost);
 			free(dstnet);
@@ -1158,7 +1204,7 @@ show_rib_detail_msg(struct imsg *imsg)
 				err(1, NULL);
 
 			printf("%-18s %-15s ", dstnet,
-			    log_in6addr(&rt->nexthop));
+			    log_in6addr_scope(&rt->nexthop, rt->ifindex));
 			printf("%-15s %-12s %-7d %-7d\n",
 			    inet_ntoa(rt->adv_rtr), path_type_name(rt->p_type),
 			    rt->cost, rt->cost2);
@@ -1225,7 +1271,7 @@ show_fib_msg(struct imsg *imsg)
 		free(p);
 
 		if (!IN6_IS_ADDR_UNSPECIFIED(&k->nexthop))
-			printf("%s", log_in6addr(&k->nexthop));
+			printf("%s", log_in6addr_scope(&k->nexthop, k->scope));
 		else if (k->flags & F_CONNECTED)
 			printf("link#%u", k->ifindex);
 		printf("\n");

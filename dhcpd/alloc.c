@@ -1,4 +1,4 @@
-/*	$OpenBSD: alloc.c,v 1.4 2004/09/16 18:35:42 deraadt Exp $	*/
+/*	$OpenBSD: alloc.c,v 1.12 2010/01/02 04:21:16 krw Exp $	*/
 
 /* Memory allocation... */
 
@@ -43,35 +43,6 @@
 #include "dhcpd.h"
 
 struct lease_state *free_lease_states;
-
-void *
-dmalloc(int size, char *name)
-{
-	void *foo = calloc(size, sizeof(char));
-
-	if (!foo)
-		warning("No memory for %s.", name);
-	return (foo);
-}
-
-void
-dfree(void *ptr, char *name)
-{
-	if (!ptr) {
-		warning("dfree %s: free on null pointer.", name);
-		return;
-	}
-	free(ptr);
-}
-
-struct tree *
-new_tree(char *name)
-{
-	struct tree *rval = dmalloc(sizeof(struct tree), name);
-
-	return (rval);
-}
-
 struct tree_cache *free_tree_caches;
 
 struct tree_cache *
@@ -83,39 +54,11 @@ new_tree_cache(char *name)
 		rval = free_tree_caches;
 		free_tree_caches = (struct tree_cache *)(rval->value);
 	} else {
-		rval = dmalloc(sizeof(struct tree_cache), name);
+		rval = calloc(1, sizeof(struct tree_cache));
 		if (!rval)
 			error("unable to allocate tree cache for %s.", name);
 	}
 	return (rval);
-}
-
-struct hash_table *
-new_hash_table(int count, char *name)
-{
-	struct hash_table *rval;
-
-	rval = dmalloc(sizeof(struct hash_table) -
-	    (DEFAULT_HASH_SIZE * sizeof(struct hash_bucket *)) +
-	    (count * sizeof(struct hash_bucket *)), name);
-	if (rval == NULL)
-		return (NULL);
-	rval->hash_count = count;
-	return (rval);
-}
-
-struct hash_bucket *
-new_hash_bucket(char *name)
-{
-	struct hash_bucket *rval = dmalloc(sizeof(struct hash_bucket), name);
-
-	return (rval);
-}
-
-void
-free_hash_bucket(struct hash_bucket *ptr, char *name)
-{
-	dfree(ptr, name);
 }
 
 void
@@ -125,34 +68,6 @@ free_tree_cache(struct tree_cache *ptr)
 	free_tree_caches = ptr;
 }
 
-void
-free_tree(struct tree *ptr, char *name)
-{
-	dfree(ptr, name);
-}
-
-struct shared_network *
-new_shared_network(char *name)
-{
-	struct shared_network *rval =
-		dmalloc(sizeof(struct shared_network), name);
-	return (rval);
-}
-
-struct subnet *
-new_subnet(char *name)
-{
-	struct subnet *rval = dmalloc(sizeof(struct subnet), name);
-	return (rval);
-}
-
-struct class *
-new_class(char *name)
-{
-	struct class *rval = dmalloc(sizeof(struct class), name);
-	return (rval);
-}
-
 struct lease_state *
 new_lease_state(char *name)
 {
@@ -160,10 +75,13 @@ new_lease_state(char *name)
 
 	if (free_lease_states) {
 		rval = free_lease_states;
-		free_lease_states =
-			(struct lease_state *)(free_lease_states->next);
-	} else
-		rval = dmalloc (sizeof (struct lease_state), name);
+		free_lease_states = free_lease_states->next;
+	} else {
+		rval = calloc(1, sizeof(struct lease_state));
+		if (!rval)
+			error("unable to allocate lease state for %s.", name);
+	}
+
 	return (rval);
 }
 
@@ -171,35 +89,7 @@ void
 free_lease_state(struct lease_state *ptr, char *name)
 {
 	if (ptr->prl)
-		dfree(ptr->prl, name);
+		free(ptr->prl);
 	ptr->next = free_lease_states;
 	free_lease_states = ptr;
-}
-
-struct lease *
-new_leases(int n, char *name)
-{
-	struct lease *rval = dmalloc(n * sizeof(struct lease), name);
-	return (rval);
-}
-
-struct lease *
-new_lease(char *name)
-{
-	struct lease *rval = dmalloc(sizeof(struct lease), name);
-	return (rval);
-}
-
-struct group *
-new_group(char *name)
-{
-	struct group *rval =
-		dmalloc(sizeof(struct group), name);
-	return (rval);
-}
-
-void
-free_lease(struct lease *ptr, char *name)
-{
-	dfree(ptr, name);
 }

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageRepositoryList.pm,v 1.17 2009/04/19 14:58:32 espie Exp $
+# $OpenBSD: PackageRepositoryList.pm,v 1.26 2010/07/02 11:17:46 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -22,68 +22,70 @@ package OpenBSD::PackageRepositoryList;
 
 sub new
 {
-	my $class = shift;
-	return bless [], $class;
+	my ($class, $state) = @_;
+	return bless {l => [], k => {}, state => $state}, $class;
+}
+
+sub filter_new
+{
+	my $self = shift;
+	my @l = ();
+	for my $r (@_) {
+		next if $self->{k}{$r};
+		$self->{k}{$r} = 1;
+		push @l, $r;
+	}
+	return @l;
 }
 
 sub add
 {
 	my $self = shift;
-	push @$self, @_;
+	push @{$self->{l}}, $self->filter_new(@_);
+}
+
+sub prepend
+{
+	my $self = shift;
+	unshift @{$self->{l}}, $self->filter_new(@_);
+}
+
+sub do_something
+{
+	my ($self, $do, $pkgname, @args) = @_;
+	if ($pkgname eq '-') {
+		return OpenBSD::PackageRepository->pipe->new($self->{state})->$do($pkgname, @args);
+	}
+	for my $repo (@{$self->{l}}) {
+		my $r = $repo->$do($pkgname, @args);
+		return $r if defined $r;
+	}
+	return undef;
 }
 
 sub find
 {
-	my ($self, $pkgname, $arch) = @_;
+	my ($self, @args) = @_;
 
-	for my $repo (@$self) {
-		my $pkg = $repo->find($pkgname, $arch);
-		return $pkg if defined $pkg;
-	}
-	return;
+	return $self->do_something('find', @args);
 }
 
 sub grabPlist
 {
-	my ($self, $pkgname, $arch, $code) = @_;
-
-	for my $repo (@$self) {
-		my $plist = $repo->grabPlist($pkgname, $arch, $code);
-		return $plist if defined $plist;
-	}
-	return;
-}
-
-sub match
-{
-	my ($self, @search) = @_;
-	for my $repo (@$self) {
-		my @l = $repo->match(@search);
-		if (@l > 0) {
-			return @l;
-		}
-	}
-	return ();
+	my ($self, @args) = @_;
+	return $self->do_something('grabPlist', @args);
 }
 
 sub match_locations
 {
 	my ($self, @search) = @_;
-	for my $repo (@$self) {
+	for my $repo (@{$self->{l}}) {
 		my $l = $repo->match_locations(@search);
 		if (@$l > 0) {
 			return $l;
 		}
 	}
 	return [];
-}
-
-sub cleanup
-{
-	my $self = shift;
-	for my $repo (@$self) {
-		$repo->cleanup;
-	}
 }
 
 sub print_without_src

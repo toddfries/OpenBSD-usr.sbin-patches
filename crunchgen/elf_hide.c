@@ -1,4 +1,4 @@
-/* $OpenBSD: elf_hide.c,v 1.4 2009/11/02 23:59:29 deraadt Exp $ */
+/* $OpenBSD: elf_hide.c,v 1.6 2010/07/20 02:08:15 deraadt Exp $ */
 
 /*
  * Copyright (c) 1997 Dale Rahn.
@@ -37,6 +37,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/exec.h>
+#include "mangle.h"
+
 #ifdef _NLIST_DO_ELF
 #include <sys/exec_elf.h>
 
@@ -72,7 +74,6 @@ elf_hide(int pfile, char *p)
 	Elf_Phdr       *pphdr;
 	int             i;
 #endif
-	struct stat     sb;
 
 	pexe = p;
 	pehdr = (Elf_Ehdr *) pexe;
@@ -145,8 +146,6 @@ elf_hide(int pfile, char *p)
 
 	load_strtab(pehdr, pexe);
 	load_symtab(pehdr, pexe);
-
-	munmap(pexe, sb.st_size);
 	close(pfile);
 }
 char           *shstrtab;
@@ -326,32 +325,7 @@ hide_sym(Elf_Ehdr * ehdr, Elf_Shdr * symsect,
 				info = info & 0xf;
 				psymtab->st_info = info;
 			} else {
-				/*
-				 * XXX This is a big ugly hack to be able to
-				 * XXX use chrunchide with MIPS.
-				 * XXX Because MIPS needs global symbols to stay
-				 * XXX global (has to do with GOT), we mess
-				 * XXX around with the symbol names instead.
-				 * XXX For most uses this will be no problem,
-				 * XXX symbols are stripped anyway.  However
-				 * XXX symbol names will randomly clash.
-				 */
-				char *p;
-				u_int32_t n, z;
-				u_int32_t f;
-				f = arc4random();
-
-				z = f++;
-				p = get_str(psymtab->st_name);
-				n = strlen(p);
-				if (n > 4)
-					n = 4;
-				while (n--) {
-					p[n] = z;
-					z >>= 8;
-					while (p[n] == 0)
-						p[n] += arc4random();
-				}
+				mangle_str(get_str(psymtab->st_name));
 			}
 #ifdef DEBUG
 			printf("st_info %x\n", psymtab->st_info);
