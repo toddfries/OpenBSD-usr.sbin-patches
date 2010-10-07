@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: IdCache.pm,v 1.5 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: IdCache.pm,v 1.8 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2002-2005 Marc Espie <espie@openbsd.org>
 #
@@ -73,7 +73,7 @@ sub convert
 	my @entry = getgrnam($_[1]);
 	return @entry == 0 ? undef : $entry[2];
 }
-	
+
 package OpenBSD::UnameCache;
 our @ISA=qw(OpenBSD::SimpleIdCache);
 
@@ -89,5 +89,5 @@ sub convert
 {
 	return getgrgid($_[1]);
 }
-	
+
 1;

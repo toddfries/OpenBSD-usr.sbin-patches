@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.10 2009/06/06 05:52:01 pyr Exp $	*/
+/*	$OpenBSD: control.c,v 1.13 2010/05/14 11:52:19 claudio Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -142,13 +142,13 @@ control_accept(int listenfd, short event, void *arg)
 	if ((connfd = accept(listenfd,
 	    (struct sockaddr *)&sun, &len)) == -1) {
 		if (errno != EWOULDBLOCK && errno != EINTR)
-			log_warn("control_accept");
+			log_warn("control_accept: accept");
 		return;
 	}
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		log_warn("control_accept");
 		close(connfd);
 		return;
@@ -240,6 +240,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 			case IMSG_SNMP_TRAP:
 			case IMSG_SNMP_ELEMENT:
 			case IMSG_SNMP_END:
+			case IMSG_SNMP_LOCK:
 				break;
 			default:
 				log_debug("control_dispatch_imsg: "
