@@ -1,9 +1,9 @@
-#!/bin/sh -
+#!/bin/ksh -
 #
-# $OpenBSD: sysmerge.sh,v 1.52 2009/10/02 11:53:45 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.63 2010/08/21 09:32:00 sthen Exp $
 #
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
-# Copyright (c) 2008, 2009 Antoine Jacoutot <ajacoutot@openbsd.org>
+# Copyright (c) 2008, 2009, 2010 Antoine Jacoutot <ajacoutot@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -20,8 +20,9 @@
 
 umask 0022
 
-unset AUTO_INSTALLED_FILES BATCHMODE DIFFMODE NEED_NEWALIASES
-unset OBSOLETE_FILES SRCDIR TGZ TGZURL XTGZ XTGZURL
+unset AUTO_INSTALLED_FILES BATCHMODE DIFFMODE ETCSUM NEED_NEWALIASES
+unset NEWGRP NEWUSR NEED_REBOOT OBSOLETE_FILES SRCDIR SRCSUM TGZ TGZURL
+unset XETCSUM XTGZ XTGZURL
 
 WRKDIR=`mktemp -d -p ${TMPDIR:=/var/tmp} sysmerge.XXXXX` || exit 1
 SWIDTH=`stty size | awk '{w=$2} END {if (w==0) {w=80} print w}'`
@@ -38,12 +39,15 @@ clean_src() {
 	fi
 }
 
-# restore files from backups
+# restore files from backups or remove the newly generated sum files if
+# they did not exist
 restore_bak() {
-	for i in ${DESTDIR}/${DBDIR}/.*.bak; do
+	for i in ${DESTDIR}/${DBDIR}/.{${SRCSUM},${ETCSUM},${XETCSUM}}.bak; do
 		_i=`basename ${i} .bak`
 		if [ -f "${i}" ]; then
 			mv ${i} ${DESTDIR}/${DBDIR}/${_i#.}
+		elif [ -f "${DESTDIR}/${DBDIR}/${_i#.}" ]; then
+			rm ${DESTDIR}/${DBDIR}/${_i#.}
 		fi
 	done
 }
@@ -73,66 +77,16 @@ if [ -z "${FETCH_CMD}" ]; then
 	FETCH_CMD="/usr/bin/ftp -V -m -k ${FTP_KEEPALIVE}"
 fi
 
-
-do_pre() {
-	if [ -z "${SRCDIR}" -a -z "${TGZ}" -a -z "${XTGZ}" ]; then
-		if [ -f "/usr/src/etc/Makefile" ]; then
-			SRCDIR=/usr/src
-		else
-			echo " *** Error: please specify a valid path to src or (x)etcXX.tgz"
-			error_rm_wrkdir
-		fi
-	fi
-
-	TEMPROOT="${WRKDIR}/temproot"
-	BKPDIR="${WRKDIR}/backups"
-
-	if [ -z "${BATCHMODE}" -a -n "${DIFFMODE}" ]; then
-		echo "\n===> Running ${0##*/} with the following settings:\n"
-		if [ "${TGZURL}" ]; then
-			echo " etc source:          ${TGZURL}"
-			echo "                      (fetched in ${TGZ})"
-		elif [ "${TGZ}" ]; then
-			echo " etc source:          ${TGZ}"
-		elif [ "${SRCDIR}" ]; then
-			echo " etc source:          ${SRCDIR}"
-		fi
-		if [ "${XTGZURL}" ]; then
-			echo " xetc source:         ${XTGZURL}"
-			echo "                      (fetched in ${XTGZ})"
-		else
-			[ "${XTGZ}" ] && echo " xetc source:         ${XTGZ}"
-		fi
-		echo ""
-		echo " base work directory: ${WRKDIR}"
-		echo " temp root directory: ${TEMPROOT}"
-		echo " backup directory:    ${BKPDIR}"
-		echo ""
-		echo -n "Continue? (y|[n]) "
-		read ANSWER
-		case "${ANSWER}" in
-			y|Y)
-				echo ""
-				;;
-			*)
-				error_rm_wrkdir
-				;;
-		esac
-	fi
-}
-
-
 do_populate() {
 	mkdir -p ${DESTDIR}/${DBDIR} || error_rm_wrkdir
 	echo "===> Creating and populating temporary root under"
 	echo "     ${TEMPROOT}"
 	mkdir -p ${TEMPROOT}
-	local SRCSUM ETCSUM XETCSUM
 	if [ "${SRCDIR}" ]; then
 		SRCSUM=srcsum
 		cd ${SRCDIR}/etc
 		make DESTDIR=${TEMPROOT} distribution-etc-root-var > /dev/null 2>&1
-		(cd ${TEMPROOT} && find . -type f | xargs cksum >> ${WRKDIR}/${SRCSUM})
+		(cd ${TEMPROOT} && find . -type f | xargs cksum > ${WRKDIR}/${SRCSUM})
 	fi
 
 	if [ "${TGZ}" -o "${XTGZ}" ]; then
@@ -142,12 +96,12 @@ do_populate() {
 		if [ "${TGZ}" ]; then
 			ETCSUM=etcsum
 			_E=$(cd `dirname ${TGZ}` && pwd)/`basename ${TGZ}`
-			(cd ${TEMPROOT} && tar -tzf ${_E} | xargs cksum >> ${WRKDIR}/${ETCSUM})
+			(cd ${TEMPROOT} && tar -tzf ${_E} | xargs cksum > ${WRKDIR}/${ETCSUM})
 		fi
 		if [ "${XTGZ}" ]; then
 			XETCSUM=xetcsum
 			_X=$(cd `dirname ${XTGZ}` && pwd)/`basename ${XTGZ}`
-			(cd ${TEMPROOT} && tar -tzf ${_X} | xargs cksum >> ${WRKDIR}/${XETCSUM})
+			(cd ${TEMPROOT} && tar -tzf ${_X} | xargs cksum > ${WRKDIR}/${XETCSUM})
 		fi
 	fi
 
@@ -190,7 +144,15 @@ do_populate() {
 	done
 
 	# files we don't want/need to deal with
-	IGNORE_FILES="/etc/*.db /etc/mail/*.db /etc/passwd /etc/motd /etc/myname /var/mail/root"
+	IGNORE_FILES="/etc/*.db
+		      /etc/mail/*.db
+		      /etc/passwd
+		      /etc/motd
+		      /etc/myname
+		      /var/db/locate.database
+		      /var/db/sysmerge/{etc,xetc}sum
+		      /var/games/tetris.scores
+		      /var/mail/root"
 	CF_FILES="/etc/mail/localhost.cf /etc/mail/sendmail.cf /etc/mail/submit.cf"
 	for cf in ${CF_FILES}; do
 		CF_DIFF=`diff -q -I "##### " ${TEMPROOT}/${cf} ${DESTDIR}/${cf} 2> /dev/null`
@@ -208,7 +170,6 @@ do_populate() {
 	done
 }
 
-
 do_install_and_rm() {
 	if [ -f "${5}/${4##*/}" ]; then
 		mkdir -p ${BKPDIR}/${4%/*}
@@ -221,7 +182,6 @@ do_install_and_rm() {
 	fi
 	rm -f "${4}"
 }
-
 
 mm_install() {
 	local INSTDIR
@@ -244,6 +204,7 @@ mm_install() {
 		echo -n "===> A new ${DESTDIR%/}/dev/MAKEDEV script was installed, "
 		echo "running MAKEDEV"
 		(cd ${DESTDIR}/dev && /bin/sh MAKEDEV all)
+		export NEED_REBOOT=1
 		;;
 	/etc/login.conf)
 		if [ -f ${DESTDIR}/etc/login.conf.db ]; then
@@ -251,6 +212,7 @@ mm_install() {
 			echo "running cap_mkdb"
 			cap_mkdb ${DESTDIR}/etc/login.conf
 		fi
+		export NEED_REBOOT=1
 		;;
 	/etc/mail/access|/etc/mail/genericstable|/etc/mail/mailertable|/etc/mail/virtusertable)
 		DBFILE=`echo ${1} | sed -e 's,.*/,,'`
@@ -368,7 +330,6 @@ merge_loop() {
 	done
 }
 
-
 diff_loop() {
 	if [ "${BATCHMODE}" ]; then
 		HANDLE_COMPFILE=todo
@@ -381,9 +342,6 @@ diff_loop() {
 	unset FORCE_UPG
 
 	while [ "${HANDLE_COMPFILE}" = "v" -o "${HANDLE_COMPFILE}" = "todo" ]; do
-		if [ "${HANDLE_COMPFILE}" = "v" ]; then
-			echo "\n========================================================================\n"
-		fi
 		if [ -f "${DESTDIR}${COMPFILE#.}" -a -f "${COMPFILE}" -a -z "${IS_LINK}" ]; then
 			if [ -z "${DIFFMODE}" ]; then
 				# automatically install files if current != new and current = old
@@ -402,9 +360,61 @@ diff_loop() {
 					fi
 					return
 				fi
+				# automatically install missing users
+				if [ "${COMPFILE}" = "./etc/master.passwd" ]; then
+					local _merge_pwd
+					while read l; do
+						_u=`echo ${l} | awk -F ':' '{ print $1 }'`
+						if [ "${_u}" != "root" ]; then
+							if [ -z "`grep -E "^${_u}:" ${DESTDIR}${COMPFILE#.}`" ]; then
+								echo "===> Adding the ${_u} user"
+								if [ "${DESTDIR}" ]; then
+									chroot ${DESTDIR} chpass -la "${l}"
+								else
+									chpass -la "${l}"
+								fi
+								if [ $? -eq 0 ]; then
+									set -A NEWUSR -- ${NEWUSR[@]} ${_u}
+								else
+									_merge_pwd=1
+								fi
+							fi
+						fi
+					done < ${COMPFILE}
+					if [ -z ${_merge_pwd} ]; then
+						rm "${TEMPROOT}${COMPFILE#.}"
+						return
+					fi
+				fi
+				# automatically install missing groups
+				if [ "${COMPFILE}" = "./etc/group" ]; then
+					local _merge_grp
+					while read l; do
+						_g=`echo ${l} | awk -F ':' '{ print $1 }'`
+						_gid=`echo ${l} | awk -F ':' '{ print $3 }'`
+						if [ -z "`grep -E "^${_g}:" ${DESTDIR}${COMPFILE#.}`" ]; then
+							echo "===> Adding the ${_g} group"
+							if [ "${DESTDIR}" ]; then
+								chroot ${DESTDIR} groupadd -g "${_gid}" "${_g}"
+							else
+								groupadd -g "${_gid}" "${_g}"
+							fi
+							if [ $? -eq 0 ]; then
+								set -A NEWGRP -- ${NEWGRP[@]} ${_g}
+							else
+								_merge_grp=1
+							fi
+						fi
+					done < ${COMPFILE}
+					if [ -z ${_merge_grp} ]; then
+						rm "${TEMPROOT}${COMPFILE#.}"
+						return
+					fi
+				fi
 			fi
 			if [ "${HANDLE_COMPFILE}" = "v" ]; then
 				(
+					echo "\n========================================================================\n"
 					echo "===> Displaying differences between ${COMPFILE} and installed version:"
 					echo ""
 					diff -u "${DESTDIR}${COMPFILE#.}" "${COMPFILE}"
@@ -516,7 +526,6 @@ diff_loop() {
 	done
 }
 
-
 do_compare() {
 	echo "===> Starting comparison"
 
@@ -563,9 +572,8 @@ do_compare() {
 		fi
 	done
 
-	echo "\n===> Comparison complete"
+	echo "===> Comparison complete"
 }
-
 
 do_post() {
 	echo "===> Making sure your directory hierarchy has correct perms, running mtree"
@@ -594,6 +602,17 @@ do_post() {
 	if [ "${OBSOLETE_FILES}" ]; then
 		echo "===> File(s) removed from previous source (maybe obsolete)" >> ${REPORT}
 		echo "${OBSOLETE_FILES}" >> ${REPORT}
+		echo "" >> ${REPORT}
+	fi
+	if [ "${NEWUSR}" -o "${NEWGRP}" ]; then
+		echo "===> The following user(s)/group(s) have been added" >> ${REPORT}
+		if [ "${NEWUSR}" ]; then
+			echo -n "user(s): ${NEWUSR[@]}\n" >> ${REPORT}
+		fi
+		if [ "${NEWGRP}" ]; then
+			echo -n "group(s): ${NEWGRP[@]}\n" >> ${REPORT}
+		fi
+		echo "" >> ${REPORT}
 	fi
 	if [ "${FILES_IN_TEMPROOT}" ]; then
 		echo "===> File(s) remaining for you to merge by hand" >> ${REPORT}
@@ -601,7 +620,7 @@ do_post() {
 	fi
 
 	if [ -e "${REPORT}" ]; then
-		if [ "${OBSOLETE_FILES}" -o "${FILES_IN_TEMPROOT}" ]; then
+		if [ "${OBSOLETE_FILES}" -o "${FILES_IN_TEMPROOT}" -o "${NEED_NEWALIASES}" ]; then
 			echo "===> Manual intervention may be needed, see ${REPORT}"
 		else
 			echo "===> Output log available at ${REPORT}"
@@ -612,10 +631,14 @@ do_post() {
 		rm -rf "${WRKDIR}"
 	fi
 
+	if [ "${NEED_REBOOT}" ]; then
+		echo "\n *** WARNING: some new and/or updated file(s) may require a reboot!"
+		unset NEED_REBOOT
+	fi
+
 	clean_src
 	rm -f ${DESTDIR}/${DBDIR}/.*.bak
 }
-
 
 while getopts bds:x: arg; do
 	case ${arg} in
@@ -628,9 +651,8 @@ while getopts bds:x: arg; do
 	s)
 		if [ -f "${OPTARG}/etc/Makefile" ]; then
 			SRCDIR=${OPTARG}
-		elif [ -f "${OPTARG}" ] && echo -n ${OPTARG} | \
-		    awk -F/ '{print $NF}' | \
-		    grep '^etc[0-9][0-9]\.tgz$' > /dev/null 2>&1 ; then
+		elif [ -f "${OPTARG}" ] && \
+			tar tzf ${OPTARG} ./var/db/sysmerge/etcsum > /dev/null 2>&1 ; then
 			TGZ=${OPTARG}
 		elif echo ${OPTARG} | \
 		    grep -qE '^(http|ftp)://.*/etc[0-9][0-9]\.tgz$'; then
@@ -646,9 +668,8 @@ while getopts bds:x: arg; do
 		fi
 		;;
 	x)
-		if [ -f "${OPTARG}" ] && echo -n ${OPTARG} | \
-		    awk -F/ '{print $NF}' | \
-		    grep '^xetc[0-9][0-9]\.tgz$' > /dev/null 2>&1 ; then
+		if [ -f "${OPTARG}" ] && \
+			tar tzf ${OPTARG} ./var/db/sysmerge/xetcsum > /dev/null 2>&1 ; then \
 			XTGZ=${OPTARG}
 		elif echo ${OPTARG} | \
 		    grep -qE '^(http|ftp)://.*/xetc[0-9][0-9]\.tgz$'; then
@@ -671,7 +692,19 @@ while getopts bds:x: arg; do
 done
 
 
-do_pre
+if [ -z "${SRCDIR}" -a -z "${TGZ}" -a -z "${XTGZ}" ]; then
+	if [ -f "/usr/src/etc/Makefile" ]; then
+		SRCDIR=/usr/src
+	else
+		echo " *** Error: please specify a valid path to src or (x)etcXX.tgz"
+		usage
+		error_rm_wrkdir
+	fi
+fi
+
+TEMPROOT="${WRKDIR}/temproot"
+BKPDIR="${WRKDIR}/backups"
+
 do_populate
 do_compare
 do_post

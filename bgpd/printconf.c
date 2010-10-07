@@ -1,4 +1,4 @@
-/*	$OpenBSD: printconf.c,v 1.74 2009/12/01 14:28:05 claudio Exp $	*/
+/*	$OpenBSD: printconf.c,v 1.84 2010/08/06 14:32:13 jsg Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -27,15 +27,19 @@
 
 void		 print_op(enum comp_ops);
 void		 print_community(int, int);
+void		 print_extcommunity(struct filter_extcommunity *);
 void		 print_origin(u_int8_t);
 void		 print_set(struct filter_set_head *);
 void		 print_mainconf(struct bgpd_config *);
+void		 print_rdomain_targets(struct filter_set_head *, const char *);
+void		 print_rdomain(struct rdomain *);
+const char	*print_af(u_int8_t);
 void		 print_network(struct network_config *);
 void		 print_peer(struct peer_config *, struct bgpd_config *,
 		    const char *);
 const char	*print_auth_alg(u_int8_t);
 const char	*print_enc_alg(u_int8_t);
-const char	*print_safi(u_int8_t);
+void		 print_announce(struct peer_config *, const char *);
 void		 print_rule(struct peer *, struct filter_rule *);
 const char *	 mrt_type(enum mrt_type);
 void		 print_mrt(u_int32_t, u_int32_t, const char *, const char *);
@@ -92,6 +96,32 @@ print_community(int as, int type)
 		printf("neighbor-as ");
 	else
 		printf("%d ", type);
+}
+
+void
+print_extcommunity(struct filter_extcommunity *c)
+{
+	switch (c->type & EXT_COMMUNITY_VALUE) {
+	case EXT_COMMUNITY_TWO_AS:
+		printf("%s %i:%i ", log_ext_subtype(c->subtype),
+		    c->data.ext_as.as, c->data.ext_as.val);
+		break;
+	case EXT_COMMUNITY_IPV4:
+		printf("%s %s:%i ", log_ext_subtype(c->subtype),
+		    inet_ntoa(c->data.ext_ip.addr), c->data.ext_ip.val);
+		break;
+	case EXT_COMMUNITY_FOUR_AS:
+		printf("%s %s:%i ", log_ext_subtype(c->subtype),
+		    log_as(c->data.ext_as4.as4), c->data.ext_as.val);
+		break;
+	case EXT_COMMUNITY_OPAQUE:
+		printf("%s 0x%llx ", log_ext_subtype(c->subtype),
+		    c->data.ext_opaq);
+		break;
+	default:
+		printf("0x%x 0x%llx ", c->type, c->data.ext_opaq);
+		break;
+	}
 }
 
 void
@@ -184,6 +214,14 @@ print_set(struct filter_set_head *set)
 			/* not possible */
 			printf("king bula saiz: config broken");
 			break;
+		case ACTION_SET_EXT_COMMUNITY:
+			printf("ext-community ");
+			print_extcommunity(&s->action.ext_community);
+			break;
+		case ACTION_DEL_EXT_COMMUNITY:
+			printf("ext-community delete ");
+			print_extcommunity(&s->action.ext_community);
+			break;
 		}
 	}
 	printf("}");
@@ -200,17 +238,16 @@ print_mainconf(struct bgpd_config *conf)
 		printf(" %u", conf->short_as);
 	ina.s_addr = conf->bgpid;
 	printf("\nrouter-id %s\n", inet_ntoa(ina));
+
+	printf("socket \"%s\"\n", conf->csock);
+	if (conf->rcsock)
+		printf("socket \"%s\" restricted\n", conf->rcsock);
 	if (conf->holdtime)
 		printf("holdtime %u\n", conf->holdtime);
 	if (conf->min_holdtime)
 		printf("holdtime min %u\n", conf->min_holdtime);
 	if (conf->connectretry)
 		printf("connect-retry %u\n", conf->connectretry);
-
-	if (conf->flags & BGPD_FLAG_NO_FIB_UPDATE)
-		printf("fib-update no\n");
-	else
-		printf("fib-update yes\n");
 
 	if (conf->flags & BGPD_FLAG_NO_EVALUATE)
 		printf("route-collector yes\n");
@@ -232,43 +269,67 @@ print_mainconf(struct bgpd_config *conf)
 		printf("nexthop qualify via bgp\n");
 	if (conf->flags & BGPD_FLAG_NEXTHOP_DEFAULT)
 		printf("nexthop qualify via default\n");
+}
 
-	if (conf->flags & BGPD_FLAG_REDIST_CONNECTED) {
-		printf("network inet connected");
-		if (!TAILQ_EMPTY(&conf->connectset))
-			printf(" ");
-		print_set(&conf->connectset);
+void
+print_rdomain_targets(struct filter_set_head *set, const char *tgt)
+{
+	struct filter_set	*s;
+	TAILQ_FOREACH(s, set, entry) {
+		printf("\t%s ", tgt);
+		print_extcommunity(&s->action.ext_community);
 		printf("\n");
 	}
-	if (conf->flags & BGPD_FLAG_REDIST_STATIC) {
-		printf("network inet static");
-		if (!TAILQ_EMPTY(&conf->staticset))
-			printf(" ");
-		print_set(&conf->staticset);
-		printf("\n");
-	}
-	if (conf->flags & BGPD_FLAG_REDIST6_CONNECTED) {
-		printf("network inet6 connected");
-		if (!TAILQ_EMPTY(&conf->connectset6))
-			printf(" ");
-		print_set(&conf->connectset6);
-		printf("\n");
-	}
-	if (conf->flags & BGPD_FLAG_REDIST_STATIC) {
-		printf("network inet6 static");
-		if (!TAILQ_EMPTY(&conf->staticset6))
-			printf(" ");
-		print_set(&conf->staticset6);
-		printf("\n");
-	}
-	if (conf->rtableid)
-		printf("rtable %u\n", conf->rtableid);
+}
+
+void
+print_rdomain(struct rdomain *r)
+{
+	printf("rdomain %u {\n", r->rtableid);
+	printf("\tdescr \"%s\"\n", r->descr);
+	if (r->flags & F_RIB_NOFIBSYNC)
+		printf("\tfib-update no\n");
+	else
+		printf("\tfib-update yes\n");
+	printf("\tdepend on %s\n", r->ifmpe);
+
+	printf("\n\t%s\n", log_rd(r->rd));
+
+	print_rdomain_targets(&r->export, "export-target");
+	print_rdomain_targets(&r->import, "import-target");
+
+	printf("}\n");
+}
+
+const char *
+print_af(u_int8_t aid)
+{
+	/*
+	 * Hack around the fact that aid2str() will return "IPv4 unicast"
+	 * for AID_INET. AID_INET and AID_INET6 need special handling and
+	 * the other AID should never end up here (at least for now).
+	 */
+	if (aid == AID_INET)
+		return ("inet");
+	if (aid == AID_INET6)
+		return ("inet6");
+	return (aid2str(aid));
 }
 
 void
 print_network(struct network_config *n)
 {
-	printf("network %s/%u", log_addr(&n->prefix), n->prefixlen);
+	switch (n->type) {
+	case NETWORK_STATIC:
+		printf("network %s static", print_af(n->prefix.aid));
+		break;
+	case NETWORK_CONNECTED:
+		printf("network %s connected", print_af(n->prefix.aid));
+		break;
+	default:
+		printf("network %s/%u", log_addr(&n->prefix), n->prefixlen);
+		break;
+	}
 	if (!TAILQ_EMPTY(&n->attrset))
 		printf(" ");
 	print_set(&n->attrset);
@@ -378,8 +439,7 @@ print_peer(struct peer_config *p, struct bgpd_config *conf, const char *c)
 	if (p->ttlsec)
 		printf("%s\tttl-security yes\n", c);
 
-	printf("%s\tannounce IPv4 %s\n", c, print_safi(p->capabilities.mp_v4));
-	printf("%s\tannounce IPv6 %s\n", c, print_safi(p->capabilities.mp_v6));
+	print_announce(p, c);
 
 	if (p->softreconfig_in == 1)
 		printf("%s\tsoftreconfig in yes\n", c);
@@ -423,17 +483,14 @@ print_enc_alg(u_int8_t alg)
 	}
 }
 
-const char *
-print_safi(u_int8_t safi)
+void
+print_announce(struct peer_config *p, const char *c)
 {
-	switch (safi) {
-	case SAFI_NONE:
-		return ("none");
-	case SAFI_UNICAST:
-		return ("unicast");
-	default:
-		return ("?");
-	}
+	u_int8_t	aid;
+
+	for (aid = 0; aid < AID_MAX; aid++)
+		if (p->capabilities.mp[aid])
+			printf("%s\tannounce %s\n", c, aid2str(aid));
 }
 
 void
@@ -516,10 +573,19 @@ print_rule(struct peer *peer_l, struct filter_rule *r)
 			printf("unfluffy-as %s ", log_as(r->match.as.as));
 	}
 
+	if (r->match.aslen.type) {
+		printf("%s %u ", r->match.aslen.type == ASLEN_MAX ?
+		    "max-as-len" : "max-as-seq", r->match.aslen.aslen);
+	}
+
 	if (r->match.community.as != COMMUNITY_UNSET) {
 		printf("community ");
 		print_community(r->match.community.as,
 		    r->match.community.type);
+	}
+	if (r->match.ext_community.flags & EXT_COMMUNITY_FLAG_VALID) {
+		printf("ext-community ");
+		print_extcommunity(&r->match.ext_community);
 	}
 
 	print_set(&r->set);
@@ -636,25 +702,33 @@ peer_compare(const void *aa, const void *bb)
 void
 print_config(struct bgpd_config *conf, struct rib_names *rib_l,
     struct network_head *net_l, struct peer *peer_l,
-    struct filter_head *rules_l, struct mrt_head *mrt_l)
+    struct filter_head *rules_l, struct mrt_head *mrt_l,
+    struct rdomain_head *rdom_l)
 {
 	struct filter_rule	*r;
 	struct network		*n;
 	struct rde_rib		*rr;
+	struct rdomain		*rd;
 
 	xmrt_l = mrt_l;
-	printf("\n");
 	print_mainconf(conf);
+	printf("\n");
+	TAILQ_FOREACH(n, net_l, entry)
+		print_network(&n->net);
+	printf("\n");
+	SIMPLEQ_FOREACH(rd, rdom_l, entry)
+		print_rdomain(rd);
 	printf("\n");
 	SIMPLEQ_FOREACH(rr, rib_l, entry) {
 		if (rr->flags & F_RIB_NOEVALUATE)
 			printf("rde rib %s no evaluate\n", rr->name);
-		else
+		else if (rr->flags & F_RIB_NOFIB)
 			printf("rde rib %s\n", rr->name);
+		else
+			printf("rde rib %s rtable %u fib-update %s\n", rr->name,
+			    rr->rtableid, rr->flags & F_RIB_NOFIBSYNC ?
+			    "no" : "yes");
 	}
-	printf("\n");
-	TAILQ_FOREACH(n, net_l, entry)
-		print_network(&n->net);
 	printf("\n");
 	print_mrt(0, 0, "", "");
 	printf("\n");

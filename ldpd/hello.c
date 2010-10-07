@@ -1,4 +1,4 @@
-/*	$OpenBSD: hello.c,v 1.2 2009/06/05 22:34:45 michele Exp $ */
+/*	$OpenBSD: hello.c,v 1.6 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -37,15 +37,16 @@
 #include "ldpe.h"
 
 struct hello_prms_tlv	*tlv_decode_hello_prms(char *, u_int16_t);
-int			 tlv_decode_opt_hello_prms(char *, u_int16_t);
-int			 gen_hello_prms_tlv(struct iface *, struct buf *,
+int			 tlv_decode_opt_hello_prms(char *, u_int16_t,
+			    struct in_addr *, u_int32_t *);
+int			 gen_hello_prms_tlv(struct iface *, struct ibuf *,
 			    u_int16_t);
 
 int
 send_hello(struct iface *iface)
 {
 	struct sockaddr_in	 dst;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	u_int16_t		 size;
 
 	dst.sin_port = htons(LDP_PORT);
@@ -56,9 +57,7 @@ send_hello(struct iface *iface)
 	if (iface->passive)
 		return (0);
 
-	log_debug("send_hello: iface %s", iface->name);
-
-	if ((buf = buf_open(LDP_MAX_LEN)) == NULL)
+	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_hello");
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg) +
@@ -75,7 +74,7 @@ send_hello(struct iface *iface)
 	gen_hello_prms_tlv(iface, buf, size);
 
 	send_packet(iface, buf->buf, buf->wpos, &dst);
-	buf_free(buf);
+	ibuf_free(buf);
 
 	return (0);
 }
@@ -88,8 +87,8 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 	struct nbr		*nbr = NULL;
 	struct hello_prms_tlv	*cpt;
 	struct ldp_hdr		*ldp;
-
-	log_debug("recv_hello: neighbor %s", inet_ntoa(src));
+	struct in_addr		 address;
+	u_int32_t		 conf_number;
 
 	ldp = (struct ldp_hdr *)buf;
 
@@ -113,14 +112,18 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 	buf += sizeof(struct hello_prms_tlv);
 	len -= sizeof(struct hello_prms_tlv);
 
-	tlv_decode_opt_hello_prms(buf, len);
+	tlv_decode_opt_hello_prms(buf, len, &address, &conf_number);
 
 	nbr = nbr_find_ldpid(iface, ldp->lsr_id, ldp->lspace_id);
 	if (!nbr) {
-		nbr = nbr_new(ldp->lsr_id, ldp->lspace_id, iface, 0);
+		nbr = nbr_new(ldp->lsr_id, ldp->lspace_id, iface);
 
 		/* set neighbor parameters */
-		nbr->addr.s_addr = src.s_addr;
+		if (address.s_addr == INADDR_ANY)
+			nbr->addr.s_addr = src.s_addr;
+		else
+			nbr->addr.s_addr = address.s_addr;
+
 		nbr->hello_type = cpt->reserved;
 
 		if (cpt->holdtime == 0) {
@@ -142,13 +145,13 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 
 	nbr_fsm(nbr, NBR_EVT_HELLO_RCVD);
 
-	if (nbr->addr.s_addr < nbr->iface->addr.s_addr &&
+	if (ntohl(nbr->addr.s_addr) < ntohl(nbr->iface->addr.s_addr) &&
 	    nbr->state == NBR_STA_PRESENT && !nbr_pending_idtimer(nbr))
 		nbr_act_session_establish(nbr, 1);
 }
 
 int
-gen_hello_prms_tlv(struct iface *iface, struct buf *buf, u_int16_t size)
+gen_hello_prms_tlv(struct iface *iface, struct ibuf *buf, u_int16_t size)
 {
 	struct hello_prms_tlv	parms;
 
@@ -162,7 +165,7 @@ gen_hello_prms_tlv(struct iface *iface, struct buf *buf, u_int16_t size)
 	parms.holdtime = htons(iface->holdtime);
 	parms.reserved = 0;
 
-	return (buf_add(buf, &parms, sizeof(parms)));
+	return (ibuf_add(buf, &parms, sizeof(parms)));
 }
 
 struct hello_prms_tlv *
@@ -186,8 +189,34 @@ tlv_decode_hello_prms(char *buf, u_int16_t len)
 }
 
 int
-tlv_decode_opt_hello_prms(char *buf, u_int16_t len)
+tlv_decode_opt_hello_prms(char *buf, u_int16_t len, struct in_addr *addr,
+    u_int32_t *conf_number)
 {
-	/* XXX: todo */
+	struct hello_opt_parms_tlv	*tlv;
+
+	bzero(addr, sizeof(*addr));
+	*conf_number = 0;
+
+	while (len >= sizeof(*tlv)) {
+		tlv = (struct hello_opt_parms_tlv *)buf;
+
+		if (tlv->length < sizeof(u_int32_t))
+			return (-1);
+
+		switch (ntohs(tlv->type)) {
+		case TLV_TYPE_IPV4TRANSADDR:
+			addr->s_addr = tlv->value;
+			break;
+		case TLV_TYPE_CONFIG:
+			*conf_number = ntohl(tlv->value);
+			break;
+		default:
+			return (-1);
+		}
+
+		len -= sizeof(*tlv);
+		buf += sizeof(*tlv);
+	}
+
 	return (0);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.3 2008/12/04 17:24:13 cloder Exp $	*/
+/*	$OpenBSD: log.c,v 1.8 2010/06/01 23:06:23 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -21,7 +21,6 @@
 #include <sys/tree.h>
 #include <sys/param.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 
 #include <errno.h>
 #include <event.h>
@@ -52,7 +51,7 @@ log_init(int n_debug)
 	verbose = n_debug;
 
 	if (!debug)
-		openlog(__progname, LOG_PID | LOG_NDELAY, LOG_MAIL);
+		openlog(__progname, LOG_NDELAY, LOG_MAIL);
 
 	tzset();
 }

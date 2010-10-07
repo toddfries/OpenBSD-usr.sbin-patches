@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SharedItems.pm,v 1.16 2009/11/11 13:00:40 espie Exp $
+# $OpenBSD: SharedItems.pm,v 1.28 2010/08/03 14:10:12 espie Exp $
 #
 # Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
 #
@@ -27,30 +27,68 @@ use OpenBSD::Paths;
 
 sub find_items_in_installed_packages
 {
-	my $progress = shift;
+	my $state = shift;
 	my $db = OpenBSD::SharedItemsRecorder->new;
-	my @list = installed_packages();
-	my $total = @list;
-	$progress->set_header("Read shared items");
-	my $done = 0;
-	for my $e (@list) {
-		$progress->show($done, $total);
-		my $plist = OpenBSD::PackingList->from_installation($e, 
-		    \&OpenBSD::PackingList::SharedItemsOnly) or next;
-		next if !defined $plist;
+	$state->status->what("Read")->object("shared items");
+	$state->progress->for_list("Read shared items", [installed_packages()],
+	    sub {
+		my $e = shift;
+		my $plist = OpenBSD::PackingList->from_installation($e,
+		    \&OpenBSD::PackingList::SharedItemsOnly) or return;
+		return if !defined $plist;
 		$plist->record_shared($db, $e);
-		$done++;
-	}
+	    });
 	return $db;
+}
+
+sub check_shared
+{
+	my ($set, $o) = @_;
+	if (!defined $set->{db}) {
+		$set->{db} = OpenBSD::SharedItemsRecorder->new;
+		for my $pkg (installed_packages()) {
+			next if $set->{older}{$pkg};
+			my $plist = OpenBSD::PackingList->from_installation($pkg,
+			    \&OpenBSD::PackingList::SharedItemsOnly) or next;
+			next if !defined $plist;
+			$plist->record_shared($set->{db}, $pkg);
+		}
+	}
+	if (defined $set->{db}{dirs}{$o->fullname}) {
+		return 1;
+	} else {
+		push(@{$set->{old_shared}{$o->fullname}}, $o);
+		return 0;
+	}
+}
+
+sub wipe_directory
+{
+	my ($state, $h, $d) = @_;
+
+	my $realname = $state->{destdir}.$d;
+
+	for my $i (@{$h->{$d}}) {
+		$state->log->set_context('-'.$i->{pkgname});
+		$i->cleanup($state);
+	}
+	if (!rmdir $realname) {
+		$state->log("Error deleting directory #1: #2",
+		    $realname, $!)
+			unless $state->{dirs_okay}->{$d};
+		return 0;
+	}
+	return 1;
 }
 
 sub cleanup
 {
 	my ($recorder, $state) = @_;
 
-	my $remaining = find_items_in_installed_packages($state->progress);
+	my $remaining = find_items_in_installed_packages($state);
 
 	$state->progress->clear;
+	$state->status->what("Clean");
 	$state->progress->set_header("Clean shared items");
 	my $h = $recorder->{dirs};
 	my $u = $recorder->{users};
@@ -61,55 +99,48 @@ sub cleanup
 	$total += keys %$g if defined $g;
 	my $done = 0;
 
-	if (defined $h) {
-		for my $d (sort {$b cmp $a} keys %$h) {
-			$state->progress->show($done, $total);
-			my $realname = $state->{destdir}.$d;
-			if ($remaining->{dirs}->{$realname}) {
-				for my $i (@{$h->{$d}}) {
-					$state->log->set_context($i->{pkgname});
-					$i->reload($state);
-				}
-			} else {
-				for my $i (@{$h->{$d}}) {
-					$state->log->set_context($i->{pkgname});
-					$i->cleanup($state);
-				}
-				if (!rmdir $realname) {
-					$state->log("Error deleting directory $realname: $!\n")
-					    unless $state->{dirs_okay}->{$d};
-				}
+	for my $d (sort {$b cmp $a} keys %$h) {
+		$state->progress->show($done, $total);
+		my $realname = $state->{destdir}.$d;
+		if ($remaining->{dirs}->{$realname}) {
+			for my $i (@{$h->{$d}}) {
+				$state->log->set_context('-'.$i->{pkgname});
+				$i->reload($state);
 			}
-			$done++;
+		} else {
+			wipe_directory($state, $h, $d);
 		}
+		$done++;
 	}
-	if (defined $u) {
-		while (my ($user, $pkgname) = each %$u) {
-			$state->progress->show($done, $total);
-			next if $remaining->{users}->{$user};
-			if ($state->{extra}) {
-				$state->system(OpenBSD::Paths->userdel, $user);
-			} else {
-				$state->log->set_context($pkgname);
-				$state->log("You should also run /usr/sbin/userdel $user\n");
-			}
-			$done++;
+	while (my ($user, $pkgname) = each %$u) {
+		$state->progress->show($done, $total);
+		next if $remaining->{users}->{$user};
+		if ($state->{extra}) {
+			$state->system(OpenBSD::Paths->userdel, '--',
+			    $user);
+		} else {
+			$state->log->set_context('-'.$pkgname);
+			$state->log("You should also run /usr/sbin/userdel #1", $user);
 		}
+		$done++;
 	}
-	if (defined $g) {
-		while (my ($group, $pkgname) = each %$g) {
-			$state->progress->show($done, $total);
-			next if $remaining->{groups}->{$group};
-			if ($state->{extra}) {
-				$state->system(OpenBSD::Paths->groupdel, $group);
-			} else {
-				$state->log->set_context($pkgname);
-				$state->log("You should also run /usr/sbin/groupdel $group\n");
-			}
-			$done++;
+	while (my ($group, $pkgname) = each %$g) {
+		$state->progress->show($done, $total);
+		next if $remaining->{groups}->{$group};
+		if ($state->{extra}) {
+			$state->system(OpenBSD::Paths->groupdel, '--',
+			    $group);
+		} else {
+			$state->log->set_context('-'.$pkgname);
+			$state->log("You should also run /usr/sbin/groupdel #1", $group);
 		}
+		$done++;
 	}
-	$state->progress->next;
+	if ($state->verbose >= 2) {
+		$state->progress->next;
+	} else {
+		$state->progress->clear;
+	}
 }
 
 package OpenBSD::PackingElement;
@@ -126,7 +157,7 @@ sub cleanup
 {
 	my ($self, $state) = @_;
 	my $fullname = $state->{destdir}.$self->fullname;
-	$state->log("You may wish to remove ", $fullname, " from man.conf\n");
+	$state->log("You may wish to remove #1 from man.conf", $fullname);
 	for my $f (OpenBSD::Paths->man_cruft) {
 		unlink("$fullname/$f");
 	}
@@ -137,7 +168,7 @@ sub cleanup
 {
 	my ($self, $state) = @_;
 	my $fullname = $state->{destdir}.$self->fullname;
-	$state->log("You may wish to remove ", $fullname, " from your font path\n");
+	$state->log("You may wish to remove #1 from your font path", $fullname);
 	for my $f (OpenBSD::Paths->font_cruft) {
 		unlink("$fullname/$f");
 	}

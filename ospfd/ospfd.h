@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfd.h,v 1.84 2009/11/02 20:20:54 claudio Exp $ */
+/*	$OpenBSD: ospfd.h,v 1.88 2010/09/25 13:28:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -85,6 +85,7 @@ enum imsg_type {
 	IMSG_CTL_SHOW_SUM_AREA,
 	IMSG_CTL_FIB_COUPLE,
 	IMSG_CTL_FIB_DECOUPLE,
+	IMSG_CTL_FIB_RELOAD,
 	IMSG_CTL_AREA,
 	IMSG_CTL_KROUTE,
 	IMSG_CTL_KROUTE_ADDR,
@@ -118,7 +119,8 @@ enum imsg_type {
 	IMSG_RECONF_AUTHMD,
 	IMSG_RECONF_REDIST,
 	IMSG_RECONF_END,
-	IMSG_DEMOTE
+	IMSG_DEMOTE,
+	IMSG_IFADDRDEL
 };
 
 #define	REDIST_CONNECTED	0x01
@@ -322,6 +324,7 @@ struct iface {
 
 	u_int64_t		 baudrate;
 	u_int32_t		 dead_interval;
+	u_int32_t		 fast_hello_interval;
 	u_int32_t		 ls_ack_cnt;
 	u_int32_t		 crypt_seq_num;
 	time_t			 uptime;
@@ -341,6 +344,11 @@ struct iface {
 	u_int8_t		 linkstate;
 	u_int8_t		 priority;
 	u_int8_t		 passive;
+};
+
+struct ifaddrdel {
+	struct in_addr		addr;
+	unsigned int		ifindex;
 };
 
 /* ospf_conf */
@@ -434,10 +442,11 @@ struct ctl_iface {
 	struct in_addr		 dr_addr;
 	struct in_addr		 bdr_id;
 	struct in_addr		 bdr_addr;
-	time_t			 hello_timer;
+	struct timeval		 hello_timer;
 	time_t			 uptime;
 	u_int64_t		 baudrate;
 	u_int32_t		 dead_interval;
+	u_int32_t		 fast_hello_interval;
 	unsigned int		 ifindex;
 	int			 state;
 	int			 mtu;
@@ -496,6 +505,7 @@ struct ctl_sum {
 	u_int32_t		 spf_hold_time;
 	u_int32_t		 num_ext_lsa;
 	u_int32_t		 num_area;
+	u_int32_t		 ext_lsa_cksum;
 	time_t			 uptime;
 	u_int8_t		 rfc1583compat;
 };
@@ -506,6 +516,7 @@ struct ctl_sum_area {
 	u_int32_t		 num_adj_nbr;
 	u_int32_t		 num_spf_calc;
 	u_int32_t		 num_lsa;
+	u_int32_t		 lsa_cksum;
 };
 
 struct demote_msg {
@@ -545,6 +556,7 @@ int		 kr_delete(struct kroute *);
 void		 kr_shutdown(void);
 void		 kr_fib_couple(void);
 void		 kr_fib_decouple(void);
+void		 kr_fib_reload(void);
 void		 kr_dispatch_msg(int, short, void *);
 void		 kr_show_route(struct imsg *);
 void		 kr_ifinfo(char *, pid_t);
