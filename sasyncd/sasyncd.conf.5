@@ -1,4 +1,4 @@
-.\" $OpenBSD: sasyncd.conf.5,v 1.15 2007/05/31 19:20:29 jmc Exp $
+.\" $OpenBSD: sasyncd.conf.5,v 1.17 2010/06/30 00:44:36 kjell Exp $
 .\"
 .\" Copyright (c) 2005 Håkan Olsson.  All rights reserved.
 .\"
@@ -27,7 +27,7 @@
 .\"
 .\" Manual page for sasyncd.conf
 .\"
-.Dd $Mdocdate: May 31 2007 $
+.Dd $Mdocdate: June 30 2010 $
 .Dt SASYNCD.CONF 5
 .Os
 .Sh NAME
@@ -71,11 +71,14 @@ should track master/slave state on.
 .Ic group
 .Ar group
 .Xc
-Specify which interface group
+Specify on which interface group
 .Xr sasyncd 8
-should use to suppress
+should increase the demote counter.
+This has the effect of suppressing
 .Xr carp 4
-preemption while the system boots.
+preemption while initial
+.Xr sasyncd 8
+state is established.
 The default is to use the
 .Dq carp
 group.
@@ -157,6 +160,17 @@ The shared AES key used to encrypt messages between
 hosts.
 This configuration setting is required and must be either 16, 24 or 32
 bytes long (corresponding to AES using a 128, 192 or 256 bit key).
+.It Ic control isakmpd | iked | all | none
+By default,
+.Xr sasyncd 8
+tracks its local master/slave mode and toggles the passive mode of
+.Xr isakmpd 8
+accordingly.
+This option can be changed to control
+.Xr iked 8
+instead,
+to control all supported daemons at the same time,
+or to turn it off to synchronize SAs only.
 .El
 .Sh SEE ALSO
 .Xr chmod 1 ,

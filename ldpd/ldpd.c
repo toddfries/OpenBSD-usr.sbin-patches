@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpd.c,v 1.5 2009/11/02 20:34:58 claudio Exp $ */
+/*	$OpenBSD: ldpd.c,v 1.12 2010/09/01 13:54:54 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -25,7 +25,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/param.h>
-#include <sys/sysctl.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -130,9 +129,6 @@ main(int argc, char *argv[])
 	struct event		 ev_sigint, ev_sigterm, ev_sigchld, ev_sighup;
 	int			 ch, opts = 0;
 	int			 debug = 0;
-	int			 ipforwarding, mplsenable;
-	int			 mib[4];
-	size_t			 len;
 
 	conffile = CONF_FILE;
 	ldpd_process = PROC_MAIN;
@@ -166,27 +162,6 @@ main(int argc, char *argv[])
 			/* NOTREACHED */
 		}
 	}
-
-	mib[0] = CTL_NET;
-	mib[1] = PF_INET;
-	mib[2] = IPPROTO_IP;
-	mib[3] = IPCTL_FORWARDING;
-	len = sizeof(ipforwarding);
-	if (sysctl(mib, 4, &ipforwarding, &len, NULL, 0) == -1)
-		err(1, "sysctl");
-
-	if (ipforwarding != 1)
-		log_warnx("WARNING: IP forwarding NOT enabled");
-
-	mib[0] = CTL_NET;
-	mib[1] = PF_MPLS;
-	mib[2] = MPLSCTL_ENABLE;
-	len = sizeof(mplsenable);
-	if (sysctl(mib, 3, &mplsenable, &len, NULL, 0) == -1)
-		err(1, "sysctl");
-
-	if (mplsenable != 1)
-		log_warnx("WARNING: MPLS NOT enabled");
 
 	/* fetch interfaces early */
 	kif_init();
@@ -281,7 +256,7 @@ main(int argc, char *argv[])
 	    iev_lde->handler, iev_lde);
 	event_add(&iev_lde->ev, NULL);
 
-	if (kr_init(!(ldpd_conf->flags & LDPD_FLAG_NO_LFIB_UPDATE)) == -1)
+	if (kr_init(!(ldpd_conf->flags & LDPD_FLAG_NO_FIB_UPDATE)) == -1)
 		fatalx("kr_init failed");
 
 	/* remove unneded stuff from config */
@@ -385,11 +360,11 @@ main_dispatch_ldpe(int fd, short event, void *bula)
 				log_debug("configuration reloaded");
 			break;
 */
-		case IMSG_CTL_LFIB_COUPLE:
-			kr_lfib_couple();
+		case IMSG_CTL_FIB_COUPLE:
+			kr_fib_couple();
 			break;
-		case IMSG_CTL_LFIB_DECOUPLE:
-			kr_lfib_decouple();
+		case IMSG_CTL_FIB_DECOUPLE:
+			kr_fib_decouple();
 			break;
 		case IMSG_CTL_KROUTE:
 		case IMSG_CTL_KROUTE_ADDR:
@@ -453,15 +428,18 @@ main_dispatch_lde(int fd, short event, void *bula)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_KLABEL_INSERT:
-			kroute_insert_label(imsg.data);
-			break;
 		case IMSG_KLABEL_CHANGE:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE !=
+			    sizeof(struct kroute))
+				fatalx("invalid size of IMSG_KLABEL_CHANGE");
 			if (kr_change(imsg.data))
 				log_warn("main_dispatch_lde: error changing "
 				    "route");
 			break;
 		case IMSG_KLABEL_DELETE:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE !=
+			    sizeof(struct kroute))
+				fatalx("invalid size of IMSG_KLABEL_DELETE");
 			if (kr_delete(imsg.data))
 				log_warn("main_dispatch_lde: error deleting "
 				    "route");
@@ -485,6 +463,8 @@ main_dispatch_lde(int fd, short event, void *bula)
 void
 main_imsg_compose_ldpe(int type, pid_t pid, void *data, u_int16_t datalen)
 {
+	if (iev_ldpe == NULL)
+		return;
 	imsg_compose_event(iev_ldpe, type, 0, pid, -1, data, datalen);
 }
 
@@ -516,6 +496,37 @@ imsg_compose_event(struct imsgev *iev, u_int16_t type,
 	    pid, fd, data, datalen)) != -1)
 		imsg_event_add(iev);
 	return (ret);
+}
+
+void
+evbuf_enqueue(struct evbuf *eb, struct ibuf *buf)
+{
+	ibuf_close(&eb->wbuf, buf);
+	evbuf_event_add(eb);
+}
+
+void
+evbuf_event_add(struct evbuf *eb)
+{
+	if (eb->wbuf.queued)
+		event_add(&eb->ev, NULL);
+}
+
+void
+evbuf_init(struct evbuf *eb, int fd, void (*handler)(int, short, void *),
+    void *arg)
+{
+	msgbuf_init(&eb->wbuf);
+	eb->wbuf.fd = fd;
+	event_set(&eb->ev, eb->wbuf.fd, EV_WRITE, handler, arg);
+}
+
+void
+evbuf_clear(struct evbuf *eb)
+{
+	event_del(&eb->ev);
+	msgbuf_clear(&eb->wbuf);
+	eb->wbuf.fd = -1;
 }
 
 /*

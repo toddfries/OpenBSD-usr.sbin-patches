@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Handle.pm,v 1.10 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: Handle.pm,v 1.25 2010/08/12 20:36:13 espie Exp $
 #
 # Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
 #
@@ -34,15 +34,14 @@ use constant {
 
 sub cleanup
 {
-	my ($self, $error) = @_;
+	my ($self, $error, $errorinfo) = @_;
 	$self->{error} //= $error;
+	$self->{errorinfo} //= $errorinfo;
 	if (defined $self->location) {
-		if (defined $self->{error} &&
-		    $self->{error} == ALREADY_INSTALLED) {
-			$self->location->close_now;
-		} elsif (defined $self->{error} &&
-		    $self->{error} == CANT_INSTALL) {
+		if (defined $self->{error} && $self->{error} == BAD_PACKAGE) {
 			$self->location->close_with_client_error;
+		} else {
+			$self->location->close_now;
 		}
 		$self->location->wipe_info;
 	}
@@ -66,7 +65,7 @@ sub pkgname
 		} elsif (defined $self->{name}) {
 			require OpenBSD::PackageName;
 
-			$self->{pkgname} = 
+			$self->{pkgname} =
 			    OpenBSD::PackageName::url2pkgname($self->{name});
 		}
 	}
@@ -109,13 +108,34 @@ sub error_message
 	if ($error == BAD_PACKAGE) {
 		return "bad package";
 	} elsif ($error == CANT_INSTALL) {
-		return "can't install";
+		if ($self->{errorinfo}) {
+			return "$self->{errorinfo}";
+		} else {
+			return "can't install";
+		}
 	} elsif ($error == NOT_FOUND) {
 		return "not found";
 	} elsif ($error == ALREADY_INSTALLED) {
 		return "already installed";
 	} else {
 		return "no error";
+	}
+}
+
+sub complete_old
+{
+	my $self = shift;
+	my $location = $self->{location};
+
+	if (!defined $location) {
+		$self->set_error(NOT_FOUND);
+    	} else {
+		my $plist = $location->plist;
+		if (!defined $plist) {
+			$self->set_error(BAD_PACKAGE);
+		} else {
+			$self->{plist} = $plist;
+		}
 	}
 }
 
@@ -126,20 +146,11 @@ sub create_old
 	my $self= $class->new;
 	$self->{name} = $pkgname;
 
-	require OpenBSD::PackageRepository::Installed;
-
-	my $location = OpenBSD::PackageRepository::Installed->new->find($pkgname, $state->{arch});
-	if (!defined $location) {
-		$self->set_error(NOT_FOUND);
-    	} else {
+	my $location = $state->repo->installed->find($pkgname, $state->{arch});
+	if (defined $location) {
 		$self->{location} = $location;
-		my $plist = $location->plist;
-		if (!defined $plist) {
-			$self->set_error(BAD_PACKAGE);
-		} else {
-			$self->{plist} = $plist;
-		}
 	}
+	$self->complete_old;
 
 	return $self;
 }
@@ -169,20 +180,23 @@ sub get_plist
 	my $location = $handle->{location};
 	my $pkg = $handle->pkgname;
 
-	if ($state->{verbose}) {
-		print $state->deptree_header($pkg);
-		print "parsing $pkg\n";
+	if ($state->verbose >= 2) {
+		$state->say("#1parsing #2", $state->deptree_header($pkg), $pkg);
 	}
-	my $plist = $location->grabPlist;
+	my $plist = $location->plist;
 	unless (defined $plist) {
-		print "Can't find CONTENTS from ", $location->url, "\n";
+		$state->say("Can't find CONTENTS from #1", $location->url);
 		$location->close_with_client_error;
 		$location->wipe_info;
 		$handle->set_error(BAD_PACKAGE);
 		return;
 	}
+	unless ($plist->has('url')) {
+		OpenBSD::PackingElement::Url->add($plist, $location->url);
+	}
 	if ($plist->localbase ne $state->{localbase}) {
-		print "Localbase mismatch: package has: ", $plist->localbase, " , user wants: ", $state->{localbase}, "\n";
+		$state->say("Localbase mismatch: package has: #1, user wants: #2",
+		    $plist->localbase, $state->{localbase});
 		$location->close_with_client_error;
 		$location->wipe_info;
 		$handle->set_error(BAD_PACKAGE);
@@ -190,24 +204,9 @@ sub get_plist
 	}
 	my $pkgname = $handle->{pkgname} = $plist->pkgname;
 
-	if (is_installed($pkgname) && 
-	    (!$state->{allow_replacing} ||	
-	      !$state->{defines}->{installed} &&
-	      !$plist->has_new_sig($state) && 
-	      !$plist->uses_old_libs)) {
-		$handle->{tweaked} = 
-		    OpenBSD::Add::tweak_package_status($pkgname, $state);
-		print "Not reinstalling $pkgname\n" if $state->{verbose} and
-		    !$handle->{tweaked};
-		$state->tracker->{installed}->{$pkgname} = 1;
-		$location->close_now;
-		$location->wipe_info;
-		$handle->set_error(ALREADY_INSTALLED);
-		return;
-	}
 	if ($pkg ne '-') {
 		if (!defined $pkgname or $pkg ne $pkgname) {
-			print "Package name is not consistent ???\n";
+			$state->say("Package name is not consistent ???");
 			$location->close_with_client_error;
 			$location->wipe_info;
 			$handle->set_error(BAD_PACKAGE);
@@ -223,15 +222,15 @@ sub get_location
 
 	my $name = $handle->{name};
 
-	my $location = OpenBSD::PackageLocator->find($name, $state->{arch});
+	my $location = $state->repo->find($name, $state->{arch});
 	if (!$location) {
-		print $state->deptree_header($name);
+		$state->print("#1", $state->deptree_header($name));
 		$handle->set_error(NOT_FOUND);
-		$handle->{tweaked} = 
-		    OpenBSD::Add::tweak_package_status($handle->pkgname, 
+		$handle->{tweaked} =
+		    OpenBSD::Add::tweak_package_status($handle->pkgname,
 			$state);
 		if (!$handle->{tweaked}) {
-			print "Can't find $name\n";
+			$state->say("Can't find #1", $name);
 		}
 		return;
 	}

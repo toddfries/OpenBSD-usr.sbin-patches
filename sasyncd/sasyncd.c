@@ -1,4 +1,4 @@
-/*	$OpenBSD: sasyncd.c,v 1.18 2008/03/17 20:30:17 sobrado Exp $	*/
+/*	$OpenBSD: sasyncd.c,v 1.20 2010/06/16 17:39:05 reyk Exp $	*/
 
 /*
  * Copyright (c) 2005 Håkan Olsson.  All rights reserved.
@@ -72,10 +72,11 @@ sasyncd_run(pid_t ppid)
 	wfds = (fd_set *)malloc(fdsetsize);
 	if (!wfds) {
 		log_err("malloc(%lu) failed", (unsigned long)fdsetsize);
+		free(rfds);
 		return -1;
 	}
 
-	isakmpd_setrun();
+	control_setrun();
 
 	signal(SIGINT, sasyncd_stop);
 	signal(SIGTERM, sasyncd_stop);
@@ -184,6 +185,7 @@ main(int argc, char **argv)
 	LIST_INIT(&cfgstate.peerlist);
 
 	cfgstate.listen_port = SASYNCD_DEFAULT_PORT;
+	cfgstate.flags |= CTL_DEFAULT;
 
 	if (!cfgfile)
 		cfgfile = SASYNCD_CFGFILE;

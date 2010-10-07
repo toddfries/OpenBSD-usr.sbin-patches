@@ -1,4 +1,4 @@
-/*	$OpenBSD: usbdevs.c,v 1.17 2008/09/04 11:46:18 jsg Exp $	*/
+/*	$OpenBSD: usbdevs.c,v 1.19 2010/05/31 21:33:04 deraadt Exp $	*/
 /*	$NetBSD: usbdevs.c,v 1.19 2002/02/21 00:34:31 christos Exp $	*/
 
 /*
@@ -205,8 +205,16 @@ getstring(int f, int addr, int si, char *s, int langid)
 	req.ucr_data = &us;
 	USETW2(req.ucr_request.wValue, UDESC_STRING, si);
 	USETW(req.ucr_request.wIndex, langid);
-	USETW(req.ucr_request.wLength, sizeof(usb_string_descriptor_t));
+	USETW(req.ucr_request.wLength, 2);
 	req.ucr_flags = USBD_SHORT_XFER_OK;
+
+	if (ioctl(f, USB_REQUEST, &req) == -1){
+		perror("getstring: ioctl");
+		*s = 0;
+		return;
+	}
+
+	USETW(req.ucr_request.wLength, us.bLength);
 
 	if (ioctl(f, USB_REQUEST, &req) == -1){
 		perror("getstring: ioctl");
@@ -259,13 +267,16 @@ main(int argc, char **argv)
 	int ch, i, f;
 	char buf[50];
 	char *dev = 0;
+	const char *errstr;
 	int addr = 0;
 	int ncont;
 
 	while ((ch = getopt(argc, argv, "a:df:v?")) != -1) {
 		switch (ch) {
 		case 'a':
-			addr = atoi(optarg);
+			addr = strtonum(optarg, 1, USB_MAX_DEVICES, &errstr);
+			if (errstr)
+				errx(1, "addr %s", errstr);
 			break;
 		case 'd':
 			showdevs++;

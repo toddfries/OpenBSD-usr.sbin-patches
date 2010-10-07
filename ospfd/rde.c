@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.83 2009/11/02 20:20:54 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.88 2010/09/25 13:28:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -438,9 +438,6 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				if (self)
 					free(lsa);
 			} else if (r < 0) {
-				/* lsa no longer needed */
-				free(lsa);
-
 				/*
 				 * point 6 of "The Flooding Procedure"
 				 * We are violating the RFC here because
@@ -452,8 +449,12 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				if (rde_req_list_exists(nbr, &lsa->hdr)) {
 					imsg_compose_event(iev_ospfe, IMSG_LS_BADREQ,
 					    imsg.hdr.peerid, 0, -1, NULL, 0);
+					free(lsa);
 					break;
 				}
+
+				/* lsa no longer needed */
+				free(lsa);
 
 				/* new LSA older than DB */
 				if (ntohl(db_hdr->seq_num) == MAX_SEQ_NUM &&
@@ -652,6 +653,8 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				 */
 				if (v)
 					lsa_merge(nbrself, lsa, v);
+				else
+					free(lsa);
 			}
 			break;
 		case IMSG_RECONF_CONF:
@@ -737,7 +740,7 @@ rde_send_change_kroute(struct rt_node *r)
 	int			 krcount = 0;
 	struct kroute		 kr;
 	struct rt_nexthop	*rn;
-	struct buf		*wbuf;
+	struct ibuf		*wbuf;
 
 	if ((wbuf = imsg_create(&iev_main->ibuf, IMSG_KROUTE_CHANGE, 0, 0,
 	    sizeof(kr))) == NULL) {
@@ -791,8 +794,11 @@ rde_send_summary(pid_t pid)
 	LIST_FOREACH(area, &rdeconf->area_list, entry)
 		sumctl.num_area++;
 
-	RB_FOREACH(v, lsa_tree, &asext_tree)
+	RB_FOREACH(v, lsa_tree, &asext_tree) {
 		sumctl.num_ext_lsa++;
+		sumctl.ext_lsa_cksum += ntohs(v->lsa->hdr.ls_chksum);
+		
+	}
 
 	gettimeofday(&now, NULL);
 	if (rdeconf->uptime < now.tv_sec)
@@ -827,8 +833,10 @@ rde_send_summary_area(struct area *area, pid_t pid)
 		if (nbr->state == NBR_STA_FULL && !nbr->self)
 			sumareactl.num_adj_nbr++;
 
-	RB_FOREACH(v, lsa_tree, tree)
+	RB_FOREACH(v, lsa_tree, tree) {
 		sumareactl.num_lsa++;
+		sumareactl.lsa_cksum += ntohs(v->lsa->hdr.ls_chksum);
+	}
 
 	rde_imsg_compose_ospfe(IMSG_CTL_SHOW_SUM_AREA, 0, pid, &sumareactl,
 	    sizeof(sumareactl));
@@ -1178,6 +1186,20 @@ orig_asext_lsa(struct rroute *rr, u_int16_t age)
 	 */
 	lsa->hdr.ls_id = rr->kr.prefix.s_addr;
 	lsa->data.asext.mask = prefixlen2mask(rr->kr.prefixlen);
+
+	if (age == MAX_AGE) {
+		/* inherit metric and ext_tag from the current LSA,
+		 * some routers don't like to get withdraws that are
+		 * different from what they have in their table.
+		 */
+		struct vertex *v;
+		v = lsa_find(NULL, lsa->hdr.type, lsa->hdr.ls_id,
+		    lsa->hdr.adv_rtr);
+		if (v != NULL) {
+			rr->metric = ntohl(v->lsa->data.asext.metric);
+			rr->kr.ext_tag = ntohl(v->lsa->data.asext.ext_tag);
+		}
+	}
 
 	/*
 	 * nexthop -- on connected routes we are the nexthop,

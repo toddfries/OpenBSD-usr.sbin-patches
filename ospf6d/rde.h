@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.17 2009/03/29 21:42:30 stsp Exp $ */
+/*	$OpenBSD: rde.h,v 1.22 2010/07/01 19:47:04 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -30,7 +30,7 @@ struct v_nexthop {
 	TAILQ_ENTRY(v_nexthop)	 entry;
 	struct vertex		*prev;
 	struct in6_addr		 nexthop;
-	u_int32_t		 ifindex;
+	unsigned int		 ifindex;
 };
 
 TAILQ_HEAD(v_nexthead, v_nexthop);
@@ -73,7 +73,7 @@ struct rde_nbr {
 	struct iface			*iface;
 	u_int32_t			 peerid;	/* unique ID in DB */
 	unsigned int			 ifindex;
-	u_int32_t		 	 iface_id;	/* id of neighbor's
+	u_int32_t			 iface_id;	/* id of neighbor's
 							   iface */
 	int				 state;
 	int				 self;
@@ -91,6 +91,7 @@ struct rt_nexthop {
 	TAILQ_ENTRY(rt_nexthop)	entry;
 	struct in6_addr		nexthop;
 	struct in_addr		adv_rtr;
+	unsigned int		ifindex;
 	time_t			uptime;
 	u_int8_t		connected;
 	u_int8_t		invalid;
@@ -133,6 +134,7 @@ int		 rde_nbr_loading(struct area *);
 struct rde_nbr	*rde_nbr_self(struct area *);
 struct rde_nbr	*rde_nbr_find(u_int32_t);
 void		 rde_summary_update(struct rt_node *, struct area *);
+void		 orig_intra_area_prefix_lsas(struct area *);
 
 /* rde_lsdb.c */
 void		 lsa_init(struct lsa_tree *);
@@ -148,7 +150,11 @@ void		 lsa_del(struct rde_nbr *, struct lsa_hdr *);
 void		 lsa_age(struct vertex *);
 struct vertex	*lsa_find(struct iface *, u_int16_t, u_int32_t, u_int32_t);
 struct vertex	*lsa_find_rtr(struct area *, u_int32_t);
-struct vertex	*lsa_find_tree(struct lsa_tree *, u_int16_t, u_int32_t, u_int32_t);
+struct vertex	*lsa_find_rtr_frag(struct area *, u_int32_t, unsigned int);
+struct vertex	*lsa_find_tree(struct lsa_tree *, u_int16_t, u_int32_t,
+		    u_int32_t);
+u_int32_t	 lsa_find_lsid(struct lsa_tree *, u_int16_t, u_int32_t,
+		    int (*)(struct lsa *, struct lsa *), struct lsa *);
 u_int16_t	 lsa_num_links(struct vertex *);
 void		 lsa_snap(struct rde_nbr *, u_int32_t);
 void		 lsa_dump(struct lsa_tree *, int, pid_t);
