@@ -1,4 +1,4 @@
-/*	$OpenBSD: ber.c,v 1.20 2010/02/24 14:09:45 jmc Exp $ */
+/*	$OpenBSD: ber.c,v 1.23 2010/09/20 08:30:13 martinh Exp $ */
 
 /*
  * Copyright (c) 2007 Reyk Floeter <reyk@vantronix.net>
@@ -101,7 +101,7 @@ ber_unlink_elements(struct ber_element *prev)
 
 	if ((prev->be_encoding == BER_TYPE_SEQUENCE ||
 	    prev->be_encoding == BER_TYPE_SET) &&
-	    prev->be_sub == NULL) {
+	    prev->be_sub != NULL) {
 		elm = prev->be_sub;
 		prev->be_sub = NULL;
 	} else {
@@ -823,10 +823,6 @@ ber_free_elements(struct ber_element *root)
 	free(root);
 }
 
-/*
- * internal functions
- */
-
 size_t
 ber_calc_len(struct ber_element *root)
 {
@@ -852,11 +848,16 @@ ber_calc_len(struct ber_element *root)
 		size += ber_calc_len(root->be_next);
 
 	/* This is an empty element, do not use a minimal size */
-	if (root->be_type == BER_TYPE_EOC && root->be_len == 0)
+	if (root->be_class != BER_CLASS_CONTEXT &&
+	    root->be_type == BER_TYPE_EOC && root->be_len == 0)
 		return (0);
 
 	return (root->be_len + size);
 }
+
+/*
+ * internal functions
+ */
 
 static int
 ber_dump_element(struct ber *ber, struct ber_element *root)
@@ -1136,18 +1137,18 @@ ber_read_element(struct ber *ber, struct ber_element *elm)
 				return -1;
 		}
 		next = elm->be_sub;
-		do {
+		while (len > 0) {
 			r = ber_read_element(ber, next);
 			if (r == -1)
 				return -1;
-			if (next->be_next == NULL) {
+			len -= r;
+			if (len > 0 && next->be_next == NULL) {
 				if ((next->be_next = ber_get_element(0)) ==
 				    NULL)
 					return -1;
 			}
 			next = next->be_next;
-			len -= r;
-		} while (len > 0);
+		}
 		break;
 	}
 	return totlen;

@@ -1,5 +1,5 @@
-/*	$Id: aldap.c,v 1.22 2010/02/07 13:04:25 blambert Exp $ */
-/*	$OpenBSD: aldap.c,v 1.22 2010/02/07 13:04:25 blambert Exp $ */
+/*	$Id: aldap.c,v 1.26 2010/07/21 17:32:12 martinh Exp $ */
+/*	$OpenBSD: aldap.c,v 1.26 2010/07/21 17:32:12 martinh Exp $ */
 
 /*
  * Copyright (c) 2008 Alexander Schrijver <aschrijver@openbsd.org>
@@ -55,6 +55,7 @@ aldap_close(struct aldap *al)
 	if (close(al->ber.fd) == -1)
 		return (-1);
 
+	ber_free(&al->ber);
 	free(al);
 
 	return (0);
@@ -546,6 +547,7 @@ aldap_parse_url(char *url, struct aldap_url *lu)
 	if (p)
 		lu->filter = p;
 done:
+	free(url);
 	return (1);
 fail:
 	free(lu->buffer);
@@ -601,7 +603,7 @@ aldap_get_stringset(struct ber_element *elm)
 	if ((ret = calloc(i + 1, sizeof(char *))) == NULL)
 		return NULL;
 
-	for (a = elm, i = 0; a->be_type == BER_TYPE_OCTETSTRING;
+	for (a = elm, i = 0; a != NULL && a->be_type == BER_TYPE_OCTETSTRING;
 	    a = a->be_next, i++) {
 
 		ber_get_string(a, &s);
@@ -687,7 +689,7 @@ ldap_do_parse_search_filter(struct ber_element *prev, char **cpp)
 		if ((elm = ber_add_set(prev)) == NULL)
 			goto callfail;
 		root = elm;
-		ber_set_header(elm, BER_CLASS_APP, type);
+		ber_set_header(elm, BER_CLASS_CONTEXT, type);
 
 		if (*++cp != '(')		/* opening `(` of filter */
 			goto syntaxfail;
@@ -705,7 +707,7 @@ ldap_do_parse_search_filter(struct ber_element *prev, char **cpp)
 	case '!':		/* NOT */
 		if ((root = ber_add_sequence(prev)) == NULL)
 			goto callfail;
-		ber_set_header(root, BER_CLASS_APP, LDAP_FILT_NOT);
+		ber_set_header(root, BER_CLASS_CONTEXT, LDAP_FILT_NOT);
 
 		cp++;				/* now points to sub-filter */
 		if ((elm = ldap_do_parse_search_filter(root, &cp)) == NULL)

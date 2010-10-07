@@ -1,3 +1,4 @@
+/* $OpenBSD: bytebuf.c,v 1.3 2010/07/02 21:20:57 yasuoka Exp $ */
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -40,7 +41,7 @@
  *	}</pre>
  *
  * @author Yasuoka Masahiko
- * $Id: bytebuf.c,v 1.1 2010/01/11 04:20:57 yasuoka Exp $
+ * $Id: bytebuf.c,v 1.3 2010/07/02 21:20:57 yasuoka Exp $
  */
 #include <stdlib.h>
 #include <string.h>
@@ -60,7 +61,7 @@
 	    abort(); 						\
 	}
 #else
-#define	BYTEBUF_ASSERT(cond)			
+#define	BYTEBUF_ASSERT(cond)
 #endif
 #endif
 
@@ -81,7 +82,7 @@ struct _bytebuffer {
 
 #ifndef	MIN
 #define	MIN(m,n)	((m) < (n)? (m) : (n))
-#endif	
+#endif
 
 /**
  * Create a bytebuffer and allocate memory area.
@@ -102,7 +103,7 @@ bytebuffer_create(size_t capacity)
 
 	if (capacity > 0) {
 		if ((_this->data = malloc(capacity)) == NULL)
-			goto reigai;
+			goto fail;
 		memset(_this->data, 0, capacity);
 		_this->capacity = capacity;
 	} else
@@ -111,10 +112,10 @@ bytebuffer_create(size_t capacity)
 	_this->limit = _this->capacity;
 	_this->mark = -1;
 	return _this;
-reigai:
+fail:
 	if (_this != NULL)
 		free(_this);
-	return NULL;	
+	return NULL;
 }
 
 /**
@@ -174,9 +175,9 @@ bytebuffer_realloc(bytebuffer *_this, size_t capacity)
 
 	if (_this->limit > capacity) {
 		errno = EINVAL;
-		return -1;	
+		return -1;
 	}
-	
+
 	if ((new_data = realloc(_this->data, capacity)) == NULL)
 		return -1;
 
@@ -255,7 +256,7 @@ bytebuffer_put(bytebuffer *_this, const void *src, size_t srclen)
 
 	if (src != NULL && src != BYTEBUFFER_PUT_DIRECT)
 		memcpy(rval, src, srclen);
-	
+
 	_this->position += srclen;
 
 	return rval;
@@ -263,7 +264,7 @@ bytebuffer_put(bytebuffer *_this, const void *src, size_t srclen)
 
 /*
  * Transfer data from this buffer to the given destination memory.
- * If the given buffer is too small, this function returns <code>NULL</code> 
+ * If the given buffer is too small, this function returns <code>NULL</code>
  * and <code>errno</code> is <code>ENOBUFS</code>
  *
  * @param	dst	pointer of the destination memory.  Specify NULL
@@ -282,7 +283,7 @@ bytebuffer_get(bytebuffer *_this, void *dst, size_t dstlen)
 	}
 	if (dst != NULL && dst != BYTEBUFFER_GET_DIRECT)
 		memcpy(dst, (char *)_this->data + _this->position, dstlen);
-	
+
 	_this->position += dstlen;
 
 	return dst;
@@ -343,7 +344,7 @@ bytebuffer_has_remaining(bytebuffer *_this)
 	return bytebuffer_remaining(_this) > 0;
 }
 
-/** 
+/**
  * Flip this buffer.
  * The limit is set to the position and the position is set zero.
  */
@@ -357,7 +358,7 @@ bytebuffer_flip(bytebuffer *_this)
 	_this->mark = -1;
 }
 
-/** 
+/**
  * Rewind this buffer.
  * The position is set to zero.
  */
@@ -370,7 +371,7 @@ bytebuffer_rewind(bytebuffer *_this)
 	_this->mark = -1;
 }
 
-/** 
+/**
  * Clear this buffer.
  * The position is set to zero.
  */

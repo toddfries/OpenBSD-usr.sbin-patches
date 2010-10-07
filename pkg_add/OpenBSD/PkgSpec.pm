@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgSpec.pm,v 1.27 2010/01/07 13:11:21 espie Exp $
+# $OpenBSD: PkgSpec.pm,v 1.31 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -194,7 +194,7 @@ sub add_version_constraints
 		# non constraint
 	} else {
 		for my $c (split /\,/, $vspec) {
-			push(@$constraints, 
+			push(@$constraints,
 			    OpenBSD::PkgSpec::versionspec->new($c));
 		}
 	}
@@ -207,7 +207,7 @@ sub add_flavor_constraints
 	if ($flavorspec eq '') {
 		# non constraint
 	} else {
-		push(@$constraints, 
+		push(@$constraints,
 		    OpenBSD::PkgSpec::flavorspec->new($flavorspec));
 	}
 }
@@ -223,10 +223,10 @@ sub new
 		$class->add_version_constraints($constraints, $r->{vspec});
 		$class->add_flavor_constraints($constraints, $r->{flavorspec});
 
-		my $o = bless { 
-			exactstem => qr{^$stemspec$}, 
-			fuzzystem => qr{^$stemspec\-\d.*$}, 
-			constraints => $constraints, 
+		my $o = bless {
+			exactstem => qr{^$stemspec$},
+			fuzzystem => qr{^$stemspec\-\d.*$},
+			constraints => $constraints,
 		    }, $class;
 		if (defined $r->{e}) {
 			$o->{e} = 1;
@@ -249,9 +249,13 @@ LOOP1:
 		for my $c (@{$o->{constraints}}) {
 			next LOOP1 unless $c->match($name);
 		}
-		push(@result, $s);
+		if (wantarray) {
+			push(@result, $s);
+		} else {
+			return 1;
+		}
 	}
-		
+
 	return @result;
 }
 
@@ -269,7 +273,7 @@ LOOP2:
 		}
 		push(@$result, $s);
 	}
-		
+
 	return $result;
 }
 
@@ -284,7 +288,7 @@ sub subpattern_class
 sub new
 {
 	my ($class, $pattern) = @_;
-	my @l = map { $class->subpattern_class->new($_) } 
+	my @l = map { $class->subpattern_class->new($_) }
 		(split /\|/o, $pattern);
 	if (@l == 1) {
 		return $l[0];
@@ -296,11 +300,20 @@ sub new
 sub match_ref
 {
 	my ($self, $r) = @_;
-	my @l = ();
-	for my $subpattern (@$self) {
-		push(@l, $subpattern->match_ref($r));
+	if (wantarray) {
+		my @l = ();
+		for my $subpattern (@$self) {
+			push(@l, $subpattern->match_ref($r));
+		}
+		return @l;
+	} else {
+		for my $subpattern (@$self) {
+			if ($subpattern->match_ref($r)) {
+				return 1;
+			}
+		}
+		return 0;
 	}
-	return @l;
 }
 
 sub match_locations

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_attr.c,v 1.83 2010/03/29 09:24:07 claudio Exp $ */
+/*	$OpenBSD: rde_attr.c,v 1.85 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2004 Claudio Jeker <claudio@openbsd.org>
@@ -63,7 +63,7 @@ attr_write(void *p, u_int16_t p_len, u_int8_t flags, u_int8_t type,
 }
 
 int
-attr_writebuf(struct buf *buf, u_int8_t flags, u_int8_t type, void *data,
+attr_writebuf(struct ibuf *buf, u_int8_t flags, u_int8_t type, void *data,
     u_int16_t data_len)
 {
 	u_char	hdr[4];
@@ -80,9 +80,9 @@ attr_writebuf(struct buf *buf, u_int8_t flags, u_int8_t type, void *data,
 	hdr[0] = flags;
 	hdr[1] = type;
 
-	if (buf_add(buf, hdr, flags & ATTR_EXTLEN ? 4 : 3) == -1)
+	if (ibuf_add(buf, hdr, flags & ATTR_EXTLEN ? 4 : 3) == -1)
 		return (-1);
-	if (buf_add(buf, data, data_len) == -1)
+	if (ibuf_add(buf, data, data_len) == -1)
 		return (-1);
 	return (0);
 }
@@ -966,6 +966,43 @@ aspath_match(struct aspath *a, enum as_spec type, u_int32_t as)
 					return (0);
 				return (1);
 			}
+		}
+	}
+	return (0);
+}
+
+int
+aspath_lenmatch(struct aspath *a, enum aslen_spec type, u_int aslen)
+{
+	u_int8_t	*seg;
+	u_int32_t	 as, lastas = 0;
+	u_int		 count = 0;
+	u_int16_t	 len, seg_size;
+	u_int8_t	 i, seg_type, seg_len;
+
+	if (type == ASLEN_MAX) {
+		if (aslen < aspath_count(a->data, a->len))
+			return (1);
+		else
+			return (0);
+	}
+
+	/* type == ASLEN_SEQ */
+	seg = a->data;
+	for (len = a->len; len > 0; len -= seg_size, seg += seg_size) {
+		seg_type = seg[0];
+		seg_len = seg[1];
+		seg_size = 2 + sizeof(u_int32_t) * seg_len;
+
+		for (i = 0; i < seg_len; i++) {
+			/* what should we do with AS_SET? */
+			as = aspath_extract(seg, i);
+			if (as == lastas) {
+				if (aslen < ++count)
+					return (1);
+			} else
+				count = 1;
+			lastas = as;
 		}
 	}
 	return (0);

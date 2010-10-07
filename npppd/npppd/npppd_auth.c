@@ -1,3 +1,5 @@
+/* $OpenBSD: npppd_auth.c,v 1.6 2010/07/02 21:20:57 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,9 +25,9 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/**@file 認証レルム */
-/* $Id: npppd_auth.c,v 1.4 2010/01/31 05:49:51 yasuoka Exp $ */
-/* なるべく npppd に非依存で書いていきたいところ。*/
+/**@file authentication realm */
+/* $Id: npppd_auth.c,v 1.6 2010/07/02 21:20:57 yasuoka Exp $ */
+/* I hope to write the source code in npppd-independent as possible. */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -64,7 +66,7 @@
  * @see	::NPPPD_AUTH_TYPE_LOCAL
  * @see	::NPPPD_AUTH_TYPE_RADIUS
  * @return The pointer to the {@link ::npppd_auth_base} object will be returned
- * in case success otherwise NULL wiil be returned.
+ * in case success otherwise NULL will be returned.
  */
 npppd_auth_base *
 npppd_auth_create(int auth_type, const char *label, void *_npppd)
@@ -101,7 +103,7 @@ npppd_auth_create(int auth_type, const char *label, void *_npppd)
 		}
 		break;
 #endif
-	
+
 	default:
 		NPPPD_AUTH_ASSERT(0);
 		break;
@@ -111,7 +113,7 @@ npppd_auth_create(int auth_type, const char *label, void *_npppd)
 }
 
 /**
- * Call this function to make the object unusable. 
+ * Call this function to make the object unusable.
  * <p>
  * {@link ::npppd_auth_base} objects is refered by the {@link ::npppd_ppp}
  * object.   After this funcation is called, npppd will disconnect the PPP
@@ -167,7 +169,7 @@ npppd_auth_reload(npppd_auth_base *base)
 
 	val = npppd_auth_config_str(base, "name");
 	if (val == NULL)
-		/* .name の定義がなければ、ラベルを使う */
+		/* use the label if .name is not defined. */
 		strlcpy(base->name, npppd_auth_default_label(base),
 		    sizeof(base->name));
 	else
@@ -185,9 +187,9 @@ npppd_auth_reload(npppd_auth_base *base)
 
 	base->eap_capable =
 	    npppd_auth_config_str_equal(base, "eap_capable", "true", 1);
-	base->strip_nt_domain = 
+	base->strip_nt_domain =
 	    npppd_auth_config_str_equal(base, "strip_nt_domain", "true", 1);
-	base->strip_atmark_realm = 
+	base->strip_atmark_realm =
 	    npppd_auth_config_str_equal(base, "strip_atmark_realm", "true", 0);
 
 	base->has_acctlist = 0;
@@ -201,19 +203,19 @@ npppd_auth_reload(npppd_auth_base *base)
 				str_hash, 1021)) == NULL) {
 				npppd_auth_base_log(base,
 				    LOG_WARNING, "hash_create() failed: %m.");
-				goto reigai;
+				goto fail;
 			}
 		}
 		base->reloadable = NPPPD_DEFAULT_AUTH_LOCAL_RELOADABLE;
 		base->has_acctlist = 1;
 		if (npppd_auth_reload_acctlist(base) != 0)
-			goto reigai;
+			goto fail;
 
 	} else {
 		if (base->type == NPPPD_AUTH_TYPE_LOCAL) {
 			npppd_auth_base_log(base,
 			    LOG_WARNING, "missing acctlist property.");
-			goto reigai;
+			goto fail;
 		}
 	}
 
@@ -221,7 +223,7 @@ npppd_auth_reload(npppd_auth_base *base)
 #ifdef USE_NPPPD_RADIUS
 	case NPPPD_AUTH_TYPE_RADIUS:
 		if (npppd_auth_radius_reload(base) != 0)
-			goto reigai;
+			goto fail;
 		break;
 #endif
 	}
@@ -229,7 +231,7 @@ npppd_auth_reload(npppd_auth_base *base)
 
 	return 0;
 
-reigai:
+fail:
 	base->initialized = 0;
 	base->has_acctlist = 0;
 	base->acctlist_ready = 0;
@@ -239,15 +241,18 @@ reigai:
 }
 
 /**
- * ユーザのパスワードを取得します。成功すると 0 が返ります。
+ * This function gets specified user's password. The value 0 is returned
+ * if the call succeeds.
  *
- * @param	username	パスワードを取得するユーザの名前
- * @param	password	パスワードを格納する領域。
- *				パスワードの長さだけを知りたい場合には NULL
- *				を指定します。
- * @param	lppassword	パスワードを格納する領域の長さのポインタ
- * @return User unknown の場合は 1、パスワードバッファの長さが足りない場合
- * は 2、その他のエラーは負の数が返ります。
+ * @param	username	username which gets the password
+ * @param	password	buffers which stores the password
+ *				Specify NULL if you want to known the length of
+ *				the password only.
+ * @param	lppassword	pointer which indicates the length of
+ *				the buffer which stores the password.
+ * @return A value 1 is returned if user is unknown. A value 2 is returned
+ *				if password buffer is sufficient. A negative value is
+ *				returned if other error occurred.
  */
 int
 npppd_auth_get_user_password(npppd_auth_base *base,
@@ -285,15 +290,18 @@ npppd_auth_get_user_password(npppd_auth_base *base,
 }
 
 /**
- * ユーザの Framed-IP-{Address,Netmask} を取得します。成功すると 0 が返ります。
+ * This function gets specified users' Framed-IP-{Address,Netmask}.
+ * The value 0 is returned if the call succeeds.
  * <p>
- * 認証データベースは随時更新されるため、認証直後にこの関数を呼び出さないと、
- * パスワードと世代がズレる可能性があります。したがって認証直後にこの関数
- * を呼び出します。</p>
- * @param	username	パスワードを取得するユーザの名前
- * @param	ip4address	Framed-IP-Address を格納する struct in_addr 
- * @param	ip4netmask	Framed-IP-Netmask を格納する struct in_addr 
- *	のポインタ
+ * Because authentication database is updated at any time, the password is
+ * possible to be inconsistent if this function is not called immediately
+ * after authentication. So this function is called immediately after
+ * authentication. </p>
+ * @param	username	username which gets the password
+ * @param	ip4address	pointer which indicates struct in_addr which
+ *						stores the Framed-IP-Address
+ * @param	ip4netmask	pointer which indicates struct in_addr which
+ *						stores Framed-IP-Netmask
  */
 int
 npppd_auth_get_framed_ip(npppd_auth_base *base, const char *username,
@@ -382,9 +390,9 @@ npppd_auth_is_ready(npppd_auth_base *base)
 	case NPPPD_AUTH_TYPE_LOCAL:
 		return (base->acctlist_ready != 0)? 1 : 0;
 		/* NOTREACHED */
-		
+
 	case NPPPD_AUTH_TYPE_RADIUS:
-		return (base->acctlist_ready != 0 || 
+		return (base->acctlist_ready != 0 ||
 		    base->radius_ready != 0)? 1 : 0;
 		/* NOTREACHED */
 	}
@@ -476,7 +484,7 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 	slist_init(&users);
 	csv = NULL;
 	if ((file = priv_fopen(base->acctlist_path)) == NULL) {
-		/* ファイルが存在しない場合は、空とする */
+		/* hash is empty if file is not found. */
 		if (errno == ENOENT)
 			hash_delete_all(base->users_hash, 1);
 		npppd_auth_base_log(base,
@@ -487,7 +495,7 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 	if ((csv = csvreader_create()) == NULL) {
 		npppd_auth_base_log(base, LOG_ERR,
 		    "Loading a account list failed: csvreader_create(): %m");
-		goto reigai;
+		goto fail;
 	}
 
 	for (linno = 0, eof = 0; !eof;) {
@@ -501,21 +509,21 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 				npppd_auth_base_log(base, LOG_ERR,
 				    "Loading a account list failed: lineno=%d "
 				    "line too short", linno + 1);
-				goto reigai;
+				goto fail;
 			}
 			if (line[linelen - 1] != '\n' && !feof(file)) {
 				npppd_auth_base_log(base, LOG_ERR,
 				    "Loading a account list failed: lineno=%d "
 				    "line too long", linno + 1);
-				goto reigai;
+				goto fail;
 			}
-			
+
 			status = csvreader_parse(csv, line);
 		} else {
 			if (!feof(file)) {
 				npppd_auth_base_log(base, LOG_ERR,
 				    "Loading a account list failed: %m");
-				goto reigai;
+				goto fail;
 			}
 			status = csvreader_parse_flush(csv);
 			eof = 1;
@@ -528,12 +536,12 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 				npppd_auth_base_log(base, LOG_ERR,
 				    "Loading a account list "
 				    "failed: lineno=%d parse error", linno);
-			goto reigai;
+			goto fail;
 		}
 		ncols = csvreader_get_number_of_column(csv);
 		if ((cols = csvreader_get_column(csv)) == NULL)
 			continue;
-		linno++; /* CSV としての行番号としたいのでココでカウント */
+		linno++; /* count up here because line number is treated as CSV. */
 		if (linno == 1) {
 			/* skip a title line */
 			continue;
@@ -581,7 +589,7 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 		if ((user = malloc(usersz)) == NULL) {
 			npppd_auth_base_log(base, LOG_ERR,
 			    "Loading a account list failed: %m");
-			goto reigai;
+			goto fail;
 		}
 		memset(user, 0, usersz);
 
@@ -618,7 +626,7 @@ npppd_auth_reload_acctlist(npppd_auth_base *base)
 		if (hash_insert(base->users_hash, user->username, user) != 0) {
 			npppd_auth_base_log(base, LOG_ERR,
 			    "Loading a account list failed: hash_insert(): %m");
-			goto reigai;
+			goto fail;
 		}
 		nuser++;
 next_user:
@@ -634,7 +642,7 @@ next_user:
 	base->acctlist_ready = 1;
 
 	return 0;
-reigai:
+fail:
 	fclose(file);
 	if (csv != NULL)
 		csvreader_destroy(csv);
@@ -690,7 +698,7 @@ radius_server_address_load(radius_req_setting *radius, int idx,
 	memset(&radius->server[idx], 0, sizeof(radius->server[0]));
 
 	if (addrport_parse(address, IPPROTO_TCP, &ai) !=0)
-		return 1; 
+		return 1;
 
 	switch (ai->ai_family) {
 	default:
@@ -713,7 +721,7 @@ radius_server_address_load(radius_req_setting *radius, int idx,
 	return 0;
 }
 
-/** RADIUS認証レルムの設定を読み込みます */
+/** reload the configuration of RADIUS authentication realm */
 static int
 npppd_auth_radius_reload(npppd_auth_base *base)
 {
@@ -737,12 +745,12 @@ npppd_auth_radius_reload(npppd_auth_base *base)
 				continue;
 			snprintf(label, sizeof(label), "server.%s.address",tok);
 			if ((val = npppd_auth_config_str(base, label)) == NULL)
-				goto reigai;
+				goto fail;
 			if (radius_server_address_load(&_this->rad_setting, n,
 			    val) != 0) {
 				npppd_auth_base_log(base, LOG_INFO,
 				    "parse error at %s", label);
-				goto reigai;
+				goto fail;
 			}
 			snprintf(label, sizeof(label), "server.%s.secret",
 			    tok);
@@ -762,7 +770,7 @@ npppd_auth_radius_reload(npppd_auth_base *base)
 		    != 0) {
 			npppd_auth_base_log(base, LOG_INFO,
 			    "parse error at %s", label);
-			goto reigai;
+			goto fail;
 		}
 		if ((val = npppd_auth_config_str(base, "server.secret"))!= NULL)
 			strlcpy(_this->rad_setting.server[n].secret, val,
@@ -785,7 +793,7 @@ npppd_auth_radius_reload(npppd_auth_base *base)
 	    _this->rad_setting.timeout, n);
 
 	return 0;
-reigai:
+fail:
 	npppd_auth_destroy(base);
 
 	return 1;
@@ -801,7 +809,7 @@ npppd_auth_radius_get_radius_req_setting(npppd_auth_radius *_this)
 	return &_this->rad_setting;
 }
 
-/** RADIUS サーバが問い合わせに失敗したことを通知します。*/
+/** This function notifies that RADIUS server failed the request. */
 void
 npppd_auth_radius_server_failure_notify(npppd_auth_radius *_this,
     struct sockaddr *server, const char *reason)
@@ -820,8 +828,8 @@ npppd_auth_radius_server_failure_notify(npppd_auth_radius *_this,
 	if (memcmp(&rad_setting->server[rad_setting->curr_server].peer,
 	    server, server->sa_len) == 0) {
 		/*
-		 * 失敗した Radius は現在カレントなので、次の Radius
-		 * に切替える。
+		 * The RADIUS server which request was failed is currently selected,
+		 * so next RADIUS server will be selected.
 		 */
 		for (i = 1; i < countof(rad_setting->server); i++) {
 			n = (rad_setting->curr_server + i) %
@@ -843,7 +851,7 @@ npppd_auth_radius_server_failure_notify(npppd_auth_radius *_this,
 /***********************************************************************
  * Helper functions
  ***********************************************************************/
-/** このインスタンスに基づいたラベルから始まるログを記録します。 */
+/** Log it which starts the label based on this instance. */
 static int
 npppd_auth_base_log(npppd_auth_base *_this, int prio, const char *fmt, ...)
 {
@@ -898,7 +906,7 @@ npppd_auth_config_prefix(npppd_auth_base *base)
 	switch(base->type) {
 	case NPPPD_AUTH_TYPE_LOCAL:
 		return "auth.local.realm";
-	
+
 	case NPPPD_AUTH_TYPE_RADIUS:
 		return "auth.radius.realm";
 

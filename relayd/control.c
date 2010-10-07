@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.34 2010/01/11 06:40:14 jsg Exp $	*/
+/*	$OpenBSD: control.c,v 1.36 2010/05/14 11:11:10 reyk Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -142,7 +142,7 @@ control_accept(int listenfd, short event, void *arg)
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		close(connfd);
 		log_warn("control_accept");
 		return;
@@ -342,7 +342,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 			 *
 			 * so in this case, the reply relayctl gets means
 			 * that the reload command has been set,
-			 * it doesn't say wether the command succeeded or not.
+			 * it doesn't say whether the command succeeded or not.
 			 */
 			imsg_compose_event(&c->iev, IMSG_CTL_OK,
 			    0, 0, -1, NULL, 0);

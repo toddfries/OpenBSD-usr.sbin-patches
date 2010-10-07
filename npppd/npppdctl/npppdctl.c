@@ -1,3 +1,5 @@
+/* $OpenBSD: npppdctl.c,v 1.6 2010/09/22 00:32:48 jsg Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,23 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/*-
- * Copyright (c) 2005
- *	Internet Initiative Japan Inc.  All rights reserved.
- */
-/**@file
- * vdipwho との互換性を保ちつつ併せて次の機能を提供します。
- * <ul>
- * <li>利用状況<br>
- * vdipwho 接続中のユーザ名、割り当てアドレス、開始時刻、レイヤ 2 のプロト
- * コル名、レイヤ 2 の接続元アドレス</li>
- * <li>(-s オプション) 統計情報を表示します。<br>
- *  npppd の ppp の Id、ユーザ名、入出力バイト、パケット、エラー数</li>
- * <li>(-d オプション) 切断機能<br>
- * 指定した PPP ユーザ名の全ての接続を切断します。<br>
- * </ul>
- */
-/* $Id: npppdctl.c,v 1.1 2010/01/11 04:20:57 yasuoka Exp $ */
+/* $Id: npppdctl.c,v 1.6 2010/09/22 00:32:48 jsg Exp $ */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -70,25 +56,25 @@
 #endif
 #define	DEFAULT_TIMEOUT		5
 
-/** UNIX ドメインデータグラムの待ち受け用ファイル。*/
+/** Filename template for listening soccket of UNIX domain datagram */
 char dgramsock[] = "/tmp/npppdctl.XXXXXX";
 
-/** npppd 側のソケットアドレス */
+/** Daemon side socket address */
 struct sockaddr_un peersock;
 
-/** ソケット */
+/** Socket descriptor */
 int sock = -1;
 
-/** UNIXタイム表示 (vdipwho由来) */
+/** Show 'since' field as unix time. */
 int uflag = 0;
 
-/** 名前を引かない (vdipwho由来) */
+/** Don't convert addresses/ports to names */
 int nflag = 0;
 
-/** 受信バッファサイズ */
+/** Receive buffer size */
 int rcvbuf_sz = DEFAULT_NPPPD_CTL_MAX_MSGSZ;
 
-/** 長い行。80桁抑制しない */
+/** Use long line to display information */
 int lflag = 0;
 
 static void        usage (void);
@@ -96,24 +82,21 @@ static void        on_exit (void);
 static void        npppd_who (int);
 static void        npppd_disconnect (const char *);
 static const char  *eat_null (const char *);
-static void        npppd_ctl_termid_authen(const char *, const char *);
 static void        npppd_ctl_common(int);
 static void        print_who(struct npppd_who *);
 static void        print_stat(struct npppd_who *);
 
 static const char *progname = NULL;
 
-/** 使い方を表示します。 */
+/** show usage */
 static void
 usage(void)
 {
 
 	fprintf(stderr,
 	"usage: %s [-slnuh] [-d ppp_user] [-r rcvbuf_sz] [-p npppd_ctl_path]\n"
-	"       %s -c [-r rcvbuf_sz] {ppp_id | ip} auth_id\n"
-	"usage: %s [-r]\n"
+	"usage: %s -R\n"
 	    "\t-R: Reset the routing table.\n"
-	    "\t-c: Set the client auth's auth-id.\n"
 	    "\t-d: Disconnect specified user.\n"
 	    "\t-h: Show this usage.\n"
 	    "\t-l: Use long line to display information.\n"
@@ -122,7 +105,7 @@ usage(void)
 	    "\t-r: Receive buffer size (default %d).\n"
 	    "\t-s: Show statistics informations instead of who.\n"
 	    "\t-u: Show 'since' field as unix time.\n",
-	    progname, progname, progname, rcvbuf_sz);
+	    progname, progname, rcvbuf_sz);
 }
 
 static void
@@ -131,11 +114,11 @@ on_signal(int notused)
 	exit(1);
 }
 
-/** nppdctl エントリポイント */
+/** entry point of 'npppdctl' command */
 int
 main(int argc, char *argv[])
 {
-	int ch, sflag, fdgramsock, cflag, rtflag;
+	int ch, sflag, fdgramsock, rtflag;
 	const char *path = DEFAULT_NPPPD_CTL_SOCK_PATH;
 	const char *disconn;
 	struct sockaddr_un sun;
@@ -144,8 +127,8 @@ main(int argc, char *argv[])
 
 	progname = basename(argv[0]);
 	disconn = NULL;
-	sflag = cflag = rtflag = 0;
-	while ((ch = getopt(argc, argv, "lcd:sunhp:r:R")) != -1) {
+	sflag = rtflag = 0;
+	while ((ch = getopt(argc, argv, "ld:sunhp:r:R")) != -1) {
 		switch (ch) {
 		case 'n':
 			nflag = 1;
@@ -158,9 +141,6 @@ main(int argc, char *argv[])
 			break;
 		case 'u':
 			uflag = 1;
-			break;
-		case 'c':
-			cflag = 1;
 			break;
 		case 'l':
 			lflag = 1;
@@ -188,11 +168,11 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	// UNIX ドメインデータグラムの待ち受け用ファイル。
+	/* create a listening socket for unix domain datagram. */
 	if ((fdgramsock = mkstemp(dgramsock)) < 0)
 		err(1, "mkstemp");
 
-	// 終了時に削除するフック
+	/* set the hook that deletes the listening socket on exiting */
 	if (atexit(on_exit) != 0)
 		err(1, "atexit");
 	signal(SIGINT, on_signal);
@@ -210,12 +190,12 @@ main(int argc, char *argv[])
 	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
 		err(1, "setsockopt(SO_RCVTIMEO)");
 
-	// 待ち受けソケット準備
+	/* Prepare a listening socket */
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	sun.sun_len = sizeof(sun);
 	strlcpy(sun.sun_path, dgramsock, sizeof(sun.sun_path));
-	// mkstemp でファイルを作ってしまっているので、削除
+	/* delete the file that is created by mkstemp */
 	close(fdgramsock); unlink(dgramsock);
 
 	if (bind(sock, (struct sockaddr *)&sun, sizeof(sun)) != 0)
@@ -223,7 +203,7 @@ main(int argc, char *argv[])
 	if (chmod(dgramsock, 0600) != 0)
 		err(1, "chmod(%s,%d)", dgramsock, 0600);
 
-	// npppd に接続するソケット
+	/* Prepare a socket for sending to the daemon */
 	memset(&peersock, 0, sizeof(peersock));
 	peersock.sun_family = AF_UNIX;
 	peersock.sun_len = sizeof(peersock);
@@ -235,13 +215,7 @@ main(int argc, char *argv[])
 		npppd_who(1);
 	else if (rtflag)
 		npppd_ctl_common(NPPPD_CTL_CMD_RESET_ROUTING_TABLE);
-	else if (cflag > 0) {
-		if (argc < 2) {
-			usage();
-			exit(1);
-		}
-		npppd_ctl_termid_authen(argv[0], argv[1]);
-	} else
+	else
 		npppd_who(0);
 
 	close(sock);
@@ -250,7 +224,7 @@ main(int argc, char *argv[])
 	return 0;
 }
 
-/** 終了処理。待ち受けソケットを消します。*/
+/** exiting hook.  delete the listening socket */
 static void
 on_exit(void)
 {
@@ -260,11 +234,11 @@ on_exit(void)
 }
 
 /**
- * vdipwho と同じ出力をします。
- * <p>
- * 出力例
-<pre>name             assigned         since         proto  from
-yasuoka3         10.0.0.116       Aug 02 21:10  L2TP   192.168.159.103:1701</pre></p>
+ * This function displays connected ppp link one by one.
+<pre>
+name             assigned         since         proto  from
+username         10.0.0.116       Aug 02 21:10  L2TP   192.168.159.103:1701
+</pre></p>
  */
 static void
 npppd_who(int show_stat)
@@ -286,7 +260,7 @@ npppd_who(int show_stat)
 	else
 		printf("id       name                  in(Kbytes/pkts/errs)"
 		    "     out(Kbytes/pkts/errs)\n");
-		
+
 	n = 0;
 	l->count = -1;
 	do {
@@ -338,7 +312,7 @@ print_who(struct npppd_who *w)
 
 	hasserv = (sa->sa_family == AF_INET || sa->sa_family ==AF_INET6)? 1 : 0;
 	if (sa->sa_family == AF_LINK) {
-		snprintf(hoststr, sizeof(hoststr), 
+		snprintf(hoststr, sizeof(hoststr),
 		    "%02x:%02x:%02x:%02x:%02x:%02x",
 		    LLADDR((struct sockaddr_dl *)sa)[0] & 0xff,
 		    LLADDR((struct sockaddr_dl *)sa)[1] & 0xff,
@@ -346,7 +320,7 @@ print_who(struct npppd_who *w)
 		    LLADDR((struct sockaddr_dl *)sa)[3] & 0xff,
 		    LLADDR((struct sockaddr_dl *)sa)[4] & 0xff,
 		    LLADDR((struct sockaddr_dl *)sa)[5] & 0xff);
-	} if (sa->sa_family < AF_MAX) {
+	} else if (sa->sa_family < AF_MAX) {
 		getnameinfo((const struct sockaddr *)&w->phy_info,
 		    sa->sa_len, hoststr, sizeof(hoststr), servstr,
 		    sizeof(servstr),
@@ -382,7 +356,7 @@ print_stat(struct npppd_who *w)
 	    (double)w->obytes/1024, w->opackets, w->oerrors);
 }
 
-/** ユーザ名で切断 */
+/** disconnect by username */
 static void
 npppd_disconnect(const char *username)
 {
@@ -406,8 +380,10 @@ npppd_disconnect(const char *username)
 }
 
 /**
- * str に指定した文字列が、NULLポインタまたは空文字列の場合 "<none>" に変更し
- * て返します。それ以外の場合は、指定した文字列をそのまま返します。
+ * make sure "str" is not NULL or not zero length string.
+ * <p>
+ * When NULL pointer or zero length string is specified as "str", this function
+ * returns "<none>".  Otherwise it returns the "str" without modification.</p>
  */
 static const char *
 eat_null(const char *str)
@@ -415,52 +391,6 @@ eat_null(const char *str)
 	if (str == NULL || *str == '\0')
 		return "<none>";
 	return str;
-}
-
-static void
-npppd_ctl_termid_authen(const char *ppp_key, const char *authid)
-{
-	int sz;
-	char *ep;
-	long lval;
-	struct npppd_ctl_termid_set_auth_request req = {
-		.command = NPPPD_CTL_CMD_TERMID_SET_AUTH,
-		.reserved = 0,
-	};
-	u_char buf[BUFSIZ];
-	struct in_addr ip4;
-
-	if (inet_pton(AF_INET, ppp_key, &ip4) == 1) {
-		req.ppp_key_type = NPPPD_CTL_PPP_FRAMED_IP_ADDRESS;
-		req.ppp_key.framed_ip_address.s_addr = ip4.s_addr;
-	} else {
-		errno = 0;
-		lval = strtol(ppp_key, &ep, 10);
-		if (ppp_key[0] == '\0' || *ep != '\0') {
-			fprintf(stderr, "not a number: %s\n", ppp_key);
-			exit(1);
-		}
-		if ((errno == ERANGE && (lval == LONG_MAX|| lval == LONG_MIN))||
-		    lval > UINT_MAX) {
-			fprintf(stderr, "out of range: %s\n",
-			    ppp_key);
-			exit(1);
-		}
-		req.ppp_key_type = NPPPD_CTL_PPP_ID;
-		req.ppp_key.id = lval;
-	}
-	strlcpy(req.authid, authid, sizeof(req.authid));
-
-	if (sendto(sock, &req, sizeof(req), 0, (struct sockaddr *)&peersock,
-	    sizeof(peersock)) < 0) {
-		err(1 ,"sendto() failed");
-	}
-
-	if ((sz = recv(sock, buf, sizeof(buf), 0)) <= 0)
-		err(1, "recv");
-	buf[sz] = '\0';
-
-	printf("%s\n", buf);
 }
 
 static void

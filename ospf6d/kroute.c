@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.19 2010/02/23 16:22:57 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.28 2010/08/22 21:15:25 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -77,6 +77,8 @@ int		protect_lo(void);
 void		get_rtaddrs(int, struct sockaddr *, struct sockaddr **);
 void		if_change(u_short, int, struct if_data *);
 void		if_newaddr(u_short, struct sockaddr_in6 *,
+		    struct sockaddr_in6 *, struct sockaddr_in6 *);
+void		if_deladdr(u_short, struct sockaddr_in6 *,
 		    struct sockaddr_in6 *, struct sockaddr_in6 *);
 void		if_announce(void *);
 
@@ -380,11 +382,10 @@ kr_redist_eval(struct kroute *kr, struct rroute *rr)
 		goto dont_redistribute;
 
 	/*
-	 * We consider unspecified, loopback, multicast, link- and site-local,
+	 * We consider loopback, multicast, link- and site-local,
 	 * IPv4 mapped and IPv4 compatible addresses as not redistributable.
 	 */
-	if (IN6_IS_ADDR_UNSPECIFIED(&kr->prefix) ||
-	    IN6_IS_ADDR_LOOPBACK(&kr->prefix) ||
+	if (IN6_IS_ADDR_LOOPBACK(&kr->prefix) ||
 	    IN6_IS_ADDR_MULTICAST(&kr->prefix) ||
 	    IN6_IS_ADDR_LINKLOCAL(&kr->prefix) ||
 	    IN6_IS_ADDR_SITELOCAL(&kr->prefix) ||
@@ -694,17 +695,17 @@ protect_lo(void)
 u_int8_t
 mask2prefixlen(struct sockaddr_in6 *sa_in6)
 {
-	u_int8_t	l = 0, i, len;
+	u_int8_t	l = 0, *ap, *ep;
 
 	/*
 	 * sin6_len is the size of the sockaddr so substract the offset of
 	 * the possibly truncated sin6_addr struct.
 	 */
-	len = sa_in6->sin6_len -
-	    (u_int8_t)(&((struct sockaddr_in6 *)NULL)->sin6_addr);
-	for (i = 0; i < len; i++) {
+	ap = (u_int8_t *)&sa_in6->sin6_addr;
+	ep = (u_int8_t *)sa_in6 + sa_in6->sin6_len;
+	for (; ap < ep; ap++) {
 		/* this "beauty" is adopted from sbin/route/show.c ... */
-		switch (sa_in6->sin6_addr.s6_addr[i]) {
+		switch (*ap) {
 		case 0xff:
 			l += 8;
 			break;
@@ -772,8 +773,8 @@ inet6applymask(struct in6_addr *dest, const struct in6_addr *src, int prefixlen)
 		dest->s6_addr[i] = src->s6_addr[i] & mask.s6_addr[i];
 }
 
-#define	ROUNDUP(a)	\
-    (((a) & (sizeof(long) - 1)) ? (1 + ((a) | (sizeof(long) - 1))) : (a))
+#define ROUNDUP(a) \
+	((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
 
 void
 get_rtaddrs(int addrs, struct sockaddr *sa, struct sockaddr **rti_info)
@@ -838,6 +839,7 @@ if_newaddr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 {
 	struct iface		*iface;
 	struct iface_addr	*ia;
+	struct ifaddrchange	 ifc;
 
 	if (ifa == NULL || ifa->sin6_family != AF_INET6)
 		return;
@@ -853,7 +855,7 @@ if_newaddr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 	    IN6_IS_ADDR_SITELOCAL(&ifa->sin6_addr) ||
 	    IN6_IS_ADDR_V4MAPPED(&ifa->sin6_addr) ||
 	    IN6_IS_ADDR_V4COMPAT(&ifa->sin6_addr))
-	    	return;
+		return;
 
 	/* XXX thanks, KAME, for this ugliness... adopted from route/show.c */
 	if (IN6_IS_ADDR_LINKLOCAL(&ifa->sin6_addr)) {
@@ -896,8 +898,65 @@ if_newaddr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 	default:
 		fatalx("if_newaddr: unknown interface type");
 	}
-		
+
 	TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
+	ifc.addr = ia->addr;
+	ifc.dstbrd = ia->dstbrd;
+	ifc.prefixlen = ia->prefixlen;
+	ifc.ifindex = ifindex;
+	main_imsg_compose_ospfe(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+	main_imsg_compose_rde(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+}
+
+void
+if_deladdr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
+    struct sockaddr_in6 *brd)
+{
+	struct iface		*iface;
+	struct iface_addr	*ia, *nia;
+	struct ifaddrchange	 ifc;
+
+	if (ifa == NULL || ifa->sin6_family != AF_INET6)
+		return;
+	if ((iface = if_find(ifindex)) == NULL) {
+		log_warnx("if_deladdr: corresponding if %i not found", ifindex);
+		return;
+	}
+
+	/* We only care about link-local and global-scope. */
+	if (IN6_IS_ADDR_UNSPECIFIED(&ifa->sin6_addr) ||
+	    IN6_IS_ADDR_LOOPBACK(&ifa->sin6_addr) ||
+	    IN6_IS_ADDR_MULTICAST(&ifa->sin6_addr) ||
+	    IN6_IS_ADDR_SITELOCAL(&ifa->sin6_addr) ||
+	    IN6_IS_ADDR_V4MAPPED(&ifa->sin6_addr) ||
+	    IN6_IS_ADDR_V4COMPAT(&ifa->sin6_addr))
+		return;
+
+	/* XXX thanks, KAME, for this ugliness... adopted from route/show.c */
+	if (IN6_IS_ADDR_LINKLOCAL(&ifa->sin6_addr)) {
+		ifa->sin6_addr.s6_addr[2] = 0;
+		ifa->sin6_addr.s6_addr[3] = 0;
+	}
+
+	for (ia = TAILQ_FIRST(&iface->ifa_list); ia != NULL; ia = nia) {
+		nia = TAILQ_NEXT(ia, entry);
+
+		if (IN6_ARE_ADDR_EQUAL(&ia->addr, &ifa->sin6_addr)) {
+			log_debug("if_deladdr: ifindex %u, addr %s/%d",
+			    ifindex, log_in6addr(&ia->addr), ia->prefixlen);
+			TAILQ_REMOVE(&iface->ifa_list, ia, entry);
+			ifc.addr = ia->addr;
+			ifc.dstbrd = ia->dstbrd;
+			ifc.prefixlen = ia->prefixlen;
+			ifc.ifindex = ifindex;
+			main_imsg_compose_ospfe(IMSG_IFADDRDEL, 0, &ifc,
+			    sizeof(ifc));
+			main_imsg_compose_rde(IMSG_IFADDRDEL, 0, &ifc,
+			    sizeof(ifc));
+			free(ia);
+			return;
+		}
+	}
 }
 
 void
@@ -937,6 +996,10 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 		struct sockaddr_in6	addr;
 		char			pad[sizeof(long)]; /* thank you IPv6 */
 	} prefix, nexthop, mask;
+	struct {
+		struct sockaddr_dl	addr;
+		char			pad[sizeof(long)];
+	} ifp;
 	struct sockaddr_rtlabel	sa_rl;
 	int			iovcnt = 0;
 	const char		*label;
@@ -981,9 +1044,13 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 		 * XXX into the sin6_addr. Welcome to the typical
 		 * XXX IPv6 insanity and all without wine bottles.
 		 */
-		/* nexthop.addr.sin6_scope_id = kroute->scope; */
-		nexthop.addr.sin6_addr.s6_addr[2] = (kroute->scope >> 8) & 0xff;
-		nexthop.addr.sin6_addr.s6_addr[3] = kroute->scope & 0xff;
+		if (IN6_IS_ADDR_LINKLOCAL(&nexthop.addr.sin6_addr)) {
+			/* nexthop.addr.sin6_scope_id = kroute->scope; */
+			nexthop.addr.sin6_addr.s6_addr[2] =
+			    (kroute->scope >> 8) & 0xff;
+			nexthop.addr.sin6_addr.s6_addr[3] =
+			    kroute->scope & 0xff;
+		}
 		/* adjust header */
 		hdr.rtm_flags |= RTF_GATEWAY;
 		hdr.rtm_addrs |= RTA_GATEWAY;
@@ -991,6 +1058,23 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 		/* adjust iovec */
 		iov[iovcnt].iov_base = &nexthop;
 		iov[iovcnt++].iov_len = ROUNDUP(sizeof(struct sockaddr_in6));
+	} else if (kroute->ifindex) {
+		/*
+		 * We don't have an interface address in that network,
+		 * so we install a cloning route.  The kernel will then
+		 * do neigbor discovery.
+		 */
+		bzero(&ifp, sizeof(ifp));
+		ifp.addr.sdl_len = sizeof(struct sockaddr_dl);
+		ifp.addr.sdl_family = AF_LINK;
+		ifp.addr.sdl_index  = kroute->ifindex;
+		/* adjust header */
+		hdr.rtm_flags |= RTF_CLONING;
+		hdr.rtm_addrs |= RTA_GATEWAY;
+		hdr.rtm_msglen += ROUNDUP(sizeof(struct sockaddr_dl));
+		/* adjust iovec */
+		iov[iovcnt].iov_base = &ifp;
+		iov[iovcnt++].iov_len = ROUNDUP(sizeof(struct sockaddr_dl));
 	}
 
 	bzero(&mask, sizeof(mask));
@@ -1025,8 +1109,7 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 
 retry:
 	if (writev(fd, iov, iovcnt) == -1) {
-		switch (errno) {
-		case ESRCH:
+		if (errno == ESRCH) {
 			if (hdr.rtm_type == RTM_CHANGE) {
 				hdr.rtm_type = RTM_ADD;
 				goto retry;
@@ -1034,19 +1117,11 @@ retry:
 				log_info("route %s/%u vanished before delete",
 				    log_sockaddr(&prefix), kroute->prefixlen);
 				return (0);
-			} else {
-				log_warn("send_rtmsg: action %u, "
-				    "prefix %s/%u", hdr.rtm_type,
-				    log_sockaddr(&prefix), kroute->prefixlen);
-				return (0);
 			}
-			break;
-		default:
-			log_warn("send_rtmsg: action %u, prefix %s/%u",
-			    hdr.rtm_type, log_sockaddr(&prefix),
-			    kroute->prefixlen);
-			return (0);
 		}
+		log_warn("send_rtmsg: action %u, prefix %s/%u", hdr.rtm_type,
+		    log_sockaddr(&prefix), kroute->prefixlen);
+		return (0);
 	}
 
 	return (0);
@@ -1348,7 +1423,7 @@ dispatch_rtmsg(void)
 		switch (rtm->rtm_type) {
 		case RTM_ADD:
 		case RTM_CHANGE:
-			if (!IN6_IS_ADDR_UNSPECIFIED(&nexthop) &&
+			if (IN6_IS_ADDR_UNSPECIFIED(&nexthop) &&
 			    !(flags & F_CONNECTED)) {
 				log_warnx("dispatch_rtmsg no nexthop for %s/%u",
 				    log_in6addr(&prefix), prefixlen);
@@ -1466,6 +1541,19 @@ add:
 			get_rtaddrs(ifam->ifam_addrs, sa, rti_info);
 
 			if_newaddr(ifam->ifam_index,
+			    (struct sockaddr_in6 *)rti_info[RTAX_IFA],
+			    (struct sockaddr_in6 *)rti_info[RTAX_NETMASK],
+			    (struct sockaddr_in6 *)rti_info[RTAX_BRD]);
+			break;
+		case RTM_DELADDR:
+			ifam = (struct ifa_msghdr *)rtm;
+			if ((ifam->ifam_addrs & (RTA_NETMASK | RTA_IFA |
+			    RTA_BRD)) == 0)
+				break;
+			sa = (struct sockaddr *)(ifam + 1);
+			get_rtaddrs(ifam->ifam_addrs, sa, rti_info);
+
+			if_deladdr(ifam->ifam_index,
 			    (struct sockaddr_in6 *)rti_info[RTAX_IFA],
 			    (struct sockaddr_in6 *)rti_info[RTAX_NETMASK],
 			    (struct sockaddr_in6 *)rti_info[RTAX_BRD]);

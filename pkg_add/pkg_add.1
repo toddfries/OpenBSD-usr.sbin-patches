@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_add.1,v 1.97 2010/02/28 15:35:41 jmc Exp $
+.\"	$OpenBSD: pkg_add.1,v 1.102 2010/08/01 23:03:48 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -15,7 +15,7 @@
 .\" Jordan K. Hubbard
 .\"
 .\"
-.Dd $Mdocdate: February 28 2010 $
+.Dd $Mdocdate: August 1 2010 $
 .Dt PKG_ADD 1
 .Os
 .Sh NAME
@@ -24,7 +24,7 @@
 .Sh SYNOPSIS
 .Nm pkg_add
 .Bk -words
-.Op Fl acIinqrsUuvxz
+.Op Fl acIimnqrsUuvxz
 .Op Fl A Ar arch
 .Op Fl B Ar pkg-destdir
 .Oo Fl D Ar name
@@ -311,6 +311,10 @@ and
 will try its best to reproduce the installation, even if the
 version numbers don't quite match and even if some packages cannot
 be found.
+.It Fl m
+Causes
+.Nm
+to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually install a package, just report the steps that
 would be taken if it was.
@@ -368,7 +372,7 @@ information it needs.
 .It Fl U
 Update dependencies if required before installing the new package(s).
 .It Fl u
-Update the given
+Update the given installed
 .Ar pkgname(s) ,
 and anything it depends upon.
 If no
@@ -446,7 +450,7 @@ For each new package in an updateset,
 .Nm
 extracts the package's
 .Dq packing information
-(the packing list, description, and installation/deinstallation scripts)
+(the packing-list, description, and installation/deinstallation scripts)
 into a special staging directory in
 .Pa /var/tmp
 (or
@@ -479,7 +483,7 @@ and
 .Cm @wantlib
 directives; see
 .Xr pkg_create 1 )
-are read from the packing list.
+are read from the packing-list.
 If any of these dependencies are not currently fulfilled,
 an attempt is made to find a package that meets them and install it,
 looking first in the current updateset, then in the list of packages
@@ -494,7 +498,9 @@ and enough space to store files.
 .It
 If the package contains an
 .Ar install
-script, it is executed with the following arguments:
+script (deprecated,
+.Cm @exec
+is more versatile), it is executed with the following arguments:
 .Bl -tag -width indentindent
 .It Ar pkg-name
 The name of the package being installed.
@@ -507,12 +513,13 @@ If the
 .Ar install
 script exits with a non-zero status code, the installation is terminated.
 .It
-The packing list is used as a guide for extracting
+The packing-list is used as a guide for extracting
 files from the package into their final locations.
 .It
 If an
 .Ar install
-script exists for the package, it is executed with the following arguments:
+script exists for the package (deprecated),
+it is executed with the following arguments:
 .Bl -tag -width indentindent
 .It Ar pkg_name
 The name of the package being installed.

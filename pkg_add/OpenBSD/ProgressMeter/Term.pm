@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Term.pm,v 1.2 2010/03/23 08:11:04 espie Exp $
+# $OpenBSD: Term.pm,v 1.14 2010/08/03 17:31:52 espie Exp $
 #
 # Copyright (c) 2004-2007 Marc Espie <espie@openbsd.org>
 #
@@ -64,14 +64,23 @@ sub init
 	$self->find_window_size;
 	$self->{lastdisplay} = '';
 	$self->{continued} = 0;
+	$self->{work} = 0;
+	$self->{header} = '';
 	return unless defined $ENV{TERM} || defined $ENV{TERMCAP};
 	my $termios = POSIX::Termios->new;
 	$termios->getattr(0);
-	$self->{terminal} = Term::Cap->Tgetent({ OSPEED => 
+	$self->{terminal} = Term::Cap->Tgetent({ OSPEED =>
 	    $termios->getospeed});
 	$self->{glitch} = $self->{terminal}->Tputs("xn", 1);
 	$self->{cleareol} = $self->{terminal}->Tputs("ce", 1);
 	$self->{hpa} = $self->{terminal}->Tputs("ch", 1);
+	if (!defined $self->{hpa}) {
+		# XXX this works with screen and tmux
+		$self->{cuf} = $self->{terminal}->Tputs("RI", 1);
+		if (defined $self->{cuf}) {
+			$self->{hpa} = "\r".$self->{cuf};
+		}
+	}
 }
 
 my $wsz_format = 'SSSS';
@@ -86,7 +95,7 @@ sub find_window_size
 	$sizeof{'struct winsize'} = 8;
 	require 'sys/ttycom.ph';
 	if (ioctl(STDOUT, &TIOCGWINSZ, $r)) {
-		my ($rows, $cols, $xpix, $ypix) = 
+		my ($rows, $cols, $xpix, $ypix) =
 		    unpack($wsz_format, $r);
 		$self->{width} = $cols;
 	} else {
@@ -143,10 +152,11 @@ sub _show
 {
 	my ($self, $extra, $stars) = @_;
 	my $d = $self->{header};
+	my $prefix = length($d);
 	if (defined $extra) {
 		$d.="|$extra";
+		$prefix++;
 	}
-	return if $d eq $self->{lastdisplay} && !$self->{continued};
 	if ($self->{width} > length($d)) {
 		if ($self->{cleareol}) {
 			$d .= $self->{cleareol};
@@ -154,22 +164,29 @@ sub _show
 			$d .= ' 'x($self->{width} - length($d) - 1);
 		}
 	}
-	my $prefix;
-	if (!$self->{continued} && defined $self->{hpa}) {
-		if (defined $stars && defined $self->{stars}) { 
-			$prefix = length($self->{header})+1+$self->{stars};
-		} else {
-			$prefix = length($self->{header});
+
+	if ($self->{continued}) {
+		print "\r$d";
+		$self->{continued} = 0;
+		$self->{lastdisplay} = $d;
+		return;
+	}
+
+	return if $d eq $self->{lastdisplay};
+
+
+	if (defined $self->{hpa}) {
+		if (defined $stars && defined $self->{stars}) {
+			$prefix += $self->{stars};
 		}
 	}
-	if (defined $prefix && substr($self->{lastdisplay}, 0, $prefix) eq
+	if (defined $self->{hpa} && substr($self->{lastdisplay}, 0, $prefix) eq
 	    substr($d, 0, $prefix)) {
 		print $self->hmove($prefix), substr($d, $prefix);
 	} else {
 		print "\r$d";
 	}
 	$self->{lastdisplay} = $d;
-	$self->{continued} = 0;
 }
 
 sub message
@@ -205,6 +222,14 @@ sub show
 	}
 }
 
+sub working
+{
+	my ($self, $slowdown) = @_;
+	$self->{work}++;
+	return if $self->{work} < $slowdown;
+	$self->message(substr("/-\\|", ($self->{work}/$slowdown) % 4, 1));
+}
+
 sub clear
 {
 	my $self = shift;
@@ -223,13 +248,14 @@ sub next
 	my ($self, $todo) = @_;
 	$self->clear;
 
-	$todo //= '';
-	print "\r$self->{header}: ok$todo\n";
+	$todo //= 'ok';
+	print "\r$self->{header}: $todo\n";
 }
 
 sub ntogo
 {
-	&OpenBSD::UI::ntogo_string;
+	my ($self, $state, $offset) = @_;
+	return $state->ntogo_string($offset);
 }
 
 sub compute_size
@@ -262,7 +288,7 @@ sub visit_with_size
 		    $progress->show($donesize + $done, $plist->{totsize});
 		};
 	}
-	$plist->size_and($progress, \$donesize, $plist->{totsize}, 
+	$plist->size_and($progress, \$donesize, $plist->{totsize},
 	    $method, $state, @r);
 }
 
@@ -272,7 +298,7 @@ sub visit_with_count
 	$plist->{total} //= compute_count($plist);
 	my $count = 0;
 	$progress->show($count, $plist->{total});
-	$plist->count_and($progress, \$count, $plist->{total}, 
+	$plist->count_and($progress, \$count, $plist->{total},
 	    $method, $state, @r);
 }
 1;

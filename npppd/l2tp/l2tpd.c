@@ -1,3 +1,5 @@
+/* $OpenBSD: l2tpd.c,v 1.5 2010/09/24 14:50:30 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,13 +25,8 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/**@file
- * L2TP(Layer Two Tunneling Protocol "L2TP") の実装
- */
-/*
- * RFC 2661
- */
-// $Id: l2tpd.c,v 1.2 2010/01/13 07:49:44 yasuoka Exp $
+/**@file L2TP(Layer Two Tunneling Protocol "L2TP") / RFC2661 */
+/* $Id: l2tpd.c,v 1.5 2010/09/24 14:50:30 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -81,11 +78,8 @@
 static void             l2tpd_io_event (int, short, void *);
 static inline int       short_cmp (const void *, const void *);
 static inline uint32_t  short_hash (const void *, int);
-/*
- * static 変数
- */
 
-/** l2tpd の ID番号のシーケンス番号 */
+/* sequence # of l2tpd ID */
 static unsigned l2tpd_id_seq = 0;
 
 #ifndef USE_LIBSOCKUTIL
@@ -93,33 +87,42 @@ struct in_ipsec_sa_cookie	{	};
 #endif
 
 
-/***********************************************************************
- * L2TP デーモンインスタンス操作
- ***********************************************************************/
+/* L2TP daemon instance */
 
 /**
- * L2TPデーモンインスタンスを初期化します。
+ * initialize L2TP daemon instance
  * <p>
- * {@link _l2tpd#bind_sin} は、.sin_family = AF_INET、.sin_port = 1701、
- * .sin_len が設定された状態で返ります。 </p>
+ * {@link _l2tpd#bind_sin} will return with .sin_family = AF_INET,
+ * .sin_port = 1701 and .sin_len = "appropriate value"
+ * </p>
  */
 int
 l2tpd_init(l2tpd *_this)
 {
-	struct sockaddr_in sin0;
+	int i, id, off;
+	struct sockaddr_in sin4;
+	struct sockaddr_in6 sin6;
 
 	L2TPD_ASSERT(_this != NULL);
 	memset(_this, 0, sizeof(l2tpd));
 
 	slist_init(&_this->listener);
-	memset(&sin0, 0, sizeof(sin0));
-	sin0.sin_len = sizeof(sin0);
-	sin0.sin_family = AF_INET;
-	if (l2tpd_add_listener(_this, 0, L2TPD_DEFAULT_LAYER2_LABEL, 
-	    (struct sockaddr *)&sin0) != 0) {
+	slist_init(&_this->free_session_id_list);
+
+	memset(&sin4, 0, sizeof(sin4));
+	sin4.sin_len = sizeof(sin4);
+	sin4.sin_family = AF_INET;
+	if (l2tpd_add_listener(_this, 0, L2TPD_DEFAULT_LAYER2_LABEL,
+	    (struct sockaddr *)&sin4) != 0) {
 		return 1;
 	}
-
+	memset(&sin6, 0, sizeof(sin6));
+	sin6.sin6_len = sizeof(sin6);
+	sin6.sin6_family = AF_INET6;
+	if (l2tpd_add_listener(_this, 1, L2TPD_DEFAULT_LAYER2_LABEL,
+	    (struct sockaddr *)&sin6) != 0) {
+		return 1;
+	}
 	_this->id = l2tpd_id_seq++;
 
 	if ((_this->ctrl_map = hash_create(short_cmp, short_hash,
@@ -127,6 +130,25 @@ l2tpd_init(l2tpd *_this)
 		log_printf(LOG_ERR, "hash_create() failed in %s(): %m",
 		    __func__);
 		return 1;
+	}
+
+	if (slist_add(&_this->free_session_id_list,
+	    (void *)L2TP_SESSION_ID_SHUFFLE_MARK) == NULL) {
+		l2tpd_log(_this, LOG_ERR, "slist_add() failed on %s(): %m",
+		    __func__);
+		return 1;
+	}
+	off = random() % L2TP_SESSION_ID_MASK;
+	for (i = 0; i < L2TP_NCALL; i++) {
+		id = (i + off) % L2TP_SESSION_ID_MASK;
+		if (id == 0)
+			id = (off - 1) % L2TP_SESSION_ID_MASK;
+		if (slist_add(&_this->free_session_id_list, (void *)id)
+		    == NULL) {
+			l2tpd_log(_this, LOG_ERR,
+			    "slist_add() failed on %s(): %m", __func__);
+			return 1;
+		}
 	}
 	_this->ip4_allow = NULL;
 
@@ -137,12 +159,12 @@ l2tpd_init(l2tpd *_this)
 	return 0;
 }
 
-/**
- * {@link ::l2tpd L2TPデーモン}に{@link ::l2tpd_listener リスナ}を追加します。
- * @param	_this	{@link ::l2tpd L2TPデーモン}
- * @param	idx	リスナのインデックス
- * @param	label	物理層としてのラベル。"L2TP" など
- * @param	bindaddr	待ち受けるアドレス
+/*
+ * Add a {@link :l2tpd_listener} to the {@link ::l2tpd L2TP daemon}
+ * @param	_this	{@link ::l2tpd L2TP daemon}
+ * @param	idx	index of the lisnter
+ * @param	label	physical layer label (ex. "L2TP")
+ * @param	bindaddr	bind address
  */
 int
 l2tpd_add_listener(l2tpd *_this, int idx, const char *label,
@@ -166,20 +188,19 @@ l2tpd_add_listener(l2tpd *_this, int idx, const char *label,
 		l2tpd_log(_this, LOG_ERR,
 		    "Invalid argument error on %s(): idx must be %d but %d",
 		    __func__, slist_length(&_this->listener), idx);
-		goto reigai;
+		goto fail;
 	}
 	if ((plistener = malloc(sizeof(l2tpd_listener))) == NULL) {
 		l2tpd_log(_this, LOG_ERR, "malloc() failed in %s: %m",
 		    __func__);
-		goto reigai;
+		goto fail;
 	}
 	memset(plistener, 0, sizeof(l2tpd_listener));
-	L2TPD_ASSERT(sizeof(plistener->bind_sin) >= bindaddr->sa_len);
-	memcpy(&plistener->bind_sin, bindaddr, bindaddr->sa_len);
+	L2TPD_ASSERT(sizeof(plistener->bind) >= bindaddr->sa_len);
+	memcpy(&plistener->bind, bindaddr, bindaddr->sa_len);
 
-	/* ポート番号が省略された場合は、デフォルト (1701/udp)を使う */
-	if (plistener->bind_sin.sin_port == 0)
-		plistener->bind_sin.sin_port = htons(L2TPD_DEFAULT_UDP_PORT);
+	if (plistener->bind.sin6.sin6_port == 0)
+		plistener->bind.sin6.sin6_port = htons(L2TPD_DEFAULT_UDP_PORT);
 
 	plistener->sock = -1;
 	plistener->self = _this;
@@ -189,16 +210,16 @@ l2tpd_add_listener(l2tpd *_this, int idx, const char *label,
 	if (slist_add(&_this->listener, plistener) == NULL) {
 		l2tpd_log(_this, LOG_ERR, "slist_add() failed in %s: %m",
 		    __func__);
-		goto reigai;
+		goto fail;
 	}
 	return 0;
-reigai:
+fail:
 	if (plistener != NULL)
 		free(plistener);
 	return 1;
 }
 
-/** L2TPデーモンインスタンスの終了処理を行います。*/
+/* finalize L2TP daemon instance */
 void
 l2tpd_uninit(l2tpd *_this)
 {
@@ -206,6 +227,7 @@ l2tpd_uninit(l2tpd *_this)
 
 	L2TPD_ASSERT(_this != NULL);
 
+	slist_fini(&_this->free_session_id_list);
 	if (_this->ctrl_map != NULL) {
 		hash_free(_this->ctrl_map);
 		_this->ctrl_map = NULL;
@@ -223,24 +245,65 @@ l2tpd_uninit(l2tpd *_this)
 	}
 	slist_fini(&_this->listener);
 
-	event_del(&_this->ev_timeout);	// ねんのため
+	event_del(&_this->ev_timeout);	/* just in case */
 	_this->state = L2TPD_STATE_STOPPED;
 	_this->config = NULL;
 }
 
-/** 待ち受けを開始します。*/
+/** assign the call to the l2tpd */
+int
+l2tpd_assign_call(l2tpd *_this, l2tp_call *call)
+{
+	int shuffle_cnt, session_id;
+
+	shuffle_cnt = 0;
+	do {
+		session_id = (int)slist_remove_first(
+		    &_this->free_session_id_list);
+		if (session_id != L2TP_SESSION_ID_SHUFFLE_MARK)
+			break;
+		L2TPD_ASSERT(shuffle_cnt == 0);
+		if (shuffle_cnt++ > 0) {
+			l2tpd_log(_this, LOG_ERR,
+			    "unexpected errror in %s(): free_session_id_list "
+			    "full", __func__);
+			slist_add(&_this->free_session_id_list,
+			    (void *)L2TP_SESSION_ID_SHUFFLE_MARK);
+			return 1;
+		}
+		slist_shuffle(&_this->free_session_id_list);
+		slist_add(&_this->free_session_id_list,
+		    (void *)L2TP_SESSION_ID_SHUFFLE_MARK);
+	} while (1);
+	call->id = session_id;
+
+	return 0;
+}
+
+/* this function will be called when the call is released */
+void
+l2tpd_release_call(l2tpd *_this, l2tp_call *call)
+{
+	slist_add(&_this->free_session_id_list, (void *)call->id);
+}
+
+
+/* start l2tpd listner */
 static int
 l2tpd_listener_start(l2tpd_listener *_this, char *ipsec_policy_in,
     char *ipsec_policy_out)
 {
 	int sock, ival;
 	l2tpd *_l2tpd;
+	char hbuf[NI_MAXHOST + NI_MAXSERV + 16];
 #ifdef NPPPD_FAKEBIND
 	int wildcardbinding = 0;
 	extern void set_faith(int, int);
 
+	/* XXX IPv6? */
 	wildcardbinding =
-	    (_this->bind_sin.sin_addr.s_addr == INADDR_ANY)?  1 : 0;
+	    (_this->bind.sin4.sin_family == AF_INET4 && 
+		    _this->bind.sin4.sin_addr.s_addr == INADDR_ANY)? 1 : 0;
 #endif
 	sock = -1;
 	_l2tpd = _this->self;
@@ -248,10 +311,11 @@ l2tpd_listener_start(l2tpd_listener *_this, char *ipsec_policy_in,
 	if (_this->phy_label[0] == '\0')
 		strlcpy(_this->phy_label, L2TPD_DEFAULT_LAYER2_LABEL,
 		    sizeof(_this->phy_label));
-	if ((sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
+	if ((sock = socket(_this->bind.sin6.sin6_family,
+	    SOCK_DGRAM, IPPROTO_UDP)) < 0) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "socket() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 #ifdef NPPPD_FAKEBIND
 	if (!wildcardbinding)
@@ -267,25 +331,25 @@ l2tpd_listener_start(l2tpd_listener *_this, char *ipsec_policy_in,
 	if ((ival = fcntl(sock, F_GETFL, 0)) < 0) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "fcntl(,F_GETFL) failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	} else if (fcntl(sock, F_SETFL, ival | O_NONBLOCK) < 0) {
 		l2tpd_log(_l2tpd, LOG_ERR, "fcntl(,F_SETFL,O_NONBLOCK) failed "
 		    "in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 	ival = 1;
 	if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &ival, sizeof(ival))
 	    != 0) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "setsockopt(,,SO_REUSEPORT) failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
-	if (bind(sock, (struct sockaddr *)&_this->bind_sin,
-	    _this->bind_sin.sin_len) != 0) {
-		l2tpd_log(_l2tpd, LOG_ERR, "Binding %s:%u/udp: %m",
-		    inet_ntoa(_this->bind_sin.sin_addr),
-		    ntohs(_this->bind_sin.sin_port));
-		goto reigai;
+	if (bind(sock, (struct sockaddr *)&_this->bind,
+	    _this->bind.sin6.sin6_len) != 0) {
+		l2tpd_log(_l2tpd, LOG_ERR, "Binding %s/udp: %m",
+		    addrport_tostring((struct sockaddr *)&_this->bind,
+		    _this->bind.sin6.sin6_len, hbuf, sizeof(hbuf)));
+		goto fail;
 	}
 #ifdef NPPPD_FAKEBIND
 	if (!wildcardbinding)
@@ -298,24 +362,50 @@ l2tpd_listener_start(l2tpd_listener *_this, char *ipsec_policy_in,
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "setsockopt(,,UDP_NO_CKSUM) failed in %s(): %m",
 		    __func__);
-		goto reigai;
+		goto fail;
 	}
 #endif
 #ifdef USE_LIBSOCKUTIL
 	if (setsockoptfromto(sock) != 0) {
 		l2tpd_log(_l2tpd, LOG_ERR,
 		    "setsockoptfromto() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 #else
-	// recvfromto のために
-	ival = 1;
-	if (setsockopt(sock, IPPROTO_IP, IP_RECVDSTADDR, &ival, sizeof(ival))
-	    != 0) {
-		l2tpd_log(_l2tpd, LOG_ERR,
-		    "setsockopt(,,IP_RECVDSTADDR) failed in %s(): %m",
-		    __func__);
-		goto reigai;
+	if (_this->bind.sin6.sin6_family == AF_INET) {
+		ival = 1;
+		if (setsockopt(sock, IPPROTO_IP, IP_RECVDSTADDR, &ival,
+		    sizeof(ival)) != 0) {
+			l2tpd_log(_l2tpd, LOG_ERR,
+			    "setsockopt(,,IP_RECVDSTADDR) failed in %s(): %m",
+			    __func__);
+			goto fail;
+		}
+	} else {
+		ival = 1;
+                if (setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &ival,
+		    sizeof(ival)) != 0) {
+			l2tpd_log(_l2tpd, LOG_ERR,
+			    "setsockopt(,,IPV6_PKTINFO) failed in %s(): %m",
+			    __func__);
+			goto fail;
+		}
+	}
+#endif
+#ifdef IP_PIPEX
+	if (_this->bind.sin6.sin6_family == AF_INET) {
+		ival = 1;
+		if (setsockopt(sock, IPPROTO_IP, IP_PIPEX, &ival,
+		    sizeof(ival)) != 0)
+			l2tpd_log(_l2tpd, LOG_WARNING,
+			    "%s(): setsockopt(IP_PIPEX) failed: %m", __func__);
+	} else {
+		ival = 1;
+		if (setsockopt(sock, IPPROTO_IPV6, IPV6_PIPEX, &ival,
+		    sizeof(ival)) != 0)
+			l2tpd_log(_l2tpd, LOG_WARNING,
+			    "%s(): setsockopt(IPV6_PIPEX) failed: %m",
+			    __func__);
 	}
 #endif
 #ifdef IP_IPSEC_POLICY
@@ -341,19 +431,19 @@ l2tpd_listener_start(l2tpd_listener *_this, char *ipsec_policy_in,
 	    l2tpd_io_event, _this);
 	event_add(&_this->ev_sock, NULL);
 
-	l2tpd_log(_l2tpd, LOG_INFO, "Listening %s:%u/udp (L2TP LNS) [%s]",
-	    inet_ntoa(_this->bind_sin.sin_addr),
-	    ntohs(_this->bind_sin.sin_port), _this->phy_label);
+	l2tpd_log(_l2tpd, LOG_INFO, "Listening %s/udp (L2TP LNS) [%s]",
+	    addrport_tostring((struct sockaddr *)&_this->bind,
+	    _this->bind.sin6.sin6_len, hbuf, sizeof(hbuf)), _this->phy_label);
 
 	return 0;
-reigai:
+fail:
 	if (sock >= 0)
 		close(sock);
-		
+
 	return 1;
 }
 
-/** L2TPデーモンを開始します。*/
+/* start L2TP daemon */
 int
 l2tpd_start(l2tpd *_this)
 {
@@ -374,23 +464,23 @@ l2tpd_start(l2tpd *_this)
 	if (_this->require_ipsec != 0) {
 #if 0
 		/*
-		 * NOTE ipsec_set_policy() 内で利用する yacc のスタック用の
-		 * バッファは動的に割り当てられますが、解放されません。
-		 * yasuoka の調査時は 2000 バイトリークします。
+		 * Note: ipsec_set_policy() will assign the buffer for
+		 * yacc parser stack, however it never free.
+		 * it cause memory leak (-2000byte).
 		 */
 		if ((ipsec_policy_in = ipsec_set_policy(L2TPD_IPSEC_POLICY_IN,
 		    strlen(L2TPD_IPSEC_POLICY_IN))) == NULL) {
 			l2tpd_log(_this, LOG_ERR,
 			    "ipsec_set_policy(L2TPD_IPSEC_POLICY_IN) failed "
 			    "at %s(): %s: %m", __func__, ipsec_strerror());
-				goto reigai;
+				goto fail;
 		}
 		if ((ipsec_policy_out = ipsec_set_policy(L2TPD_IPSEC_POLICY_OUT,
 		    strlen(L2TPD_IPSEC_POLICY_OUT))) == NULL) {
 			l2tpd_log(_this, LOG_ERR,
 			    "ipsec_set_policy(L2TPD_IPSEC_POLICY_OUT) failed "
 			    "at %s(): %s: %m", __func__, ipsec_strerror());
-			goto reigai;
+			goto fail;
 		}
 #endif
 	}
@@ -412,7 +502,7 @@ l2tpd_start(l2tpd *_this)
 
 	return rval;
 #if 0
-reigai:
+fail:
 #endif
 	if (ipsec_policy_in != NULL)
 		free(ipsec_policy_in);
@@ -422,23 +512,24 @@ reigai:
 	return 1;
 }
 
-/** 待ち受けを終了します */
+/* stop l2tp lisnter */
 static void
 l2tpd_listener_stop(l2tpd_listener *_this)
 {
+	char hbuf[NI_MAXHOST + NI_MAXSERV + 16];
+
 	if (_this->sock >= 0) {
 		event_del(&_this->ev_sock);
 		close(_this->sock);
 		l2tpd_log(_this->self, LOG_INFO,
-		    "Shutdown %s:%u/udp (L2TP LNS)",
-		    inet_ntoa(_this->bind_sin.sin_addr),
-		    ntohs(_this->bind_sin.sin_port));
+		    "Shutdown %s/udp (L2TP LNS)",
+		    addrport_tostring((struct sockaddr *)&_this->bind,
+		    _this->bind.sin6.sin6_len, hbuf, sizeof(hbuf)));
 		_this->sock = -1;
 	}
 }
-/**
- * 切断を猶予せずにすぐに停止します。
- */
+
+/* stop immediattly without disconnect operation */
 void
 l2tpd_stop_immediatly(l2tpd *_this)
 {
@@ -449,12 +540,13 @@ l2tpd_stop_immediatly(l2tpd *_this)
 		plsnr = slist_itr_next(&_this->listener);
 		l2tpd_listener_stop(plsnr);
 	}
-	event_del(&_this->ev_timeout);	// ねんのため
+	event_del(&_this->ev_timeout);	/* XXX */
 	_this->state = L2TPD_STATE_STOPPED;
 }
 
-/**
- * {@link ::_l2tp_ctrl コントロール} が終了した際にコールされます。
+/*
+ * this function will be called when {@link ::_l2tp_ctrl control}
+ * is terminated.
  */
 void
 l2tpd_ctrl_finished_notify(l2tpd *_this)
@@ -485,9 +577,7 @@ l2tpd_stop_timeout(int fd, short evtype, void *ctx)
 	l2tpd_stop_immediatly(_this);
 }
 
-/**
- * L2TPデーモンを停止します。
- */
+/* stop L2TP daemon */
 void
 l2tpd_stop(l2tpd *_this)
 {
@@ -500,9 +590,7 @@ l2tpd_stop(l2tpd *_this)
 	if (l2tpd_is_stopped(_this))
 		return;
 	if (l2tpd_is_shutting_down(_this)) {
-		/*
-		 * 2度目はすぐに終了
-		 */
+		/* terminate immidiatly, when 2nd call */
 		l2tpd_stop_immediatly(_this);
 		return;
 	}
@@ -527,9 +615,9 @@ l2tpd_stop(l2tpd *_this)
 	l2tpd_stop_immediatly(_this);
 }
 
-/***********************************************************************
- * 設定関連
- ***********************************************************************/
+/*
+ * Configuration
+ */
 #define	CFG_KEY(p, s)	config_key_prefix((p), (s))
 #define	VAL_SEP		" \t\r\n"
 
@@ -548,10 +636,10 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 
 	_this->config = config;
 	do_start = 0;
-	if (l2tpd_config_str_equal(_this, CFG_KEY(name, "enabled"), "true", 
+	if (l2tpd_config_str_equal(_this, CFG_KEY(name, "enabled"), "true",
 	    default_enabled)) {
-		// false にした直後に true にされるかもしれない。
-		if (l2tpd_is_shutting_down(_this)) 
+		/* care the case false-true flapping */
+		if (l2tpd_is_shutting_down(_this))
 			l2tpd_stop_immediatly(_this);
 		if (l2tpd_is_stopped(_this))
 			do_start = 1;
@@ -564,7 +652,7 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 		return 1;
 	_this->config = config;
 
-	/* 設定がなかったら使われる */
+	/* default value */
 	 gethostname(_this->default_hostname, sizeof(_this->default_hostname));
 
 	_this->ctrl_in_pktdump = l2tpd_config_str_equal(_this,
@@ -578,7 +666,7 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 	_this->phy_label_with_ifname = l2tpd_config_str_equal(_this,
 	    CFG_KEY(name, "label_with_ifname"), "true", 0);
 
-	// ip4_allow をパース
+	/* parse ip4_allow */
 	in_addr_range_list_remove_all(&_this->ip4_allow);
 	val = l2tpd_config_str(_this, CFG_KEY(name, "ip4_allow"));
 	if (val != NULL) {
@@ -602,13 +690,12 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 	}
 
 	if (do_start) {
-		/*
-		 * 起動直後と、l2tpd.enable が false -> true に変更された
-		 * 場合に、do_start。すべてのリスナーが、初期化された状態を
-		 * 仮定できる
-		 */
-		// l2tpd.listener_in の読み込む
-		val = l2tpd_config_str(_this, CFG_KEY(name, "listener_in"));
+		 /*
+		  * in the case of 1) cold-booted and 2) pptpd.enable
+		  * toggled "false" to "true" do this, because we can
+		  * assume that all pptpd listner are initialized.
+		  */
+		val = l2tpd_config_str(_this, CFG_KEY(name, "listener"));
 		if (val != NULL) {
 			if (strlen(val) >= sizeof(buf)) {
 				l2tpd_log(_this, LOG_ERR,
@@ -619,7 +706,8 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 			strlcpy(buf, val, sizeof(buf));
 
 			label = NULL;
-			// タブ、スペース区切りで、複数指定可能
+			/* it can accept multiple values with tab/space
+			 * separation */
 			for (i = 0, cp = buf;
 			    (tok = strsep(&cp, VAL_SEP)) != NULL;) {
 				if (*tok == '\0')
@@ -632,13 +720,11 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 				    &ai)) != 0) {
 					l2tpd_log(_this, LOG_ERR,
 					    "configuration error at "
-					    "l2tpd.listener_in: %s: %s", label,
+					    "l2tpd.listener: %s: %s", label,
 					    gai_strerror(aierr));
 					label = NULL;
 					return 1;
 				}
-				L2TPD_ASSERT(ai != NULL &&
-				    ai->ai_family == AF_INET);
 				if (l2tpd_add_listener(_this, i, label,
 				    ai->ai_addr) != 0) {
 					freeaddrinfo(ai);
@@ -651,7 +737,7 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 			}
 			if (label != NULL) {
 				l2tpd_log(_this, LOG_ERR, "configuration "
-				    "error at l2tpd.listener_in: %s", label);
+				    "error at l2tpd.listener: %s", label);
 				return 1;
 			}
 		}
@@ -667,10 +753,10 @@ l2tpd_reload(l2tpd *_this, struct properties *config, const char *name,
 	return 0;
 }
 
-/***********************************************************************
- * I/O 関連
- ***********************************************************************/
-/** アクセスを拒否したことをログに残す */
+/*
+ * I/O functions
+ */
+/* logging when deny an access */
 void
 l2tpd_log_access_deny(l2tpd *_this, const char *reason, struct sockaddr *peer)
 {
@@ -686,7 +772,7 @@ l2tpd_log_access_deny(l2tpd *_this, const char *reason, struct sockaddr *peer)
 	    "%s", hostbuf, servbuf, reason);
 }
 
-/** I/Oイベントハンドラ */
+/* I/O event handler */
 static void
 l2tpd_io_event(int fd, short evtype, void *ctx)
 {
@@ -728,7 +814,7 @@ l2tpd_io_event(int fd, short evtype, void *ctx)
 				l2tpd_stop(_l2tpd);
 				return;
 			}
-			//送信元チェック(allows.in)
+			/* source address check (allows.in) */
 			switch (peer.ss_family) {
 			case AF_INET:
 #ifdef USE_LIBSOCKUTIL
@@ -740,7 +826,7 @@ l2tpd_io_event(int fd, short evtype, void *ctx)
 				nat_t = NULL;
 #endif
 				/*
-				 * XXX NAT-T の場合の送信元チェック
+				 * XXX check source address when NAT-T
 				 */
 				if (in_addr_range_list_includes(
 				    &_l2tpd->ip4_allow,
@@ -750,9 +836,16 @@ l2tpd_io_event(int fd, short evtype, void *ctx)
 					    (struct sockaddr *)&sock, nat_t,
 					    buf, sz);
 				else
-					l2tpd_log_access_deny(_l2tpd, 
+					l2tpd_log_access_deny(_l2tpd,
 					    "not allowed by acl.",
 					    (struct sockaddr *)&peer);
+				break;
+			case AF_INET6:
+				/* XXX source address restriction in IPv6? */
+				l2tp_ctrl_input(_l2tpd, _this->index,
+				    (struct sockaddr *)&peer,
+				    (struct sockaddr *)&sock, NULL,
+				    buf, sz);
 				break;
 			default:
 				l2tpd_log(_l2tpd, LOG_ERR,
@@ -764,9 +857,9 @@ l2tpd_io_event(int fd, short evtype, void *ctx)
 	}
 }
 
-/***********************************************************************
- * L2TPコントロール関連
- ***********************************************************************/
+/*
+ * L2TP control
+ */
 l2tp_ctrl *
 l2tpd_get_ctrl(l2tpd *_this, int tunid)
 {
@@ -792,9 +885,9 @@ l2tpd_remove_ctrl(l2tpd *_this, int tunid)
 }
 
 
-/***********************************************************************
- * 雑多
- ***********************************************************************/
+/*
+ * misc
+ */
 
 void
 l2tpd_log(l2tpd *_this, int prio, const char *fmt, ...)

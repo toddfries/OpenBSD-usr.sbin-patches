@@ -1,9 +1,30 @@
 /*-
- * Copyright 2007, 2009
- *	Internet Initiative Japan Inc.  All rights reserved.
+ * Copyright (c) 2007, 2009 Internet Initiative Japan Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
  */
-/* $Id: ipsec_util.c,v 1.1 2010/01/11 04:20:57 yasuoka Exp $ */
-/*@file IPsec 関連ユーティリティ */
+/* $Id: ipsec_util.c,v 1.4 2010/09/23 04:47:40 jsg Exp $ */
+/*@file IPsec related utility functions */
 /*
  * RFC 2367 PF_KEY Key Management API, Version 2
  */
@@ -59,25 +80,25 @@ ipsec_util_purge_transport_sa(struct sockaddr *sock, struct sockaddr *peer,
 
 	tv = KEYSOCK_RCVTIMEO;
 	if (setsockopt(key_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0)
-		goto reigai;
-	
+		goto fail;
+
 	del_in.is_valid = del_out.is_valid = 0;
 	if (delete_prepare(key_sock, sock, peer, proto, &del_in, &del_out) != 0)
-		goto reigai;
+		goto fail;
 
 	if (del_in.is_valid && (dir & IPSEC_UTIL_DIRECTION_IN) != 0) {
 		if (send_sadb_delete(key_sock, &del_in))
-			goto reigai;
+			goto fail;
 	}
 	if (del_out.is_valid && (dir & IPSEC_UTIL_DIRECTION_OUT) != 0) {
 		if (send_sadb_delete(key_sock, &del_out))
-			goto reigai;
+			goto fail;
 	}
 	close(key_sock);
 
 	return 0;
 
-reigai:
+fail:
 	close(key_sock);
 
 	return -1;

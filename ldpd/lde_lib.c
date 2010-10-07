@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde_lib.c,v 1.15 2010/04/13 15:39:29 michele Exp $ */
+/*	$OpenBSD: lde_lib.c,v 1.26 2010/08/27 12:22:46 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -20,11 +20,11 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <net/if.h>
 #include <net/if_types.h>
+#include <netinet/in.h>
 #include <netmpls/mpls.h>
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <err.h>
 #include <stdio.h>
@@ -38,22 +38,30 @@
 #include "log.h"
 #include "lde.h"
 
+static int fec_compare(struct fec *, struct fec *);
+
+void		 rt_free(void *);
+struct rt_node	*rt_add(struct in_addr, u_int8_t);
+struct rt_lsp	*rt_lsp_find(struct rt_node *, struct in_addr);
+struct rt_lsp	*rt_lsp_add(struct rt_node *, struct in_addr);
+void		 rt_lsp_del(struct rt_lsp *);
+
+RB_PROTOTYPE(fec_tree, fec, entry, fec_compare)
+RB_GENERATE(fec_tree, fec, entry, fec_compare)
+
 extern struct ldpd_conf		*ldeconf;
-RB_HEAD(rt_tree, rt_node)	 rt;
-RB_PROTOTYPE(rt_tree, rt_node, entry, rt_compare)
-RB_GENERATE(rt_tree, rt_node, entry, rt_compare)
 
-u_int32_t	lde_assign_label(void);
+struct fec_tree	rt = RB_INITIALIZER(&rt);
 
-/* route table */
+/* FEC tree fucntions */
 void
-rt_init(void)
+fec_init(struct fec_tree *fh)
 {
-	RB_INIT(&rt);
+	RB_INIT(fh);
 }
 
-int
-rt_compare(struct rt_node *a, struct rt_node *b)
+static int
+fec_compare(struct fec *a, struct fec *b)
 {
 	if (ntohl(a->prefix.s_addr) < ntohl(b->prefix.s_addr))
 		return (-1);
@@ -67,85 +75,113 @@ rt_compare(struct rt_node *a, struct rt_node *b)
 	return (0);
 }
 
-struct rt_node *
-rt_find(in_addr_t prefix, u_int8_t prefixlen)
+struct fec *
+fec_find_prefix(struct fec_tree *fh, in_addr_t prefix, u_int8_t prefixlen)
 {
-	struct rt_node	 s;
+	struct fec	 s;
 
 	s.prefix.s_addr = prefix;
 	s.prefixlen = prefixlen;
 
-	return (RB_FIND(rt_tree, &rt, &s));
+	return (fec_find(fh, &s));
 }
 
-int
-rt_insert(struct rt_node *r)
+struct fec *
+fec_find(struct fec_tree *fh, struct fec *f)
 {
-	if (RB_INSERT(rt_tree, &rt, r) != NULL) {
-		log_warnx("rt_insert failed for %s/%u",
-		    inet_ntoa(r->prefix), r->prefixlen);
-		free(r);
-		return (-1);
-	}
+	return (RB_FIND(fec_tree, fh, f));
+}
 
+
+int
+fec_insert(struct fec_tree *fh, struct fec *f)
+{
+	if (RB_INSERT(fec_tree, fh, f) != NULL)
+		return (-1);
 	return (0);
 }
 
 int
-rt_remove(struct rt_node *r)
+fec_remove(struct fec_tree *fh, struct fec *f)
 {
-	if (RB_REMOVE(rt_tree, &rt, r) == NULL) {
-		log_warnx("rt_remove failed for %s/%u",
-		    inet_ntoa(r->prefix), r->prefixlen);
+	if (RB_REMOVE(fec_tree, fh, f) == NULL) {
+		log_warnx("fec_remove failed for %s/%u",
+		    inet_ntoa(f->prefix), f->prefixlen);
 		return (-1);
 	}
-
-	free(r);
 	return (0);
 }
 
 void
+fec_clear(struct fec_tree *fh, void (*free_cb)(void *))
+{
+	struct fec	*f;
+
+	while ((f = RB_ROOT(fh)) != NULL) {
+		fec_remove(fh, f);
+		free_cb(f);
+	}
+}
+
+
+/* routing table functions */
+void
 rt_dump(pid_t pid)
 {
-	struct rt_node		*r;
+	struct fec		*f;
+	struct rt_node		*rr;
+	struct rt_lsp		*rl;
+	struct lde_map		*me;
 	static struct ctl_rt	 rtctl;
 
-	RB_FOREACH(r, rt_tree, &rt) {
-		rtctl.prefix.s_addr = r->prefix.s_addr;
-		rtctl.prefixlen = r->prefixlen;
-		rtctl.nexthop.s_addr = r->nexthop.s_addr;
-		rtctl.flags = r->flags;
-		rtctl.local_label = r->local_label;
-		rtctl.remote_label = r->remote_label;
+	RB_FOREACH(f, fec_tree, &rt) {
+		rr = (struct rt_node *)f;
+		rtctl.prefix = rr->fec.prefix;
+		rtctl.prefixlen = rr->fec.prefixlen;
+		rtctl.flags = rr->flags;
+		rtctl.local_label = rr->local_label;
 
-		if (!r->present)
-			rtctl.in_use = 0;
-		else
+		LIST_FOREACH(rl, &rr->lsp, entry) {
+			rtctl.nexthop = rl->nexthop;
+			rtctl.remote_label = rl->remote_label;
 			rtctl.in_use = 1;
 
-		if (rtctl.nexthop.s_addr == htonl(INADDR_LOOPBACK))
-			rtctl.connected = 1;
-		else
-			rtctl.connected = 0;
+			if (rtctl.nexthop.s_addr == htonl(INADDR_ANY))
+				rtctl.connected = 1;
+			else
+				rtctl.connected = 0;
 
-		lde_imsg_compose_ldpe(IMSG_CTL_SHOW_LIB, 0, pid, &rtctl,
-		    sizeof(rtctl));
+			lde_imsg_compose_ldpe(IMSG_CTL_SHOW_LIB, 0, pid,
+			    &rtctl, sizeof(rtctl));
+		}
+		if (LIST_EMPTY(&rr->lsp)) {
+			LIST_FOREACH(me, &rr->downstream, entry) {
+				rtctl.in_use = 0;
+				rtctl.connected = 0;
+				/* we don't know the nexthop use id instead */
+				rtctl.nexthop = me->nexthop->id;
+				rtctl.remote_label = me->label;
+
+				lde_imsg_compose_ldpe(IMSG_CTL_SHOW_LIB, 0, pid,
+				    &rtctl, sizeof(rtctl));
+			}
+		}
 	}
 }
 
 void
 rt_snap(u_int32_t peerid)
 {
+	struct fec	*f;
 	struct rt_node	*r;
 	struct map	 map;
 
 	bzero(&map, sizeof(map));
-
-	RB_FOREACH(r, rt_tree, &rt) {
-		map.prefix = r->prefix.s_addr;
-		map.prefixlen = r->prefixlen;
-		map.label = (ntohl(r->local_label) & MPLS_LABEL_MASK) >>
-		    MPLS_LABEL_OFFSET;
+	RB_FOREACH(f, fec_tree, &rt) {
+		r = (struct rt_node *)f;
+		map.prefix = r->fec.prefix;
+		map.prefixlen = r->fec.prefixlen;
+		map.label = r->local_label;
 
 		lde_imsg_compose_ldpe(IMSG_MAPPING_ADD, peerid, 0, &map,
 		    sizeof(map));
@@ -153,376 +189,311 @@ rt_snap(u_int32_t peerid)
 }
 
 void
-rt_clear(void)
+rt_free(void *arg)
 {
-	struct rt_node	*r;
+	struct rt_node	*rr = arg;
+	struct rt_lsp	*rl;
 
-	while ((r = RB_MIN(rt_tree, &rt)) != NULL)
-		rt_remove(r);
+	while ((rl = LIST_FIRST(&rr->lsp))) {
+		LIST_REMOVE(rl, entry);
+		free(rl);
+	}
+
+	if (!LIST_EMPTY(&rr->downstream))
+		log_warnx("rt_free: fec %s/%u downstream list not empty",
+		    inet_ntoa(rr->fec.prefix), rr->fec.prefixlen);
+	if (!LIST_EMPTY(&rr->upstream))
+		log_warnx("rt_free: fec %s/%u upstream list not empty",
+		    inet_ntoa(rr->fec.prefix), rr->fec.prefixlen);
+
+	free(rl);
 }
 
-u_int32_t
-lde_assign_label()
+void
+rt_clear(void)
 {
-	static u_int32_t label = MPLS_LABEL_RESERVED_MAX;
+	fec_clear(&rt, rt_free);
+}
 
-	/* XXX some checks needed */
-	label++;
-	return (htonl(label << MPLS_LABEL_OFFSET));
+struct rt_node *
+rt_add(struct in_addr prefix, u_int8_t prefixlen)
+{
+	struct rt_node	*rn;
+
+	rn = calloc(1, sizeof(*rn));
+	if (rn == NULL)
+		fatal("rt_add");
+
+	rn->fec.prefix.s_addr = prefix.s_addr;
+	rn->fec.prefixlen = prefixlen;
+	rn->local_label = NO_LABEL;
+	LIST_INIT(&rn->upstream);
+	LIST_INIT(&rn->downstream);
+	LIST_INIT(&rn->lsp);
+
+	if (fec_insert(&rt, &rn->fec))
+		log_warnx("failed to add %s/%u to rt tree",
+		    inet_ntoa(rn->fec.prefix), rn->fec.prefixlen);
+
+	return (rn);
+}
+
+struct rt_lsp *
+rt_lsp_find(struct rt_node *rn, struct in_addr nexthop)
+{
+	struct rt_lsp	*rl;
+
+	LIST_FOREACH(rl, &rn->lsp, entry)
+		if (rl->nexthop.s_addr == nexthop.s_addr)
+			return (rl);
+	return (NULL);
+}
+
+struct rt_lsp *
+rt_lsp_add(struct rt_node *rn, struct in_addr nexthop)
+{
+	struct rt_lsp	*rl;
+
+	rl = calloc(1, sizeof(*rl));
+	if (rl == NULL)
+		fatal("rt_lsp_add");
+
+	rl->nexthop.s_addr = nexthop.s_addr;
+	rl->remote_label = NO_LABEL;
+	LIST_INSERT_HEAD(&rn->lsp, rl, entry);
+
+	return (rl);
+}
+
+void
+rt_lsp_del(struct rt_lsp *rl)
+{
+	LIST_REMOVE(rl, entry);
+	free(rl);
 }
 
 void
 lde_kernel_insert(struct kroute *kr)
 {
 	struct rt_node		*rn;
-	struct rt_label		*rl;
-	struct iface		*iface;
-	struct lde_nbr		*ln;
+	struct rt_lsp		*rl;
 	struct lde_nbr_address	*addr;
-	struct map		 localmap;
+	struct lde_map		*map;
 
-	rn = rt_find(kr->prefix.s_addr, kr->prefixlen);
-	if (rn == NULL) {
-		rn = calloc(1, sizeof(*rn));
-		if (rn == NULL)
-			fatal("lde_insert");
+	log_debug("kernel add route %s/%u", inet_ntoa(kr->prefix),
+	    kr->prefixlen);
 
-		rn->prefix.s_addr = kr->prefix.s_addr;
-		rn->prefixlen = kr->prefixlen;
-		rn->remote_label = NO_LABEL;
-		rn->local_label = NO_LABEL;
-		TAILQ_INIT(&rn->labels_list);
+	rn = (struct rt_node *)fec_find_prefix(&rt, kr->prefix.s_addr,
+	    kr->prefixlen);
+	if (rn == NULL)
+		rn = rt_add(kr->prefix, kr->prefixlen);
 
-		rt_insert(rn);
-	}
-
-	if (rn->present) {
-		if (kr->nexthop.s_addr == rn->nexthop.s_addr)
-			return;
-
-		/* The nexthop has changed, change also the label associated
-		   with prefix */
-		rn->remote_label = NO_LABEL;
-		rn->nexthop.s_addr = kr->nexthop.s_addr;
-
-		if ((ldeconf->mode & MODE_RET_LIBERAL) == 0) {
-			/* XXX: we support just liberal retention for now */
-			log_warnx("lde_kernel_insert: missing mode");
-			return;
-		}
-
-		TAILQ_FOREACH(rl, &rn->labels_list, node_l) {
-			addr = lde_address_find(rl->nexthop, &rn->nexthop);
-			if (addr != NULL) {
-				rn->remote_label =
-				    htonl(rl->label << MPLS_LABEL_OFFSET);
-				break;
-			}
-		}
-
-		log_debug("lde_kernel_insert: prefix %s, changing label to %u",
-		    inet_ntoa(rn->prefix), rl ? rl->label : 0);
-
-		lde_send_change_klabel(rn);
-		return;
-	}
-
-	rn->present = 1;
-	rn->nexthop.s_addr = kr->nexthop.s_addr;
+	rl = rt_lsp_find(rn, kr->nexthop);
+	if (rl == NULL)
+		rl = rt_lsp_add(rn, kr->nexthop);
 
 	/* There is static assigned label for this route, record it in lib */
 	if (kr->local_label != NO_LABEL) {
-		rn->local_label = (htonl(kr->local_label) << MPLS_LABEL_OFFSET);
+		rn->local_label = kr->local_label;
 		return;
 	}
 
-	TAILQ_FOREACH(rl, &rn->labels_list, node_l) {
-		addr = lde_address_find(rl->nexthop, &rn->nexthop);
+	if (rn->local_label == NO_LABEL) {
+		if (kr->nexthop.s_addr == INADDR_ANY)
+			/* Directly connected route */
+			rn->local_label = MPLS_LABEL_IMPLNULL;
+		else
+			rn->local_label = lde_assign_label();
+	}
+
+	LIST_FOREACH(map, &rn->downstream, entry) {
+		addr = lde_address_find(map->nexthop, &rl->nexthop);
 		if (addr != NULL) {
-			rn->remote_label =
-			    htonl(rl->label << MPLS_LABEL_OFFSET);
+			rl->remote_label = map->label;
 			break;
 		}
 	}
 
-	if (rn->local_label == NO_LABEL) {
-		/* Directly connected route */
-		if (kr->nexthop.s_addr == INADDR_ANY) {
-			rn->local_label =
-			    htonl(MPLS_LABEL_IMPLNULL << MPLS_LABEL_OFFSET);
-			rn->nexthop.s_addr = htonl(INADDR_LOOPBACK);
-		} else
-			rn->local_label = lde_assign_label();
-	}
-
-	lde_send_insert_klabel(rn);
+	lde_send_change_klabel(rn, rl);
 
 	/* Redistribute the current mapping to every nbr */
-	localmap.label = (ntohl(rn->local_label) & MPLS_LABEL_MASK) >>
-	    MPLS_LABEL_OFFSET;
-	localmap.prefix = rn->prefix.s_addr;
-	localmap.prefixlen = rn->prefixlen;
-
-	LIST_FOREACH(iface, &ldeconf->iface_list, entry) {
-		LIST_FOREACH(ln, &iface->lde_nbr_list, entry) {
-			if (ln->self)
-				continue;
-
-			if (ldeconf->mode & MODE_ADV_UNSOLICITED &&
-			    ldeconf->mode & MODE_DIST_INDEPENDENT)
-				lde_send_labelmapping(ln->peerid, &localmap);
-
-			if (ldeconf->mode & MODE_ADV_UNSOLICITED &&
-			    ldeconf->mode & MODE_DIST_ORDERED) {
-			       /* XXX */
-				if (rn->nexthop.s_addr == INADDR_ANY ||
-				    rn->remote_label != NO_LABEL)
-					lde_send_labelmapping(ln->peerid,
-					    &localmap);
-			}
-		}
-	}
+	lde_nbr_do_mappings(rn);
 }
 
 void
 lde_kernel_remove(struct kroute *kr)
 {
 	struct rt_node		*rn;
-	struct rt_label		*rl;
-	struct lde_nbr		*ln;
+	struct rt_lsp		*rl;
 
-	rn = rt_find(kr->prefix.s_addr, kr->prefixlen);
-	rn = rt_find(kr->prefix.s_addr, kr->prefixlen);
+	log_debug("kernel remove route %s/%u", inet_ntoa(kr->prefix),
+	    kr->prefixlen);
+
+	rn = (struct rt_node *)fec_find_prefix(&rt, kr->prefix.s_addr,
+	    kr->prefixlen);
 	if (rn == NULL)
+		/* route lost */
 		return;
 
-	if (ldeconf->mode & MODE_RET_LIBERAL) {
-		ln = lde_find_address(rn->nexthop);
-		if (ln) {
-			rl = calloc(1, sizeof(*rl));
-			if (rl == NULL)
-				fatal("lde_kernel_remove");
+	rl = rt_lsp_find(rn, kr->nexthop);
+	if (rl == NULL)
+		/* nexthop lost */
 
-			rl->label = rn->remote_label;
-			rl->node = rn;
-			rl->nexthop = ln;
-			TAILQ_INSERT_TAIL(&rn->labels_list, rl, node_l);
-			TAILQ_INSERT_TAIL(&ln->labels_list, rl, nbr_l);
-		}
-	}
+	rt_lsp_del(rl);
 
-	rn->remote_label = NO_LABEL;
-	rn->nexthop.s_addr = INADDR_ANY;
-	rn->present = 0;
+	/* XXX handling of total loss of route, withdraw mappings, etc */
+
+	/* Redistribute the current mapping to every nbr */
+	lde_nbr_do_mappings(rn);
 }
 
 void
 lde_check_mapping(struct map *map, struct lde_nbr *ln)
 {
 	struct rt_node		*rn;
-	struct rt_label		*rl;
-	struct lde_nbr_address	*addr;
-	struct lde_map_entry	*me, *menew;
-	struct lde_req_entry	*req;
-	struct iface		*iface;
-	struct map		 localmap;
+	struct rt_lsp		*rl;
+	struct lde_nbr_address	*addr = NULL;
+	struct lde_map		*me;
 
-	/* The route is not yet in fib. If we are in liberal mode create a
-	   route and record the label */
-	rn = rt_find(map->prefix, map->prefixlen);
+	log_debug("label mapping from nbr %s, FEC %s, label %u",
+	    inet_ntoa(ln->id), log_fec(map), map->label);
+
+	rn = (struct rt_node *)fec_find_prefix(&rt, map->prefix.s_addr,
+	    map->prefixlen);
 	if (rn == NULL) {
+		/* The route is not yet in fib. If we are in liberal mode
+		 *  create a route and record the label */
 		if (ldeconf->mode & MODE_RET_CONSERVATIVE)
 			return;
 
-		rn = calloc(1, sizeof(*rn));
-		if (rn == NULL)
-			fatal("lde_check_mapping");
-
-		rn->prefix.s_addr = map->prefix;
-		rn->prefixlen = map->prefixlen;
+		rn = rt_add(map->prefix, map->prefixlen);
 		rn->local_label = lde_assign_label();
-		rn->remote_label = NO_LABEL;
-		rn->present = 0;
-
-		TAILQ_INIT(&rn->labels_list);
-
-		rt_insert(rn);
 	}
 
-	TAILQ_FOREACH(me, &ln->recv_map_list, entry) {
-		if (me->prefix.s_addr == map->prefix &&
-		    me->prefixlen == map->prefixlen) {
+	LIST_FOREACH(me, &rn->downstream, entry) {
+		if (ln == me->nexthop) {
 			if (me->label == map->label) {
+				/* Duplicate: RFC says to send back a release,
+				 * even though we did not release the actual
+				 * mapping. This is confusing.
+				 */
 				lde_send_labelrelease(ln->peerid, map);
 				return;
 			}
+			/* old mapping that is now changed */
+			break;
 		}
 	}
 
-	addr = lde_address_find(ln, &rn->nexthop);
-	if (addr == NULL || !rn->present) {
+	LIST_FOREACH(rl, &rn->lsp, entry) {
+		addr = lde_address_find(ln, &rl->nexthop);
+		if (addr)
+			break;
+	}
+
+	if (addr == NULL) {
+		/* route not yet available */
 		if (ldeconf->mode & MODE_RET_CONSERVATIVE) {
 			lde_send_labelrelease(ln->peerid, map);
 			return;
 		}
+		/* in liberal mode just note the mapping */
+		if (me == NULL)
+			me = lde_map_add(ln, rn, 0);
+		me->label = map->label;
 
-		rl = calloc(1, sizeof(*rl));
-		if (rl == NULL)
-			fatal("lde_check_mapping");
-
-		rl->label = map->label;
-		rl->node = rn;
-		rl->nexthop = ln;
-
-		TAILQ_INSERT_TAIL(&rn->labels_list, rl, node_l);
-		TAILQ_INSERT_TAIL(&ln->labels_list, rl, nbr_l);
 		return;
 	}
 
-	rn->remote_label = htonl(map->label << MPLS_LABEL_OFFSET);
-
-	/* If we are ingress for this LSP install the label */
-	if (rn->nexthop.s_addr == INADDR_ANY)
-		lde_send_change_klabel(rn);
+	rl->remote_label = map->label;
 
 	/* Record the mapping from this peer */	
-	menew = calloc(1, sizeof(*menew));
-	if (menew == NULL)
-		fatal("lde_check_mapping");
+	if (me == NULL)
+		me = lde_map_add(ln, rn, 0);
+	me->label = map->label;
 
-	menew->prefix.s_addr = map->prefix;
-	menew->prefixlen = map->prefixlen;
-	menew->label = map->label;
-
-	TAILQ_INSERT_HEAD(&ln->recv_map_list, menew, entry);
+	lde_send_change_klabel(rn, rl);
 
 	/* Redistribute the current mapping to every nbr */
-	localmap.label = rn->local_label;
-	localmap.prefix = rn->prefix.s_addr;
-	localmap.prefixlen = rn->prefixlen;
-
-	LIST_FOREACH(iface, &ldeconf->iface_list, entry) {
-		LIST_FOREACH(ln, &iface->lde_nbr_list, entry) {
-			/* Did we already send a mapping to this peer? */
-			TAILQ_FOREACH(me, &ln->sent_map_list, entry) {
-				if (me->prefix.s_addr == rn->prefix.s_addr &&
-				    me->prefixlen == rn->prefixlen)
-					break;
-			}
-			if (me != NULL) {
-				/* XXX: check RAttributes */
-				continue;
-			}
-
-			if (ldeconf->mode & MODE_ADV_UNSOLICITED &&
-			    ldeconf->mode & MODE_DIST_ORDERED) {
-				lde_send_labelmapping(ln->peerid, &localmap);
-
-				menew = calloc(1, sizeof(*menew));
-				if (menew == NULL)
-					fatal("lde_check_mapping");
-
-				menew->prefix.s_addr = map->prefix;
-				menew->prefixlen = map->prefixlen;
-				menew->label = map->label;
-
-				TAILQ_INSERT_HEAD(&ln->sent_map_list, menew,
-				    entry);
-			}
-
-			TAILQ_FOREACH(req, &ln->req_list, entry) {
-				if (req->prefix.s_addr == rn->prefix.s_addr &&
-				    req->prefixlen == rn->prefixlen)
-					break;
-			}
-			if (req != NULL) {
-				lde_send_labelmapping(ln->peerid, &localmap);
-
-				menew = calloc(1, sizeof(*menew));
-				if (menew == NULL)
-					fatal("lde_check_mapping");
-
-				menew->prefix.s_addr = map->prefix;
-				menew->prefixlen = map->prefixlen;
-				menew->label = map->label;
-
-				TAILQ_INSERT_HEAD(&ln->sent_map_list, menew,
-				    entry);
-
-				TAILQ_REMOVE(&ln->req_list, req, entry);
-				free(req);
-			}
-		}
-	}
-
-	lde_send_change_klabel(rn);
+	lde_nbr_do_mappings(rn);
 }
 
 void
 lde_check_request(struct map *map, struct lde_nbr *ln)
 {
-	struct lde_req_entry	*lre, *newlre;
-	struct rt_node		*rn;
-	struct lde_nbr		*lnn;
-	struct map		 localmap;
+	struct lde_req	*lre;
+	struct rt_node	*rn;
+	struct rt_lsp	*rl;
+	struct lde_nbr	*lnn;
+	struct map	 localmap;
 
-	bzero(&newlre, sizeof(newlre));
+	log_debug("label request from nbr %s, FEC %s",
+	    inet_ntoa(ln->id), log_fec(map));
 
-	rn = rt_find(map->prefix, map->prefixlen);
-	if (rn == NULL || rn->remote_label == NO_LABEL) {
+	rn = (struct rt_node *)fec_find_prefix(&rt, map->prefix.s_addr,
+	    map->prefixlen);
+	if (rn == NULL) {
 		lde_send_notification(ln->peerid, S_NO_ROUTE, map->messageid,
 		    MSG_TYPE_LABELREQUEST);
 		return;
 	}
 
-	if (lde_address_find(ln, &rn->nexthop)) {
-		lde_send_notification(ln->peerid, S_LOOP_DETECTED,
-		    map->messageid, MSG_TYPE_LABELREQUEST);
+	/* first check if we have a pending request running */
+	lre = (struct lde_req *)fec_find(&ln->recv_req, &rn->fec);
+	if (lre != NULL)
 		return;
-	}
 
-	TAILQ_FOREACH(lre, &ln->req_list, entry) {
-		if (lre->prefix.s_addr == map->prefix &&
-		    lre->prefixlen == map->prefixlen)
+	LIST_FOREACH(rl, &rn->lsp, entry) {
+		if (lde_address_find(ln, &rl->nexthop)) {
+			lde_send_notification(ln->peerid, S_LOOP_DETECTED,
+			    map->messageid, MSG_TYPE_LABELREQUEST);
 			return;
+		}
+
+		if (rl->remote_label != NO_LABEL)
+			break;
 	}
 
-	/* XXX: if we are egress ? */
-	if (rn->remote_label != NO_LABEL) {
+	/* there is a valid mapping available */
+	if (rl != NULL) {
 		bzero(&localmap, sizeof(localmap));
 		localmap.prefix = map->prefix;
 		localmap.prefixlen = map->prefixlen;
 		localmap.label = rn->local_label;
 
 		lde_send_labelmapping(ln->peerid, &localmap);
-	} else {
-		lnn = lde_find_address(rn->nexthop);
+		return;
+	}
+
+	/* no mapping available, try to request */
+	LIST_FOREACH(rl, &rn->lsp, entry) {
+		lnn = lde_find_address(rl->nexthop);
 		if (lnn == NULL)
-			return;
+			continue;
 
 		lde_send_labelrequest(lnn->peerid, map);
 
-		newlre = calloc(1, sizeof(*newlre));
-		if (newlre == NULL)
+		lre = calloc(1, sizeof(*lre));
+		if (lre == NULL)
 			fatal("lde_check_request");
 
-		newlre->prefix.s_addr = map->prefix;
-		newlre->prefixlen = map->prefixlen;
+		lre->fec = rn->fec;
+		lre->msgid = map->messageid;
 
-		TAILQ_INSERT_HEAD(&ln->req_list, newlre, entry);
+		if (fec_insert(&ln->recv_req, &lre->fec)) {
+			log_warnx("failed to add %s/%u to recv req",
+			    inet_ntoa(lre->fec.prefix), lre->fec.prefixlen);
+			free(lre);
+		}
 	}
 }
 
 void
-lde_label_list_free(struct lde_nbr *nbr)
+lde_check_release(struct map *map, struct lde_nbr *ln)
 {
-	struct rt_label	*rl;
+	log_debug("label mapping from nbr %s, FEC %s",
+	    inet_ntoa(ln->id), log_fec(map));
 
-	while ((rl = TAILQ_FIRST(&nbr->labels_list)) != NULL) {
-		TAILQ_REMOVE(&nbr->labels_list, rl, nbr_l);
-		TAILQ_REMOVE(&nbr->labels_list, rl, node_l);
-		if (TAILQ_EMPTY(&rl->node->labels_list))
-			rt_remove(rl->node);
-		free(rl);
-	}
+	/* check withdraw list */
+	/* check sent map list */
 }

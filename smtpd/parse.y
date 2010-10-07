@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.55 2010/04/20 18:55:01 jacekm Exp $	*/
+/*	$OpenBSD: parse.y,v 1.66 2010/09/20 09:01:09 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -23,7 +23,6 @@
 
 %{
 #include <sys/types.h>
-#include <sys/time.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <sys/param.h>
@@ -44,6 +43,7 @@
 #include <netdb.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -89,6 +89,7 @@ static int		 errors = 0;
 objid_t			 last_map_id = 1;
 struct map		*map = NULL;
 struct rule		*rule = NULL;
+TAILQ_HEAD(condlist, cond) *conditions = NULL;
 struct mapel_list	*contents = NULL;
 
 struct listener	*host_v4(const char *, in_port_t);
@@ -100,6 +101,7 @@ int		 host(const char *, const char *, const char *,
 int		 interface(const char *, const char *, const char *,
 		    struct listenerlist *, int, in_port_t, u_int8_t);
 void		 set_localaddrs(void);
+int		 delaytonum(char *);
 
 typedef struct {
 	union {
@@ -115,18 +117,17 @@ typedef struct {
 
 %}
 
-%token	QUEUE INTERVAL SIZE LISTEN ON ALL PORT
+%token	EXPIRE SIZE LISTEN ON ALL PORT
 %token	MAP TYPE HASH LIST SINGLE SSL SMTPS CERTIFICATE
-%token	DNS DB TFILE EXTERNAL DOMAIN CONFIG SOURCE
+%token	DNS DB PLAIN EXTERNAL DOMAIN CONFIG SOURCE
 %token  RELAY VIA DELIVER TO MAILDIR MBOX HOSTNAME
 %token	ACCEPT REJECT INCLUDE NETWORK ERROR MDA FROM FOR
 %token	ARROW ENABLE AUTH TLS LOCAL VIRTUAL USER TAG ALIAS
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.map>		map
-%type	<v.number>	quantifier decision port from auth ssl size
+%type	<v.number>	decision port from auth ssl size
 %type	<v.cond>	condition
-%type	<v.tv>		interval
 %type	<v.object>	mapref
 %type	<v.string>	certname user tag on alias
 
@@ -176,21 +177,6 @@ optnl		: '\n' optnl
 
 nl		: '\n' optnl
 		;
-
-quantifier	: /* empty */			{ $$ = 1; }
-		| 'm'				{ $$ = 60; }
-		| 'h'				{ $$ = 3600; }
-		| 'd'				{ $$ = 86400; }
-		;
-
-interval	: NUMBER quantifier		{
-			if ($1 < 0) {
-				yyerror("invalid interval: %lld", $1);
-				YYERROR;
-			}
-			$$.tv_usec = 0;
-			$$.tv_sec = $1 * $2;
-		}
 
 size		: NUMBER			{
 			if ($1 < 0) {
@@ -265,10 +251,14 @@ tag		: TAG STRING			{
 		| /* empty */			{ $$ = NULL; }
 		;
 
-main		: QUEUE INTERVAL interval	{
-			conf->sc_qintval = $3;
-		}
-	       	| SIZE size {
+main		: EXPIRE STRING {
+      			conf->sc_qexpire = delaytonum($2);
+      			if (conf->sc_qexpire == -1) {
+				yyerror("invalid expire delay: %s", $2);
+				YYERROR;
+			}
+      		}
+		| SIZE size {
        			conf->sc_maxsize = $2;
 		}
 		| LISTEN ON STRING port ssl certname auth tag {
@@ -350,7 +340,12 @@ maptype		: SINGLE			{ map->m_type = T_SINGLE; }
 		;
 
 mapsource	: DNS				{ map->m_src = S_DNS; }
-		| TFILE				{ map->m_src = S_FILE; }
+		| PLAIN STRING			{
+			map->m_src = S_PLAIN;
+			if (strlcpy(map->m_config, $2, sizeof(map->m_config))
+			    >= sizeof(map->m_config))
+				err(1, "pathname too long");
+		}
 		| DB STRING			{
 			map->m_src = S_DB;
 			if (strlcpy(map->m_config, $2, sizeof(map->m_config))
@@ -780,15 +775,15 @@ condition	: NETWORK mapref		{
 		;
 
 condition_list	: condition comma condition_list	{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		| condition	{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		;
 
 conditions	: condition				{
-			TAILQ_INSERT_TAIL(&rule->r_conditions, $1, c_entry);
+			TAILQ_INSERT_TAIL(conditions, $1, c_entry);
 		}
 		| '{' condition_list '}'
 		;
@@ -810,33 +805,33 @@ user		: USER STRING		{
 action		: DELIVER TO MAILDIR user		{
 			rule->r_user = $4;
 			rule->r_action = A_MAILDIR;
-			if (strlcpy(rule->r_value.path, "~/Maildir",
-			    sizeof(rule->r_value.path)) >=
-			    sizeof(rule->r_value.path))
+			if (strlcpy(rule->r_value.buffer, "~/Maildir",
+			    sizeof(rule->r_value.buffer)) >=
+			    sizeof(rule->r_value.buffer))
 				fatal("pathname too long");
 		}
 		| DELIVER TO MAILDIR STRING user	{
 			rule->r_user = $5;
 			rule->r_action = A_MAILDIR;
-			if (strlcpy(rule->r_value.path, $4,
-			    sizeof(rule->r_value.path)) >=
-			    sizeof(rule->r_value.path))
+			if (strlcpy(rule->r_value.buffer, $4,
+			    sizeof(rule->r_value.buffer)) >=
+			    sizeof(rule->r_value.buffer))
 				fatal("pathname too long");
 			free($4);
 		}
 		| DELIVER TO MBOX			{
 			rule->r_action = A_MBOX;
-			if (strlcpy(rule->r_value.path, _PATH_MAILDIR "/%u",
-			    sizeof(rule->r_value.path))
-			    >= sizeof(rule->r_value.path))
+			if (strlcpy(rule->r_value.buffer, _PATH_MAILDIR "/%u",
+			    sizeof(rule->r_value.buffer))
+			    >= sizeof(rule->r_value.buffer))
 				fatal("pathname too long");
 		}
 		| DELIVER TO MDA STRING user		{
 			rule->r_user = $5;
 			rule->r_action = A_EXT;
-			if (strlcpy(rule->r_value.command, $4,
-			    sizeof(rule->r_value.command))
-			    >= sizeof(rule->r_value.command))
+			if (strlcpy(rule->r_value.buffer, $4,
+			    sizeof(rule->r_value.buffer))
+			    >= sizeof(rule->r_value.buffer))
 				fatal("command too long");
 			free($4);
 		}
@@ -963,22 +958,49 @@ on		: ON STRING	{
 		| /* empty */	{ $$ = NULL; }
 
 rule		: decision on from			{
-			struct rule	*r;
 
-			if ((r = calloc(1, sizeof(*r))) == NULL)
+			if ((rule = calloc(1, sizeof(*rule))) == NULL)
 				fatal("out of memory");
-			rule = r;
 			rule->r_sources = map_find(conf, $3);
+
+
+			if ((conditions = calloc(1, sizeof(*conditions))) == NULL)
+				fatal("out of memory");
 
 			if ($2)
 				(void)strlcpy(rule->r_tag, $2, sizeof(rule->r_tag));
 			free($2);
 
-			TAILQ_INIT(&rule->r_conditions);
-			TAILQ_INIT(&rule->r_options);
+
+			TAILQ_INIT(conditions);
 
 		} FOR conditions action	tag {
-			TAILQ_INSERT_TAIL(conf->sc_rules, rule, r_entry);
+			struct rule	*subr;
+			struct cond	*cond;
+
+			if ($8)
+				(void)strlcpy(rule->r_tag, $8, sizeof(rule->r_tag));
+			free($8);
+
+			while ((cond = TAILQ_FIRST(conditions)) != NULL) {
+
+				if ((subr = calloc(1, sizeof(*subr))) == NULL)
+					fatal("out of memory");
+
+				*subr = *rule;
+
+				subr->r_condition = *cond;
+				
+				TAILQ_REMOVE(conditions, cond, c_entry);
+				TAILQ_INSERT_TAIL(conf->sc_rules, subr, r_entry);
+
+				free(cond);
+			}
+
+			free(conditions);
+			free(rule);
+			conditions = NULL;
+			rule = NULL;
 		}
 		;
 %%
@@ -1024,14 +1046,13 @@ lookup(char *s)
 		{ "dns",		DNS },
 		{ "domain",		DOMAIN },
 		{ "enable",		ENABLE },
+		{ "expire",		EXPIRE },
 		{ "external",		EXTERNAL },
-		{ "file",		TFILE },
 		{ "for",		FOR },
 		{ "from",		FROM },
 		{ "hash",		HASH },
 		{ "hostname",		HOSTNAME },
 		{ "include",		INCLUDE },
-		{ "interval",		INTERVAL },
 		{ "list",		LIST },
 		{ "listen",		LISTEN },
 		{ "local",		LOCAL },
@@ -1041,8 +1062,8 @@ lookup(char *s)
 		{ "mda",		MDA },
 		{ "network",		NETWORK },
 		{ "on",			ON },
+		{ "plain",		PLAIN },
 		{ "port",		PORT },
-		{ "queue",		QUEUE },
 		{ "reject",		REJECT },
 		{ "relay",		RELAY },
 		{ "single",		SINGLE },
@@ -1220,9 +1241,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -1434,8 +1456,7 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 	SPLAY_INIT(conf->sc_ssl);
 	SPLAY_INIT(&conf->sc_sessions);
 
-	conf->sc_qintval.tv_sec = SMTPD_QUEUE_INTERVAL;
-	conf->sc_qintval.tv_usec = 0;
+	conf->sc_qexpire = SMTPD_EXPIRE;
 	conf->sc_opts = opts;
 
 	if ((file = pushfile(filename, 0)) == NULL) {
@@ -1817,4 +1838,50 @@ set_localaddrs(void)
 	}
 
 	freeifaddrs(ifap);
+}
+
+int
+delaytonum(char *str)
+{
+	unsigned int	 factor;
+	size_t		 len;
+	const char	*errstr = NULL;
+	int		 delay;
+
+	/* we need at least 1 digit and 1 unit */
+	len = strlen(str);
+	if (len < 2)
+		goto bad;
+
+	switch(str[len - 1]) {
+
+	case 's':
+		factor = 1;
+		break;
+
+	case 'm':
+		factor = 60;
+		break;
+
+	case 'h':
+		factor = 60 * 60;
+		break;
+
+	case 'd':
+		factor = 24 * 60 * 60;
+		break;
+
+	default:
+		goto bad;
+	}
+	
+	str[len - 1] = '\0';
+	delay = strtonum(str, 1, INT_MAX / factor, &errstr);
+	if (errstr)
+		goto bad;
+
+	return (delay * factor);
+
+bad:
+	return (-1);
 }

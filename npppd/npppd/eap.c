@@ -1,3 +1,5 @@
+/* $OpenBSD: eap.c,v 1.5 2010/09/22 11:48:38 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -24,18 +26,17 @@
  * SUCH DAMAGE.
  */
 /**@file
- *
- * EAP Pass-through Authenticator の実装。
- *
+ * This file provides EAP(Extensible Authentication Protocols, RFC 3748)
+ * handlers.  This currently provides only EAP Pass-through Authenticator.
  * @see RFC3748
  *	    Extensible Authentication Protocols(EAP)
  * @see RFC3579
  *	    RADIUS (Remote Authentication Dial In User Service) Support For
  *	    Extensible Authentication Protocol (EAP). B. Aboba, P. Calhoun.
  */
-// $Id: eap.c,v 1.1 2010/01/11 04:20:57 yasuoka Exp $
+/* $Id: eap.c,v 1.5 2010/09/22 11:48:38 yasuoka Exp $ */
 
-/* FIXME: コメント/ログの意味がわからない */
+/* FIXME: This must be rewritten. */
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -71,9 +72,9 @@
 
 #define	EAP_HEADERLEN	4
 
-#define	EAP_TIMEOUT_INIT	3	/* 初期リトライ間隔 */
-#define	EAP_TIMEOUT_MAX		20	/* 最大リトライ間隔 */
-#define	EAP_RETRY		4	/* リトライ回数 */
+#define	EAP_TIMEOUT_INIT	3	/* Initial retry internval */
+#define	EAP_TIMEOUT_MAX		20	/* Maximum retry internval */
+#define	EAP_RETRY		4	/* Number of retry */
 
 #define	EAP_REQUEST	1
 #define	EAP_RESPONSE	2
@@ -85,7 +86,7 @@
 
 #define EAP_DEBUG
 #ifdef	EAP_DEBUG
-#define	EAP_DBG(x)	eap_log x 
+#define	EAP_DBG(x)	eap_log x
 #define	EAP_ASSERT(cond)					\
 	if (!(cond)) {						\
 	    fprintf(stderr,					\
@@ -94,8 +95,8 @@
 	    abort(); 						\
 	}
 #else
-#define	EAP_ASSERT(cond)			
-#define	EAP_DBG(x)	
+#define	EAP_ASSERT(cond)
+#define	EAP_DBG(x)
 #endif
 
 #define TMPBUF		256
@@ -113,9 +114,7 @@ static void eap_log(eap *_this, uint32_t prio, const char *fmt, ...) __printflik
 static int get_mppe_keys(eap *_this, RADIUS_PACKET *pkt, const char *secret);
 #endif
 
-/**
- * {@link ::_eap EAPインスタンス}を初期化します。
- */
+/** Initialize the EAP */
 void
 eap_init(eap *_this, npppd_ppp *ppp)
 {
@@ -128,9 +127,7 @@ eap_init(eap *_this, npppd_ppp *ppp)
         _this->state = EAP_STATE_INITIAL;
 }
 
-/**
- * 認証者として、EAPを開始します。Identity Requestを投げます。
- */
+/** Start the EAP as a authenticator.  Send a identity request */
 void
 eap_start(eap *_this)
 {
@@ -140,8 +137,8 @@ eap_start(eap *_this)
 	EAP_ASSERT(_this != NULL);
 	EAP_ASSERT(_this->ppp != NULL);
 
-	/* 
-	 * initialize for timeout callback 
+	/*
+	 * initialize for timeout callback
 	 */
 	_this->name_len = 0;
 	memset(_this->name, 0, sizeof(_this->name));
@@ -149,7 +146,7 @@ eap_start(eap *_this)
 	memset(_this->attr_state, 0, RADIUS_ATTR_STATE_LEN);
 
 	if (_this->state == EAP_STATE_INITIAL ||
-            _this->state == EAP_STATE_SEND_REQUEST_TO_PEER){ 
+            _this->state == EAP_STATE_SEND_REQUEST_TO_PEER){
 		if (_this->ntry > 0) {
 			_this->ntry--;
 
@@ -174,12 +171,12 @@ eap_start(eap *_this)
 
 			if (_this->eapid == 0)
 				_this->eapid = INIT_EAPID;
-			else 
+			else
 				_this->eapid++;
 
-                        /*                  
+                        /*
                          * send eap request
-                         */                 
+                         */
 			ppp_output(_this->ppp, PPP_PROTO_EAP, EAP_REQUEST,
 			    _this->eapid, req0, req - req0);
 			_this->state =  EAP_STATE_SEND_REQUEST_TO_PEER;
@@ -214,7 +211,7 @@ eap_restart(eap *_this) {
 	eap_start(_this);
 }
 
-void 
+void
 eap_input(eap *_this, unsigned char *pktp, int len){
         u_int8_t *pkthp;
         int code, id, length, type;
@@ -226,7 +223,7 @@ eap_input(eap *_this, unsigned char *pktp, int len){
 		return;
 	}
         pkthp = pktp;
-        
+
         UNTIMEOUT(eap_restart, _this);
 
 	if(len < EAP_HEADERLEN + 1){
@@ -242,7 +239,7 @@ eap_input(eap *_this, unsigned char *pktp, int len){
 		    "Recieved unexpected packet from peer (code = %d)", code);
 		return;
 	}
-       
+
        	GETCHAR(id, pkthp);
         if (id != _this->eapid) {
 		/* discard */
@@ -254,7 +251,7 @@ eap_input(eap *_this, unsigned char *pktp, int len){
 
 	/*
 	 * get user name  from itentity response
-	 */ 
+	 */
        	GETSHORT(length, pkthp);
        	GETCHAR(type, pkthp);
 	if (type == PPP_AUTH_EAP_IDENTITY && _this->name_len == 0) {
@@ -273,19 +270,19 @@ eap_input(eap *_this, unsigned char *pktp, int len){
                        		_this->name_len = 0;
 				eap_log(_this, LOG_ERR,
 				    "Identity name is too long");
-				return;				
+				return;
 	    		}
         	}
 	}
 
 	if (type == PPP_AUTH_EAP_NAK){
-		/* 
+		/*
 		 * Nak check
 		 */
 		_this->flags |= PPP_EAP_FLAG_NAK_RESPONSE;
 		eap_log(_this, LOG_DEBUG, "peer response is nak");
 	}
- 
+
 	if(_this->name_len != 0){
 		eap_forward_to_radius(_this, pktp, len);
 		return;
@@ -293,8 +290,8 @@ eap_input(eap *_this, unsigned char *pktp, int len){
 
 	/* unexpected process
          * discard
-         */ 
-	eap_log(_this, LOG_DEBUG, 
+         */
+	eap_log(_this, LOG_DEBUG,
 	    "recieve eap length = %d, "
 	    "eap info: code = %d, id = %d, length = %d, type = %d, "
 	    "name length = %d",
@@ -316,117 +313,120 @@ eap_forward_to_radius(eap *_this, u_int8_t *data, int datalen)
 	unsigned int timeout;
 	char buf0[MAX_USERNAME_LENGTH];
 
-	/* FIXME: 毎度やる必要なし */
+	/*
+	 * FIXME: Whenever a radius packet is forwarded, is
+	 * FIXME: npppd_ppp_bind_realm() called?
+	 */
 	if (npppd_ppp_bind_realm(_this->ppp->pppd, _this->ppp, _this->name, 1)
 	    != 0) {
-		/* 
-		 * internal error 
+		/*
+		 * internal error
 		 * retry
 		 */
 		eap_log(_this, LOG_ERR, "Not found realm");
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
 	if (npppd_ppp_is_realm_radius(
 	    _this->ppp->pppd, _this->ppp) == 0) {
 		/*
-		 * internal error 
-		 * retry 
+		 * internal error
+		 * retry
 		 */
 		eap_log(_this, LOG_ERR, "Not found realm");
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
 	if ((rad_setting = npppd_get_radius_req_setting(
 	    _this->ppp->pppd, _this->ppp)) == NULL) {
 		/*
-		 * internal error 
-		 * retry  
+		 * internal error
+		 * retry
 		 */
 		eap_log(_this, LOG_ERR, "Not found radius server setting");
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
-        /*                          
+        /*
          * make  new request packet
-         */                          
+         */
         if ((radpkt = radius_new_request_packet(RADIUS_CODE_ACCESS_REQUEST))
 	    == NULL){
-		/* 
-		 * internal error 
-		 * retry 
+		/*
+		 * internal error
+		 * retry
 		 */
 		eap_log(_this, LOG_ERR, "Can't make new request packet");
 		retry = 1;
-		goto reigai;
+		goto fail;
         }
 
 	if (ppp_set_radius_attrs_for_authreq(_this->ppp, rad_setting, radpkt)
 	    != 0) {
 		/*
-		 * internal error 
-		 * retry  
+		 * internal error
+		 * retry
 		 */
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
 	/* avoid EAP fragmentation */
 	if (radius_put_uint32_attr(radpkt, RADIUS_TYPE_FRAMED_MTU,
 		_this->ppp->mru) != 0) {
 		/*
-		 * internal error 
-		 * retry  
+		 * internal error
+		 * retry
 		 */
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
-        /*                                    
-         * set user name attribute 
-         */ 
+        /*
+         * set user name attribute
+         */
 	if (_this->name_len != 0) {
-		if (radius_put_string_attr(radpkt, RADIUS_TYPE_USER_NAME, 
+		if (radius_put_string_attr(radpkt, RADIUS_TYPE_USER_NAME,
 		    npppd_ppp_get_username_for_auth(_this->ppp->pppd,
 			    _this->ppp, _this->name, buf0)) != 0) {
-			/* 
+			/*
 			 * internal error
 			 * retry
 			 */
-			eap_log(_this, LOG_ERR, 
-			    "Can't put attribute to radius packet. type = %d", 
+			eap_log(_this, LOG_ERR,
+			    "Can't put attribute to radius packet. type = %d",
 			    RADIUS_TYPE_USER_NAME);
 			retry = 1;
-			goto reigai;
+			goto fail;
 		}
 	} else {
 		/*
-		 * none Identity 
-		 * discard 
+		 * none Identity
+		 * discard
 		 */
 		eap_log(_this, LOG_NOTICE, "Identity name is not seted");
-		goto reigai;
+		goto fail;
 	}
 
 	/*
 	 * set state attribute
 	 */
 	if (_this->attr_state_len != 0) {
-		if (radius_put_raw_attr(radpkt, 
-		    RADIUS_TYPE_STATE, 
-		    _this->attr_state, 
+		if (radius_put_raw_attr(radpkt,
+		    RADIUS_TYPE_STATE,
+		    _this->attr_state,
 		    _this->attr_state_len) != 0) {
-			/* 
+			/*
 			 * internal error
 			 * discard
-			 */ 
-			eap_log(_this, LOG_ERR, 
-			    "Can't put attribute to radius packet. type = %d", 
+			 */
+			eap_log(_this, LOG_ERR,
+			    "Can't put attribute to radius packet. type = %d",
 			    RADIUS_TYPE_STATE);
-			goto reigai;
+			goto fail;
 		}
 	}
 
@@ -436,34 +436,34 @@ eap_forward_to_radius(eap *_this, u_int8_t *data, int datalen)
 	 */
 	while (rlength > 0) {
 		if (rlength > 253) {
-			if (radius_put_raw_attr(radpkt, 
-			    RADIUS_TYPE_EAP_MESSAGE, 
+			if (radius_put_raw_attr(radpkt,
+			    RADIUS_TYPE_EAP_MESSAGE,
 			    data+(datalen-rlength), 253) != 0) {
-				/* 
-				 * internal error 
-				 * retry 
+				/*
+				 * internal error
+				 * retry
 				 */
-				eap_log(_this, LOG_ERR, 
+				eap_log(_this, LOG_ERR,
 				    "Can't put attribute to radius packet.  "
 				    "type = %d", RADIUS_TYPE_EAP_MESSAGE);
 				retry = 1;
-				goto reigai;
+				goto fail;
 			}
 			rlength -= 253;
 		} else {
-			if (radius_put_raw_attr(radpkt, 
-		    	    RADIUS_TYPE_EAP_MESSAGE, 
-		    	    data+(datalen-rlength), 
+			if (radius_put_raw_attr(radpkt,
+		    	    RADIUS_TYPE_EAP_MESSAGE,
+		    	    data+(datalen-rlength),
 		    	    rlength) != 0) {
 				/*
 				 * internal error
 				 * retry
-				 */ 
-				eap_log(_this, LOG_ERR, 
+				 */
+				eap_log(_this, LOG_ERR,
 			    	    "Can't put attribute to radius packet.  "
 				    "type = %d", RADIUS_TYPE_EAP_MESSAGE);
 				retry = 1;
-                     		goto reigai;
+                     		goto fail;
                  	}
                  	rlength -= rlength;
 		}
@@ -475,18 +475,21 @@ eap_forward_to_radius(eap *_this, u_int8_t *data, int datalen)
 	if (_this->radctx != NULL)
 		radius_cancel_request(_this->radctx);
 
-	/* 
-	 * prepare request 
+	/*
+	 * prepare request
 	 */
-	if (_this->session_timeout != 0) 
-/* FIXME: 認証タイムアウトと独立したタイマーが必要なのか? */
+	if (_this->session_timeout != 0)
+/*
+ * FIXME: Is the timer other than authentication timeout timer really
+ * FIXME: necessary?
+ */
 		timeout = _this->session_timeout/2;
 	else
 		timeout = _this->ppp->auth_timeout;
         if (radius_prepare(rad_setting, _this, &radctx,
 	    eap_recv_from_radius, timeout) != 0) {
-		/* 
-		 * internal error 
+		/*
+		 * internal error
 		 * retry
 		 */
 		eap_log(_this, LOG_ERR, "Can't prepare to send access request "
@@ -496,42 +499,42 @@ eap_forward_to_radius(eap *_this, u_int8_t *data, int datalen)
 			    "radius server setting is not ready");
 		}
 		retry  = 1;
-		goto reigai;
+		goto fail;
 	}
 	_this->radctx = radctx;
 
-	/*                        
-	 * get secret password  
-         *     for radius         
+	/*
+	 * get secret password
+         *     for radius
          */
         secret = radius_get_server_secret(_this->radctx);
         secretlen = strlen(secret);
 
-        /*                                      
-         * set message authenticator attribute  
+        /*
+         * set message authenticator attribute
          */
 	if (radius_put_message_authenticator(radpkt, secret) != 0) {
 		eap_log(_this, LOG_ERR, "couldn't put message authentication "
 		    "attribute to radius packet");
 		retry = 1;
-		goto reigai;
+		goto fail;
 	}
 
 	radius_get_authenticator(radpkt, _this->authenticator);
 
-	/* 
-	 * send request 
+	/*
+	 * send request
 	 */
         radius_request(_this->radctx, radpkt);
         return;
-reigai:
+fail:
 	/*
          *  don't give peer user infomation
          */
 	if (radpkt != NULL)
 		radius_delete_packet(radpkt);
         eap_log(_this, LOG_NOTICE, "Can't forward packet to radius from peer");
-	if (retry) { 
+	if (retry) {
 		eap_restart(_this);
 	}
         return;
@@ -547,10 +550,10 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 	int retry = 0;
 	char *notify_reason = NULL;
 	RADIUS_REQUEST_CTX radctx;
-	u_char msgbuf[4096], *cp;		/* FIXME: たぶん十分 */
+	u_char msgbuf[4096], *cp;		/* FIXME: May be enough? */
 	int len;
         u_int8_t attrlen = 0;
-	
+
         u_int8_t eap_code = 0;
         u_int8_t eap_id = 0;
         size_t eap_length;
@@ -563,34 +566,34 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
         _this = context;
 	radctx = _this->radctx;
         errorCode = ERROR_AUTH_SERVER_TIMEOUT;
-        _this->radctx = NULL; 
+        _this->radctx = NULL;
 
         if (pkt == NULL) {
 		if (flags & RADIUS_REQUST_TIMEOUT) {
 			/*
-			 * timeout 
+			 * timeout
 			 * retry
 			 */
                 	eap_log(_this, LOG_WARNING, "Timeout radius response");
 			retry = 1;
 			notify_reason = "timeout";
 		} else  {
-			/* 
+			/*
 			 * internal error
 			 * retry
 			 */
                 	eap_log(_this, LOG_WARNING,
-			    "Internal error with radius packet");           
+			    "Internal error with radius packet");
 			retry = 1;
 			notify_reason = "intenal error";
 		}
 		goto auth_failed;
         }
 
-        if(!(flags && RADIUS_REQUST_CHECK_AUTHENTICTOR_NO_CHECK) &&
-            !(flags && RADIUS_REQUST_CHECK_AUTHENTICTOR_OK)){
+        if(!(flags & RADIUS_REQUST_CHECK_AUTHENTICTOR_NO_CHECK) &&
+            !(flags & RADIUS_REQUST_CHECK_AUTHENTICTOR_OK)){
                 /* discard */
-                eap_log(_this, LOG_WARNING, "Header has invalid authticator");           
+                eap_log(_this, LOG_WARNING, "Header has invalid authticator");
 		notify_reason = "bad authenticator";
 		retry = 1;
             	goto auth_failed;
@@ -602,9 +605,9 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 	secret = radius_get_server_secret(radctx);
 	secretlen = strlen(secret);
 
-        /*                                       
-         * get radius code                        
-         */                                      
+        /*
+         * get radius code
+         */
 	code = radius_get_code(pkt);
 	if (radius_check_message_authenticator(pkt, secret) != 0) {
 		eap_log(_this, LOG_WARNING, "bad message authenticator.");
@@ -621,7 +624,7 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 		/*
 		 * check reject
 		 */
-		if ((_this->flags & PPP_EAP_FLAG_NAK_RESPONSE) 
+		if ((_this->flags & PPP_EAP_FLAG_NAK_RESPONSE)
 		    && code == RADIUS_CODE_ACCESS_REJECT) {
 			/*
 			 * nak and reject
@@ -632,7 +635,7 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 			/*
 			 * reject
 			 */
-                	eap_log(_this, LOG_NOTICE, "Authentication reject");           
+                	eap_log(_this, LOG_NOTICE, "Authentication reject");
 		} else {
 			/*
 			 * discard
@@ -645,7 +648,7 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 		goto auth_failed;
 	}
 	if (attrlen < 4) {
-		/* 
+		/*
 		 * discard
 		 */
 		eap_log(_this, LOG_WARNING, "EAP message is too short");
@@ -662,9 +665,9 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 	 */
 	if (code == RADIUS_CODE_ACCESS_CHALLENGE) {
 		_this->attr_state_len = RADIUS_ATTR_STATE_LEN;
-		if (radius_get_raw_attr(pkt, 
-		    RADIUS_TYPE_STATE, 
-		    _this->attr_state, 
+		if (radius_get_raw_attr(pkt,
+		    RADIUS_TYPE_STATE,
+		    _this->attr_state,
 		    &(_this->attr_state_len)) != 0) {
 			/* discard */
 			eap_log(_this, LOG_ERR, "Not found state attribute");
@@ -679,18 +682,18 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 		}
 	}
 
-	/* 
+	/*
 	 * get session timeout field
 	 */
-	if (radius_get_uint32_attr(pkt, RADIUS_TYPE_SESSION_TIMEOUT, 
+	if (radius_get_uint32_attr(pkt, RADIUS_TYPE_SESSION_TIMEOUT,
 	    &_this->session_timeout) == 0) {
-		if (_this->session_timeout > EAP_TIMEOUT_MAX) 
+		if (_this->session_timeout > EAP_TIMEOUT_MAX)
 			_this->session_timeout = EAP_TIMEOUT_MAX;
-		eap_log(_this, LOG_DEBUG, "Found session timeout attribute");	
+		eap_log(_this, LOG_DEBUG, "Found session timeout attribute");
 	}
 
-        /*                            
-         *  get eap message attribute 
+        /*
+         *  get eap message attribute
          */
 	if (radius_get_raw_attr_all(pkt, RADIUS_TYPE_EAP_MESSAGE,
 	    NULL, &len) != 0) {
@@ -714,12 +717,12 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 		goto auth_failed;
 	}
 
-        /*                       
-         * forwarding validation 
+        /*
+         * forwarding validation
          * RFC 3579, RFC 3784
-	 * 
-	 */ 
-	finish = 0;                          
+	 *
+	 */
+	finish = 0;
 	switch (code) {
 	case RADIUS_CODE_ACCESS_REQUEST:
 		eap_log(_this, LOG_INFO,
@@ -730,53 +733,53 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 	case RADIUS_CODE_ACCESS_REJECT:
 		switch (eap_code) {
 		case EAP_REQUEST:
-			eap_log(_this, LOG_INFO, "Abnormal reject");	
+			eap_log(_this, LOG_INFO, "Abnormal reject");
 			eap_stop(_this);
 			ppp_stop(_this->ppp, "Authentication failed");
 			finish = 1;
 			break;
 		case EAP_RESPONSE:
-			eap_log(_this, LOG_INFO, 
-			    "Unexpected eap code(access reject)");	
+			eap_log(_this, LOG_INFO,
+			    "Unexpected eap code(access reject)");
 			goto auth_failed;
 			break;
 		case EAP_FAILURE:
-			eap_log(_this, LOG_INFO, "Eap failure");	
+			eap_log(_this, LOG_INFO, "Eap failure");
 			eap_stop(_this);
-			finish = eap_forward_to_peer(_this, 
+			finish = eap_forward_to_peer(_this,
 			    msgbuf+EAP_HEADERLEN, len-EAP_HEADERLEN,
 			    eap_code, eap_id);
 			break;
 		case EAP_SUCCESS:
 		default:
-			eap_log(_this, LOG_INFO, 
+			eap_log(_this, LOG_INFO,
 			    "Invalid combination code: radius code = %d and "
 			    "eap code = %d", code ,eap_code);
 			goto auth_failed;
 				break;
 		}
-		break; 		
+		break;
 	case RADIUS_CODE_ACCESS_ACCEPT:
 		switch (eap_code) {
 		case EAP_REQUEST:
-			finish = eap_forward_to_peer(_this, 
+			finish = eap_forward_to_peer(_this,
 			    msgbuf+EAP_HEADERLEN, len-EAP_HEADERLEN,
 			    eap_code, eap_id);
 			break;
 		case EAP_RESPONSE:
-			eap_log(_this, LOG_INFO, 
-			    "unexpected eap code(access accept)");	
+			eap_log(_this, LOG_INFO,
+			    "unexpected eap code(access accept)");
 			goto auth_failed;
 			break;
 		case EAP_FAILURE:
-			eap_log(_this, LOG_INFO, 
+			eap_log(_this, LOG_INFO,
 			    "Invalid combination code: radius code = %d and "
 			    "eap code = %d",
-			    code ,eap_code);	
+			    code ,eap_code);
 			goto auth_failed;
 			break;
 		case EAP_SUCCESS:
-			ppp_proccess_radius_framed_ip(_this->ppp, pkt);
+			ppp_process_radius_framed_ip(_this->ppp, pkt);
 #ifdef USE_NPPPD_MPPE
 			if (get_mppe_keys(_this, pkt, secret)) {
 				if (MPPE_REQUIRED(_this->ppp)) {
@@ -792,45 +795,45 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
 					    "encryption");
 				}
                         } else {
-				eap_log(_this, LOG_DEBUG, 
+				eap_log(_this, LOG_DEBUG,
 					    "Found attribute of mppe keys");
 			}
 
 #endif
-			finish = eap_forward_to_peer(_this, 
+			finish = eap_forward_to_peer(_this,
 			    msgbuf+EAP_HEADERLEN, len-EAP_HEADERLEN,
 			    eap_code, eap_id);
 			break;
 		default:
-			eap_log(_this, LOG_INFO, 
+			eap_log(_this, LOG_INFO,
 			    "Invalid combination code: radius code = %d and "
 			    "eap code = %d", code ,eap_code);
 			goto auth_failed;
 			break;
 		}
-		break; 		
+		break;
 	case RADIUS_CODE_ACCESS_CHALLENGE:
 		switch (eap_code) {
 		case EAP_REQUEST:
-			finish = eap_forward_to_peer(_this, 
+			finish = eap_forward_to_peer(_this,
 			    msgbuf+EAP_HEADERLEN, len-EAP_HEADERLEN,
 			    eap_code, eap_id);
 			break;
 		case EAP_RESPONSE:
-			eap_log(_this, LOG_INFO, 
-			    "Unexpected eap code(access challenge)");	
+			eap_log(_this, LOG_INFO,
+			    "Unexpected eap code(access challenge)");
 			goto auth_failed;
 			break;
 		case EAP_FAILURE:
 		case EAP_SUCCESS:
 		default:
-			eap_log(_this, LOG_INFO, 
+			eap_log(_this, LOG_INFO,
 			    "Invalid combination code: radius code = %d and "
 			    "eap code = %d", code ,eap_code);
 			goto auth_failed;
 			break;
-		} 
-		/* XXX TODO:not forward EAP-START */		
+		}
+		/* XXX TODO:not forward EAP-START */
 		break;
 	default:
 		eap_log(_this, LOG_INFO,
@@ -852,7 +855,7 @@ eap_recv_from_radius(void *context, RADIUS_PACKET *pkt, int flags)
         return;
 
 auth_failed:
-	eap_log(_this, LOG_WARNING, 
+	eap_log(_this, LOG_WARNING,
 	    "Can't forward packet to peer from radius");
 	if (notify_reason != NULL) {
 		npppd_radius_server_failure_notify(
@@ -878,21 +881,23 @@ get_mppe_keys(eap *_this, RADIUS_PACKET *pkt, const char *secret) {
 		return 1;
 	}
 	len = sizeof(sendkey);
+	/* XXX: radius_get_vs_raw_attr doesn't read 'len' */
 	if (radius_get_vs_raw_attr(pkt, RADIUS_VENDOR_MICROSOFT,
 	    RADIUS_VTYPE_MPPE_SEND_KEY, &sendkey, &len) != 0) {
 		eap_log(_this, LOG_ERR, "no mppe_send_key");
 		return 1;
 	}
 	len = sizeof(recvkey);
+	/* XXX: radius_get_vs_raw_attr doesn't read 'len' */
 	if (radius_get_vs_raw_attr(pkt, RADIUS_VENDOR_MICROSOFT,
 	    RADIUS_VTYPE_MPPE_RECV_KEY, &recvkey, &len) != 0) {
 		eap_log(_this, LOG_ERR, "no mppe_recv_key");
 		return 1;
 	}
-	DecryptKeyFromRadius(_this->ppp->mppe.send.master_key,
+	mschap_radiuskey(_this->ppp->mppe.send.master_key,
 	    sendkey.salt, _this->authenticator, secret);
 
-	DecryptKeyFromRadius(_this->ppp->mppe.recv.master_key,
+	mschap_radiuskey(_this->ppp->mppe.recv.master_key,
 	    recvkey.salt, _this->authenticator, secret);
 
 	return 0;
@@ -918,9 +923,9 @@ eap_forward_to_peer(eap *_this, u_int8_t *data, int datalen, int type, u_int8_t 
         EAP_ASSERT(data != NULL);
 
 	switch (type) {
-	case EAP_REQUEST: 
+	case EAP_REQUEST:
         	ppp_output(_this->ppp, PPP_PROTO_EAP, EAP_REQUEST, id, data,
-		    datalen); 
+		    datalen);
         	break;
 	case EAP_SUCCESS:
         	ppp_output(_this->ppp, PPP_PROTO_EAP, EAP_SUCCESS, id, data,
@@ -933,7 +938,7 @@ eap_forward_to_peer(eap *_this, u_int8_t *data, int datalen, int type, u_int8_t 
 		break;
 	case EAP_FAILURE:
         	ppp_output(_this->ppp, PPP_PROTO_EAP, EAP_FAILURE, id, data,
-		    datalen); 
+		    datalen);
         	eap_log(_this, LOG_INFO, "eap-failure has been received from the peer.");
         	eap_log(_this, LOG_INFO, "Authentication failed");
 		eap_stop(_this);
@@ -947,7 +952,7 @@ eap_forward_to_peer(eap *_this, u_int8_t *data, int datalen, int type, u_int8_t 
 }
 
 /************************************************************************
- * ユーティリティ関数
+ * Miscellaneous functions
  ************************************************************************/
 void
 eap_log(eap *_this, uint32_t prio, const char *fmt, ...)

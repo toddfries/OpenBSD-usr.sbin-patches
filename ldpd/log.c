@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.4 2010/04/15 15:44:37 claudio Exp $ */
+/*	$OpenBSD: log.c,v 1.8 2010/09/02 14:34:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -15,6 +15,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <errno.h>
 #include <stdarg.h>
@@ -187,8 +192,6 @@ nbr_state_name(int state)
 		return ("OPENSENT");
 	case NBR_STA_OPER:
 		return ("OPERATIONAL");
-	case NBR_STA_ACTIVE:
-		return ("ACTIVE");
 	default:
 		return ("UNKNW");
 	}
@@ -217,12 +220,6 @@ if_type_name(enum iface_type type)
 		return ("POINTOPOINT");
 	case IF_TYPE_BROADCAST:
 		return ("BROADCAST");
-	case IF_TYPE_NBMA:
-		return ("NBMA");
-	case IF_TYPE_POINTOMULTIPOINT:
-		return ("POINTOMULTIPOINT");
-	case IF_TYPE_VIRTUALLINK:
-		return ("VIRTUALLINK");
 	}
 	/* NOTREACHED */
 	return ("UNKNOWN");
@@ -290,4 +287,18 @@ notification_name(u_int32_t status)
 		snprintf(buf, sizeof(buf), "[%08x]", status);
 		return (buf);
 	}
+}
+
+const char *
+log_fec(struct map *map)
+{
+	static char	buf[32];
+	char		pstr[32];
+
+	if (snprintf(buf, sizeof(buf), "%s/%u",
+	    inet_ntop(AF_INET, &map->prefix, pstr, sizeof(pstr)),
+	    map->prefixlen) == -1)
+		return ("???");
+
+	return (buf);
 }

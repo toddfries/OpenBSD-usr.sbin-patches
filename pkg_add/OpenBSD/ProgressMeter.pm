@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: ProgressMeter.pm,v 1.30 2010/03/22 20:38:44 espie Exp $
+# $OpenBSD: ProgressMeter.pm,v 1.36 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 #
@@ -26,8 +26,8 @@ sub new
 
 sub setup
 {
-	my ($self, $opt_x) = @_;
-	if (!$opt_x && -t STDOUT) {
+	my ($self, $opt_x, $opt_m) = @_;
+	if ($opt_m || (!$opt_x && -t STDOUT)) {
 		require OpenBSD::ProgressMeter::Term;
 		bless $self, "OpenBSD::ProgressMeter::Term";
 		$self->init;
@@ -46,6 +46,21 @@ sub errprint
 	print STDERR @_;
 }
 
+sub for_list
+{
+	my ($self, $msg, $l, $code) = @_;
+	if (defined $msg) {
+		$self->set_header($msg);
+	}
+	my $total = scalar @$l;
+	my $i = 0;
+	for my $e (@$l) {
+		$self->show(++$i, $total);
+		&$code($e);
+	}
+	$self->next;
+}
+
 # stub class when no actual progressmeter that still prints out.
 package OpenBSD::ProgressMeter::Stub;
 our @ISA = qw(OpenBSD::ProgressMeter);
@@ -54,6 +69,7 @@ sub clear {}
 
 sub show {}
 
+sub working {}
 sub message {}
 
 sub next {}

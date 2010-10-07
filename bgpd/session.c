@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.307 2010/04/16 12:24:25 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.311 2010/09/02 14:03:21 sobrado Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -65,8 +65,8 @@ void	session_accept(int);
 int	session_connect(struct peer *);
 void	session_tcp_established(struct peer *);
 void	session_capa_ann_none(struct peer *);
-int	session_capa_add(struct buf *, u_int8_t, u_int8_t);
-int	session_capa_add_mp(struct buf *, u_int8_t);
+int	session_capa_add(struct ibuf *, u_int8_t, u_int8_t);
+int	session_capa_add_mp(struct ibuf *, u_int8_t);
 struct bgp_msg	*session_newmsg(enum msg_type, u_int16_t);
 int	session_sendmsg(struct bgp_msg *, struct peer *);
 void	session_open(struct peer *);
@@ -174,8 +174,8 @@ setup_listeners(u_int *la_cnt)
 }
 
 pid_t
-session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2], 
-    int pipe_s2rctl[2], char *cname, char *rcname)
+session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
+    int pipe_s2rctl[2])
 {
 	int			 nfds, timeout;
 	unsigned int		 i, j, idx_peers, idx_listeners, idx_mrts;
@@ -201,12 +201,6 @@ session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
 	default:
 		return (pid);
 	}
-
-	/* control socket is outside chroot */
-	if ((csock = control_init(0, cname)) == -1)
-		fatalx("control socket setup failed");
-	if (rcname != NULL && (rcsock = control_init(1, rcname)) == -1)
-		fatalx("control socket setup failed");
 
 	if ((pw = getpwnam(BGPD_USER)) == NULL)
 		fatal(NULL);
@@ -248,8 +242,6 @@ session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
 	imsg_init(ibuf_main, pipe_m2s[1]);
 
 	TAILQ_INIT(&ctl_conns);
-	control_listen(csock);
-	control_listen(rcsock);
 	LIST_INIT(&mrthead);
 	listener_cnt = 0;
 	peer_cnt = 0;
@@ -377,7 +369,7 @@ session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
 		if (ctl_queued < SESSION_CTL_QUEUE_MAX)
 			/*
 			 * Do not act as unlimited buffer. Don't read in more
-			 * messages if the ctl sockets are getting full. 
+			 * messages if the ctl sockets are getting full.
 			 */
 			pfd[PFD_PIPE_ROUTE_CTL].events = POLLIN;
 		pfd[PFD_SOCK_CTL].fd = csock;
@@ -626,7 +618,7 @@ bgp_fsm(struct peer *peer, enum session_events event)
 			timer_stop(peer, Timer_IdleHold);
 
 			/* allocate read buffer */
-			peer->rbuf = calloc(1, sizeof(struct buf_read));
+			peer->rbuf = calloc(1, sizeof(struct ibuf_read));
 			if (peer->rbuf == NULL)
 				fatal(NULL);
 
@@ -1227,17 +1219,17 @@ session_capa_ann_none(struct peer *peer)
 }
 
 int
-session_capa_add(struct buf *opb, u_int8_t capa_code, u_int8_t capa_len)
+session_capa_add(struct ibuf *opb, u_int8_t capa_code, u_int8_t capa_len)
 {
 	int errs = 0;
 
-	errs += buf_add(opb, &capa_code, sizeof(capa_code));
-	errs += buf_add(opb, &capa_len, sizeof(capa_len));
+	errs += ibuf_add(opb, &capa_code, sizeof(capa_code));
+	errs += ibuf_add(opb, &capa_len, sizeof(capa_len));
 	return (errs);
 }
 
 int
-session_capa_add_mp(struct buf *buf, u_int8_t aid)
+session_capa_add_mp(struct ibuf *buf, u_int8_t aid)
 {
 	u_int8_t		 safi, pad = 0;
 	u_int16_t		 afi;
@@ -1246,9 +1238,9 @@ session_capa_add_mp(struct buf *buf, u_int8_t aid)
 	if (aid2afi(aid, &afi, &safi) == -1)
 		fatalx("session_capa_add_mp: bad afi/safi pair");
 	afi = htons(afi);
-	errs += buf_add(buf, &afi, sizeof(afi));
-	errs += buf_add(buf, &pad, sizeof(pad));
-	errs += buf_add(buf, &safi, sizeof(safi));
+	errs += ibuf_add(buf, &afi, sizeof(afi));
+	errs += ibuf_add(buf, &pad, sizeof(pad));
+	errs += ibuf_add(buf, &safi, sizeof(safi));
 
 	return (errs);
 }
@@ -1258,23 +1250,23 @@ session_newmsg(enum msg_type msgtype, u_int16_t len)
 {
 	struct bgp_msg		*msg;
 	struct msg_header	 hdr;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	int			 errs = 0;
 
 	memset(&hdr.marker, 0xff, sizeof(hdr.marker));
 	hdr.len = htons(len);
 	hdr.type = msgtype;
 
-	if ((buf = buf_open(len)) == NULL)
+	if ((buf = ibuf_open(len)) == NULL)
 		return (NULL);
 
-	errs += buf_add(buf, &hdr.marker, sizeof(hdr.marker));
-	errs += buf_add(buf, &hdr.len, sizeof(hdr.len));
-	errs += buf_add(buf, &hdr.type, sizeof(hdr.type));
+	errs += ibuf_add(buf, &hdr.marker, sizeof(hdr.marker));
+	errs += ibuf_add(buf, &hdr.len, sizeof(hdr.len));
+	errs += ibuf_add(buf, &hdr.type, sizeof(hdr.type));
 
 	if (errs > 0 ||
 	    (msg = calloc(1, sizeof(*msg))) == NULL) {
-		buf_free(buf);
+		ibuf_free(buf);
 		return (NULL);
 	}
 
@@ -1300,7 +1292,7 @@ session_sendmsg(struct bgp_msg *msg, struct peer *p)
 			mrt_dump_bgp_msg(mrt, msg->buf->buf, msg->len, p);
 	}
 
-	buf_close(&p->wbuf, msg->buf);
+	ibuf_close(&p->wbuf, msg->buf);
 	free(msg);
 	return (0);
 }
@@ -1309,14 +1301,14 @@ void
 session_open(struct peer *p)
 {
 	struct bgp_msg		*buf;
-	struct buf		*opb;
+	struct ibuf		*opb;
 	struct msg_open		 msg;
 	u_int16_t		 len;
 	u_int8_t		 i, op_type, optparamlen = 0;
 	u_int			 errs = 0;
 
 
-	if ((opb = buf_dynamic(0, UCHAR_MAX - sizeof(op_type) -
+	if ((opb = ibuf_dynamic(0, UCHAR_MAX - sizeof(op_type) -
 	    sizeof(optparamlen))) == NULL) {
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
@@ -1340,7 +1332,7 @@ session_open(struct peer *p)
 		c[0] = 0x80; /* we're always restarting */
 		c[1] = 0;
 		errs += session_capa_add(opb, CAPA_RESTART, 2);
-		errs += buf_add(opb, &c, 2);
+		errs += ibuf_add(opb, &c, 2);
 	}
 
 	/* 4-bytes AS numbers, draft-ietf-idr-as4bytes-13 */
@@ -1349,16 +1341,16 @@ session_open(struct peer *p)
 
 		nas = htonl(conf->as);
 		errs += session_capa_add(opb, CAPA_AS4BYTE, sizeof(nas));
-		errs += buf_add(opb, &nas, sizeof(nas));
+		errs += ibuf_add(opb, &nas, sizeof(nas));
 	}
 
-	if (buf_size(opb))
-		optparamlen = buf_size(opb) + sizeof(op_type) +
+	if (ibuf_size(opb))
+		optparamlen = ibuf_size(opb) + sizeof(op_type) +
 		    sizeof(optparamlen);
 
 	len = MSGSIZE_OPEN_MIN + optparamlen;
 	if (errs || (buf = session_newmsg(OPEN, len)) == NULL) {
-		buf_free(opb);
+		ibuf_free(opb);
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
 	}
@@ -1372,24 +1364,24 @@ session_open(struct peer *p)
 	msg.bgpid = conf->bgpid;	/* is already in network byte order */
 	msg.optparamlen = optparamlen;
 
-	errs += buf_add(buf->buf, &msg.version, sizeof(msg.version));
-	errs += buf_add(buf->buf, &msg.myas, sizeof(msg.myas));
-	errs += buf_add(buf->buf, &msg.holdtime, sizeof(msg.holdtime));
-	errs += buf_add(buf->buf, &msg.bgpid, sizeof(msg.bgpid));
-	errs += buf_add(buf->buf, &msg.optparamlen, sizeof(msg.optparamlen));
+	errs += ibuf_add(buf->buf, &msg.version, sizeof(msg.version));
+	errs += ibuf_add(buf->buf, &msg.myas, sizeof(msg.myas));
+	errs += ibuf_add(buf->buf, &msg.holdtime, sizeof(msg.holdtime));
+	errs += ibuf_add(buf->buf, &msg.bgpid, sizeof(msg.bgpid));
+	errs += ibuf_add(buf->buf, &msg.optparamlen, sizeof(msg.optparamlen));
 
 	if (optparamlen) {
 		op_type = OPT_PARAM_CAPABILITIES;
-		optparamlen = buf_size(opb);
-		errs += buf_add(buf->buf, &op_type, sizeof(op_type));
-		errs += buf_add(buf->buf, &optparamlen, sizeof(optparamlen));
-		errs += buf_add(buf->buf, opb->buf, buf_size(opb));
+		optparamlen = ibuf_size(opb);
+		errs += ibuf_add(buf->buf, &op_type, sizeof(op_type));
+		errs += ibuf_add(buf->buf, &optparamlen, sizeof(optparamlen));
+		errs += ibuf_add(buf->buf, opb->buf, ibuf_size(opb));
 	}
 
-	buf_free(opb);
+	ibuf_free(opb);
 
 	if (errs > 0) {
-		buf_free(buf->buf);
+		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
@@ -1437,8 +1429,8 @@ session_update(u_int32_t peerid, void *data, size_t datalen)
 		return;
 	}
 
-	if (buf_add(buf->buf, data, datalen)) {
-		buf_free(buf->buf);
+	if (ibuf_add(buf->buf, data, datalen)) {
+		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
@@ -1469,14 +1461,14 @@ session_notification(struct peer *p, u_int8_t errcode, u_int8_t subcode,
 		return;
 	}
 
-	errs += buf_add(buf->buf, &errcode, sizeof(errcode));
-	errs += buf_add(buf->buf, &subcode, sizeof(subcode));
+	errs += ibuf_add(buf->buf, &errcode, sizeof(errcode));
+	errs += ibuf_add(buf->buf, &subcode, sizeof(subcode));
 
 	if (datalen > 0)
-		errs += buf_add(buf->buf, data, datalen);
+		errs += ibuf_add(buf->buf, data, datalen);
 
 	if (errs > 0) {
-		buf_free(buf->buf);
+		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
@@ -1525,12 +1517,12 @@ session_rrefresh(struct peer *p, u_int8_t aid)
 	}
 
 	afi = htons(afi);
-	errs += buf_add(buf->buf, &afi, sizeof(afi));
-	errs += buf_add(buf->buf, &null8, sizeof(null8));
-	errs += buf_add(buf->buf, &safi, sizeof(safi));
+	errs += ibuf_add(buf->buf, &afi, sizeof(afi));
+	errs += ibuf_add(buf->buf, &null8, sizeof(null8));
+	errs += ibuf_add(buf->buf, &safi, sizeof(safi));
 
 	if (errs > 0) {
-		buf_free(buf->buf);
+		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
 		return;
@@ -2266,7 +2258,7 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 	struct kif		*kif;
 	u_char			*data;
 	enum reconf_action	 reconf;
-	int			 n, depend_ok;
+	int			 n, depend_ok, restricted;
 	u_int8_t		 errcode, subcode;
 
 	if ((n = imsg_read(ibuf)) == -1)
@@ -2354,6 +2346,28 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 			}
 
 			break;
+		case IMSG_RECONF_CTRL:
+			if (idx != PFD_PIPE_MAIN)
+				fatalx("reconf request not from parent");
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(restricted))
+				fatalx("IFINFO imsg with wrong len");
+			memcpy(&restricted, imsg.data, sizeof(restricted));
+			if (imsg.fd == -1) {
+				log_warnx("expected to receive fd for control "
+				    "socket but didn't receive any");
+				break;
+			}
+			if (restricted) {
+				control_shutdown(rcsock);
+				rcsock = imsg.fd;
+				control_listen(rcsock);
+			} else {
+				control_shutdown(csock);
+				csock = imsg.fd;
+				control_listen(csock);
+			}
+			break;
 		case IMSG_RECONF_DONE:
 			if (idx != PFD_PIPE_MAIN)
 				fatalx("reconf request not from parent");
@@ -2361,7 +2375,6 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 				fatalx("got IMSG_RECONF_DONE but no config");
 			conf->flags = nconf->flags;
 			conf->log = nconf->log;
-			conf->rtableid = nconf->rtableid;
 			conf->bgpid = nconf->bgpid;
 			conf->clusterid = nconf->clusterid;
 			conf->as = nconf->as;
@@ -2488,6 +2501,7 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 		case IMSG_CTL_KROUTE_ADDR:
 		case IMSG_CTL_SHOW_NEXTHOP:
 		case IMSG_CTL_SHOW_INTERFACE:
+		case IMSG_CTL_SHOW_FIB_TABLES:
 			if (idx != PFD_PIPE_MAIN)
 				fatalx("ctl kroute request not from parent");
 			control_imsg_relay(&imsg);
@@ -2765,9 +2779,10 @@ session_up(struct peer *p)
 }
 
 int
-imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
+imsg_compose_parent(int type, u_int32_t peerid, pid_t pid, void *data,
+    u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, 0, pid, -1, data, datalen));
+	return (imsg_compose(ibuf_main, type, peerid, pid, -1, data, datalen));
 }
 
 int

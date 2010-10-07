@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SharedLibs.pm,v 1.47 2010/01/24 15:31:38 espie Exp $
+# $OpenBSD: SharedLibs.pm,v 1.51 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -128,7 +128,7 @@ sub add_libs_from_installed_package
 	my $pkgname = shift;
 	return if $done_plist->{$pkgname};
 	$done_plist->{$pkgname} = 1;
-	my $plist = OpenBSD::PackingList->from_installation($pkgname, 
+	my $plist = OpenBSD::PackingList->from_installation($pkgname,
 	    \&OpenBSD::PackingList::LibraryOnly);
 	return if !defined $plist;
 
@@ -174,8 +174,8 @@ sub report_problem
 	}
 	if (!defined $printed->{$name} || $printed->{$name} ne $r) {
 		$printed->{$name} = $r;
-		$state->errsay("|library $name not found");
-		$state->print($r);
+		$state->errsay("|library #1 not found", $name);
+		$state->print("#1", $r);
 	}
 }
 

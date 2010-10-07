@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.104 2010/04/19 10:22:59 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.109 2010/07/31 11:30:50 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -24,8 +24,8 @@ my $dot = '.';
 sub new
 {
 	my $class = shift;
-	bless { default_owner=>'root', 
-	     default_group=>'bin', 
+	bless { default_owner=>'root',
+	     default_group=>'bin',
 	     default_mode=> 0444,
 	     cwd=>\$dot}, $class;
 }
@@ -50,7 +50,7 @@ sub match
 {
 	my ($h, $plist) = @_;
 	return
-	    defined $plist->fullpkgpath && 
+	    defined $plist->fullpkgpath &&
 	    $h->{$plist->fullpkgpath};
 }
 
@@ -133,7 +133,7 @@ sub conflict_list
 	require OpenBSD::PkgCfl;
 
 	my $self = shift;
-	
+
 	$self->{conflict_list} //= OpenBSD::PkgCfl->make_conflict_list($self);
 	return $self->{conflict_list};
 }
@@ -223,7 +223,7 @@ sub DependOnly
 			while (<$fh>) {
 			    if (m/^\@(?:depend|wantlib|define-tag)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -244,7 +244,7 @@ sub ExtraInfoOnly
 			while (<$fh>) {
 			    if (m/^\@(?:pkgpath)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -265,7 +265,7 @@ sub UpdateInfoOnly
 			while (<$fh>) {
 			    if (m/^\@(?:depend|wantlib|conflict|option|pkgpath|url)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -309,7 +309,7 @@ sub ConflictOnly
 			while (<$fh>) {
 			    if (m/^\@(?:conflict|option|name)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:depend|wantlib|groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -330,7 +330,7 @@ MAINLOOP:
 			&$cont($_);
 			while(<$fh>) {
 				redo MAINLOOP unless m/^\@(?:sha|md5|size|symlink|link)\b/o;
-				    m/^\@size\b/o || m/^\@symlink\b/o || 
+				    m/^\@size\b/o || m/^\@symlink\b/o ||
 				    m/^\@link\b/o;
 				&$cont($_);
 			}
@@ -452,7 +452,7 @@ sub pkgpath
 {
 	my $self = shift;
 	if (!defined $self->{_hashpath}) {
-		my $h = $self->{_hashpath} = 
+		my $h = $self->{_hashpath} =
 		    bless {}, "OpenBSD::PackingList::hashpath";
 		if (defined $self->fullpkgpath) {
 			$h->{$self->fullpkgpath} = 1;
@@ -469,7 +469,7 @@ sub pkgpath
 sub match_pkgpath
 {
 	my ($self, $plist2) = @_;
-	return $self->pkgpath->match($plist2) || 
+	return $self->pkgpath->match($plist2) ||
 	    $plist2->pkgpath->match($self);
 }
 
@@ -477,12 +477,12 @@ our @unique_categories =
     (qw(name url digital-signature no-default-conflict manual-installation always-update explicit-update extrainfo localbase arch));
 
 our @list_categories =
-    (qw(conflict pkgpath incompatibility ask-update updateset depend 
+    (qw(conflict pkgpath incompatibility ask-update updateset depend
     	wantlib define-tag groups users items));
 
 our @cache_categories =
     (qw(depend wantlib));
-	
+
 sub visit
 {
 	my ($self, $method, @l) = @_;
@@ -518,7 +518,7 @@ sub from_installation
 
 	require OpenBSD::PackageInfo;
 
-	$code = \&defaultCode if !defined $code;
+	$code //= \&defaultCode;
 
 	if ($code == \&DependOnly && defined $plist_cache->{$pkgname}) {
 	    return $plist_cache->{$pkgname};
@@ -527,7 +527,7 @@ sub from_installation
 	my $plist = $o->fromfile($filename, $code);
 	if (defined $plist && $code == \&DependOnly) {
 		$plist_cache->{$pkgname} = $plist;
-	} 
+	}
 	if (defined $plist) {
 		$plist->set_infodir(OpenBSD::PackageInfo::installed_info($pkgname));
 	}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.30 2010/03/01 08:55:45 claudio Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.35 2010/08/22 20:55:10 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -341,8 +341,8 @@ lsa_asext_check(struct lsa *lsa, u_int16_t len)
 	char			*buf = (char *)lsa;
 	struct lsa_asext	*asext;
 	struct in6_addr		 fw_addr;
-	u_int32_t	 	 metric;
-	u_int16_t	 	 ref_ls_type;
+	u_int32_t		 metric;
+	u_int16_t		 ref_ls_type;
 	int			 rv;
 	u_int16_t		 total_len;
 
@@ -432,6 +432,7 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 	struct lsa_tree	*tree;
 	struct vertex	*new, *old;
 	struct timeval	 tv, now, res;
+	int		 update = 1;
 
 	if (LSA_IS_SCOPE_AS(ntohs(lsa->hdr.type)))
 		tree = &asext_tree;
@@ -460,14 +461,15 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 				fatal("lsa_add");
 			return (1);
 		}
-		if (!lsa_equal(new->lsa, old->lsa)) {
-			if (ntohs(lsa->hdr.type) != LSA_TYPE_EXTERNAL)
-				nbr->area->dirty = 1;
-			start_spf_timer();
-		}
+		if (lsa_equal(new->lsa, old->lsa))
+			update = 0;
 		vertex_free(old);
 		RB_INSERT(lsa_tree, tree, new);
-	} else {
+	}
+
+	if (update) {
+		if (ntohs(lsa->hdr.type) == LSA_TYPE_LINK)
+			orig_intra_area_prefix_lsas(nbr->area);
 		if (ntohs(lsa->hdr.type) != LSA_TYPE_EXTERNAL)
 			nbr->area->dirty = 1;
 		start_spf_timer();
@@ -711,7 +713,7 @@ lsa_snap(struct rde_nbr *nbr, u_int32_t peerid)
 		if (tree == &nbr->area->lsa_tree) {
 			tree = &nbr->iface->lsa_tree;
 			continue;
-		} else 
+		} else
 			tree = &asext_tree;
 
 	} while (1);
@@ -787,7 +789,9 @@ lsa_timeout(int fd, short event, void *bula)
 			v->deleted = 0;
 
 			/* schedule recalculation of the RIB */
-			if (v->lsa->hdr.type != LSA_TYPE_EXTERNAL)
+			if (ntohs(v->lsa->hdr.type) == LSA_TYPE_LINK)
+				orig_intra_area_prefix_lsas(v->area);
+			if (ntohs(v->lsa->hdr.type) != LSA_TYPE_EXTERNAL)
 				v->area->dirty = 1;
 			start_spf_timer();
 
@@ -823,7 +827,11 @@ lsa_refresh(struct vertex *v)
 	u_int16_t	 len;
 
 	/* refresh LSA by increasing sequence number by one */
-	v->lsa->hdr.age = htons(DEFAULT_AGE);
+	if (v->self && ntohs(v->lsa->hdr.age) >= MAX_AGE)
+		/* self originated network that is currently beeing removed */
+		v->lsa->hdr.age = htons(MAX_AGE);
+	else
+		v->lsa->hdr.age = htons(DEFAULT_AGE);
 	seqnum = ntohl(v->lsa->hdr.seq_num);
 	if (seqnum++ == MAX_SEQ_NUM)
 		/* XXX fix me */
@@ -877,9 +885,11 @@ lsa_merge(struct rde_nbr *nbr, struct lsa *lsa, struct vertex *v)
 	/* overwrite the lsa all other fields are unaffected */
 	free(v->lsa);
 	v->lsa = lsa;
-	start_spf_timer();
+	if (v->type == LSA_TYPE_LINK)
+		orig_intra_area_prefix_lsas(nbr->area);
 	if (v->type != LSA_TYPE_EXTERNAL)
 		nbr->area->dirty = 1;
+	start_spf_timer();
 
 	/* set correct timeout for reflooding the LSA */
 	clock_gettime(CLOCK_MONOTONIC, &tp);
@@ -925,7 +935,7 @@ lsa_equal(struct lsa *a, struct lsa *b)
 		return (0);
 	if (a->hdr.len != b->hdr.len)
 		return (0);
-	/* LSA with age MAX_AGE are never equal */
+	/* LSAs with age MAX_AGE are never equal */
 	if (a->hdr.age == htons(MAX_AGE) || b->hdr.age == htons(MAX_AGE))
 		return (0);
 	if (memcmp(&a->data, &b->data, ntohs(a->hdr.len) -
@@ -941,7 +951,7 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	struct lsa_prefix	*lp = buf;
 	u_int32_t		*buf32, *addr = NULL;
 	u_int8_t		 prefixlen;
-	u_int16_t		 consumed = 0;
+	u_int16_t		 consumed;
 
 	if (len < sizeof(*lp))
 		return (-1);
@@ -957,9 +967,10 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	}
 
 	buf32 = (u_int32_t *)(lp + 1);
-	consumed += sizeof(*lp);
+	consumed = sizeof(*lp);
 
-	for (; ((prefixlen + 31) / 32) > 0; prefixlen -= 32) {
+	for (prefixlen = LSA_PREFIXSIZE(prefixlen) / sizeof(u_int32_t);
+	    prefixlen > 0; prefixlen--) {
 		if (len < consumed + sizeof(u_int32_t))
 			return (-1);
 		if (addr)
@@ -969,4 +980,3 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 
 	return (consumed);
 }
-

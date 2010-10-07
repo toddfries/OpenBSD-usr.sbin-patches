@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.11 2010/01/10 16:42:35 gilles Exp $	*/
+/*	$OpenBSD: parser.c,v 1.15 2010/09/04 21:31:04 tedu Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -58,6 +58,7 @@ struct token {
 
 static const struct token t_main[];
 static const struct token t_show[];
+static const struct token t_show_queue[];
 static const struct token t_pause[];
 static const struct token t_resume[];
 static const struct token t_schedule[];
@@ -78,9 +79,15 @@ static const struct token t_main[] = {
 };
 
 static const struct token t_show[] = {
-	{KEYWORD,	"queue",	SHOW_QUEUE,	NULL},
+	{KEYWORD,	"queue",	SHOW_QUEUE,	t_show_queue},
 	{KEYWORD,	"runqueue",	SHOW_RUNQUEUE,	NULL},
 	{KEYWORD,	"stats",	SHOW_STATS,	NULL},
+	{ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_show_queue[] = {
+	{NOTOKEN,	"",		NONE,		NULL},
+	{KEYWORD,	"raw",		SHOW_QUEUE_RAW,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -99,12 +106,12 @@ static const struct token t_resume[] = {
 };
 
 static const struct token t_schedule[] = {
-	{VARIABLE,	"message id/uid",      	SCHEDULE,	NULL},
+	{VARIABLE,	"message",      	SCHEDULE,	NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 
 static const struct token t_remove[] = {
-	{VARIABLE,	"message id/uid",      	REMOVE,		NULL},
+	{VARIABLE,	"message",      	REMOVE,		NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 
@@ -114,18 +121,21 @@ static const struct token t_log[] = {
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 
-static struct parse_result	res;
+static const struct token *match_token(const char *, const struct token [],
+    struct parse_result *res);
+static void show_valid_args(const struct token []);
 
 struct parse_result *
 parse(int argc, char *argv[])
 {
+	static struct parse_result	res;
 	const struct token	*table = t_main;
 	const struct token	*match;
 
 	bzero(&res, sizeof(res));
 
 	while (argc >= 0) {
-		if ((match = match_token(argv[0], table)) == NULL) {
+		if ((match = match_token(argv[0], table, &res)) == NULL) {
 			fprintf(stderr, "valid commands/args:\n");
 			show_valid_args(table);
 			return (NULL);
@@ -148,8 +158,9 @@ parse(int argc, char *argv[])
 	return (&res);
 }
 
-const struct token *
-match_token(const char *word, const struct token table[])
+static const struct token *
+match_token(const char *word, const struct token table[],
+    struct parse_result *res)
 {
 	u_int			 i, match;
 	const struct token	*t = NULL;
@@ -170,7 +181,7 @@ match_token(const char *word, const struct token table[])
 				match++;
 				t = &table[i];
 				if (t->value)
-					res.action = t->value;
+					res->action = t->value;
 			}
 			break;
 		case VARIABLE:
@@ -178,8 +189,8 @@ match_token(const char *word, const struct token table[])
 				match++;
 				t = &table[i];
 				if (t->value) {
-					res.action = t->value;
-					res.data = word;
+					res->action = t->value;
+					res->data = word;
 				}
 			}
 			break;
@@ -201,7 +212,7 @@ match_token(const char *word, const struct token table[])
 	return (t);
 }
 
-void
+static void
 show_valid_args(const struct token table[])
 {
 	int	i;

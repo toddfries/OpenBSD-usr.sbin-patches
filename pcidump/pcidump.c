@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcidump.c,v 1.22 2010/03/01 19:00:47 kettenis Exp $	*/
+/*	$OpenBSD: pcidump.c,v 1.24 2010/09/05 18:14:33 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 David Gwynne <loki@animata.net>
@@ -43,7 +43,10 @@ void hexdump(int, int, int, int);
 const char *str2busdevfunc(const char *, int *, int *, int *);
 int pci_nfuncs(int, int);
 int pci_read(int, int, int, u_int32_t, u_int32_t *);
+int pci_readmask(int, int, int, u_int32_t, u_int32_t *);
 void dump_caplist(int, int, int, u_int8_t);
+void dump_pcie_linkspeed(int, int, int, uint8_t);
+void print_pcie_ls(uint8_t);
 int dump_rom(int, int, int);
 int dump_vga_bios(void);
 
@@ -266,6 +269,50 @@ probe(int bus, int dev, int func)
 }
 
 void
+print_pcie_ls(uint8_t speed)
+{
+	switch (speed) {
+	case 1:
+		printf("2.5");
+		break;
+	case 2:
+		printf("5.0");
+		break;
+	default:
+		printf("unknown (%d)", speed);
+	}
+}
+
+void
+dump_pcie_linkspeed(int bus, int dev, int func, uint8_t ptr)
+{
+	u_int32_t creg, sreg;
+	u_int8_t cap, cwidth, cspeed, swidth, sspeed;
+
+	if (pci_read(bus, dev, func, ptr + PCI_PCIE_LCAP, &creg) != 0)
+		return;
+
+	if (pci_read(bus, dev, func, ptr + PCI_PCIE_LCSR, &sreg) != 0)
+		return;
+	sreg = sreg >> 16;
+
+	cwidth = (creg >> 4) & 0x3f;
+	swidth = (sreg >> 4) & 0x3f;
+	cspeed = creg & 0x0f;
+	sspeed = sreg & 0x0f;
+	
+	if (cwidth == 0)
+		return;
+
+	printf("\t        Link Speed: ");
+	print_pcie_ls(sspeed);
+	printf(" / ");
+	print_pcie_ls(cspeed);
+
+	printf(" Gb/s Link Width: x%d / x%d\n", swidth, cwidth);
+}
+
+void
 dump_caplist(int bus, int dev, int func, u_int8_t ptr)
 {
 	u_int32_t reg;
@@ -287,6 +334,8 @@ dump_caplist(int bus, int dev, int func, u_int8_t ptr)
 		if (cap > PCI_CAPNAMES_MAX)
 			cap = 0;
 		printf("%s\n", pci_capnames[cap]);
+		if (cap == PCI_CAP_PCIEXPRESS)
+			dump_pcie_linkspeed(bus, dev, func, ptr);
 		ptr = PCI_CAPLIST_NEXT(reg);
 	}
 }
@@ -296,16 +345,18 @@ dump_type0(int bus, int dev, int func)
 {
 	const char *memtype;
 	u_int64_t mem;
-	u_int32_t reg;
+	u_int64_t mask;
+	u_int32_t reg, reg1;
 	int bar;
 
 	for (bar = PCI_MAPREG_START; bar < PCI_MAPREG_END; bar += 0x4) {
-		if (pci_read(bus, dev, func, bar, &reg) != 0)
+		if (pci_read(bus, dev, func, bar, &reg) != 0 ||
+		    pci_readmask(bus, dev, func, bar, &reg1) != 0)
 			warn("unable to read PCI_MAPREG 0x%02x", bar);
 
 		printf("\t0x%04x: BAR ", bar);
 
-		if (reg == 0x0) {
+		if (reg == 0 && reg1 == 0) {
 			printf("empty (%08x)\n", reg);
 			continue;
 		}
@@ -323,28 +374,34 @@ dump_type0(int bus, int dev, int func)
 			case PCI_MAPREG_MEM_TYPE_32BIT_1M:
 				printf("%s ", memtype);
 
-				printf("addr: 0x%08x\n",
-				    PCI_MAPREG_MEM_ADDR(reg));
+				printf("addr: 0x%08x/0x%08x\n",
+				    PCI_MAPREG_MEM_ADDR(reg),
+				    PCI_MAPREG_MEM_SIZE(reg1));
 
 				break;
 			case PCI_MAPREG_MEM_TYPE_64BIT:
 				mem = reg;
+				mask = reg1;
 				bar += 0x04;
-				if (pci_read(bus, dev, func, bar, &reg) != 0)
+				if (pci_read(bus, dev, func, bar, &reg) != 0 ||
+				    pci_readmask(bus, dev, func, bar, &reg1) != 0)
 					warn("unable to read 0x%02x", bar);
 
 				mem |= (u_int64_t)reg << 32;
+				mask |= (u_int64_t)reg1 << 32;
 
-				printf("64bit addr: 0x%016llx\n",
-				    PCI_MAPREG_MEM64_ADDR(mem));
+				printf("64bit addr: 0x%016llx/0x%08llx\n",
+				    PCI_MAPREG_MEM64_ADDR(mem),
+				    PCI_MAPREG_MEM64_SIZE(mask));
 
 				break;
 			}
 			break;
 
 		case PCI_MAPREG_TYPE_IO:
-			printf("io addr: 0x%08x\n",
-			    PCI_MAPREG_IO_ADDR(reg));
+			printf("io addr: 0x%08x/0x%04x\n",
+			    PCI_MAPREG_IO_ADDR(reg),
+			    PCI_MAPREG_IO_SIZE(reg1));
 			break;
 		}
 	}
@@ -602,6 +659,28 @@ pci_read(int bus, int dev, int func, u_int32_t reg, u_int32_t *val)
 	io.pi_width = 4;
 
 	rv = ioctl(pcifd, PCIOCREAD, &io);
+	if (rv != 0)
+		return (rv);
+
+	*val = io.pi_data;
+
+	return (0);
+}
+
+int
+pci_readmask(int bus, int dev, int func, u_int32_t reg, u_int32_t *val)
+{
+	struct pci_io io;
+	int rv;
+
+	bzero(&io, sizeof(io));
+	io.pi_sel.pc_bus = bus;
+	io.pi_sel.pc_dev = dev;
+	io.pi_sel.pc_func = func;
+	io.pi_reg = reg;
+	io.pi_width = 4;
+
+	rv = ioctl(pcifd, PCIOCREADMASK, &io);
 	if (rv != 0)
 		return (rv);
 

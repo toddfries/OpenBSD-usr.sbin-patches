@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfd.c,v 1.73 2010/02/19 10:35:52 dlg Exp $ */
+/*	$OpenBSD: ospfd.c,v 1.75 2010/09/02 14:03:22 sobrado Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -743,7 +743,7 @@ merge_config(struct ospfd_conf *conf, struct ospfd_conf *xconf)
 				SIMPLEQ_REMOVE_HEAD(&a->redist_list, entry);
 				free(r);
 			}
-			
+
 			while ((r = SIMPLEQ_FIRST(&xa->redist_list)) != NULL) {
 				SIMPLEQ_REMOVE_HEAD(&xa->redist_list, entry);
 				SIMPLEQ_INSERT_TAIL(&a->redist_list, r, entry);
@@ -831,7 +831,8 @@ merge_interfaces(struct area *a, struct area *xa)
 			LIST_REMOVE(xi, entry);
 			LIST_INSERT_HEAD(&a->iface_list, xi, entry);
 			xi->area = a;
-			if (ospfd_process == PROC_OSPF_ENGINE)
+			if (ospfd_process == PROC_OSPF_ENGINE &&
+			    !(xi->state == IF_STA_LOOPBACK))
 				xi->state = IF_STA_NEW;
 			continue;
 		}

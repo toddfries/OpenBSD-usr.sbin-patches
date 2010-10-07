@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.133 2010/03/29 09:24:07 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.137 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org> and
@@ -74,6 +74,7 @@ struct rde_peer {
 	u_int16_t			 short_as;
 	u_int8_t			 reconf_in;	/* in filter changed */
 	u_int8_t			 reconf_out;	/* out filter changed */
+	u_int8_t			 reconf_rib;	/* rib changed */
 };
 
 #define AS_SET			1
@@ -276,14 +277,12 @@ struct rib_entry {
 struct rib {
 	char			name[PEER_DESCR_LEN];
 	struct rib_tree		rib;
-	enum reconf_action 	state;
+	u_int			rtableid;
 	u_int16_t		flags;
 	u_int16_t		id;
+	enum reconf_action 	state;
 };
 
-#define F_RIB_ENTRYLOCK		0x0001
-#define F_RIB_NOEVALUATE	0x0002
-#define F_RIB_NOFIB		0x0004
 #define RIB_FAILED		0xffff
 
 struct prefix {
@@ -298,7 +297,7 @@ extern struct rde_memstats rdemem;
 
 /* prototypes */
 /* rde.c */
-void		 rde_send_kroute(struct prefix *, struct prefix *);
+void		 rde_send_kroute(struct prefix *, struct prefix *, u_int16_t);
 void		 rde_send_nexthop(struct bgpd_addr *, int);
 void		 rde_send_pftable(u_int16_t, struct bgpd_addr *,
 		     u_int8_t, int);
@@ -314,7 +313,7 @@ int		 rde_as4byte(struct rde_peer *);
 /* rde_attr.c */
 int		 attr_write(void *, u_int16_t, u_int8_t, u_int8_t, void *,
 		     u_int16_t);
-int		 attr_writebuf(struct buf *, u_int8_t, u_int8_t, void *,
+int		 attr_writebuf(struct ibuf *, u_int8_t, u_int8_t, void *,
 		     u_int16_t);
 void		 attr_init(u_int32_t);
 void		 attr_shutdown(void);
@@ -347,6 +346,7 @@ int		 aspath_loopfree(struct aspath *, u_int32_t);
 int		 aspath_compare(struct aspath *, struct aspath *);
 u_char		*aspath_prepend(struct aspath *, u_int32_t, int, u_int16_t *);
 int		 aspath_match(struct aspath *, enum as_spec, u_int32_t);
+int		 aspath_lenmatch(struct aspath *, enum aslen_spec, u_int);
 int		 community_match(struct rde_aspath *, int, int);
 int		 community_set(struct rde_aspath *, int, int);
 void		 community_delete(struct rde_aspath *, int, int);
@@ -363,7 +363,7 @@ int		 community_ext_conv(struct filter_extcommunity *, u_int16_t,
 extern u_int16_t	 rib_size;
 extern struct rib	*ribs;
 
-u_int16_t	 rib_new(char *, u_int16_t);
+u_int16_t	 rib_new(char *, u_int, u_int16_t);
 u_int16_t	 rib_find(char *);
 void		 rib_free(struct rib *);
 struct rib_entry *rib_get(struct rib *, struct bgpd_addr *, int);

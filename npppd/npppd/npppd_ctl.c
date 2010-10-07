@@ -1,3 +1,5 @@
+/* $OpenBSD: npppd_ctl.c,v 1.7 2010/09/24 14:50:30 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -24,10 +26,11 @@
  * SUCH DAMAGE.
  */
 /**@file
- * npppd 制御。UNIXドメインソケット /var/run/npppd_ctl を open して、
- * npppdctlコマンドからのコマンドを受け付ける。
+ * npppd management.
+ * This file provides to open UNIX domain socket which located in
+ * /var/run/npppd_ctl and accept commmands from the npppdctl command.
  */
-/* $Id: npppd_ctl.c,v 1.3 2010/01/31 05:49:51 yasuoka Exp $ */
+/* $Id: npppd_ctl.c,v 1.7 2010/09/24 14:50:30 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -67,6 +70,7 @@
 #else
 #include <netinet/if_ether.h>
 #endif
+#include <netinet/ip_var.h>
 #include <sys/ioctl.h>
 #include <net/pipex.h>
 #endif
@@ -87,7 +91,7 @@
 	}
 #else
 #define	NPPPD_CTL_DBG(x)
-#define	NPPPD_CTL_ASSERT(cond)			
+#define	NPPPD_CTL_ASSERT(cond)
 #endif
 #include "debugutil.h"
 
@@ -103,7 +107,7 @@ static void  npppd_who_init(struct npppd_who *, npppd_ctl *, npppd_ppp *);
 static int npppd_ppp_get_pipex_stat(struct npppd_who *, npppd_ppp *);
 #endif
 
-/** npppd制御機能を初期化します。*/
+/** initialize npppd management */
 void
 npppd_ctl_init(npppd_ctl *_this, npppd *_npppd, const char *pathname)
 {
@@ -115,7 +119,7 @@ npppd_ctl_init(npppd_ctl *_this, npppd *_npppd, const char *pathname)
 	_this->max_msgsz  = DEFAULT_NPPPD_CTL_MAX_MSGSZ;
 }
 
-/** npppd制御機能を起動します。*/
+/** start npppd management */
 int
 npppd_ctl_start(npppd_ctl *_this)
 {
@@ -124,7 +128,7 @@ npppd_ctl_start(npppd_ctl *_this)
 
 	if ((_this->sock = socket(AF_LOCAL, SOCK_DGRAM, 0)) < 0) {
 		log_printf(LOG_ERR, "socket() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 
 	val = _this->max_msgsz;
@@ -135,13 +139,16 @@ npppd_ctl_start(npppd_ctl *_this)
 			    "ctl.max_msgbuf may beyonds kernel limit.  "
 			    "setsockopt(,SOL_SOCKET, SO_SNDBUF,%d) "
 			    "failed in %s(): %m", val, __func__);
-			/* NetBSD の場合は kern.sbmax 以下にする必要あり */
+			/*
+			 * on NetBSD, need to set value which is less than or equal
+			 * to kern.sbmax.
+			 */
 		else
 			log_printf(LOG_ERR,
 			    "setsockopt(,SOL_SOCKET, SO_SNDBUF,%d) "
 			    "failed in %s(): %m", val, __func__);
 
-		goto reigai;
+		goto fail;
 	}
 	priv_unlink(_this->pathname);
 	memset(&sun, 0, sizeof(sun));
@@ -152,18 +159,18 @@ npppd_ctl_start(npppd_ctl *_this)
 	if (priv_bind(_this->sock, (struct sockaddr *)&sun, sizeof(sun))
 	    != 0) {
 		log_printf(LOG_ERR, "bind() failed in %s(): %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 
 	dummy = 0;
 	if ((flags = fcntl(_this->sock, F_GETFL, &dummy)) < 0) {
 		log_printf(LOG_ERR, "fcntl(,F_GETFL) failed in %s(): %m",
 		    __func__);
-		goto reigai;
+		goto fail;
 	} else if (fcntl(_this->sock, F_SETFL, flags | O_NONBLOCK) < 0) {
 		log_printf(LOG_ERR, "fcntl(,F_SETFL,O_NONBLOCK) failed in %s()"
 		    ": %m", __func__);
-		goto reigai;
+		goto fail;
 	}
 	chown(_this->pathname, -1, NPPPD_GID);
 	chmod(_this->pathname, NPPPD_CTL_SOCK_FILE_MODE);
@@ -175,7 +182,7 @@ npppd_ctl_start(npppd_ctl *_this)
 	log_printf(LOG_INFO, "Listening %s (npppd_ctl)", _this->pathname);
 
 	return 0;
-reigai:
+fail:
 	if (_this->sock >= 0)
 		close(_this->sock);
 	_this->sock = -1;
@@ -183,7 +190,7 @@ reigai:
 	return -1;
 }
 
-/** npppd制御機能を停止します。*/
+/** stop npppd management */
 void
 npppd_ctl_stop(npppd_ctl *_this)
 {
@@ -196,7 +203,7 @@ npppd_ctl_stop(npppd_ctl *_this)
 	}
 }
 
-/** コマンド毎に制御手続きを実行します */
+/** execute management procedure on each command */
 static void
 npppd_ctl_command(npppd_ctl *_this, u_char *pkt, int pktlen,
     struct sockaddr *peer)
@@ -272,16 +279,16 @@ cmd_who_out:
 		break;
 cmd_who_send_error:
 	/*
-	 * FIXME: we should wait until the buffer is avaliable.
+	 * FIXME: we should wait until the buffer is available.
 	 */
 		NPPPD_CTL_DBG((_this, LOG_DEBUG, "sendto() failed in %s: %m",
 		    __func__));
 		if (errno == ENOBUFS || errno == EMSGSIZE || errno == EINVAL) {
-			npppd_ctl_log(_this, LOG_INFO, 
+			npppd_ctl_log(_this, LOG_INFO,
 			    "'who' is requested, but "
 			    "the buffer is not enough.");
 		} else {
-			npppd_ctl_log(_this, LOG_ERR, 
+			npppd_ctl_log(_this, LOG_ERR,
 			    "sendto() failed in %s: %m",
 			    __func__);
 		}
@@ -302,7 +309,7 @@ cmd_who_send_error:
 		req = (struct npppd_disconnect_user_req *)pkt;
 
 		if (sizeof(struct npppd_disconnect_user_req) > pktlen) {
-			npppd_ctl_log(_this, LOG_ERR, 
+			npppd_ctl_log(_this, LOG_ERR,
 			    "'disconnect by user' is requested, "
 			    " but the request has invalid data length"
 			    "(%d:%d)", pktlen, (int)sizeof(req->username));
@@ -313,7 +320,7 @@ cmd_who_send_error:
 				break;
 		}
 		if (i >= sizeof(req->username)) {
-			npppd_ctl_log(_this, LOG_ERR, 
+			npppd_ctl_log(_this, LOG_ERR,
 			    "'disconnect by user' is requested, "
 			    " but the request has invalid user name");
 			break;
@@ -321,7 +328,7 @@ cmd_who_send_error:
 
 		if ((ppplist = npppd_get_ppp_by_user(_npppd, req->username))
 		    == NULL) {
-			npppd_ctl_log(_this, LOG_INFO, 
+			npppd_ctl_log(_this, LOG_INFO,
 			    "npppd_get_ppp_by_user() could't find user \"%s\" in %s: %m",
 			    req->username, __func__);
 			goto user_end;
@@ -337,86 +344,18 @@ cmd_who_send_error:
 			stopped++;
 		}
 user_end:
-		
-		npppd_ctl_log(_this, LOG_NOTICE, 
+
+		npppd_ctl_log(_this, LOG_NOTICE,
 		    "'disconnect by user' is requested, "
 		    "stopped %d connections.", stopped);
 		snprintf(respbuf, sizeof(respbuf),
 		    "Disconnected %d ppp connections", stopped);
-		
-		if (sendto(_this->sock, respbuf, strlen(respbuf), 0, peer,
-		    peer->sa_len) < 0) {
-			npppd_ctl_log(_this, LOG_ERR, 
-			    "sendto() failed in %s: %m", __func__);
-		}
-		break;
-	    }
-	/*
-	 * 端末認証関連
-	 */
-	case NPPPD_CTL_CMD_TERMID_SET_AUTH: {
-#ifndef	NPPPD_USE_CLIENT_AUTH
-		npppd_ctl_log(_this, LOG_ERR, 
-		    "NPPPD_CTL_CMD_TERMID_SET_AUTH is requested, but "
-		    "the terminal authentication is disabled.");
-		goto reigai;
-#else
-		struct npppd_ctl_termid_set_auth_request *req;
-		npppd_ppp *ppp;
-
-		req = (struct npppd_ctl_termid_set_auth_request *)pkt;
-		if (pktlen < sizeof(struct npppd_ctl_termid_set_auth_request)) {
-			npppd_ctl_log(_this, LOG_ERR, 
-			    "NPPPD_CTL_CMD_TERMID_SET_AUTH is requested, but "
-			    "the request is invalid.");
-			goto reigai;
-		}
-
-		ppp = NULL;
-
-		switch (req->ppp_key_type) {
-		case NPPPD_CTL_PPP_ID:
-			if ((ppp = npppd_get_ppp_by_id(npppd_get_npppd(),
-			    req->ppp_key.id)) == NULL) {
-				npppd_ctl_log(_this, LOG_ERR, 
-				    "NPPPD_CTL_CMD_TERMID_SET_AUTH is "
-				    "requested, but the requested ppp(id=%d) "
-				    "is not found.", req->ppp_key.id);
-				goto reigai;
-			}
-
-			break;
-		case NPPPD_CTL_PPP_FRAMED_IP_ADDRESS:
-			if ((ppp = npppd_get_ppp_by_ip(npppd_get_npppd(),
-			    req->ppp_key.framed_ip_address)) == NULL) {
-				npppd_ctl_log(_this, LOG_ERR, 
-				    "NPPPD_CTL_CMD_TERMID_SET_AUTH is "
-				    "requested, but the requested ppp(ip=%s) "
-				    "is not found.",
-				    inet_ntoa(req->ppp_key.framed_ip_address));
-				goto reigai;
-			}
-			break;
-		default:
-			npppd_ctl_log(_this, LOG_ERR, 
-			    "NPPPD_CTL_CMD_TERMID_SET_AUTH is requested, but "
-			    "the ppp_key_type is invalid.");
-			goto reigai;
-		}
-		NPPPD_CTL_ASSERT(ppp != NULL);
-
-		ppp_set_client_auth_id(ppp, req->authid);
-		strlcpy(respbuf,
-		    "Set the client authentication information successfully.",
-		    sizeof(respbuf));
 
 		if (sendto(_this->sock, respbuf, strlen(respbuf), 0, peer,
 		    peer->sa_len) < 0) {
-			npppd_ctl_log(_this, LOG_ERR, 
+			npppd_ctl_log(_this, LOG_ERR,
 			    "sendto() failed in %s: %m", __func__);
-			
 		}
-#endif
 		break;
 	    }
 	case NPPPD_CTL_CMD_RESET_ROUTING_TABLE:
@@ -431,17 +370,17 @@ user_end:
 
 		if (sendto(_this->sock, respbuf, strlen(respbuf), 0, peer,
 		    peer->sa_len) < 0) {
-			npppd_ctl_log(_this, LOG_ERR, 
+			npppd_ctl_log(_this, LOG_ERR,
 			    "sendto() failed in %s: %m", __func__);
-			
+
 		}
 		break;
 	    }
 	default:
-	    npppd_ctl_log(_this, LOG_ERR, 
+	    npppd_ctl_log(_this, LOG_ERR,
 		"Received unknown command %04x", command);
 	}
-reigai:
+fail:
 	return;
 }
 
@@ -499,6 +438,9 @@ npppd_ppp_get_pipex_stat(struct npppd_who *_this, npppd_ppp *ppp)
 #ifdef USE_NPPPD_PPTP
 	pptp_call *call;
 #endif
+#ifdef USE_NPPPD_L2TP
+	l2tp_call *l2tp;
+#endif
 
 	if (ppp->pipex_enabled == 0)
 		return 0;
@@ -509,7 +451,7 @@ npppd_ppp_get_pipex_stat(struct npppd_who *_this, npppd_ppp *ppp)
 	case PPP_TUNNEL_PPPOE:
 		pppoe = (pppoe_session *)ppp->phy_context;
 
-		/* PPPOE 固有の情報 */
+		/* PPPOE specific information */
 		req.psr_protocol = PIPEX_PROTO_PPPOE;
 		req.psr_session_id = pppoe->session_id;
 		break;
@@ -518,9 +460,18 @@ npppd_ppp_get_pipex_stat(struct npppd_who *_this, npppd_ppp *ppp)
 	case PPP_TUNNEL_PPTP:
 		call = (pptp_call *)ppp->phy_context;
 
-		/* PPTP 固有の情報 */
+		/* PPTP specific information */
 		req.psr_session_id = call->id;
 		req.psr_protocol = PIPEX_PROTO_PPTP;
+		break;
+#endif
+#ifdef USE_NPPPD_L2TP
+	case PPP_TUNNEL_L2TP:
+		l2tp = (l2tp_call *)ppp->phy_context;
+
+		/* L2TP specific information */
+		req.psr_session_id = l2tp->session_id;
+		req.psr_protocol = PIPEX_PROTO_L2TP;
 		break;
 #endif
 	default:
@@ -529,7 +480,7 @@ npppd_ppp_get_pipex_stat(struct npppd_who *_this, npppd_ppp *ppp)
 		return 1;
 	}
 
-	/* カーネル側の統計情報を反映 */
+	/* update statistics in kernel */
 	if (ioctl(iface->devf, PIPEXGSTAT, &req) != 0)
 		return 1;
 
@@ -544,7 +495,7 @@ npppd_ppp_get_pipex_stat(struct npppd_who *_this, npppd_ppp *ppp)
 }
 #endif
 
-/** IOイベントハンドラー */
+/** IO event handler */
 static void
 npppd_ctl_io_event(int fd, short evmask, void *ctx)
 {
@@ -570,7 +521,7 @@ npppd_ctl_io_event(int fd, short evmask, void *ctx)
 	return;
 }
 
-/** このインスタンスに基づいたラベルから始まるログを記録します。*/
+/** Record log that begins the label based this instance. */
 static int
 npppd_ctl_log(npppd_ctl *_this, int prio, const char *fmt, ...)
 {

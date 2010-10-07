@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.54 2010/04/05 16:07:10 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.62 2010/08/01 10:03:24 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -64,15 +64,15 @@ package OpenBSD::UpdateSet;
 
 sub new
 {
-	my $class = shift;
-	return bless {newer => {}, older => {}, kept => {}, hints => [], updates => 0}, 
-	    $class;
+	my ($class, $state) = @_;
+	return bless {newer => {}, older => {}, kept => {},
+	    hints => [], updates => 0, repo => $state->repo}, $class;
 }
 
 sub path
 {
 	my $set = shift;
-	
+
 	return $set->{path};
 }
 
@@ -81,9 +81,7 @@ sub add_repositories
 	my ($set, @repos) = @_;
 
 	if (!defined $set->{path}) {
-		require OpenBSD::PackageRepositoryList;
-
-		$set->{path} = OpenBSD::PackageRepositoryList->new;
+		$set->{path} = $set->{repo}->path;
 	}
 	$set->{path}->add(@repos);
 }
@@ -109,8 +107,7 @@ sub match_locations
 		$r = $set->{path}->match_locations(@spec);
 	}
 	if (@$r == 0) {
-		require OpenBSD::PackageLocator;
-		$r = OpenBSD::PackageLocator->match_locations(@spec);
+		$r = $set->{repo}->match_locations(@spec);
 	}
 	return $r;
 }
@@ -241,8 +238,8 @@ sub hint_names
 sub older_to_do
 {
 	my $self = shift;
-	# XXX in `combined' updates, some dependencies may remove extra 
-	# packages, so we do a double-take on the list of packages we 
+	# XXX in `combined' updates, some dependencies may remove extra
+	# packages, so we do a double-take on the list of packages we
 	# are actually replacing... for now, until we merge update sets.
 	require OpenBSD::PackageInfo;
 	my @l = ();
@@ -289,6 +286,8 @@ sub validate_plists
 	$state->{problems} = 0;
 	delete $state->{overflow};
 
+	$state->{current_set} = $self;
+
 	for my $o ($self->older_to_do) {
 		require OpenBSD::Delete;
 		OpenBSD::Delete::validate_plist($o->{plist}, $state);
@@ -301,13 +300,13 @@ sub validate_plists
 	if (@{$state->{colliding}} > 0) {
 		require OpenBSD::CollisionReport;
 
-		OpenBSD::CollisionReport::collision_report($state->{colliding}, $state);
+		OpenBSD::CollisionReport::collision_report($state->{colliding}, $state, $self);
 	}
 	if (defined $state->{overflow}) {
 		$state->vstat->tally;
 		# okay, let's retry the other way around if we haven't yet
 		if (!defined $state->{delete_first}) {
-			if ($state->{defines}->{deletefirst} || 
+			if ($state->defines('deletefirst') ||
 			    $state->confirm("Delete older packages first", 0)) {
 				$state->{delete_first} = 1;
 				$state->vstat->drop_changes;
@@ -321,6 +320,18 @@ sub validate_plists
 	} else {
 		$state->vstat->synchronize;
 		return 1;
+	}
+}
+
+sub cleanup_old_shared
+{
+	my ($set, $state) = @_;
+	my $h = $set->{old_shared};
+
+	for my $d (sort {$b cmp $a} keys %$h) {
+		OpenBSD::SharedItems::wipe_directory($state, $h, $d) ||
+		    $state->fatal("Can't continue");
+		delete $state->{recorder}{dirs}{$d};
 	}
 }
 

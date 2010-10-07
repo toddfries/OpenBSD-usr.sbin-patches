@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.33 2010/04/21 17:50:28 jacekm Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.38 2010/08/02 11:49:02 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -163,7 +163,6 @@ enqueue(int argc, char *argv[])
 		case 'x':
 			break;
 		case 'q':
-			/* XXX: implement "process all now" */
 			return (0);
 		default:
 			usage();
@@ -189,6 +188,7 @@ enqueue(int argc, char *argv[])
 	}
 
 	signal(SIGALRM, sighdlr);
+	signal(SIGPIPE, SIG_IGN);
 	alarm(300);
 
 	fp = tmpfile();
@@ -238,7 +238,8 @@ enqueue(int argc, char *argv[])
 	event_set(&msg.ev, msg.fd, EV_READ|EV_WRITE, enqueue_event, NULL);
 	event_add(&msg.ev, &msg.pcb->timeout);
 
-	event_dispatch();
+	if (event_dispatch() < 0)
+		err(1, "event_dispatch");
 
 	client_close(msg.pcb);
 	exit(0);

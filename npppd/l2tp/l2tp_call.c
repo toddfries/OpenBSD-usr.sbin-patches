@@ -1,3 +1,5 @@
+/* $OpenBSD: l2tp_call.c,v 1.6 2010/09/24 14:50:30 yasuoka Exp $	*/
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,10 +25,8 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/* $Id: l2tp_call.c,v 1.3 2010/01/27 07:27:02 yasuoka Exp $ */
-/**@file
- * L2TP LNS のコールの実装。
- */
+/* $Id: l2tp_call.c,v 1.6 2010/09/24 14:50:30 yasuoka Exp $ */
+/**@file L2TP LNS call */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -40,6 +40,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <event.h>
+#include <net/if_dl.h>
 
 #include "debugutil.h"
 #include "bytebuf.h"
@@ -48,12 +49,7 @@
 #include "l2tp.h"
 #include "l2tp_subr.h"
 
-#ifndef	L2TPD_TEST
-#include <net/if_dl.h>
 #include "npppd.h"
-#else
-typedef struct _dialin_proxy_info { } dialin_proxy_info;
-#endif
 #include "l2tp_local.h"
 
 #ifdef	L2TP_CALL_DEBUG
@@ -77,11 +73,10 @@ static int                l2tp_call_bind_ppp (l2tp_call *, dialin_proxy_info *);
 static void               l2tp_call_notify_down (l2tp_call *);
 static int                l2tp_call_send_data_packet (l2tp_call *, bytebuffer *);
 
+static int   l2tp_call_ppp_output (npppd_ppp *, unsigned char *, int, int);
+static void  l2tp_call_closed_by_ppp (npppd_ppp *);
 
-/** l2tp_call の ID番号のシーケンス番号 */
-static unsigned l2tp_call_id_seq = 0;
-
-/** {@link ::_l2tp_call L2TP コール} インスタンスを生成します。*/
+/* create {@link ::_l2tp_call L2TP call} instance */
 l2tp_call *
 l2tp_call_create(void)
 {
@@ -93,32 +88,37 @@ l2tp_call_create(void)
 	return _this;
 }
 
-/** {@link ::_l2tp_call L2TP コール} インスタンスを初期化します。 */
-void
+/* initialize {@link ::_l2tp_call L2TP call} instance */
+int
 l2tp_call_init(l2tp_call *_this, l2tp_ctrl *ctrl)
 {
 	memset(_this, 0, sizeof(l2tp_call));
 
 	_this->ctrl = ctrl;
-	_this->id = l2tp_call_id_seq++;
+	if (l2tpd_assign_call(ctrl->l2tpd, _this) != 0)
+		return -1;
+
 	_this->use_seq = ctrl->data_use_seq;
+
+	return 0;
 }
 
-/** このインスタンスを解放します。 */
+/* free {@link ::_l2tp_call L2TP call} instance */
 void
 l2tp_call_destroy(l2tp_call *_this, int from_l2tp_ctrl)
 {
+	l2tpd_release_call(_this->ctrl->l2tpd, _this);
 	free(_this);
 }
 
 /*
- *  切断について
- *	a) npppdctl (vdipwho) から切断要求があった。
- *	   ppp_stop() で切断します。→ PPP LCP TermReq
- *	b) npppd が終了する、あるいは設定変更により l2tp.enabled = false
- *	   l2tp_call_disconnect() で切断します。→ L2TP CDN
+ * l2tp disconnect will occur when
+ *      1) disconnect request issued from nppdctl command
+ *      2) npppd is terminated
+ * in case 1) ppp_stop() is used to terminal. (PPP LCP TermReq)
+ * and in case 2) l2tp_call_disconnect() is used (L2TP CDN)
  */
-/** 管理上の理由から切断します。 */
+/* administrative reason disconnection */
 void
 l2tp_call_admin_disconnect(l2tp_call *_this)
 {
@@ -126,10 +126,9 @@ l2tp_call_admin_disconnect(l2tp_call *_this)
 	    NULL, NULL, 0);
 }
 
-/**
- * 切断します。
- * @param result_code	CDN を送信せずに切断(解放)する場合には、0 を指定
- * します。
+/*
+ * disconnect l2tp connection
+ * @param result_code	disconect without CDN, specify zero
  */
 static void
 l2tp_call_disconnect(l2tp_call *_this, int result_code, int error_code,
@@ -138,8 +137,8 @@ l2tp_call_disconnect(l2tp_call *_this, int result_code, int error_code,
 	L2TP_CALL_ASSERT(_this != NULL);
 
 	if (_this->state == L2TP_CALL_STATE_CLEANUP_WAIT) {
-		// 既に CDN を受信、または送信済み
-		l2tp_call_notify_down(_this);	// ねんのため
+		/* CDN received, or have been sent */
+		l2tp_call_notify_down(_this);	/* just in case */
 		return;
 	}
 	if (result_code > 0) {
@@ -152,10 +151,11 @@ l2tp_call_disconnect(l2tp_call *_this, int result_code, int error_code,
 	l2tp_call_notify_down(_this);
 }
 
-/************************************************************************
- * 制御パケットの送受信
- ************************************************************************/
-/** 制御パケットが入力された時に呼び出します。 */
+/*
+ * control packet
+ */
+
+/* call it when control packet is recieved */
 int
 l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
     u_char *pkt, int pktlen)
@@ -164,7 +164,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 	l2tp_call *call;
 	dialin_proxy_info dpi;
 
-	// ICRQ の時だけ、_this == NULL
+	/* when ICRQ, this will be NULL */
 	L2TP_CALL_ASSERT(_this != NULL ||
 	    mestype == L2TP_AVP_MESSAGE_TYPE_ICRQ);
 
@@ -184,7 +184,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 		len = slist_length(&ctrl->call_list);
 		session_id = _this->id;
 	    again:
-		/* セッションIDの割り当て */
+		/* assign a session ID */
 		session_id &= 0xffff;
 		if (session_id == 0)
 			session_id = 1;
@@ -197,7 +197,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 		}
 		_this->session_id = session_id;
 
-		/* この l2tp_call をリストに追加。 */
+		/* add the l2tp_call to call list */
 		slist_add(&_this->ctrl->call_list, _this);
 
 		if (l2tp_call_send_ICRP(_this) != 0)
@@ -206,7 +206,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 		return 0;
 	}
 
-	/* ステートマシン */
+	/* state machine */
 	send_cdn = 0;
 	switch (_this->state) {
 	default:
@@ -225,7 +225,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 		case L2TP_AVP_MESSAGE_TYPE_ICRQ:
 		case L2TP_AVP_MESSAGE_TYPE_ICRP:
 			send_cdn = 1;
-			// FALL THROUGH
+			/* FALLTHROUGH */
 		default:
 			l2tp_call_log(_this, LOG_ERR,
 			    "Waiting ICCN.  But received %s",
@@ -242,9 +242,7 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 	case L2TP_CALL_STATE_ESTABLISHED:
 		switch (mestype) {
 		case L2TP_AVP_MESSAGE_TYPE_CDN:
-			/*
-			 * peer からの切断。ログに残す
-			 */
+			/* disconnect from peer. log it */
 			l2tp_recv_CDN(_this, pkt, pktlen);
 			_this->state = L2TP_CALL_STATE_CLEANUP_WAIT;
 			l2tp_call_notify_down(_this);
@@ -276,11 +274,11 @@ l2tp_call_recv_packet(l2tp_ctrl *ctrl, l2tp_call *_this, int mestype,
 	l2tp_call_disconnect(_this, 0, 0, NULL, NULL, 0);
 	return 1;
 }
-/**
- * ICRQ受信
- * @return	acceptable な ICRQ の場合には、0 を返します。
- *		失敗した場合には、0 以外を返し、CDN は送信済みで、ステータス
- *		も変更済みです。
+/*
+ * receieve ICRQ
+ * @return	return 0 if the ICRQ is acceptable.
+ *		other values means fail to receive, and
+ *		CDN was sent and status was updated.
  */
 static int
 l2tp_call_recv_ICRQ(l2tp_call *_this, u_char *pkt, int pktlen)
@@ -326,9 +324,10 @@ l2tp_call_recv_ICRQ(l2tp_call *_this, u_char *pkt, int pktlen)
 		case L2TP_AVP_TYPE_BEARER_TYPE:
 		case L2TP_AVP_TYPE_PHYSICAL_CHANNEL_ID:
 			/*
-			 * Windows 98/Me/NT の MS "L2TP/IPsec VPN Client"
-			 * では Physical Channel Id は mandatory ビットがたって
-			 * いる。
+			 * Memo:
+			 * Microsoft "L2TP/IPsec VPN Client" for
+			 * Windows 98/Me/NT asserts mandatory bit in
+			 * Physical Channel Id
 			 */
 		case L2TP_AVP_TYPE_CALLING_NUMBER:
 			slen = MIN(sizeof(_this->calling_number) - 1,
@@ -338,7 +337,6 @@ l2tp_call_recv_ICRQ(l2tp_call *_this, u_char *pkt, int pktlen)
 			break;
 		case L2TP_AVP_TYPE_CALLED_NUMBER:
 		case L2TP_AVP_TYPE_SUB_ADDRESS:
-			// 使い途あれば。
 			continue;
 		default:
 			if (avp->is_mandatory) {
@@ -356,7 +354,7 @@ l2tp_call_recv_ICRQ(l2tp_call *_this, u_char *pkt, int pktlen)
 				}
 #ifdef L2TP_CALL_DEBUG
 			} else {
-				L2TP_CALL_DBG((_this, LOG_DEBUG, 
+				L2TP_CALL_DBG((_this, LOG_DEBUG,
 				    "AVP (%s/%d) is not handled",
 				    avp_attr_type_string(avp->attr_type),
 				    avp->attr_type));
@@ -384,7 +382,7 @@ size_check_failed:
 	return 1;
 }
 
-/** ICRP 送信 */
+/* send ICRP */
 static int
 l2tp_call_send_ICRP(l2tp_call *_this)
 {
@@ -418,12 +416,12 @@ l2tp_call_send_ICRP(l2tp_call *_this)
 		l2tp_call_log(_this, LOG_ERR, "failed to SendICRP: %m");
 		return 1;
 	}
-	l2tp_call_log(_this, LOG_INFO, "SendICRP session_id=%u", 
+	l2tp_call_log(_this, LOG_INFO, "SendICRP session_id=%u",
 	    _this->session_id);
 	return 0;
 }
 
-/** L2TP data messageを送信します。*/
+/* send L2TP data message */
 static int
 l2tp_call_send_data_packet(l2tp_call *_this, bytebuffer *buffer)
 {
@@ -432,7 +430,7 @@ l2tp_call_send_data_packet(l2tp_call *_this, bytebuffer *buffer)
 
 	bytebuffer_flip(buffer);
 	hdr = (struct l2tp_header *)bytebuffer_pointer(buffer);
-	memset(hdr, 0, sizeof(*hdr) - 4);	/* Nr, Ns はオプション */
+	memset(hdr, 0, sizeof(*hdr) - 4);	/* Nr, NS are option */
 
 	hdr->t = 0;
 	hdr->ver = L2TP_HEADER_VERSION_RFC2661;
@@ -461,10 +459,11 @@ l2tp_call_send_data_packet(l2tp_call *_this, bytebuffer *buffer)
 	return (rval == bytebuffer_remaining(buffer))? 0 : 1;
 }
 
-/**
- * ICCN 受信
- * @return acceptable な ICCN の場合には、0 を返します。失敗した場合には、0
- *	以外を返し、CDN は送信済みで、ステータスも変更済みです。
+/*
+ * receive ICCN
+ * @return	return 0 if the ICCN is acceptable.
+ *		other value means fail to receive, and
+ *		CDN was sent and status was updated.
  */
 static int
 l2tp_call_recv_ICCN(l2tp_call *_this, u_char *pkt, int pktlen,
@@ -532,7 +531,7 @@ l2tp_call_recv_ICCN(l2tp_call *_this, u_char *pkt, int pktlen,
 			dpi->last_recv_lcp.ldata = avp_attr_length(avp);
 			break;
 		case L2TP_AVP_TYPE_PROXY_AUTHEN_CHALLENGE:
-			memcpy(dpi->auth_chall, avp->attr_value, 
+			memcpy(dpi->auth_chall, avp->attr_value,
 			    MIN(avp_attr_length(avp), sizeof(dpi->auth_chall)));
 			dpi->lauth_chall = avp_attr_length(avp);
 			break;
@@ -545,7 +544,7 @@ l2tp_call_recv_ICCN(l2tp_call *_this, u_char *pkt, int pktlen,
 			    avp_attr_length(avp)));
 			break;
 		case L2TP_AVP_TYPE_PROXY_AUTHEN_RESPONSE:
-			memcpy(dpi->auth_resp, avp->attr_value, 
+			memcpy(dpi->auth_resp, avp->attr_value,
 			    MIN(avp_attr_length(avp), sizeof(dpi->auth_resp)));
 			dpi->lauth_resp = avp_attr_length(avp);
 			break;
@@ -585,7 +584,7 @@ l2tp_call_recv_ICCN(l2tp_call *_this, u_char *pkt, int pktlen,
 				return 1;
 #ifdef L2TP_CALL_DEBUG
 			} else {
-				L2TP_CALL_DBG((_this, LOG_DEBUG, 
+				L2TP_CALL_DBG((_this, LOG_DEBUG,
 				    "AVP (%s/%d) is not handled",
 				    avp_attr_type_string(avp->attr_type),
 				    avp->attr_type));
@@ -608,7 +607,7 @@ size_check_failed:
 	return 1;
 }
 
-/** CDN 受信 */
+/* receive CDN */
 static int
 l2tp_recv_CDN(l2tp_call *_this, u_char *pkt, int pktlen)
 {
@@ -616,7 +615,7 @@ l2tp_recv_CDN(l2tp_call *_this, u_char *pkt, int pktlen)
 	struct l2tp_avp *avp;
 	char buf[L2TP_AVP_MAXSIZ], emes[256], pmes[256];
 
-	/* 初期化 */
+	/* initialize */
 	result = 0;
 	error = 0;
 	sessid = 0;
@@ -685,7 +684,7 @@ l2tp_recv_CDN(l2tp_call *_this, u_char *pkt, int pktlen)
 				}
 #ifdef L2TP_CALL_DEBUG
 			} else {
-				L2TP_CALL_DBG((_this, LOG_DEBUG, 
+				L2TP_CALL_DBG((_this, LOG_DEBUG,
 				    "AVP (%s/%d) is not handled",
 				    avp_attr_type_string(avp->attr_type),
 				    avp->attr_type));
@@ -707,15 +706,15 @@ l2tp_recv_CDN(l2tp_call *_this, u_char *pkt, int pktlen)
 	return 0;
 
 size_check_failed:
-	// CDN のメッセージがおかしくても、続行
+	/* continue to process even if the CDN message was broken */
 	l2tp_call_log(_this, LOG_ERR, "Received bad CDN: %s", emes);
 
 	return 0;
 }
 
-/** CDN 送信 */
+/* send CDN */
 static int
-l2tp_call_send_CDN(l2tp_call *_this, int result_code, int error_code, const 
+l2tp_call_send_CDN(l2tp_call *_this, int result_code, int error_code, const
     char *errmes, struct l2tp_avp *addavp[], int naddavp)
 {
 	uint32_t val32;
@@ -745,8 +744,10 @@ l2tp_call_send_CDN(l2tp_call *_this, int result_code, int error_code, const
 	avp->attr_type = L2TP_AVP_TYPE_RESULT_CODE;
 #if 0
 /*
- * エラーコード無しの長さ 8 の AVP を送信すると、Windows 2000 側が StopCCN で
- * "2 - Length is wrong" を返してくる。長さ10にして回避。
+ * Windows 2000 work around:
+ * Windows 2000 will return "2 - Length is wrong" in StopCCN,
+ * when it received "length = 8 and no error code AVP".
+ * Avoid the error, use AVP length = 10.
  */
 	if (error_code > 0) {
 		val32 = (result_code << 16) | (error_code & 0xffff);
@@ -802,7 +803,7 @@ l2tp_call_send_CDN(l2tp_call *_this, int result_code, int error_code, const
 	return 0;
 }
 
-/** ZLB の送信 */
+/* send ZLB */
 static int
 l2tp_call_send_ZLB(l2tp_call *_this)
 {
@@ -818,10 +819,10 @@ l2tp_call_send_ZLB(l2tp_call *_this)
 	    bytebuf, 1);
 }
 
-/************************************************************************
- * その他
- ************************************************************************/
-/** このインスタンスに基づいたラベルから始まるログを記録します。 */
+/*
+ * misc
+ */
+/* logging with the label of the instance */
 static void
 l2tp_call_log(l2tp_call *_this, int prio, const char *fmt, ...)
 {
@@ -840,7 +841,7 @@ l2tp_call_log(l2tp_call *_this, int prio, const char *fmt, ...)
 	va_end(ap);
 }
 
-/** 現在のステータスの文字列表現を返します。 */
+/* convert current status to strings */
 static inline const char *
 l2tp_call_state_string(l2tp_call *_this)
 {
@@ -853,33 +854,11 @@ l2tp_call_state_string(l2tp_call *_this)
 	return "unknown";
 }
 
+/*
+ * npppd physical layer
+ */
 
-#ifdef	L2TPD_TEST
-
-void
-l2tp_call_ppp_input(l2tp_call *_this, u_char *pkt, int pktlen)
-{
-}
-static int
-l2tp_call_bind_ppp(l2tp_call *_this, dialin_proxy_info *dpi)
-{
-	return 0;
-}
-static void
-l2tp_call_notify_down(l2tp_call *_this)
-{
-}
-
-#else
-/************************************************************************
- * npppd の物理層として
- ************************************************************************/
-#include "npppd.h"
-
-static int   l2tp_call_ppp_output (npppd_ppp *, unsigned char *, int, int);
-static void  l2tp_call_closed_by_ppp (npppd_ppp *);
-
-/** ppp にパケットを入力します。 */
+/* input packet to ppp */
 void
 l2tp_call_ppp_input(l2tp_call *_this, u_char *pkt, int pktlen)
 {
@@ -900,7 +879,7 @@ l2tp_call_ppp_input(l2tp_call *_this, u_char *pkt, int pktlen)
 	}
 }
 
-/** ppp からパケットが出力される時に呼び出されます。 */
+/* called ppp output a packet */
 static int
 l2tp_call_ppp_output(npppd_ppp *ppp, unsigned char *bytes, int nbytes,
     int flags)
@@ -926,7 +905,7 @@ l2tp_call_ppp_output(npppd_ppp *ppp, unsigned char *bytes, int nbytes,
 	return 0;
 }
 
-/** ppp で切断された場合に呼び出されます。 */
+/* it will be called when the connection was closed at ppp */
 static void
 l2tp_call_closed_by_ppp(npppd_ppp *ppp)
 {
@@ -937,7 +916,8 @@ l2tp_call_closed_by_ppp(npppd_ppp *ppp)
 
 	_this = ppp->phy_context;
 
-	_this->ppp = NULL;	// l2tp_call_disconnect より先に。
+	/* do before l2tp_call_disconnect() */
+	_this->ppp = NULL;
 
 	if (_this->state == L2TP_CALL_STATE_CLEANUP_WAIT) {
 		/*  no need to call l2tp_call_disconnect */
@@ -980,7 +960,7 @@ l2tp_call_closed_by_ppp(npppd_ppp *ppp)
 	l2tp_call_log(_this, LOG_NOTICE, "logtype=PPPUnbind");
 }
 
-/** ppp に切断した旨を通知し ppp の終了/解放を行います。 */
+/* notify disconnection to ppp to terminate or free of ppp */
 static void
 l2tp_call_notify_down(l2tp_call *_this)
 {
@@ -988,7 +968,7 @@ l2tp_call_notify_down(l2tp_call *_this)
 		ppp_phy_downed(_this->ppp);
 }
 
-/** ppp の bind。 */
+/* bind ppp */
 static int
 l2tp_call_bind_ppp(l2tp_call *_this, dialin_proxy_info *dpi)
 {
@@ -999,7 +979,7 @@ l2tp_call_bind_ppp(l2tp_call *_this, dialin_proxy_info *dpi)
 	errcode = 0;
 	ppp = NULL;
 	if ((ppp = ppp_create()) == NULL)
-		goto reigai;
+		goto fail;
 
 	ASSERT(_this->ppp == NULL);
 
@@ -1021,7 +1001,7 @@ l2tp_call_bind_ppp(l2tp_call *_this, dialin_proxy_info *dpi)
 	    sizeof(ppp->calling_number));
 	if (ppp_init(npppd_get_npppd(), ppp) != 0) {
 		l2tp_call_log(_this, LOG_ERR, "failed binding ppp");
-		goto reigai;
+		goto fail;
 	}
 
 	l2tp_call_log(_this, LOG_NOTICE, "logtype=PPPBind ppp=%d", ppp->id);
@@ -1032,18 +1012,18 @@ l2tp_call_bind_ppp(l2tp_call *_this, dialin_proxy_info *dpi)
 			    "'accept_dialin' is 'false' in the setting.");
 			code = L2TP_CDN_RCODE_ERROR_CODE;
 			errcode = L2TP_ECODE_INVALID_MESSAGE;
-			goto reigai;
+			goto fail;
 		}
 
 		if (ppp_dialin_proxy_prepare(ppp, dpi) != 0) {
 			code = L2TP_CDN_RCODE_TEMP_NOT_AVALIABLE;
-			goto reigai;
+			goto fail;
 		}
 	}
 	ppp_start(ppp);
 
 	return 0;
-reigai:
+fail:
 	if (ppp != NULL)
 		ppp_destroy(ppp);
 	_this->ppp = NULL;
@@ -1051,4 +1031,3 @@ reigai:
 	l2tp_call_disconnect(_this, code, 0, NULL, NULL, 0);
 	return 1;
 }
-#endif

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Replace.pm,v 1.70 2010/03/22 20:38:44 espie Exp $
+# $OpenBSD: Replace.pm,v 1.77 2010/07/28 15:06:14 espie Exp $
 #
 # Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
@@ -25,7 +25,7 @@ sub can_update
 	my ($self, $installing, $state) = @_;
 
 	my $issue = $self->update_issue($installing);
-	
+
 	if (defined $issue) {
 	    	push(@{$state->{journal}}, $issue);
 	}
@@ -55,7 +55,7 @@ sub extract
 		$state->{archive}->skip;
 		return;
 	}
-	
+
 	$self->SUPER::extract($state);
 
 	# figure out a safe directory where to put the temp file
@@ -66,7 +66,7 @@ sub extract
 		$d = dirname($d);
 	}
 	if ($state->{not}) {
-		$state->say("extracting tempfile under $d") 
+		$state->say("extracting tempfile under #1", $d)
 		    if $state->verbose >= 3;
 		$state->{archive}->skip;
 	} else {
@@ -75,7 +75,7 @@ sub extract
 		}
 		my ($fh, $tempname) = OpenBSD::Temp::permanent_file($d, "pkg");
 
-		$state->say("extracting $tempname") if $state->verbose >= 3;
+		$state->say("extracting #1", $tempname) if $state->verbose >= 3;
 		$self->{tempname} = $tempname;
 
 		# XXX don't apply destdir twice
@@ -95,7 +95,7 @@ sub extract
 
 	return if -e $destdir.$fullname;
 	$self->SUPER::extract($state);
-	$state->say("new directory ", $destdir, $fullname) 
+	$state->say("new directory #1", $destdir.$fullname)
 	    if $state->verbose >= 3;
 	return if $state->{not};
 	File::Path::mkpath($destdir.$fullname);
@@ -114,14 +114,14 @@ sub extract
 
 package OpenBSD::PackingElement::ScriptFile;
 sub update_issue
-{ 
+{
 	my ($self, $installing) = @_;
 	return $self->name." script";
 }
 
 package OpenBSD::PackingElement::FINSTALL;
 sub update_issue
-{ 
+{
 	my ($self, $installing) = @_;
 	return if !$installing;
 	return $self->SUPER::update_issue($installing);
@@ -129,7 +129,7 @@ sub update_issue
 
 package OpenBSD::PackingElement::FDEINSTALL;
 sub update_issue
-{ 
+{
 	my ($self, $installing) = @_;
 	return if $installing;
 	return $self->SUPER::update_issue($installing);
@@ -137,7 +137,7 @@ sub update_issue
 
 package OpenBSD::PackingElement::Exec;
 sub update_issue
-{ 
+{
 	my ($self, $installing) = @_;
 	return if !$installing;
 	return '@'.$self->keyword.' '.$self->{expanded};
@@ -148,7 +148,7 @@ sub update_issue { undef }
 
 package OpenBSD::PackingElement::Unexec;
 sub update_issue
-{ 
+{
 	my ($self, $installing) = @_;
 
 	return if $installing;
@@ -179,10 +179,14 @@ sub check_plist_exec
 	$plist->can_update($new, $state);
 	return 1 if @{$state->{journal}} == 0;
 
-	$state->errsay($new ? "New": "Old", " package ", $plist->pkgname, 
-	    " contains potentially unsafe operations");
+	$state->errsay(($new ? "New": "Old").
+	    " package #1 will run the following commands", $plist->pkgname);
 	for my $i (@{$state->{journal}}) {
-		$state->errsay("| ", $i);
+		if ($new) {
+			$state->errsay("+ #1", $i);
+		} else {
+			$state->errsay("- #1", $i);
+		}
 	}
 	return 0;
 }
@@ -203,7 +207,7 @@ sub is_set_safe
 {
 	my ($set, $state) = @_;
 
-	if ($state->{defines}->{update} && !$state->verbose) {
+	if ($state->defines('update') && !$state->verbose) {
 		return 1;
 	}
 
@@ -217,7 +221,7 @@ sub is_set_safe
 	}
 	return 1 if $ok;
 
-	if ($state->{defines}->{update}) {
+	if ($state->defines('update')) {
 		$state->errsay("Forcing update");
 		return 1;
 	} elsif ($state->{interactive}) {
@@ -228,8 +232,8 @@ sub is_set_safe
 			return 0;
 		}
 	} else {
-		$state->errsay("Cannot install ", $set->print, 
-		    " (use -D update)");
+		$state->errsay("Cannot install #1 (use -D update)",
+		    $set->print);
 		return 0;
     	}
 }

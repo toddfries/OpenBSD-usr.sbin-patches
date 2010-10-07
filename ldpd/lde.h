@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde.h,v 1.6 2010/02/19 12:49:21 claudio Exp $ */
+/*	$OpenBSD: lde.h,v 1.15 2010/06/30 22:15:02 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -26,19 +26,30 @@
 #include <event.h>
 #include <limits.h>
 
-/* Label mapping request pending */
-struct lde_req_entry {
-	TAILQ_ENTRY(lde_req_entry)	entry;
-	struct in_addr			prefix;
-	u_int8_t			prefixlen;
+RB_HEAD(fec_tree, fec);
+
+struct fec {
+	RB_ENTRY(fec)		entry;
+	struct in_addr		prefix;
+	u_int8_t		prefixlen;
 };
 
-/* Label mapping message sent */
-struct lde_map_entry {
-	TAILQ_ENTRY(lde_map_entry)	entry;
-	struct in_addr			prefix;
-	u_int8_t			prefixlen;
-	u_int32_t			label;
+/*
+ * fec tree of pending label request
+ * Note: currently only one outstanding request per FEC can be tracked but
+ *       should not be a problem since ldpd does not support multipath for now.
+ */
+struct lde_req {
+	struct fec		fec;
+	u_int32_t		msgid;	
+};
+
+/* mapping entries */
+struct lde_map {
+	struct fec		 fec;
+	LIST_ENTRY(lde_map)	 entry;
+	struct lde_nbr		*nexthop;
+	u_int32_t		 label;
 };
 
 /* Addresses belonging to neighbor */
@@ -49,64 +60,57 @@ struct lde_nbr_address {
 
 /* just the info LDE needs */
 struct lde_nbr {
-	LIST_ENTRY(lde_nbr)		 hash, entry;
+	RB_ENTRY(lde_nbr)		 entry;
 	struct in_addr			 id;
 
-	TAILQ_HEAD(, lde_req_entry)	 req_list;
-	TAILQ_HEAD(, lde_map_entry)	 recv_map_list;
-	TAILQ_HEAD(, lde_map_entry)	 sent_map_list;
+	struct fec_tree			 recv_req;
+	struct fec_tree			 sent_req;
+	struct fec_tree			 recv_map;
+	struct fec_tree			 sent_map;
+	struct fec_tree			 sent_wdraw;
 	TAILQ_HEAD(, lde_nbr_address)	 addr_list;
-	TAILQ_HEAD(, rt_label)		 labels_list;
 
 	u_int32_t			 peerid;
 	unsigned int			 ifindex;
-	int				 self;
 	int				 state;
 
 	u_int16_t			 lspace;
 };
 
-struct rt_node;
+struct rt_lsp {
+	LIST_ENTRY(rt_lsp)	entry;
 
-struct rt_label {
-	TAILQ_ENTRY(rt_label)	 node_l, nbr_l;
-	struct lde_nbr		*nexthop;
-	struct rt_node		*node;
-	u_int32_t		 label;
+	struct in_addr		nexthop;
+	u_int32_t		remote_label;
 };
 
 struct rt_node {
-	RB_ENTRY(rt_node)	entry;
-	TAILQ_HEAD(, rt_label)	labels_list;
-	struct in_addr		prefix;
-	struct in_addr		nexthop;
+	struct fec		fec;
+
+	LIST_HEAD(, rt_lsp)	lsp;		/* label switching pathes */
+	LIST_HEAD(, lde_map)	downstream;	/* recv mappings */
+	LIST_HEAD(, lde_map)	upstream;	/* sent mappings */
 
 	u_int32_t		local_label;
-	u_int32_t		remote_label;
-
-	u_int32_t		ext_tag;
 	u_int16_t		lspace;
 	u_int8_t		flags;
-	u_int8_t		prefixlen;
-	u_int8_t		invalid;
-	u_int8_t		present;	/* Is it present in fib? */
 };
 
 /* lde.c */
-pid_t		 lde(struct ldpd_conf *, int [2], int [2], int [2]);
-int		 lde_imsg_compose_ldpe(int, u_int32_t, pid_t, void *,
-		     u_int16_t);
-u_int32_t	 lde_router_id(void);
-void		 lde_send_insert_klabel(struct rt_node *);
-void		 lde_send_change_klabel(struct rt_node *);
-void		 lde_send_delete_klabel(struct rt_node *);
-void		 lde_send_labelmapping(u_int32_t, struct map *);
-void		 lde_send_labelrequest(u_int32_t, struct map *);
-void		 lde_send_labelrelease(u_int32_t, struct map *);
-void		 lde_send_notification(u_int32_t, u_int32_t, u_int32_t,
-		    u_int32_t);
+pid_t		lde(struct ldpd_conf *, int [2], int [2], int [2]);
+int		lde_imsg_compose_ldpe(int, u_int32_t, pid_t, void *, u_int16_t);
+u_int32_t	lde_assign_label(void);
+void		lde_send_change_klabel(struct rt_node *, struct rt_lsp *);
+void		lde_send_delete_klabel(struct rt_node *, struct rt_lsp *);
+void		lde_send_labelmapping(u_int32_t, struct map *);
+void		lde_send_labelrequest(u_int32_t, struct map *);
+void		lde_send_labelrelease(u_int32_t, struct map *);
+void		lde_send_notification(u_int32_t, u_int32_t, u_int32_t,
+		   u_int32_t);
 
-void		 lde_nbr_del(struct lde_nbr *);
+void		lde_nbr_del(struct lde_nbr *);
+void		lde_nbr_do_mappings(struct rt_node *);
+struct lde_map *lde_map_add(struct lde_nbr *, struct rt_node *, int);
 struct lde_nbr *lde_find_address(struct in_addr);
 
 
@@ -115,21 +119,22 @@ struct lde_nbr_address	*lde_address_find(struct lde_nbr *, struct in_addr *);
 int			 lde_address_del(struct lde_nbr *, struct in_addr *);
 
 /* lde_lib.c */
-void		 rt_init(void);
-int		 rt_compare(struct rt_node *, struct rt_node *);
-int		 rt_insert(struct rt_node *);
-int		 rt_remove(struct rt_node *);
-struct rt_node	*rt_find(in_addr_t, u_int8_t);
-void		 rt_clear(void);
-void		 route_reset_timers(struct rt_node *);
-int		 route_start_timeout(struct rt_node *);
-void		 route_start_garbage(struct rt_node *);
+void		 fec_init(struct fec_tree *);
+int		 fec_insert(struct fec_tree *, struct fec *);
+int		 fec_remove(struct fec_tree *, struct fec *);
+struct fec	*fec_find_prefix(struct fec_tree *, in_addr_t, u_int8_t);
+struct fec	*fec_find(struct fec_tree *, struct fec *);
+void		 fec_clear(struct fec_tree *, void (*)(void *));
+
 void		 rt_dump(pid_t);
 void		 rt_snap(u_int32_t);
+void		 rt_clear(void);
+
 void		 lde_kernel_insert(struct kroute *);
 void		 lde_kernel_remove(struct kroute *);
 void		 lde_check_mapping(struct map *, struct lde_nbr *);
 void		 lde_check_request(struct map *, struct lde_nbr *);
+void		 lde_check_release(struct map *, struct lde_nbr *);
 void		 lde_label_list_free(struct lde_nbr *);
 
 #endif	/* _LDE_H_ */

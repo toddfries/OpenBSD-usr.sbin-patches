@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.7 2010/02/25 21:07:31 michele Exp $ */
+/*	$OpenBSD: control.c,v 1.9 2010/09/01 13:54:54 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -124,7 +124,7 @@ control_accept(int listenfd, short event, void *bula)
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		log_warn("control_accept");
 		close(connfd);
 		return;
@@ -220,10 +220,8 @@ control_dispatch_imsg(int fd, short event, void *bula)
 			break;
 
 		switch (imsg.hdr.type) {
-		case IMSG_CTL_LFIB_COUPLE:
-		case IMSG_CTL_LFIB_DECOUPLE:
-			ldpe_fib_update(imsg.hdr.type);
-			/* FALLTHROUGH */
+		case IMSG_CTL_FIB_COUPLE:
+		case IMSG_CTL_FIB_DECOUPLE:
 		case IMSG_CTL_RELOAD:
 			c->iev.ibuf.pid = imsg.hdr.pid;
 			ldpe_imsg_compose_parent(imsg.hdr.type, 0, NULL, 0);

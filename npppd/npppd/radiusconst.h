@@ -1,3 +1,5 @@
+/* $OpenBSD: radiusconst.h,v 1.3 2010/07/02 21:20:57 yasuoka Exp $ */
+
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
  * All rights reserved.
@@ -23,9 +25,8 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/* ´Á»ú¥³¡¼¥É¤Ï£Å£Õ£Ã ´Á»ú¥³¡¼¥É¤Ï£Å£Õ£Ã */
 /*
- * radiusconst.h : 
+ * radiusconst.h :
  *   RADIUS constatnts
  */
 

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -14,7 +14,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -57,14 +57,10 @@ recvfromto(s, buf, buflen, flags, from, fromlen, to, tolen)
 	struct cmsghdr *cm;
 	struct iovec iov[2];
 	u_char cmsgbuf[256];
-#if defined(INET6) && defined(INET6_ADVAPI)
 	struct in6_pktinfo *pi;
-#endif /*INET6_ADVAPI*/
 	struct sockaddr_in *sin4;
 	socklen_t sslen;
-#ifdef INET6
 	struct sockaddr_in6 *sin6;
-#endif
 
 	sslen = sizeof(ss);
 	if (getsockname(s, (struct sockaddr *)&ss, &sslen) < 0)
@@ -90,7 +86,6 @@ recvfromto(s, buf, buflen, flags, from, fromlen, to, tolen)
 	for (cm = (struct cmsghdr *)CMSG_FIRSTHDR(&m);
 	     m.msg_controllen != 0 && cm;
 	     cm = (struct cmsghdr *)CMSG_NXTHDR(&m, cm)) {
-#if defined(INET6) && defined(INET6_ADVAPI)
 		if (ss.ss_family == AF_INET6
 		 && cm->cmsg_level == IPPROTO_IPV6
 		 && cm->cmsg_type == IPV6_PKTINFO
@@ -115,7 +110,6 @@ recvfromto(s, buf, buflen, flags, from, fromlen, to, tolen)
 			otolen = -1;	/* "to" already set */
 			continue;
 		}
-#endif
 #ifdef __linux__
 		if (ss.ss_family == AF_INET
 		 && cm->cmsg_level == IPPROTO_IP
@@ -134,7 +128,7 @@ recvfromto(s, buf, buflen, flags, from, fromlen, to, tolen)
 			continue;
 		}
 #endif
-#if defined(INET6) && defined(IPV6_RECVDSTADDR)
+#ifdef IPV6_RECVDSTADDR
 		if (ss.ss_family == AF_INET6
 		      && cm->cmsg_level == IPPROTO_IPV6
 		      && cm->cmsg_type == IPV6_RECVDSTADDR

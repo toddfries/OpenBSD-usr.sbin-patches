@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.52 2009/12/01 14:28:05 claudio Exp $ */
+/*	$OpenBSD: config.c,v 1.55 2010/09/02 14:03:21 sobrado Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -20,6 +20,9 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+
+#include <netmpls/mpls.h>
 
 #include <errno.h>
 #include <ifaddrs.h>
@@ -47,8 +50,6 @@ merge_config(struct bgpd_config *xconf, struct bgpd_config *conf,
 
 	/* preserve cmd line opts */
 	conf->opts = xconf->opts;
-	conf->csock = xconf->csock;
-	conf->rcsock = xconf->rcsock;
 
 	if (!conf->as) {
 		log_warnx("configuration error: AS not given");
@@ -64,6 +65,9 @@ merge_config(struct bgpd_config *xconf, struct bgpd_config *conf,
 	if ((conf->flags & BGPD_FLAG_REFLECTOR) && conf->clusterid == 0)
 		conf->clusterid = conf->bgpid;
 
+	free(xconf->csock);
+	free(xconf->rcsock);
+
 	conf->listen_addrs = xconf->listen_addrs;
 	memcpy(xconf, conf, sizeof(struct bgpd_config));
 
@@ -74,7 +78,7 @@ merge_config(struct bgpd_config *xconf, struct bgpd_config *conf,
 			nla->reconf = RECONF_REINIT;
 
 	} else {
-		/* 
+		/*
 		 * merge new listeners:
 		 * -flag all existing ones as to be deleted
 		 * -those that are in both new and old: flag to keep
@@ -310,4 +314,29 @@ prepare_listeners(struct bgpd_config *conf)
 			continue;
 		}
 	}
+}
+
+int
+get_mpe_label(struct rdomain *r)
+{
+	struct  ifreq	ifr;
+	struct shim_hdr	shim;
+	int		s;
+
+	s = socket(AF_INET, SOCK_DGRAM, 0);
+	if (s == -1)
+		return (-1);
+
+	bzero(&shim, sizeof(shim));
+	bzero(&ifr, sizeof(ifr));
+	strlcpy(ifr.ifr_name, r->ifmpe, sizeof(ifr.ifr_name));
+	ifr.ifr_data = (caddr_t)&shim;
+
+	if (ioctl(s, SIOCGETLABEL , (caddr_t)&ifr) == -1) {
+		close(s);
+		return (-1);
+	}
+	close(s);
+	r->label = shim.shim_label;
+	return (0);
 }

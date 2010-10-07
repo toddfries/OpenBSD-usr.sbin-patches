@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Tracker.pm,v 1.19 2009/12/30 17:37:36 espie Exp $
+# $OpenBSD: Tracker.pm,v 1.23 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2009 Marc Espie <espie@openbsd.org>
 #
@@ -25,7 +25,7 @@
 #   - otherwise, in update mode, put a request to update the package (e.g.,
 #   create a new UpdateSet.
 
-# the Tracker object does maintain that information globally so that 
+# the Tracker object does maintain that information globally so that
 # Update/Dependencies can do its job.
 
 use strict;
@@ -40,17 +40,17 @@ sub new
 
 sub sets_todo
 {
-	my $self = shift;
-
-	return scalar keys %{$self->{todo}};
+	my ($self, $offset) = @_;
+	return sprintf("%u/%u", (scalar keys %{$self->{done}})-$offset,
+		scalar keys %{$self->{total}});
 }
+
 sub handle_set
 {
 	my ($self, $set) = @_;
+	$self->{total}->{$set} = 1;
 	if ($set->{finished}) {
-		delete $self->{todo}->{$set};
-	} else {
-		$self->{todo}->{$set} = 1;
+		$self->{done}->{$set} = 1;
 	}
 }
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.h,v 1.7 2010/04/15 15:04:23 claudio Exp $ */
+/*	$OpenBSD: ldpe.h,v 1.11 2010/09/06 08:28:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2008 Esben Norby <norby@openbsd.org>
@@ -54,7 +54,7 @@ struct nbr {
 	struct in_addr		 addr;
 	struct in_addr		 id;
 
-	struct buf_read		*rbuf;
+	struct ibuf_read	*rbuf;
 	struct iface		*iface;
 
 	time_t			 uptime;
@@ -88,9 +88,9 @@ void	 send_keepalive(struct nbr *);
 int	 recv_keepalive(struct nbr *, char *, u_int16_t);
 
 /* notification.c */
-void	 send_notification(u_int32_t, struct iface *, int, u_int32_t,
-	    u_int32_t);
 void	 send_notification_nbr(struct nbr *, u_int32_t, u_int32_t, u_int32_t);
+struct ibuf	*send_notification(u_int32_t, struct iface *, u_int32_t,
+	    u_int32_t);
 int	 recv_notification(struct nbr *, char *, u_int16_t);
 
 /* address.c */
@@ -148,7 +148,7 @@ int	 if_set_reuse(int, int);
 
 /* neighbor.c */
 void		 nbr_init(u_int32_t);
-struct nbr	*nbr_new(u_int32_t, u_int16_t, struct iface *, int);
+struct nbr	*nbr_new(u_int32_t, u_int16_t, struct iface *);
 void		 nbr_del(struct nbr *);
 
 struct nbr	*nbr_find_ip(struct iface *, u_int32_t);
@@ -160,19 +160,15 @@ int	 nbr_fsm(struct nbr *, enum nbr_event);
 void	 nbr_itimer(int, short, void *);
 void	 nbr_start_itimer(struct nbr *);
 void	 nbr_stop_itimer(struct nbr *);
-void	 nbr_reset_itimer(struct nbr *);
 void	 nbr_ktimer(int, short, void *);
 void	 nbr_start_ktimer(struct nbr *);
 void	 nbr_stop_ktimer(struct nbr *);
-void	 nbr_reset_ktimer(struct nbr *);
 void	 nbr_ktimeout(int, short, void *);
 void	 nbr_start_ktimeout(struct nbr *);
 void	 nbr_stop_ktimeout(struct nbr *);
-void	 nbr_reset_ktimeout(struct nbr *);
 void	 nbr_idtimer(int, short, void *);
 void	 nbr_start_idtimer(struct nbr *);
 void	 nbr_stop_idtimer(struct nbr *);
-void	 nbr_reset_idtimer(struct nbr *);
 int	 nbr_pending_idtimer(struct nbr *);
 
 int	 nbr_act_session_establish(struct nbr *, int);
@@ -189,8 +185,8 @@ void			 nbr_mapping_list_clr(struct nbr *,
 struct ctl_nbr	*nbr_to_ctl(struct nbr *);
 
 /* packet.c */
-int	 gen_ldp_hdr(struct buf *, struct iface *, u_int16_t);
-int	 gen_msg_tlv(struct buf *, u_int32_t, u_int16_t);
+int	 gen_ldp_hdr(struct ibuf *, struct iface *, u_int16_t);
+int	 gen_msg_tlv(struct ibuf *, u_int32_t, u_int16_t);
 int	 send_packet(struct iface *, void *, size_t, struct sockaddr_in *);
 void	 disc_recv_packet(int, short, void *);
 void	 session_accept(int, short, void *);

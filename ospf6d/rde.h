@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.20 2010/03/01 08:55:45 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.22 2010/07/01 19:47:04 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -73,7 +73,7 @@ struct rde_nbr {
 	struct iface			*iface;
 	u_int32_t			 peerid;	/* unique ID in DB */
 	unsigned int			 ifindex;
-	u_int32_t		 	 iface_id;	/* id of neighbor's
+	u_int32_t			 iface_id;	/* id of neighbor's
 							   iface */
 	int				 state;
 	int				 self;
@@ -134,6 +134,7 @@ int		 rde_nbr_loading(struct area *);
 struct rde_nbr	*rde_nbr_self(struct area *);
 struct rde_nbr	*rde_nbr_find(u_int32_t);
 void		 rde_summary_update(struct rt_node *, struct area *);
+void		 orig_intra_area_prefix_lsas(struct area *);
 
 /* rde_lsdb.c */
 void		 lsa_init(struct lsa_tree *);

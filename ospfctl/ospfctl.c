@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfctl.c,v 1.53 2010/02/19 10:35:52 dlg Exp $ */
+/*	$OpenBSD: ospfctl.c,v 1.55 2010/09/25 13:29:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -335,7 +335,8 @@ show_summary_msg(struct imsg *imsg)
 
 		printf("SPF delay is %d msec(s), hold time between two SPFs "
 		    "is %d msec(s)\n", sum->spf_delay, sum->spf_hold_time);
-		printf("Number of external LSA(s) %d\n", sum->num_ext_lsa);
+		printf("Number of external LSA(s) %d (Checksum sum 0x%x)\n",
+		    sum->num_ext_lsa, sum->ext_lsa_cksum);
 		printf("Number of areas attached to this router: %d\n",
 		    sum->num_area);
 		break;
@@ -348,7 +349,8 @@ show_summary_msg(struct imsg *imsg)
 		    "area: %d\n", sumarea->num_adj_nbr);
 		printf("  SPF algorithm executed %d time(s)\n",
 		    sumarea->num_spf_calc);
-		printf("  Number LSA(s) %d\n", sumarea->num_lsa);
+		printf("  Number LSA(s) %d (Checksum sum 0x%x)\n",
+		    sumarea->num_lsa, sumarea->lsa_cksum);
 		break;
 	case IMSG_CTL_END:
 		printf("\n");
@@ -787,6 +789,7 @@ show_db_msg_detail(struct imsg *imsg)
 		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
 		    - sizeof(u_int32_t)) / sizeof(struct lsa_net_link);
 		off = sizeof(lsa->hdr) + sizeof(u_int32_t);
+		printf("Number of Routers: %d\n", nlinks);
 
 		for (i = 0; i < nlinks; i++) {
 			addr.s_addr = lsa->data.net.att_rtr[i];

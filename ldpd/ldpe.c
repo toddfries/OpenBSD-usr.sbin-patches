@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.c,v 1.6 2010/04/15 15:04:23 claudio Exp $ */
+/*	$OpenBSD: ldpe.c,v 1.12 2010/09/01 13:54:54 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -51,7 +51,6 @@ void	 recv_packet(int, short, void *);
 struct ldpd_conf	*leconf = NULL, *nconf;
 struct imsgev		*iev_main;
 struct imsgev		*iev_lde;
-int			 oe_nofib;
 
 /* ARGSUSED */
 void
@@ -143,8 +142,6 @@ ldpe(struct ldpd_conf *xconf, int pipe_parent2ldpe[2], int pipe_ldpe2lde[2],
 	session_socket_blockmode(xconf->ldp_session_socket, BM_NONBLOCK);
 
 	leconf = xconf;
-	if (leconf->flags & LDPD_FLAG_NO_LFIB_UPDATE)
-		oe_nofib = 1;
 
 	if ((pw = getpwnam(LDPD_USER)) == NULL)
 		fatal("getpwnam");
@@ -210,7 +207,7 @@ ldpe(struct ldpd_conf *xconf, int pipe_parent2ldpe[2], int pipe_ldpe2lde[2],
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
 
-	if ((pkt_ptr = calloc(1, READ_BUF_SIZE)) == NULL)
+	if ((pkt_ptr = calloc(1, IBUF_READ_SIZE)) == NULL)
 		fatal("ldpe");
 
 	/* start interfaces */
@@ -282,7 +279,7 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 	struct imsgbuf  *ibuf = &iev->ibuf;
 	struct iface	*iface = NULL;
 	struct kif	*kif;
-	int		 n, link_ok, shut = 0;
+	int		 n, link_new, link_old, shut = 0;
 
 	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
@@ -307,18 +304,24 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 			    sizeof(struct kif))
 				fatalx("IFINFO imsg with wrong len");
 			kif = imsg.data;
-			link_ok = (kif->flags & IFF_UP) &&
+			link_new = (kif->flags & IFF_UP) &&
 			    (LINK_STATE_IS_UP(kif->link_state) ||
 			    (kif->link_state == LINK_STATE_UNKNOWN &&
 			    kif->media_type != IFT_CARP));
 
 			LIST_FOREACH(iface, &leconf->iface_list, entry) {
-				if (kif->ifindex == iface->ifindex &&
-				    iface->type != IF_TYPE_VIRTUALLINK) {
+				if (kif->ifindex == iface->ifindex) {
+					link_old = (iface->flags & IFF_UP) &&
+					    (LINK_STATE_IS_UP(iface->linkstate)
+					    || (iface->linkstate ==
+					    LINK_STATE_UNKNOWN &&
+					    iface->media_type != IFT_CARP));
 					iface->flags = kif->flags;
 					iface->linkstate = kif->link_state;
 
-					if (link_ok) {
+					if (link_new == link_old)
+						continue;
+					if (link_new) {
 						if_fsm(iface, IF_EVT_UP);
 						log_warnx("interface %s up",
 						    iface->name);
@@ -334,8 +337,6 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 			}
 			break;
 		case IMSG_RECONF_CONF:
-			break;
-		case IMSG_RECONF_AREA:
 			break;
 		case IMSG_RECONF_IFACE:
 			break;
@@ -505,15 +506,6 @@ ldpe_router_id(void)
 }
 
 void
-ldpe_fib_update(int type)
-{
-	if (type == IMSG_CTL_LFIB_COUPLE)
-		oe_nofib = 0;
-	if (type == IMSG_CTL_LFIB_DECOUPLE)
-		oe_nofib = 1;
-}
-
-void
 ldpe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 {
 	struct iface		*iface;
@@ -538,12 +530,10 @@ ldpe_nbr_ctl(struct ctl_conn *c)
 
 	LIST_FOREACH(iface, &leconf->iface_list, entry) {
 		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (iface->self != nbr) {
-				nctl = nbr_to_ctl(nbr);
-				imsg_compose_event(&c->iev,
-				    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
-				    sizeof(struct ctl_nbr));
-			}
+			nctl = nbr_to_ctl(nbr);
+			imsg_compose_event(&c->iev,
+			    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
+			    sizeof(struct ctl_nbr));
 		}
 	}
 
