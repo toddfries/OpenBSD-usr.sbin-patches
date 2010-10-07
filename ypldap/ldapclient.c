@@ -1,4 +1,4 @@
-/* $OpenBSD: ldapclient.c,v 1.14 2009/06/06 05:02:58 eric Exp $ */
+/* $OpenBSD: ldapclient.c,v 1.18 2010/07/09 12:17:34 zinovik Exp $ */
 
 /*
  * Copyright (c) 2008 Alexander Schrijver <aschrijver@openbsd.org>
@@ -100,13 +100,13 @@ client_addr_init(struct idm *idm)
                 case AF_INET:
                         sa_in = (struct sockaddr_in *)&h->ss;
                         if (ntohs(sa_in->sin_port) == 0)
-                                sa_in->sin_port = htons(389);
+                                sa_in->sin_port = htons(LDAP_PORT);
                         idm->idm_state = STATE_DNS_DONE;
                         break;
                 case AF_INET6:
                         sa_in6 = (struct sockaddr_in6 *)&h->ss;
                         if (ntohs(sa_in6->sin6_port) == 0)
-                                sa_in6->sin6_port = htons(389);
+                                sa_in6->sin6_port = htons(LDAP_PORT);
                         idm->idm_state = STATE_DNS_DONE;
                         break;
                 default:
@@ -121,13 +121,15 @@ client_addr_init(struct idm *idm)
 int
 client_addr_free(struct idm *idm)
 {
-        struct ypldap_addr         *h;
+        struct ypldap_addr         *h, *p;
 
 	if (idm->idm_addr == NULL)
 		return (-1);
 
-	for (h = idm->idm_addr; h != NULL; h = h->next)
+	for (h = idm->idm_addr; h != NULL; h = p) {
+		p = h->next;
 		free(h);
+	}
 
 	idm->idm_addr = NULL;
 
@@ -180,7 +182,7 @@ client_dispatch_dns(int fd, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("client_dispatch_parent: imsg_read_error");
+			fatal("client_dispatch_dns: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -282,7 +284,7 @@ client_dispatch_parent(int fd, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("client_dispatch_parent: imsg_read_error");
+			fatal("client_dispatch_parent: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -660,6 +662,7 @@ next_grpentry:
 
 	return (0);
 bad:
+	aldap_close(al);
 	log_debug("directory %s errored out in %s", idm->idm_name, where);
 	return (-1);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.117 2009/08/07 11:21:53 reyk Exp $	*/
+/*	$OpenBSD: relay.c,v 1.122 2010/08/01 22:18:35 sthen Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -101,6 +101,7 @@ char		*relay_expand_http(struct ctl_relay_event *, char *,
 		    char *, size_t);
 void		 relay_close_http(struct rsession *, u_int, const char *,
 		    u_int16_t);
+void		 relay_http_request_close(struct ctl_relay_event *);
 
 SSL_CTX		*relay_ssl_ctx_create(struct relay *);
 void		 relay_ssl_transaction(struct rsession *,
@@ -144,6 +145,14 @@ relay_sig_handler(int sig, short event, void *arg)
 	case SIGTERM:
 	case SIGINT:
 		(void)event_loopexit(NULL);
+		break;
+	case SIGCHLD:
+	case SIGHUP:
+	case SIGPIPE:
+		/* ignore */
+		break;
+	default:
+		fatalx("relay_sig_handler: unexpected signal");
 	}
 }
 
@@ -154,8 +163,6 @@ relay(struct relayd *x_env, int pipe_parent2pfe[2], int pipe_parent2hce[2],
 {
 	pid_t		 pid;
 	struct passwd	*pw;
-	struct event	 ev_sigint;
-	struct event	 ev_sigterm;
 	int		 i;
 
 	switch (pid = fork()) {
@@ -209,12 +216,17 @@ relay(struct relayd *x_env, int pipe_parent2pfe[2], int pipe_parent2hce[2],
 	/* Per-child initialization */
 	relay_init();
 
-	signal_set(&ev_sigint, SIGINT, relay_sig_handler, NULL);
-	signal_set(&ev_sigterm, SIGTERM, relay_sig_handler, NULL);
-	signal_add(&ev_sigint, NULL);
-	signal_add(&ev_sigterm, NULL);
-	signal(SIGHUP, SIG_IGN);
-	signal(SIGPIPE, SIG_IGN);
+	signal_set(&env->sc_evsigint, SIGINT, relay_sig_handler, env);
+	signal_set(&env->sc_evsigterm, SIGTERM, relay_sig_handler, env);
+	signal_set(&env->sc_evsigchld, SIGCHLD, relay_sig_handler, env);
+	signal_set(&env->sc_evsighup, SIGHUP, relay_sig_handler, env);
+	signal_set(&env->sc_evsigpipe, SIGPIPE, relay_sig_handler, env);
+
+	signal_add(&env->sc_evsigint, NULL);
+	signal_add(&env->sc_evsigterm, NULL);
+	signal_add(&env->sc_evsigchld, NULL);
+	signal_add(&env->sc_evsighup, NULL);
+	signal_add(&env->sc_evsigpipe, NULL);
 
 	/* setup pipes */
 	close(pipe_pfe2hce[0]);
@@ -916,7 +928,7 @@ relay_resolve(struct ctl_relay_event *cre,
     struct protonode *proot, struct protonode *pn)
 {
 	struct rsession		*con = (struct rsession *)cre->con;
-	char			 buf[READ_BUF_SIZE], *ptr;
+	char			 buf[IBUF_READ_SIZE], *ptr;
 	int			 id;
 
 	if (pn->mark && (pn->mark != con->se_mark))
@@ -1060,7 +1072,7 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
     struct protonode *pn, struct protonode *pk, int header)
 {
 	struct rsession		*con = (struct rsession *)cre->con;
-	char			 buf[READ_BUF_SIZE], *ptr;
+	char			 buf[IBUF_READ_SIZE], *ptr;
 	int			 ret = PN_DROP, mark = 0;
 	struct protonode	*next;
 
@@ -1299,6 +1311,29 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 	return;
  fail:
 	relay_close(con, strerror(errno));
+}
+
+void
+relay_http_request_close(struct ctl_relay_event *cre)
+{
+	if (cre->path != NULL) {
+		free(cre->path);
+		cre->path = NULL;
+	}
+
+	cre->args = NULL;
+	cre->version = NULL;
+
+	if (cre->buf != NULL) {
+		free(cre->buf);
+		cre->buf = NULL;
+		cre->buflen = 0;
+	}
+
+	cre->line = 0;
+	cre->method = 0;
+	cre->done = 0;
+	cre->chunked = 0;
 }
 
 void
@@ -1570,10 +1605,7 @@ relay_read_http(struct bufferevent *bev, void *arg)
 		if (relay_bufferevent_print(cre->dst, "\r\n") == -1)
 			goto fail;
 
-		cre->line = 0;
-		cre->method = 0;
-		cre->done = 0;
-		cre->chunked = 0;
+		relay_http_request_close(cre);
 
  done:
 		if (cre->dir == RELAY_DIR_REQUEST && !cre->toread &&
@@ -2091,9 +2123,11 @@ relay_from_table(struct rsession *con)
 	u_int32_t		 p = con->se_hashkey;
 	int			 idx = 0;
 
-	if (table->conf.check && !table->up) {
+	if (table->conf.check && !table->up && !rlay->rl_backuptable->up) {
 		log_debug("relay_from_table: no active hosts");
 		return (-1);
+	} else if (!table->up && rlay->rl_backuptable->up) {
+		table = rlay->rl_backuptable;
 	}
 
 	switch (rlay->rl_conf.dstmode) {
@@ -2405,6 +2439,7 @@ relay_dispatch_pfe(int fd, short event, void *ptr)
 	struct table		*table;
 	struct ctl_status	 st;
 	objid_t			 id;
+	int			 verbose;
 
 	iev = ptr;
 	ibuf = &iev->ibuf;
@@ -2507,6 +2542,10 @@ relay_dispatch_pfe(int fd, short event, void *ptr)
 					    0, 0, -1, con, sizeof(*con));
 			imsg_compose_event(iev, IMSG_CTL_END,
 			    0, 0, -1, NULL, 0);
+			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
 			break;
 		default:
 			log_debug("relay_dispatch_msg: unexpected imsg %d",
@@ -2841,8 +2880,8 @@ relay_ssl_readcb(int fd, short event, void *arg)
 	int ret = 0, ssl_err = 0;
 	short what = EVBUFFER_READ;
 	size_t len;
-	char rbuf[READ_BUF_SIZE];
-	int howmuch = READ_BUF_SIZE;
+	char rbuf[IBUF_READ_SIZE];
+	int howmuch = IBUF_READ_SIZE;
 
 	if (event == EV_TIMEOUT) {
 		what |= EVBUFFER_TIMEOUT;

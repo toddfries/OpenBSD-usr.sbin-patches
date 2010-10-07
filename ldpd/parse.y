@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.1 2009/06/01 20:59:45 michele Exp $ */
+/*	$OpenBSD: parse.y,v 1.7 2010/09/01 13:54:54 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2008 Esben Norby <norby@openbsd.org>
@@ -107,7 +107,7 @@ typedef struct {
 
 %}
 
-%token	LSPACE INTERFACE ROUTERID LFIBUPDATE RTLABEL
+%token	LSPACE INTERFACE ROUTERID FIBUPDATE
 %token	HOLDTIME HELLOINTERVAL KEEPALIVE
 %token	DISTRIBUTION RETENTION ADVERTISEMENT
 %token	EXTTAG PASSIVE
@@ -164,11 +164,11 @@ conf_main	: ROUTERID STRING {
 			}
 			free($2);
 		}
-		| LFIBUPDATE yesno {
+		| FIBUPDATE yesno {
 			if ($2 == 0)
-				conf->flags |= LDPD_FLAG_NO_LFIB_UPDATE;
+				conf->flags |= LDPD_FLAG_NO_FIB_UPDATE;
 			else
-				conf->flags &= ~LDPD_FLAG_NO_LFIB_UPDATE;
+				conf->flags &= ~LDPD_FLAG_NO_FIB_UPDATE;
 		}
 		| DISTRIBUTION STRING {
 			conf->mode &= ~(MODE_DIST_INDEPENDENT |
@@ -211,15 +211,6 @@ conf_main	: ROUTERID STRING {
 				free($2);
 				YYERROR;
 			}
-		}
-		| RTLABEL STRING EXTTAG NUMBER {
-			if ($4 < 0 || $4 > UINT_MAX) {
-				yyerror("invalid external route tag");
-				free($2);
-				YYERROR;
-			}
-			rtlabel_tag(rtlabel_name2id($2), $4);
-			free($2);
 		}
 		| defaults
 		;
@@ -311,6 +302,7 @@ interface	: INTERFACE STRING	{
 
 interface_block	: '{' optnl interfaceopts_l '}'
 		| '{' optnl '}'
+		| /* nothing */
 		;
 
 interfaceopts_l	: interfaceopts_l interfaceoptsl nl
@@ -356,16 +348,15 @@ lookup(char *s)
 		{"advertisement",	ADVERTISEMENT},
 		{"distribution",	DISTRIBUTION},
 		{"external-tag",	EXTTAG},
+		{"fib-update",		FIBUPDATE},
 		{"hello-interval",	HELLOINTERVAL},
 		{"holdtime",		HOLDTIME},
 		{"interface",		INTERFACE},
 		{"keepalive",		KEEPALIVE},
 		{"labelspace",		LSPACE},
-		{"lfib-update",		LFIBUPDATE},
 		{"passive",		PASSIVE},
 		{"retention",		RETENTION},
 		{"router-id",		ROUTERID},
-		{"rtlabel",		RTLABEL},
 		{"yes",			YES}
 	};
 	const struct keywords	*p;
@@ -530,9 +521,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -641,9 +633,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("strdup");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
@@ -693,7 +689,8 @@ parse_config(char *filename, int opts)
 	defs->holdtime = DEFAULT_HOLDTIME;
 	defs->keepalive = DEFAULT_KEEPALIVE;
 	defs->hello_interval = DEFAULT_HELLO_INTERVAL;
-	defs->mode = (MODE_DIST_INDEPENDENT | MODE_RET_LIBERAL |
+
+	conf->mode = (MODE_DIST_INDEPENDENT | MODE_RET_LIBERAL |
 	    MODE_ADV_UNSOLICITED);
 
 	if ((file = pushfile(filename, !(conf->opts & LDPD_OPT_NOACTION))) == NULL) {

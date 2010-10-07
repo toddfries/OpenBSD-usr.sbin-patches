@@ -1,4 +1,4 @@
-/*	$OpenBSD: yp.c,v 1.4 2009/10/10 23:51:56 robert Exp $ */
+/*	$OpenBSD: yp.c,v 1.6 2010/08/03 08:24:23 pyr Exp $ */
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
  *
@@ -91,6 +91,7 @@ yp_enable_events(void)
 				fatal(NULL);
 			event_set(&ye->ye_event, i, EV_READ, yp_fd_event, NULL);
 			event_add(&ye->ye_event, NULL);
+			TAILQ_INSERT_TAIL(&env->sc_yp->yd_events, ye, ye_entry);
 		}
 	}
 }
@@ -588,7 +589,7 @@ yp_make_val(struct ypresp_val *res, char *line)
 void
 yp_make_keyval(struct ypresp_key_val *res, char *key, char *line)
 {
-	static char	keybuf[_PW_NAME_LEN+1];
+	static char	keybuf[YPMAXRECORD+1];
 	static char	buf[LINE_WIDTH];
 
 	bzero(keybuf, sizeof(keybuf));

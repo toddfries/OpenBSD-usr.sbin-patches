@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.142 2009/08/27 09:26:53 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.147 2010/09/02 14:03:22 sobrado Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -610,7 +610,7 @@ tableopts_l	: tableopts tableopts_l
 		| tableopts
 		;
 
-tableopts	: CHECK tablecheck 
+tableopts	: CHECK tablecheck
 		| port			{
 			if ($1.op != PF_OP_EQ) {
 				yyerror("invalid port");
@@ -1039,7 +1039,7 @@ protonode	: nodetype APPEND STRING TO STRING nodeopts		{
 				fatal("out of memory");
 			free($3);
 			proto->lateconnect++;
-		}		
+		}
 		| nodetype FILTER					{
 			node.action = NODE_ACTION_FILTER;
 			node.key = NULL;
@@ -1213,6 +1213,11 @@ relay		: RELAY STRING	{
 				    "or table", rlay->rl_conf.name);
 				YYERROR;
 			}
+			if (rlay->rl_backuptable == NULL) {
+				rlay->rl_conf.backuptable =
+				    conf->sc_empty_table.conf.id;
+				rlay->rl_backuptable = &conf->sc_empty_table;
+			}
 			if (rlay->rl_conf.proto == EMPTY_ID) {
 				rlay->rl_proto = &conf->sc_proto_default;
 				rlay->rl_conf.proto = conf->sc_proto_default.id;
@@ -1362,16 +1367,21 @@ forwardspec	: STRING port retry	{
 			rlay->rl_conf.dstretry = $3;
 		}
 		| tablespec	{
-			if (rlay->rl_dsttable) {
-				yyerror("table already specified");
+			if (rlay->rl_backuptable) {
+				yyerror("only one backup table is allowed");
 				purge_table(conf->sc_tables, $1);
 				YYERROR;
 			}
-
-			rlay->rl_dsttable = $1;
-			rlay->rl_dsttable->conf.flags |= F_USED;
-			rlay->rl_conf.dsttable = $1->conf.id;
-			rlay->rl_conf.dstport = $1->conf.port;
+			if (rlay->rl_dsttable) {
+				rlay->rl_backuptable = $1;
+				rlay->rl_backuptable->conf.flags |= F_USED;
+				rlay->rl_conf.backuptable = $1->conf.id;
+			} else {
+				rlay->rl_dsttable = $1;
+				rlay->rl_dsttable->conf.flags |= F_USED;
+				rlay->rl_conf.dsttable = $1->conf.id;
+				rlay->rl_conf.dstport = $1->conf.port;
+			}
 		}
 		;
 
@@ -1935,9 +1945,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -2145,6 +2156,11 @@ parse_config(const char *filename, int opts)
 	bzero(&conf->sc_proto_default, sizeof(conf->sc_proto_default));
 	conf->sc_proto_default.flags = F_USED;
 	conf->sc_proto_default.cache = RELAY_CACHESIZE;
+	conf->sc_proto_default.tcpflags = TCPFLAG_DEFAULT;
+	conf->sc_proto_default.tcpbacklog = RELAY_BACKLOG;
+	conf->sc_proto_default.sslflags = SSLFLAG_DEFAULT;
+	(void)strlcpy(conf->sc_proto_default.sslciphers, SSLCIPHERS_DEFAULT,
+	    sizeof(conf->sc_proto_default.sslciphers));
 	conf->sc_proto_default.type = RELAY_PROTO_TCP;
 	(void)strlcpy(conf->sc_proto_default.name, "default",
 	    sizeof(conf->sc_proto_default.name));
@@ -2594,8 +2610,10 @@ table_inherit(struct table *tb)
 		return (NULL);
 	}
 	(void)strlcpy(tb->conf.name, pname, sizeof(tb->conf.name));
-	if ((oldtb = table_findbyconf(conf, tb)) != NULL)
+	if ((oldtb = table_findbyconf(conf, tb)) != NULL) {
+		purge_table(NULL, tb);
 		return (oldtb);
+	}
 
 	/* Create a new table */
 	tb->conf.id = ++last_table_id;
@@ -2608,9 +2626,6 @@ table_inherit(struct table *tb)
 
 	/* Inherit global table options */
 	bcopy(&dsttb->conf.timeout, &tb->conf.timeout, sizeof(struct timeval));
-	tb->conf.skip_cnt = dsttb->conf.skip_cnt;
-	strlcpy(tb->conf.demote_group, dsttb->conf.demote_group,
-	    sizeof(tb->conf.demote_group));
 
 	/* Copy the associated hosts */
 	TAILQ_INIT(&tb->hosts);

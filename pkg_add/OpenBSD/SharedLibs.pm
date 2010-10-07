@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SharedLibs.pm,v 1.34 2009/11/11 13:00:40 espie Exp $
+# $OpenBSD: SharedLibs.pm,v 1.51 2010/06/30 10:51:04 espie Exp $
 #
-# Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -19,6 +19,8 @@ use strict;
 use warnings;
 
 use OpenBSD::Paths;
+use OpenBSD::LibSpec;
+
 package OpenBSD::PackingElement;
 
 sub mark_available_lib
@@ -46,7 +48,7 @@ sub init_path($)
 	my $destdir = shift;
 	$path={};
 	if ($destdir ne '') {
-		unshift @ldconfig, OpenBSD::Paths->chroot, $destdir;
+		unshift @ldconfig, OpenBSD::Paths->chroot, '--', $destdir;
 	}
 	open my $fh, "-|", @ldconfig, "-r";
 	if (defined $fh) {
@@ -84,17 +86,19 @@ sub ensure_ldconfig
 	$OpenBSD::PackingElement::Lib::todo = 0;
 }
 
-our $registered_libs = {};
+our $repo = OpenBSD::LibRepo->new;
 
 sub register_lib
 {
 	my ($name, $pkgname) = @_;
-	my ($stem, $major, $minor, $dir) = 
-	    OpenBSD::PackingElement::Lib->parse($name);
-	if (defined $stem) {
-		push(@{$registered_libs->{$stem}->{$dir}->{$major}},
-		    [$minor, $pkgname]);
+	my $lib = OpenBSD::Library->from_string($name);
+	if ($lib->is_valid) {
+		$repo->register($lib, $pkgname);
+	} else {
+		print STDERR "Bogus library in $pkgname: $name\n"
+		    unless $pkgname eq 'system';
 	}
+
 }
 
 my $done_plist = {};
@@ -112,6 +116,7 @@ sub add_libs_from_system
 	for my $dirname (system_dirs()) {
 		opendir(my $dir, $destdir.$dirname."/lib") or next;
 		while (my $d = readdir($dir)) {
+			next unless $d =~ m/\.so/;
 			register_lib("$dirname/lib/$d", 'system');
 		}
 		closedir($dir);
@@ -123,7 +128,7 @@ sub add_libs_from_installed_package
 	my $pkgname = shift;
 	return if $done_plist->{$pkgname};
 	$done_plist->{$pkgname} = 1;
-	my $plist = OpenBSD::PackingList->from_installation($pkgname, 
+	my $plist = OpenBSD::PackingList->from_installation($pkgname,
 	    \&OpenBSD::PackingList::LibraryOnly);
 	return if !defined $plist;
 
@@ -139,86 +144,38 @@ sub add_libs_from_plist
 	$plist->mark_available_lib($pkgname);
 }
 
-sub normalize_dir_and_spec
-{
-	my ($base, $libspec) = @_;
-	if ($libspec =~ m/^(.*)\/([^\/]+)$/o) {
-		return ("$base/$1", $2);
-	} else {
-		return ("$base/lib", $libspec);
-	}
-}
-
-sub parse_spec
-{
-	my $spec = shift;
-	if ($spec =~ m/^(.*)\.(\d+)\.(\d+)$/o) {
-		return ($1, $2, $3);
-	} else {
-		return undef;
-	}
-}
-
 sub lookup_libspec
 {
-	my ($dir, $spec) = normalize_dir_and_spec(@_);
-	my @r = ();
-	my ($libname, $major, $minor) = parse_spec($spec);
-	if (defined $libname) {
-		my $exists = $registered_libs->{$libname}->{$dir}->{$major};
-		if (defined $exists) {
-			for my $e (@$exists) {
-				if ($e->[0] >= $minor) {
-					push(@r, $e->[1]);
-				}
-			}
-		}
-	}
-	return @r;
+	my ($base, $spec) = @_;
+	return $spec->lookup($repo, $base);
 }
 
-sub entry_string
-{
-	my ($d, $M, $m) = @_;
-	return "partial match in $d: major=$M, minor=$m";
-}
-
-sub why_is_this_bad
-{
-	my ($base, $name, $d1, $d2, $M1, $M2, $m1, $m2, $pkgname) = @_;
-	if ($d1 ne $d2 && !($pkgname eq 'system' && $d1 eq "$base/lib")) {
-		return "bad directory";
-	}
-	if ($M1 != $M2) {
-		return "bad major";
-	}
-	if ($m1 > $m2) {
-		return "minor not large enough";
-	}
-	return "$pkgname not reachable";
-}
+my $printed = {};
 
 sub report_problem
 {
-	my $base = $_[0];
-	my ($dir, $name) = normalize_dir_and_spec(@_);
-	my ($stem, $major, $minor) = parse_spec($name);
+	my ($state, $spec) = @_;
+	my $name = $spec->to_string;
+	my $base = $state->{localbase};
+	my $approx = $spec->lookup_stem($repo);
 
-	return unless defined $stem;
-	return unless defined $registered_libs->{$stem};
-
-	while (my ($d, $v) = each %{$registered_libs->{$stem}}) {
-		while (my ($M, $w) = each %$v) {
-			for my $e (@$w) {
-				print "$name: ", 
-				    entry_string($d, $M, $e->[0]),
-				    " (", 
-				    why_is_this_bad($base, $name, $dir, 
-				    	$d, $major, $M, $minor, 
-					$e->[0], $e->[1]),
-				    ")\n";
-			}
+	my $r = "";
+	if (!$spec->is_valid) {
+		$r = "| bad library specification\n";
+	} elsif (!defined $approx) {
+ 		$r = "| not found anywhere\n";
+	} else {
+		for my $bad (@$approx) {
+			my $ouch = $spec->no_match($bad, $base);
+			$ouch //= "not reachable";
+			$r .= "| ".$bad->to_string." (".$bad->origin."): ".
+			    $ouch."\n";
 		}
+	}
+	if (!defined $printed->{$name} || $printed->{$name} ne $r) {
+		$printed->{$name} = $r;
+		$state->errsay("|library #1 not found", $name);
+		$state->print("#1", $r);
 	}
 }
 

@@ -204,23 +204,12 @@ static int route_nifs = -1;
 const char *
 Index2Nam(int idx)
 {
-<<<<<<< route.c
-  static char ifname[IF_NAMESIZE];
-  char *ifn;
-=======
   static char ifname[IF_NAMESIZE];
   char *ifn;
 
   ifn = if_indextoname(idx, ifname);
->>>>>>> 1.38
-
-<<<<<<< route.c
-  ifn = if_indextoname(idx, ifname);
 
   if (idx < 1 || ifn == NULL)
-=======
-  if (idx < 1 || ifn == NULL)
->>>>>>> 1.38
     return NumStr(idx, NULL, 0);
 
   return ifn;

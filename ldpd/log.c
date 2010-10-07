@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.2 2009/11/02 20:34:58 claudio Exp $ */
+/*	$OpenBSD: log.c,v 1.8 2010/09/02 14:34:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -15,6 +15,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <errno.h>
 #include <stdarg.h>
@@ -187,8 +192,6 @@ nbr_state_name(int state)
 		return ("OPENSENT");
 	case NBR_STA_OPER:
 		return ("OPERATIONAL");
-	case NBR_STA_ACTIVE:
-		return ("ACTIVE");
 	default:
 		return ("UNKNW");
 	}
@@ -202,10 +205,6 @@ if_state_name(int state)
 		return ("DOWN");
 	case IF_STA_LOOPBACK:
 		return ("LOOP");
-	case IF_STA_POINTTOPOINT:
-		return ("P2P");
-	case IF_STA_DROTHER:
-		return ("OTHER");
 	case IF_STA_ACTIVE:
 		return ("ACTIVE");
 	default:
@@ -221,13 +220,85 @@ if_type_name(enum iface_type type)
 		return ("POINTOPOINT");
 	case IF_TYPE_BROADCAST:
 		return ("BROADCAST");
-	case IF_TYPE_NBMA:
-		return ("NBMA");
-	case IF_TYPE_POINTOMULTIPOINT:
-		return ("POINTOMULTIPOINT");
-	case IF_TYPE_VIRTUALLINK:
-		return ("VIRTUALLINK");
 	}
 	/* NOTREACHED */
 	return ("UNKNOWN");
+}
+
+const char *
+notification_name(u_int32_t status)
+{
+	static char buf[16];
+
+	switch (status) {
+	case S_SUCCESS:
+		return ("Success");
+	case S_BAD_LDP_ID:
+		return ("Bad LDP Identifier");
+	case S_BAD_PROTO_VER:
+		return ("Bad Protocol Version");
+	case S_BAD_PDU_LEN:
+		return ("Bad PDU Length");
+	case S_UNKNOWN_MSG:
+		return ("Unknown Message Type");
+	case S_BAD_MSG_LEN:
+		return ("Bad Message Length");
+	case S_UNKNOWN_TLV:
+		return ("Unknown TLV");
+	case S_BAD_TLV_LEN:
+		return ("Bad TLV Length");
+	case S_BAD_TLV_VAL:
+		return ("Malformed TLV Value");
+	case S_HOLDTIME_EXP:
+		return ("Hold Timer Expired");
+	case S_SHUTDOWN:
+		return ("Shutdown");
+	case S_LOOP_DETECTED:
+		return ("Loop Detected");
+	case S_UNKNOWN_FEC:
+		return ("Unknown FEC");
+	case S_NO_ROUTE:
+		return ("No Route");
+	case S_NO_LABEL_RES:
+		return ("No Label Resources");
+	case S_AVAILABLE:
+		return ("Label Resources Available");
+	case S_NO_HELLO:
+		return ("Session Rejected, No Hello");
+	case S_PARM_ADV_MODE:
+		return ("Rejected Advertisement Mode Parameter");
+	case S_MAX_PDU_LEN:
+		return ("Rejected Max PDU Length Parameter");
+	case S_PARM_L_RANGE:
+		return ("Rejected Label Range Parameter");
+	case S_KEEPALIVE_TMR:
+		return ("KeepAlive Timer Expired");
+	case S_LAB_REQ_ABRT:
+		return ("Label Request Aborted");
+	case S_MISS_MSG:
+		return ("Missing Message Parameters");
+	case S_UNSUP_ADDR:
+		return ("Unsupported Address Family");
+	case S_KEEPALIVE_BAD:
+		return ("Bad KeepAlive Time");
+	case S_INTERN_ERR:
+		return ("Internal Error");
+	default:
+		snprintf(buf, sizeof(buf), "[%08x]", status);
+		return (buf);
+	}
+}
+
+const char *
+log_fec(struct map *map)
+{
+	static char	buf[32];
+	char		pstr[32];
+
+	if (snprintf(buf, sizeof(buf), "%s/%u",
+	    inet_ntop(AF_INET, &map->prefix, pstr, sizeof(pstr)),
+	    map->prefixlen) == -1)
+		return ("???");
+
+	return (buf);
 }
