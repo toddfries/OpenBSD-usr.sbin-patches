@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.66 2009/09/30 14:39:07 claudio Exp $ */
+/*	$OpenBSD: interface.c,v 1.70 2010/07/03 04:44:52 guenther Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -190,6 +190,7 @@ if_new(struct kif *kif, struct kif_addr *ka)
 	if (kif->flags & IFF_LOOPBACK) {
 		iface->type = IF_TYPE_POINTOPOINT;
 		iface->state = IF_STA_LOOPBACK;
+		iface->passive = 1;
 	}
 
 	/* get mtu, index and flags */
@@ -252,11 +253,11 @@ if_init(struct ospfd_conf *xconf, struct iface *iface)
 	iface->fd = xconf->ospf_socket;
 
 	strlcpy(ifr.ifr_name, iface->name, sizeof(ifr.ifr_name));
-	if (ioctl(iface->fd, SIOCGIFRTABLEID, (caddr_t)&ifr) == -1)
+	if (ioctl(iface->fd, SIOCGIFRDOMAIN, (caddr_t)&ifr) == -1)
 		rdomain = 0;
 	else {
 		rdomain = ifr.ifr_rdomainid;
-		if (setsockopt(iface->fd, IPPROTO_IP, SO_RDOMAIN,
+		if (setsockopt(iface->fd, IPPROTO_IP, SO_RTABLE,
 		    &rdomain, sizeof(rdomain)) == -1)
 			fatal("failed to set rdomain");
 	}
@@ -278,7 +279,10 @@ if_hello_timer(int fd, short event, void *arg)
 
 	/* reschedule hello_timer */
 	timerclear(&tv);
-	tv.tv_sec = iface->hello_interval;
+	if (iface->dead_interval == FAST_RTR_DEAD_TIME)
+		tv.tv_usec = iface->fast_hello_interval * 1000;
+	else
+		tv.tv_sec = iface->hello_interval;
 	if (evtimer_add(&iface->hello_timer, &tv) == -1)
 		fatal("if_hello_timer");
 }
@@ -548,18 +552,12 @@ if_act_reset(struct iface *iface)
 	switch (iface->type) {
 	case IF_TYPE_POINTOPOINT:
 	case IF_TYPE_BROADCAST:
+		/* try to cleanup */
 		inet_aton(AllSPFRouters, &addr);
-		if (if_leave_group(iface, &addr)) {
-			log_warnx("if_act_reset: error leaving group %s, "
-			    "interface %s", inet_ntoa(addr), iface->name);
-		}
+		if_leave_group(iface, &addr);
 		if (iface->state & IF_STA_DRORBDR) {
 			inet_aton(AllDRouters, &addr);
-			if (if_leave_group(iface, &addr)) {
-				log_warnx("if_act_reset: "
-				    "error leaving group %s, interface %s",
-				    inet_ntoa(addr), iface->name);
-			}
+			if_leave_group(iface, &addr);
 		}
 		break;
 	case IF_TYPE_VIRTUALLINK:
@@ -629,6 +627,7 @@ if_to_ctl(struct iface *iface)
 	ictl.adj_cnt = 0;
 	ictl.baudrate = iface->baudrate;
 	ictl.dead_interval = iface->dead_interval;
+	ictl.fast_hello_interval = iface->fast_hello_interval;
 	ictl.transmit_delay = iface->transmit_delay;
 	ictl.hello_interval = iface->hello_interval;
 	ictl.flags = iface->flags;
@@ -645,9 +644,10 @@ if_to_ctl(struct iface *iface)
 	gettimeofday(&now, NULL);
 	if (evtimer_pending(&iface->hello_timer, &tv)) {
 		timersub(&tv, &now, &res);
-		ictl.hello_timer = res.tv_sec;
-	} else
-		ictl.hello_timer = -1;
+		ictl.hello_timer = res;
+	} else {
+		ictl.hello_timer.tv_sec = -1;
+	}
 
 	if (iface->state != IF_STA_DOWN) {
 		ictl.uptime = now.tv_sec - iface->uptime;
@@ -776,9 +776,14 @@ if_leave_group(struct iface *iface, struct in_addr *addr)
 				break;
 
 		/* if interface is not found just try to drop membership */
-		if (ifg && --ifg->count != 0)
-			/* others still joined */
-			return (0);
+		if (ifg) {
+			if (--ifg->count != 0)
+				/* others still joined */
+				return (0);
+
+			LIST_REMOVE(ifg, entry);
+			free(ifg);
+		}
 
 		mreq.imr_multiaddr.s_addr = addr->s_addr;
 		mreq.imr_interface.s_addr = iface->addr.s_addr;
@@ -789,11 +794,6 @@ if_leave_group(struct iface *iface, struct in_addr *addr)
 			    "interface %s address %s", iface->name,
 			    inet_ntoa(*addr));
 			return (-1);
-		}
-
-		if (ifg) {
-			LIST_REMOVE(ifg, entry);
-			free(ifg);
 		}
 		break;
 	case IF_TYPE_POINTOMULTIPOINT:
@@ -817,7 +817,7 @@ if_set_mcast(struct iface *iface)
 	case IF_TYPE_BROADCAST:
 		if (setsockopt(iface->fd, IPPROTO_IP, IP_MULTICAST_IF,
 		    &iface->addr.s_addr, sizeof(iface->addr.s_addr)) < 0) {
-			log_debug("if_set_mcast: error setting "
+			log_warn("if_set_mcast: error setting "
 			    "IP_MULTICAST_IF, interface %s", iface->name);
 			return (-1);
 		}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.h,v 1.102 2009/09/02 08:06:42 claudio Exp $ */
+/*	$OpenBSD: session.h,v 1.108 2010/06/27 19:53:34 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -109,7 +109,7 @@ enum capa_codes {
 };
 
 struct bgp_msg {
-	struct buf	*buf;
+	struct ibuf	*buf;
 	enum msg_type	 type;
 	u_int16_t	 len;
 };
@@ -189,6 +189,7 @@ struct peer {
 	struct {
 		struct capabilities	ann;
 		struct capabilities	peer;
+		struct capabilities	neg;
 	}			 capa;
 	struct {
 		struct bgpd_addr	local_addr;
@@ -201,7 +202,7 @@ struct peer {
 	struct sockaddr_storage	 sa_remote;
 	struct peer_timer_head	 timers;
 	struct msgbuf		 wbuf;
-	struct buf_read		*rbuf;
+	struct ibuf_read	*rbuf;
 	struct peer		*next;
 	int			 fd;
 	int			 lasterr;
@@ -217,7 +218,7 @@ struct peer {
 	u_int8_t		 passive;
 };
 
-struct peer	*peers;
+extern struct peer	*peers;
 
 struct ctl_timer {
 	enum Timer	type;
@@ -226,15 +227,12 @@ struct ctl_timer {
 
 /* session.c */
 void		 session_socket_blockmode(int, enum blockmodes);
-pid_t		 session_main(struct bgpd_config *, struct peer *,
-		    struct network_head *, struct filter_head *,
-		    struct mrt_head *, struct rib_names *,
-		    int[2], int[2], int[2], int[2]);
+pid_t		 session_main(int[2], int[2], int[2], int[2]);
 void		 bgp_fsm(struct peer *, enum session_events);
 int		 session_neighbor_rrefresh(struct peer *p);
 struct peer	*getpeerbyaddr(struct bgpd_addr *);
 struct peer	*getpeerbydesc(const char *);
-int		 imsg_compose_parent(int, pid_t, void *, u_int16_t);
+int		 imsg_compose_parent(int, u_int32_t, pid_t, void *, u_int16_t);
 int		 imsg_compose_rde(int, pid_t, void *, u_int16_t);
 void	 	 session_stop(struct peer *, u_int8_t);
 
@@ -248,17 +246,17 @@ void		 log_conn_attempt(const struct peer *, struct sockaddr *);
 
 /* parse.y */
 int	 parse_config(char *, struct bgpd_config *, struct mrt_head *,
-	    struct peer **, struct network_head *, struct filter_head *);
+	    struct peer **, struct network_head *, struct filter_head *,
+	    struct rdomain_head *);
 
 /* config.c */
 int	 merge_config(struct bgpd_config *, struct bgpd_config *,
 	    struct peer *, struct listen_addrs *);
 void	 prepare_listeners(struct bgpd_config *);
+int	 get_mpe_label(struct rdomain *);
 
 /* rde.c */
-pid_t	 rde_main(struct bgpd_config *, struct peer *, struct network_head *,
-	    struct filter_head *, struct mrt_head *, struct rib_names *,
-	    int[2], int[2], int[2], int[2], int);
+pid_t	 rde_main(int[2], int[2], int[2], int[2], int);
 
 /* control.c */
 int	control_init(int, char *);
@@ -275,7 +273,7 @@ int	pfkey_init(struct bgpd_sysdep *);
 /* printconf.c */
 void	print_config(struct bgpd_config *, struct rib_names *,
 	    struct network_head *, struct peer *, struct filter_head *,
-	    struct mrt_head *);
+	    struct mrt_head *, struct rdomain_head *);
 
 /* carp.c */
 int	 carp_demote_init(char *, int);

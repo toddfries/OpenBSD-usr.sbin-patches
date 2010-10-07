@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.h,v 1.4 2009/09/22 12:24:06 jacekm Exp $	*/
+/*	$OpenBSD: client.h,v 1.12 2010/05/26 13:56:08 nicm Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -23,34 +23,43 @@
 struct smtp_client;
 
 /* return codes for io routines */
-#define CLIENT_DONE		 0	/* finished ok */
-#define CLIENT_WANT_READ	-1	/* need more data */
-#define CLIENT_WANT_WRITE	-2	/* have to send sth */
-#define CLIENT_RCPT_FAIL	-3	/* recipient refused */
+#define CLIENT_DONE		-1	/* finished */
+#define CLIENT_WANT_WRITE	-2	/* want read + write */
+#define CLIENT_STOP_WRITE	-3	/* want read */
+#define CLIENT_RCPT_FAIL	-4	/* recipient refused */
 
-/* client states */
-#define CLIENT_SSL_INIT		0x1
-#define CLIENT_SSL_CONNECT	0x2
-#define CLIENT_INIT		0x3
-#define CLIENT_EHLO		0x4
-#define CLIENT_HELO		0x5
-#define CLIENT_STARTTLS		0x6
-#define CLIENT_AUTH		0x7
-#define CLIENT_MAILFROM		0x8
-#define CLIENT_RCPTTO		0x9
-#define CLIENT_DATA		0xa
-#define CLIENT_DATA_BODY	0xb
-#define CLIENT_QUIT		0xc
+/* client commands */
+#define CLIENT_BANNER		0x1
+#define CLIENT_EHLO		0x2
+#define CLIENT_HELO		0x3
+#define CLIENT_STARTTLS		0x4
+#define CLIENT_AUTH		0x5
+#define CLIENT_MAILFROM		0x6
+#define CLIENT_RCPTTO		0x7
+#define CLIENT_DATA		0x8
+#define CLIENT_DOT		0x9
+#define CLIENT_QUIT		0xa
+
+struct client_cmd {
+	TAILQ_ENTRY(client_cmd)	 entry;
+	char			*action;
+	int			 type;
+	void			*data;
+};
+TAILQ_HEAD(cmdqueue, client_cmd);
 
 /* smtp extensions */
 #define CLIENT_EXT_STARTTLS	0
 #define CLIENT_EXT_AUTH		1
-#define CLIENT_EXT_MAX		2
+#define CLIENT_EXT_PIPELINING	2
 
-struct rcpt {
-	TAILQ_ENTRY(rcpt)	 entry;
-	char			*mbox;
-	void			*p;
+struct client_ext {
+	short			 have;
+	short			 want;
+	short			 must;
+	short			 done;
+	short			 fail;
+	char			*name;
 };
 
 struct client_auth {
@@ -61,38 +70,40 @@ struct client_auth {
 	size_t			 keysz;
 };
 
-struct client_ext {
-	short			 have;
-	short			 want;
-	short			 must;
-	short			 done;
-	short			 fail;
-	char			*name;
-	int			 state;
-};
+/* session flags */
+#define CLIENT_FLAG_FIRSTTIME	0x1
+#define CLIENT_FLAG_HANDSHAKING	0x2
+#define CLIENT_FLAG_RCPTOKAY	0x4
+#define CLIENT_FLAG_DYING	0x8
 
 struct smtp_client {
-	int			 state;
+	size_t			 cmdi;		/* iterator */
+	size_t			 cmdw;		/* window */
+	struct cmdqueue		 cmdsendq;	/* cmds to send */
+	struct cmdqueue		 cmdrecvq;	/* replies waited for */
+
+	int			 flags;
+	void			*rcptfail;
 	char			*ehlo;
-	char			*sender;
-	TAILQ_HEAD(rlist,rcpt)	 recipients;
-	struct rcpt		*rcpt;
-	struct rcpt		*rcptfail;
-	size_t			 rcptokay;
-	struct buf_read		 r;
-	struct msgbuf		 w;
-	struct buf		*data;
-	struct client_ext	 exts[CLIENT_EXT_MAX];
-	int			(*handler)(struct smtp_client *);
-	void			*ssl_state;
-	struct client_auth	 auth;
-	struct timeval		 timeout;
 	char			 reply[1024];
-	char			 status[1024];
+	struct ibuf_read	 r;
+	struct msgbuf		 w;
+	void			*ssl;
+	int			 sndlowat;
+	struct timeval		 timeout;
 	FILE			*verbose;
+
+	struct ibuf		*content;	/* current chunk of content */
+	struct ibuf		*head;		/* headers + part of body */
+	FILE			*body;		/* rest of body */
+
+	struct client_ext	 exts[3];
+	struct client_auth	 auth;
+
+	char			 status[1024];
 };
 
-struct smtp_client	*client_init(int, char *, int);
+struct smtp_client	*client_init(int, int, char *, int);
 void			 client_ssl_smtps(struct smtp_client *);
 void			 client_ssl_optional(struct smtp_client *);
 void			 client_certificate(struct smtp_client *, char *,
@@ -100,7 +111,6 @@ void			 client_certificate(struct smtp_client *, char *,
 void			 client_auth(struct smtp_client *, char *);
 void			 client_sender(struct smtp_client *, char *, ...);
 void			 client_rcpt(struct smtp_client *, void *, char *, ...);
-void			 client_data_fd(struct smtp_client *, int);
-void			 client_data_printf(struct smtp_client *, char *, ...);
-int			 client_talk(struct smtp_client *);
+void			 client_printf(struct smtp_client *, char *, ...);
+int			 client_talk(struct smtp_client *, int);
 void			 client_close(struct smtp_client *);

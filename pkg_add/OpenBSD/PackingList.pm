@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.92 2009/11/15 08:46:36 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.109 2010/07/31 11:30:50 espie Exp $
 #
-# Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -24,8 +24,8 @@ my $dot = '.';
 sub new
 {
 	my $class = shift;
-	bless { default_owner=>'root', 
-	     default_group=>'bin', 
+	bless { default_owner=>'root',
+	     default_group=>'bin',
 	     default_mode=> 0444,
 	     cwd=>\$dot}, $class;
 }
@@ -49,13 +49,42 @@ package OpenBSD::PackingList::hashpath;
 sub match
 {
 	my ($h, $plist) = @_;
-	return $h->{$plist->{extrainfo}->{subdir}};
+	return
+	    defined $plist->fullpkgpath &&
+	    $h->{$plist->fullpkgpath};
+}
+
+package OpenBSD::Composite;
+
+sub AUTOLOAD
+{
+	our $AUTOLOAD;
+	my $fullsub = $AUTOLOAD;
+	(my $sub = $fullsub) =~ s/.*:://o;
+	return if $sub eq 'DESTROY'; # special case
+	my $self = $_[0];
+	# verify it makes sense
+	if ($self->element_class->can($sub)) {
+		no strict "refs";
+		# create the sub to avoid regenerating further calls
+		*$fullsub = sub {
+			my $self = shift;
+			$self->visit($sub, @_);
+		};
+		# and jump to it
+		goto &$fullsub;
+	} else {
+		die "Can't call $sub on ".ref($self);
+	}
 }
 
 package OpenBSD::PackingList;
+our @ISA = qw(OpenBSD::Composite);
 
 use OpenBSD::PackingElement;
 use OpenBSD::PackageInfo;
+
+sub element_class { "OpenBSD::PackingElement" }
 
 sub new
 {
@@ -97,6 +126,16 @@ sub infodir
 {
 	my $self = shift;
 	return ${$self->{infodir}};
+}
+
+sub conflict_list
+{
+	require OpenBSD::PkgCfl;
+
+	my $self = shift;
+
+	$self->{conflict_list} //= OpenBSD::PkgCfl->make_conflict_list($self);
+	return $self->{conflict_list};
 }
 
 sub read
@@ -184,7 +223,7 @@ sub DependOnly
 			while (<$fh>) {
 			    if (m/^\@(?:depend|wantlib|define-tag)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -205,7 +244,7 @@ sub ExtraInfoOnly
 			while (<$fh>) {
 			    if (m/^\@(?:pkgpath)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -224,9 +263,9 @@ sub UpdateInfoOnly
 		# XXX optimization
 		if (m/^\@arch\b/o) {
 			while (<$fh>) {
-			    if (m/^\@(?:depend|wantlib|pkgpath)\b/o) {
+			    if (m/^\@(?:depend|wantlib|conflict|option|pkgpath|url)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -240,7 +279,7 @@ sub UpdateInfoOnly
 		    }
 		    return;
 		}
-		next unless m/^\@(?:name\b|depend\b|wantlib\b|pkgpath\b|comment\s+subdir\=|arch\b)/o;
+		next unless m/^\@(?:name\b|depend\b|wantlib\b|conflict|\b|option\b|pkgpath\b|comment\s+subdir\=|arch\b|url\b)/o;
 		&$cont($_);
 	}
 }
@@ -270,7 +309,7 @@ sub ConflictOnly
 			while (<$fh>) {
 			    if (m/^\@(?:conflict|option|name)\b/o) {
 				    &$cont($_);
-			    } elsif (m/^\@(?:depend|wantlib|groups|users|cwd)\b/o) {
+			    } elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
 				    last;
 			    }
 			}
@@ -291,7 +330,7 @@ MAINLOOP:
 			&$cont($_);
 			while(<$fh>) {
 				redo MAINLOOP unless m/^\@(?:sha|md5|size|symlink|link)\b/o;
-				    m/^\@size\b/o || m/^\@symlink\b/o || 
+				    m/^\@size\b/o || m/^\@symlink\b/o ||
 				    m/^\@link\b/o;
 				&$cont($_);
 			}
@@ -346,7 +385,7 @@ sub addunique
 	my ($plist, $object) = @_;
 	my $category = $object->category;
 	if (defined $plist->{$category}) {
-		die "Duplicate $category in plist";
+		die "Duplicate $category in plist ".($plist->pkgname // "?");
 	}
 	$plist->{$category} = $object;
 }
@@ -400,14 +439,23 @@ sub is_signed
 	return defined $self->{'digital-signature'};
 }
 
+sub fullpkgpath
+{
+	my $self = shift;
+	if (defined $self->{extrainfo} && $self->{extrainfo}->{subdir} ne '') {
+		return $self->{extrainfo}->{subdir};
+	} else {
+		return undef;
+	}
+}
 sub pkgpath
 {
 	my $self = shift;
 	if (!defined $self->{_hashpath}) {
-		my $h = $self->{_hashpath} = 
+		my $h = $self->{_hashpath} =
 		    bless {}, "OpenBSD::PackingList::hashpath";
-		if (defined $self->{extrainfo}) {
-			$h->{$self->{extrainfo}->{subdir}} = 1;
+		if (defined $self->fullpkgpath) {
+			$h->{$self->fullpkgpath} = 1;
 		}
 		if (defined $self->{pkgpath}) {
 			for my $i (@{$self->{pkgpath}}) {
@@ -421,20 +469,20 @@ sub pkgpath
 sub match_pkgpath
 {
 	my ($self, $plist2) = @_;
-	return $self->pkgpath->match($plist2) || 
+	return $self->pkgpath->match($plist2) ||
 	    $plist2->pkgpath->match($self);
 }
 
 our @unique_categories =
-    (qw(name digital-signature no-default-conflict manual-installation always-update extrainfo localbase arch));
+    (qw(name url digital-signature no-default-conflict manual-installation always-update explicit-update extrainfo localbase arch));
 
 our @list_categories =
-    (qw(conflict pkgpath incompatibility updateset depend 
+    (qw(conflict pkgpath incompatibility ask-update updateset depend
     	wantlib define-tag groups users items));
 
 our @cache_categories =
     (qw(depend wantlib));
-	
+
 sub visit
 {
 	my ($self, $method, @l) = @_;
@@ -470,7 +518,7 @@ sub from_installation
 
 	require OpenBSD::PackageInfo;
 
-	$code = \&defaultCode if !defined $code;
+	$code //= \&defaultCode;
 
 	if ($code == \&DependOnly && defined $plist_cache->{$pkgname}) {
 	    return $plist_cache->{$pkgname};
@@ -479,7 +527,7 @@ sub from_installation
 	my $plist = $o->fromfile($filename, $code);
 	if (defined $plist && $code == \&DependOnly) {
 		$plist_cache->{$pkgname} = $plist;
-	} 
+	}
 	if (defined $plist) {
 		$plist->set_infodir(OpenBSD::PackageInfo::installed_info($pkgname));
 	}
@@ -517,47 +565,18 @@ sub to_installation
 }
 
 
-sub signature
-{
-	my $self = shift;
-	if ($self->has('always-update')) {
-		my $s;
-		open my $fh, '>', \$s;
-		$self->write_no_sig($fh);
-		close $fh;
-		return $s;
-	} else {
-		my $k = {};
-		$self->visit('signature', $k);
-		return join(',', $self->pkgname, sort keys %$k);
-	}
-}
-
 sub forget
 {
 }
 
 # convert call to $self->sub(@args) into $self->visit(sub, @args)
 
-sub AUTOLOAD 
+sub signature
 {
-	our $AUTOLOAD;
-	my $fullsub = $AUTOLOAD;
-	(my $sub = $fullsub) =~ s/.*:://o;
-	return if $sub eq 'DESTROY'; # special case
-	# verify it makes sense
-	if (OpenBSD::PackingElement->can($sub)) {
-		no strict "refs";
-		# create the sub to avoid regenerating further calls
-		*$fullsub = sub {
-			my $self = shift;
-			$self->visit($sub, @_);
-		};
-		# and jump to it
-		goto &$fullsub;
-	} else {
-		die "Can't call $sub on ", __PACKAGE__;
-	}
+	my $self = shift;
+
+	require OpenBSD::Signature;
+	return OpenBSD::Signature->from_plist($self);
 }
 
 1;

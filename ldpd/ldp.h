@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldp.h,v 1.1 2009/06/01 20:59:45 michele Exp $ */
+/*	$OpenBSD: ldp.h,v 1.5 2010/05/17 08:07:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -91,10 +91,7 @@ struct ldp_hdr {
 	u_int16_t		length;
 	u_int32_t		lsr_id;
 	u_int16_t		lspace_id;
-	u_int8_t		pad;
-};
-
-#define	PDU_HDR_SIZE		4
+} __packed;
 
 #define	LDP_HDR_SIZE		10
 #define	INFINITE_HOLDTIME	0xffff
@@ -108,7 +105,7 @@ struct ldp_msg {
 	/* Optional Parameters */
 };
 
-#define LDP_MSG_LEN		6
+#define LDP_MSG_LEN		8
 #define	TLV_HDR_LEN		4
 
 #define	UNKNOWN_FLAGS_MASK	0xc000
@@ -149,6 +146,8 @@ struct hello_prms_tlv {
 #define	S_LAB_REQ_ABRT	0x00000015
 #define	S_MISS_MSG	0x00000016
 #define	S_UNSUP_ADDR	0x00000017
+#define	S_KEEPALIVE_BAD	0x80000018
+#define	S_INTERN_ERR	0x80000019
 
 struct sess_prms_tlv {
 	u_int16_t	type;
@@ -204,7 +203,6 @@ struct fec_elm {
 
 #define	FEC_WILDCARD		0x01
 #define	FEC_PREFIX		0x02
-#define	FEC_ADDRESS		0x03
 
 #define	FEC_IPV4		0x0001
 
@@ -214,7 +212,14 @@ struct label_tlv {
 	u_int32_t	label;
 };
 
-#define LABEL_TLV_LEN	8
-#define	NO_LABEL	UINT_MAX
+#define LABEL_TLV_LEN		8
+
+struct hello_opt_parms_tlv {
+	u_int16_t	type;
+	u_int16_t	length;
+	u_int32_t	value;
+};
+
+#define	NO_LABEL		UINT_MAX
 
 #endif /* !_LDP_H_ */

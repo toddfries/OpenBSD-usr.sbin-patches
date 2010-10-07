@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpe.c,v 1.24 2009/06/06 05:52:01 pyr Exp $	*/
+/*	$OpenBSD: snmpe.c,v 1.28 2010/09/20 12:32:41 martinh Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -36,6 +36,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <vis.h>
 
 #include "snmpd.h"
 
@@ -433,9 +434,14 @@ snmpe_debug_elements(struct ber_element *root)
 		    root->be_type == SNMP_T_IPADDR) {
 			fprintf(stderr, "addr %s\n",
 			    inet_ntoa(*(struct in_addr *)buf));
-		} else
-			fprintf(stderr, "string \"%s\"\n",
-			    root->be_len ? buf : "");
+		} else {
+			char *visbuf;
+			if ((visbuf = malloc(root->be_len * 4 + 1)) == NULL)
+				fatal("malloc");
+			strvisx(visbuf, buf, root->be_len, 0);
+			fprintf(stderr, "string \"%s\"\n",  visbuf);
+			free(visbuf);
+		}
 		break;
 	case BER_TYPE_NULL:	/* no payload */
 	case BER_TYPE_EOC:
@@ -485,7 +491,8 @@ snmpe_parse(struct sockaddr_storage *ss,
 	struct ber_element	*a, *b, *c, *d, *e, *f, *next, *last;
 	const char		*errstr = "invalid message";
 	long long		 ver, req;
-	unsigned long		 type, errval, erridx;
+	long long		 errval, erridx;
+	unsigned long		 type;
 	u_int			 class, state, i = 0, j = 0;
 	char			*comn, buf[BUFSIZ], host[MAXHOSTNAMELEN];
 	struct ber_oid		 o;
@@ -574,7 +581,7 @@ snmpe_parse(struct sockaddr_storage *ss,
 		goto fail;
 	}
 
-	/* SNMP PDU */		    
+	/* SNMP PDU */
 	if (ber_scanf_elements(a, "iiie{et",
 	    &req, &errval, &erridx, &msg->sm_pduend,
 	    &msg->sm_varbind, &class, &type) != 0) {
@@ -636,7 +643,8 @@ snmpe_parse(struct sockaddr_storage *ss,
 					break;	/* ignore error */
 				case SNMP_C_GETREQ:
 					c = ber_add_sequence(NULL);
-					if ((d = mps_getreq(c, &o)) != NULL)
+					if ((d = mps_getreq(c, &o,
+					    msg->sm_version)) != NULL)
 						break;
 					msg->sm_error = SNMP_ERROR_NOSUCHNAME;
 					ber_free_elements(c);

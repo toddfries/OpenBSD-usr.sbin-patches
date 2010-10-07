@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageInfo.pm,v 1.44 2009/11/15 09:53:52 espie Exp $
+# $OpenBSD: PackageInfo.pm,v 1.50 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -232,10 +232,9 @@ sub solve_installed_names
 		}
 	    } else {
 		if (OpenBSD::PackageName::is_stem($pkgname)) {
-		    require OpenBSD::PackageRepository::Installed;
 		    require OpenBSD::Search;
 
-		    my $r = OpenBSD::PackageRepository::Installed->new->match_locations(OpenBSD::Search::Stem->new($pkgname));
+		    my $r = $state->repo->installed->match_locations(OpenBSD::Search::Stem->new($pkgname));
 		    if (@$r == 0) {
 			print "Can't resolve $pkgname to an installed package name\n";
 			$bad = 1;
@@ -255,10 +254,10 @@ sub solve_installed_names
 			}
 			next if $found;
 
-			if ($state->{defines}->{ambiguous}) {
+			if ($state->defines('ambiguous')) {
 			    my @l = map {$_->name} @$r;
-			    $state->say("Ambiguous: $pkgname could be ", 
-				join(' ', @l));
+			    $state->say("Ambiguous: #1 could be #2",
+				$pkgname, join(' ', @l));
 			    $state->say($msg);
 			    push(@$new, @l);
 			    for my $p (@$r) {
