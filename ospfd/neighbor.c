@@ -1,4 +1,4 @@
-/*	$OpenBSD: neighbor.c,v 1.39 2009/09/30 14:39:07 claudio Exp $ */
+/*	$OpenBSD: neighbor.c,v 1.41 2010/05/07 22:32:34 sthen Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -431,8 +431,8 @@ nbr_adj_timer(int fd, short event, void *arg)
 		return ;
 
 	if (nbr->state & NBR_STA_ACTIVE && nbr->state != NBR_STA_FULL) {
-		log_warnx("nbr_adj_timer: failed to form adjacency with %s",
-		    inet_ntoa(nbr->id));
+		log_warnx("nbr_adj_timer: failed to form adjacency with %s "
+		    "on interface %s", inet_ntoa(nbr->id), nbr->iface->name);
 		nbr_fsm(nbr, NBR_EVT_ADJTMOUT);
 	}
 }
@@ -585,8 +585,11 @@ nbr_act_delete(struct nbr *nbr)
 {
 	struct timeval	tv;
 
-	if (nbr == nbr->iface->self)
+	if (nbr == nbr->iface->self) {
+		nbr->dr.s_addr = 0;
+		nbr->bdr.s_addr = 0;
 		return (0);
+	}
 
 	/* stop timers */
 	nbr_stop_itimer(nbr);
@@ -594,6 +597,7 @@ nbr_act_delete(struct nbr *nbr)
 	/* clear dr and bdr */
 	nbr->dr.s_addr = 0;
 	nbr->bdr.s_addr = 0;
+	/* XXX reset crypt_seq_num will allow replay attacks. */
 	nbr->crypt_seq_num = 0;
 
 	/* schedule kill timer */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.57 2009/11/02 20:38:45 claudio Exp $ */
+/*	$OpenBSD: parser.c,v 1.62 2010/05/03 13:11:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -52,7 +52,8 @@ enum token_type {
 	PREPSELF,
 	WEIGHT,
 	FAMILY,
-	GETOPT
+	GETOPT,
+	RTABLE
 };
 
 enum getopts {
@@ -98,6 +99,8 @@ static const struct token t_weight[];
 static const struct token t_irrfilter[];
 static const struct token t_irrfilter_opts[];
 static const struct token t_log[];
+static const struct token t_fib_table[];
+static const struct token t_show_fib_table[];
 
 static const struct token t_main[] = {
 	{ KEYWORD,	"reload",	RELOAD,		NULL},
@@ -118,6 +121,7 @@ static const struct token t_show[] = {
 	{ KEYWORD,	"network",	NETWORK_SHOW,	t_network_show},
 	{ KEYWORD,	"nexthop",	SHOW_NEXTHOP,	NULL},
 	{ KEYWORD,	"rib",		SHOW_RIB,	t_show_rib},
+	{ KEYWORD,	"tables",	SHOW_FIB_TABLES, NULL},
 	{ KEYWORD,	"ip",		NONE,		t_show_ip},
 	{ KEYWORD,	"summary",	SHOW_SUMMARY,	t_show_summary},
 	{ ENDTOKEN,	"",		NONE,		NULL}
@@ -130,14 +134,15 @@ static const struct token t_show_summary[] = {
 };
 
 static const struct token t_show_fib[] = {
-	{ NOTOKEN,	"",		NONE,			NULL},
-	{ FLAG,		"connected",	F_CONNECTED,		t_show_fib},
-	{ FLAG,		"static",	F_STATIC,		t_show_fib},
-	{ FLAG,		"bgp",		F_BGPD_INSERTED,	t_show_fib},
-	{ FLAG,		"nexthop",	F_NEXTHOP,		t_show_fib},
-	{ FAMILY,	"",		NONE,			t_show_fib},
-	{ ADDRESS,	"",		NONE,			NULL},
-	{ ENDTOKEN,	"",		NONE,			NULL}
+	{ NOTOKEN,	"",		NONE,		 NULL},
+	{ FLAG,		"connected",	F_CONNECTED,	 t_show_fib},
+	{ FLAG,		"static",	F_STATIC,	 t_show_fib},
+	{ FLAG,		"bgp",		F_BGPD_INSERTED, t_show_fib},
+	{ FLAG,		"nexthop",	F_NEXTHOP,	 t_show_fib},
+	{ KEYWORD,	"table",	NONE,		 t_show_fib_table},
+	{ FAMILY,	"",		NONE,		 t_show_fib},
+	{ ADDRESS,	"",		NONE,		 NULL},
+	{ ENDTOKEN,	"",		NONE,		 NULL}
 };
 
 static const struct token t_show_rib[] = {
@@ -189,6 +194,7 @@ static const struct token t_show_neighbor_modifiers[] = {
 static const struct token t_fib[] = {
 	{ KEYWORD,	"couple",	FIB_COUPLE,	NULL},
 	{ KEYWORD,	"decouple",	FIB_DECOUPLE,	NULL},
+	{ KEYWORD,	"table",	NONE,		t_fib_table},
 	{ ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -319,6 +325,16 @@ static const struct token t_log[] = {
 	{ ENDTOKEN,	"",		NONE,		NULL}
 };
 
+static const struct token t_fib_table[] = {
+	{ RTABLE,	"",			NONE,	t_fib},
+	{ ENDTOKEN,	"",			NONE,	NULL}
+};
+
+static const struct token t_show_fib_table[] = {
+	{ RTABLE,	"",			NONE,	t_show_fib},
+	{ ENDTOKEN,	"",			NONE,	NULL}
+};
+
 static struct parse_result	res;
 
 const struct token	*match_token(int *argc, char **argv[],
@@ -344,7 +360,6 @@ parse(int argc, char *argv[])
 	bzero(&res, sizeof(res));
 	res.community.as = COMMUNITY_UNSET;
 	res.community.type = COMMUNITY_UNSET;
-	res.flags = (F_IPV4 | F_IPV6);
 	TAILQ_INIT(&res.set);
 	if ((res.irr_outdir = getcwd(NULL, 0)) == NULL) {
 		fprintf(stderr, "getcwd failed: %s", strerror(errno));
@@ -413,15 +428,22 @@ match_token(int *argc, char **argv[], const struct token table[])
 		case FAMILY:
 			if (word == NULL)
 				break;
-			if (!strcmp(word, "inet") || !strcmp(word, "IPv4")) {
+			if (!strcmp(word, "inet") ||
+			    !strcasecmp(word, "IPv4")) {
 				match++;
 				t = &table[i];
-				res.af = AF_INET;
+				res.aid = AID_INET;
 			}
-			if (!strcmp(word, "inet6") || !strcmp(word, "IPv6")) {
+			if (!strcmp(word, "inet6") ||
+			    !strcasecmp(word, "IPv6")) {
 				match++;
 				t = &table[i];
-				res.af = AF_INET6;
+				res.aid = AID_INET6;
+			}
+			if (!strcasecmp(word, "VPNv4")) {
+				match++;
+				t = &table[i];
+				res.aid = AID_VPN_IPv4;
 			}
 			break;
 		case ADDRESS:
@@ -494,6 +516,7 @@ match_token(int *argc, char **argv[], const struct token table[])
 		case PREPNBR:
 		case PREPSELF:
 		case WEIGHT:
+		case RTABLE:
 			if (word != NULL && strlen(word) > 0 &&
 			    parse_number(word, &res, table[i].type)) {
 				match++;
@@ -586,6 +609,9 @@ show_valid_args(const struct token table[])
 		case WEIGHT:
 			fprintf(stderr, "  <number>\n");
 			break;
+		case RTABLE:
+			fprintf(stderr, "  <rtableid>\n");
+			break;
 		case NEXTHOP:
 			fprintf(stderr, "  <address>\n");
 			break;
@@ -593,7 +619,7 @@ show_valid_args(const struct token table[])
 			fprintf(stderr, "  <pftable>\n");
 			break;
 		case FAMILY:
-			fprintf(stderr, "  [ inet | inet6 | IPv4 | IPv6 ]\n");
+			fprintf(stderr, "  [ inet | inet6 | IPv4 | IPv6 | VPNv4 ]\n");
 			break;
 		case GETOPT:
 			fprintf(stderr, "  <options>\n");
@@ -617,7 +643,7 @@ parse_addr(const char *word, struct bgpd_addr *addr)
 	bzero(&ina, sizeof(ina));
 
 	if (inet_net_pton(AF_INET, word, &ina, sizeof(ina)) != -1) {
-		addr->af = AF_INET;
+		addr->aid = AID_INET;
 		addr->v4 = ina;
 		return (1);
 	}
@@ -627,13 +653,7 @@ parse_addr(const char *word, struct bgpd_addr *addr)
 	hints.ai_socktype = SOCK_DGRAM; /*dummy*/
 	hints.ai_flags = AI_NUMERICHOST;
 	if (getaddrinfo(word, "0", &hints, &r) == 0) {
-		addr->af = AF_INET6;
-		memcpy(&addr->v6,
-		    &((struct sockaddr_in6 *)r->ai_addr)->sin6_addr,
-		    sizeof(addr->v6));
-		addr->scope_id =
-		    ((struct sockaddr_in6 *)r->ai_addr)->sin6_scope_id;
-
+		sa2addr(r->ai_addr, addr);
 		freeaddrinfo(r);
 		return (1);
 	}
@@ -672,15 +692,15 @@ parse_prefix(const char *word, struct bgpd_addr *addr, u_int8_t *prefixlen)
 		if (parse_addr(word, addr) == 0)
 			return (0);
 
-	switch (addr->af) {
-	case AF_INET:
+	switch (addr->aid) {
+	case AID_INET:
 		if (mask == -1)
 			mask = 32;
 		if (mask > 32)
 			errx(1, "invalid netmask: too large");
 		addr->v4.s_addr = addr->v4.s_addr & htonl(prefixlen2mask(mask));
 		break;
-	case AF_INET6:
+	case AID_INET6:
 		if (mask == -1)
 			mask = 128;
 		inet6applymask(&addr->v6, &addr->v6, mask);
@@ -739,6 +759,11 @@ parse_number(const char *word, struct parse_result *r, enum token_type type)
 		errx(1, "number is %s: %s", errstr, word);
 
 	/* number was parseable */
+	if (type == RTABLE) {
+		r->rtableid = uval;
+		return (1);
+	}
+
 	if ((fs = calloc(1, sizeof(struct filter_set))) == NULL)
 		err(1, NULL);
 	switch (type) {

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.36 2008/05/07 12:19:20 beck Exp $ */
+/*	$OpenBSD: dhcpd.h,v 1.45 2010/04/19 12:22:09 claudio Exp $ */
 
 /*
  * Copyright (c) 1995, 1996, 1997, 1998, 1999
@@ -602,36 +602,10 @@ struct group *clone_group(struct group *, char *);
 void write_leases(void);
 
 /* alloc.c */
-void * dmalloc(int, char *);
-void dfree(void *, char *);
-struct packet *new_packet(char *);
-struct dhcp_packet *new_dhcp_packet(char *);
-struct tree *new_tree(char *);
 struct tree_cache *new_tree_cache(char *);
-struct hash_table *new_hash_table(int, char *);
-struct hash_bucket *new_hash_bucket(char *);
-struct lease *new_lease(char *);
-struct lease *new_leases(int, char *);
-struct subnet *new_subnet(char *);
-struct class *new_class(char *);
-struct shared_network *new_shared_network(char *);
-struct group *new_group(char *);
-struct protocol *new_protocol(char *);
 struct lease_state *new_lease_state(char *);
-struct domain_search_list *new_domain_search_list(char *);
-struct name_server *new_name_server(char *);
-void free_name_server(struct name_server *, char *);
-void free_domain_search_list(struct domain_search_list *, char *);
 void free_lease_state(struct lease_state *, char *);
-void free_protocol(struct protocol *, char *);
-void free_group(struct group *, char *);
-void free_shared_network(struct shared_network *, char *);
-void free_class(struct class *, char *);
-void free_subnet(struct subnet *, char *);
-void free_lease(struct lease *, char *);
-void free_hash_bucket(struct hash_bucket *, char *);
 void free_tree_cache(struct tree_cache *);
-void free_tree(struct tree *, char *);
 
 /* print.c */
 char *print_hw_addr(int, int, unsigned char *);
@@ -651,7 +625,7 @@ extern struct protocol *protocols;
 extern void (*bootp_packet_handler)(struct interface_info *,
     struct dhcp_packet *, int, unsigned int, struct iaddr, struct hardware *);
 extern struct dhcpd_timeout *timeouts;
-void discover_interfaces(void);
+void discover_interfaces(int *);
 void dispatch(void);
 int locate_network(struct packet *);
 void got_one(struct protocol *);
