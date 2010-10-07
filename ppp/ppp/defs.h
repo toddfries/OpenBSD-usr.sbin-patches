@@ -53,7 +53,7 @@
 #define	RECONNECT_TIMEOUT 3	/* Default timer for carrier loss */
 #define	DIAL_TIMEOUT	30	/* Default and Max random time to redial */
 #define	DIAL_NEXT_TIMEOUT 3	/* Default Hold time to next number redial */
-#define SCRIPT_LEN 512		/* Size of login/dial/hangup scripts */
+#define SCRIPT_LEN 1024		/* Size of login/dial/hangup scripts */
 #define LINE_LEN SCRIPT_LEN 	/* Size of lines */
 #define DEVICE_LEN SCRIPT_LEN	/* Size of individual devices */
 #define AUTHLEN 100 		/* Size of authname/authkey */
