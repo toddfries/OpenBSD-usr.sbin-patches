@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.113 2009/12/07 13:41:02 espie Exp $
+# $OpenBSD: Update.pm,v 1.145 2010/08/03 14:08:49 espie Exp $
 #
-# Copyright (c) 2004-2006 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -43,7 +43,6 @@ sub update
 
 package OpenBSD::Update;
 use OpenBSD::PackageInfo;
-use OpenBSD::PackageLocator;
 use OpenBSD::PackageName;
 use OpenBSD::Error;
 use OpenBSD::UpdateSet;
@@ -65,25 +64,27 @@ sub add_location
 {
 	my ($self, $set, $handle, $location) = @_;
 
-	$self->add_handle($set, $handle, 
+	$self->add_handle($set, $handle,
 	    OpenBSD::Handle->from_location($location));
 }
 
-my $first = 1;
+sub progress_message
+{
+	my ($self, $state, @r) = @_;
+	my $msg = $state->f(@r);
+	if ($state->{wantntogo}) {
+		$msg .= " (".$state->ntogo.")";
+	}
+	$state->progress->message($msg);
+	$state->say($msg) if $state->verbose >= 2;
+}
+
 sub process_handle
 {
 	my ($self, $set, $h, $state) = @_;
 	my $pkgname = $h->pkgname;
 
 	if ($pkgname =~ m/^\.libs\d*\-/o) {
-		if ($first) {
-			$state->say("Not updating .libs*, remember to clean them");
-			$first = 0;
-		}
-		return 0;
-	}
-	if ($pkgname =~ m/^partial\-/o) {
-		$state->say("Not updating $pkgname, remember to clean it");
 		return 0;
 	}
 
@@ -91,27 +92,53 @@ sub process_handle
 	eval {
 		if ($state->quirks->is_base_system($h, $state)) {
 			$h->{update_found} = 1;
+			$set->{updates}++;
 		}
 	};
 	return 1 if $h->{update_found};
 
-	my $plist = OpenBSD::PackingList->from_installation($pkgname, 
+	my $plist = OpenBSD::PackingList->from_installation($pkgname,
 	    \&OpenBSD::PackingList::UpdateInfoOnly);
 	if (!defined $plist) {
-		Fatal("Can't locate $pkgname");
+		$state->fatal("can't locate #1", $pkgname);
 	}
 
+	if ($plist->has('explicit-update') && $state->{allupdates}) {
+		$h->{update_found} = $h;
+		$set->move_kept($h);
+		return 0;
+	}
+
+#	if (defined $plist->{url}) {
+#		my $repo;
+#		($repo, undef) = $state->repo->path_parse($plist->{url}->name);
+#		$set->add_repositories($repo);
+#	}
 	my @search = ();
-	push(@search, OpenBSD::Search::Stem->split($pkgname));
+
+	my $sname = $pkgname;
+	while ($sname =~ s/^partial\-//o) {
+	}
+	push(@search, OpenBSD::Search::Stem->split($sname));
 
 	eval {
 		$state->quirks->tweak_search(\@search, $h, $state);
 	};
-	my $found;
 	my $oldfound = 0;
 
-	if (!$state->{defines}->{downgrade}) {
-		push(@search, OpenBSD::Search::FilterLocation->more_recent_than($pkgname, \$oldfound));
+	# XXX this is nasty: maybe we added an old set to update
+	# because of conflicts, in which case the pkgpath +
+	# conflict should be enough  to "match".
+	for my $n ($set->newer) {
+		if (($state->{hard_replace} ||
+		    $n->location->update_info->match_pkgpath($plist)) &&
+			$n->plist->conflict_list->conflicts_with($sname)) {
+				$self->add_handle($set, $h, $n);
+				return 1;
+		}
+	}
+	if (!$state->defines('downgrade')) {
+		push(@search, OpenBSD::Search::FilterLocation->more_recent_than($sname, \$oldfound));
 	}
 	push(@search, OpenBSD::Search::FilterLocation->new(
 	    sub {
@@ -120,76 +147,61 @@ sub process_handle
 			return $l;
 		}
 		my @l2 = ();
-		for my $handle (@$l) {
-		    $handle->set_arch($state->{arch});
-		    if (!$handle) {
+		for my $loc (@$l) {
+		    $loc->set_arch($state->{arch});
+		    if (!$loc) {
 			    next;
 		    }
-		    my $p2 = $handle->update_info;
+		    my $p2 = $loc->update_info;
 		    if (!$p2) {
 			next;
 		    }
 		    if ($p2->has('arch')) {
 			unless ($p2->{arch}->check($state->{arch})) {
+			    $loc->forget;
 			    next;
 			}
 		    }
-		    if ($plist->signature eq $p2->signature) {
-			$found = $handle;
-			push(@l2, $handle);
+		    if (!$plist->match_pkgpath($p2)) {
+		    	$loc->forget;
+			next
+		    }
+		    if ($p2->has('explicit-update') && $state->{allupdates}) {
+			$oldfound = 1;
+			$loc->forget;
 			next;
 		    }
-		    if ($plist->match_pkgpath($p2)) {
-			push(@l2, $handle);
+		    my $r = $plist->signature->compare($p2->signature);
+		    if (defined $r && $r > 0 && !$state->defines('downgrade')) {
+		    	$oldfound = 1;
+			$loc->forget;
+			next;
 		    }
+		    push(@l2, $loc);
 		}
 		return \@l2;
 	    }));
 
-	if (!$state->{defines}->{allversions}) {
+	if (!$state->defines('allversions')) {
 		push(@search, OpenBSD::Search::FilterLocation->keep_most_recent);
 	}
 
-	my $l = OpenBSD::PackageLocator->match_locations(@search);
+	my $l = $set->match_locations(@search);
 	if (@$l == 0) {
-		# XXX this is nasty: maybe we added an old set to update 
-		# because of conflicts, in which case the pkgpath + 
-		# conflict should be enough  to "match".
-		for my $n ($set->newer) {
-			if ($n->location->update_info->match_pkgpath($plist)) {
-				$self->add_handle($set, $h, $n);
-				return 1;
-			}
-		}
 		if ($oldfound) {
 			$h->{update_found} = $h;
-			my $msg = "No need to update $pkgname";
-			if (defined $state->{todo} && $state->{todo} > 0) {
-				$msg .= " ($state->{todo} to go)";
-			}
-			$state->progress->message($msg);
-			$state->say($msg) if $state->{beverbose};
+			$set->move_kept($h);
+
+			$self->progress_message($state, 
+			    "No need to update #1", $pkgname);
+
 			return 0;
 		}
 		return undef;
 	}
-	if (@$l == 1) {
-		if (defined $found && $found eq $l->[0] &&
-		    !$plist->uses_old_libs && !$state->{defines}->{installed}) {
-			$h->{update_found} = $h;
-			my $msg = "No need to update $pkgname";
-			if (defined $state->{todo} && $state->{todo} > 0) {
-				$msg .= " ($state->{todo} to go)";
-			}
-			$state->progress->message($msg);
-			$state->say($msg) if $state->{beverbose};
-			return 0;
-		}
-	}
+	$state->say("Update candidates: #1 -> #2 (#3)", $pkgname,
+	    join(' ', map {$_->name} @$l), $state->ntogo) if $state->verbose;
 
-	$state->say("Candidates for updating $pkgname -> ", 
-	    join(' ', map {$_->name} @$l));
-		
 	my $r = $state->choose_location($pkgname, $l);
 	if (defined $r) {
 		$self->add_location($set, $h, $r);
@@ -198,6 +210,22 @@ sub process_handle
 		$state->{issues} = 1;
 		return undef;
 	}
+}
+
+sub find_nearest
+{
+	my ($base, $locs) = @_;
+
+	my $pkgname = OpenBSD::PackageName->from_string($base);
+	return undef if !defined $pkgname->{version};
+	my @sorted = sort {$a->pkgname->{version}->compare($b->pkgname->{version}) } @$locs;
+	if ($sorted[0]->pkgname->{version}->compare($pkgname->{version}) > 0) {
+		return $sorted[0];
+	}
+	if ($sorted[-1]->pkgname->{version}->compare($pkgname->{version}) < 0) {
+		return $sorted[-1];
+	}
+	return undef;
 }
 
 sub process_hint
@@ -209,12 +237,19 @@ sub process_hint
 	my $k = OpenBSD::Search::FilterLocation->keep_most_recent;
 	# first try to find us exactly
 
-	$state->progress->message("Looking for $hint_name");
-	$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Exact->new($hint_name), $k);
+	$self->progress_message($state, "Looking for #1", $hint_name);
+	$l = $set->match_locations(OpenBSD::Search::Exact->new($hint_name), $k);
 	if (@$l == 0) {
 		my $t = $hint_name;
 		$t =~ s/\-\d([^-]*)\-?/--/;
-		$l = OpenBSD::PackageLocator->match_locations(OpenBSD::Search::Stem->new($t), $k);
+		$l = $set->match_locations(OpenBSD::Search::Stem->new($t), $k);
+	}
+	if (@$l > 1) {
+		my $r = find_nearest($hint_name, $l);
+		if (defined $r) {
+			$self->add_location($set, $hint, $r);
+			return 1;
+		}
 	}
 	my $r = $state->choose_location($hint_name, $l);
 	if (defined $r) {
@@ -232,15 +267,12 @@ sub process_hint2
 	my ($self, $set, $hint, $state) = @_;
 	my $pkgname = $hint->pkgname;
 	if (OpenBSD::PackageName::is_stem($pkgname)) {
-		my ($h, $path, $repo);
-		if ($pkgname =~ m/\//o) {
-			($repo, $path, $pkgname) = OpenBSD::PackageLocator::path_parse($pkgname);
-			$h = $repo;
-		} else {
-			$h = 'OpenBSD::PackageLocator';
-			$path = "";
-		}
-		my $l = $state->updater->stem2location($h, $pkgname, $state, 
+		if ($pkgname =~ m/[\/\:]/o) {
+			my $repo;
+			($repo, $pkgname) = $state->repo->path_parse($pkgname);
+			$set->add_repositories($repo);
+		};
+		my $l = $state->updater->stem2location($set, $pkgname, $state,
 		    $set->{quirks});
 		if (defined $l) {
 			$self->add_location($set, $hint, $l);
@@ -260,36 +292,36 @@ sub process_hint2
 sub process_set
 {
 	my ($self, $set, $state) = @_;
-	my $problem;
+	my @problems = ();
 	for my $h ($set->older, $set->hints) {
 		next if $h->{update_found};
-		my $r = $h->update($self, $set, $state);
-
-		if (!defined $r) {
-			$problem = 1;
-		} else {
-			$set->{updates} += $r;
+		if (!defined $h->update($self, $set, $state)) {
+			push(@problems, $h->pkgname);
 		}
 	}
-	if ($problem) {
+	if (@problems > 0) {
 		$state->tracker->cant($set) if !$set->{quirks};
+		if ($set->{updates} != 0) {
+			$state->say("Can't update #1: no update found for ",
+			    $set->print, join(',', @problems));
+		}
 		return 0;
-	} elsif ($set->{updates} == 0 && $set->newer == 0) {
+	} elsif ($set->{updates} == 0) {
 		$state->tracker->uptodate($set);
 		return 0;
-	} 
+	}
 	$state->tracker->add_set($set);
 	return 1;
 }
 
 sub stem2location
 {
-	my ($self, $repo, $name, $state, $is_quirks) = @_;
-	my $l = $repo->match_locations(OpenBSD::Search::Stem->new($name));
-	if (@$l > 1 && !$state->{defines}->{allversions}) {
+	my ($self, $locator, $name, $state, $is_quirks) = @_;
+	my $l = $locator->match_locations(OpenBSD::Search::Stem->new($name));
+	if (@$l > 1 && !$state->defines('allversions')) {
 		$l = OpenBSD::Search::FilterLocation->keep_most_recent->filter_locations($l);
 	}
 	return $state->choose_location($name, $l, $is_quirks);
 }
- 
+
 1;

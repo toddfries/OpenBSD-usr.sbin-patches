@@ -1,4 +1,4 @@
-/*	$OpenBSD: confpars.c,v 1.16 2006/12/17 18:03:33 stevesk Exp $ */
+/*	$OpenBSD: confpars.c,v 1.20 2010/04/02 17:03:58 zinovik Exp $ */
 
 /*
  * Copyright (c) 1995, 1996, 1997 The Internet Software Consortium.
@@ -175,7 +175,7 @@ int parse_statement(cfile, group, type, host_decl, declaration)
 	int token;
 	char *val;
 	struct shared_network *share;
-	char *t, *n;
+	char *n;
 	struct tree *tree;
 	struct tree_cache *cache;
 	struct hardware hardware;
@@ -232,7 +232,7 @@ int parse_statement(cfile, group, type, host_decl, declaration)
 		/* Otherwise, cons up a fake shared network structure
 		   and populate it with the lone subnet... */
 
-		share = new_shared_network("parse_statement");
+		share = calloc(1, sizeof(struct shared_network));
 		if (!share)
 			error("No memory for shared subnet");
 		share->group = clone_group(group, "parse_statement:subnet");
@@ -247,11 +247,9 @@ int parse_statement(cfile, group, type, host_decl, declaration)
 
 			/* Make the shared network name from network number. */
 			n = piaddr(share->subnets->net);
-			t = malloc(strlen(n) + 1);
-			if (!t)
+			share->name = strdup(n);
+			if (share->name == NULL)
 				error("no memory for subnet name");
-			strlcpy(t, n, (strlen(n) + 1));
-			share->name = t;
 
 			/* Copy the authoritative parameter from the subnet,
 			   since there is no opportunity to declare it here. */
@@ -515,16 +513,19 @@ void parse_host_declaration(cfile, group)
 	if (!name)
 		return;
 
-	host = (struct host_decl *)dmalloc(sizeof (struct host_decl),
-	    "parse_host_declaration");
+	host = calloc(1, sizeof (struct host_decl));
 	if (!host)
 		error("can't allocate host decl struct %s.", name);
 
 	host->name = name;
 	host->group = clone_group(group, "parse_host_declaration");
 
-	if (!parse_lbrace(cfile))
+	if (!parse_lbrace(cfile)) {
+		free(host->name);
+		free(host->group);
+		free(host);
 		return;
+	}
 
 	do {
 		token = peek_token(&val, cfile);
@@ -586,8 +587,12 @@ void parse_class_declaration(cfile, group, type)
 		error("No memory for class %s.", val);
 	class->group = clone_group(group, "parse_class_declaration");
 
-	if (!parse_lbrace(cfile))
+	if (!parse_lbrace(cfile)) {
+		free(class->name);
+		free(class->group);
+		free(class);
 		return;
+	}
 
 	do {
 		token = peek_token(&val, cfile);
@@ -618,7 +623,7 @@ void parse_shared_net_declaration(cfile, group)
 	char *name;
 	int declaration = 0;
 
-	share = new_shared_network("parse_shared_net_declaration");
+	share = calloc(1, sizeof(struct shared_network));
 	if (!share)
 		error("No memory for shared subnet");
 	share->leases = NULL;
@@ -638,25 +643,34 @@ void parse_shared_net_declaration(cfile, group)
 			parse_warn("zero-length shared network name");
 			val = "<no-name-given>";
 		}
-		name = malloc(strlen(val) + 1);
-		if (!name)
+		name = strdup(val);
+		if (name == NULL)
 			error("no memory for shared network name");
-		strlcpy(name, val, strlen(val) + 1);
 	} else {
 		name = parse_host_name(cfile);
-		if (!name)
+		if (!name) {
+			free(share->group);
+			free(share);
 			return;
+		}
 	}
 	share->name = name;
 
-	if (!parse_lbrace(cfile))
+	if (!parse_lbrace(cfile)) {
+		free(share->group);
+		free(share->name);
+		free(share);
 		return;
+	}
 
 	do {
 		token = peek_token(&val, cfile);
 		if (token == '}') {
 			token = next_token(&val, cfile);
 			if (!share->subnets) {
+				free(share->group);
+				free(share->name);
+				free(share);
 				parse_warn("empty shared-network decl");
 				return;
 			}
@@ -688,7 +702,7 @@ void parse_subnet_declaration(cfile, share)
 	int len = sizeof addr;
 	int declaration = 0;
 
-	subnet = new_subnet("parse_subnet_declaration");
+	subnet = calloc(1, sizeof(struct subnet));
 	if (!subnet)
 		error("No memory for new subnet");
 	subnet->shared_network = share;
@@ -696,22 +710,30 @@ void parse_subnet_declaration(cfile, share)
 	subnet->group->subnet = subnet;
 
 	/* Get the network number... */
-	if (!parse_numeric_aggregate(cfile, addr, &len, '.', 10, 8))
+	if (!parse_numeric_aggregate(cfile, addr, &len, '.', 10, 8)) {
+		free(subnet->group);
+		free(subnet);
 		return;
+	}
 	memcpy(iaddr.iabuf, addr, len);
 	iaddr.len = len;
 	subnet->net = iaddr;
 
 	token = next_token(&val, cfile);
 	if (token != TOK_NETMASK) {
+		free(subnet->group);
+		free(subnet);
 		parse_warn("Expecting netmask");
 		skip_to_semi(cfile);
 		return;
 	}
 
 	/* Get the netmask... */
-	if (!parse_numeric_aggregate(cfile, addr, &len, '.', 10, 8))
+	if (!parse_numeric_aggregate(cfile, addr, &len, '.', 10, 8)) {
+		free(subnet->group);
+		free(subnet);
 		return;
+	}
 	memcpy(iaddr.iabuf, addr, len);
 	iaddr.len = len;
 	subnet->netmask = iaddr;
@@ -773,8 +795,10 @@ void parse_group_declaration(cfile, group)
 
 	g = clone_group(group, "parse_group_declaration");
 
-	if (!parse_lbrace(cfile))
+	if (!parse_lbrace(cfile)) {
+		free(g);
 		return;
+	}
 
 	do {
 		token = peek_token(&val, cfile);
@@ -898,10 +922,9 @@ void parse_option_param(cfile, group)
 			skip_to_semi(cfile);
 		return;
 	}
-	vendor = malloc(strlen(val) + 1);
-	if (!vendor)
+	vendor = strdup(val);
+	if (vendor == NULL)
 		error("no memory for vendor token.");
-	strlcpy(vendor, val, strlen(val) + 1);
 	token = peek_token(&val, cfile);
 	if (token == '.') {
 		/* Go ahead and take the DOT token... */
@@ -913,6 +936,7 @@ void parse_option_param(cfile, group)
 			parse_warn("expecting identifier after '.'");
 			if (token != ';')
 				skip_to_semi(cfile);
+			free(vendor);
 			return;
 		}
 
@@ -925,6 +949,7 @@ void parse_option_param(cfile, group)
 		if (!universe) {
 			parse_warn("no vendor named %s.", vendor);
 			skip_to_semi(cfile);
+			free(vendor);
 			return;
 		}
 	} else {
@@ -946,6 +971,7 @@ void parse_option_param(cfile, group)
 			parse_warn("no option named %s for vendor %s",
 				    val, vendor);
 		skip_to_semi(cfile);
+		free(vendor);
 		return;
 	}
 
@@ -1339,5 +1365,3 @@ parse_address_range(FILE *cfile, struct subnet *subnet)
 	/* Create the new address range... */
 	new_address_range(low, high, subnet, dynamic);
 }
-
-

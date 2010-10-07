@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.8 2009/12/08 14:03:40 claudio Exp $ */
+/*	$OpenBSD: util.c,v 1.11 2010/03/29 09:04:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2006 Claudio Jeker <claudio@openbsd.org>
@@ -32,11 +32,24 @@ const char *
 log_addr(const struct bgpd_addr *addr)
 {
 	static char	buf[48];
+	char		tbuf[16];
 
-	if (inet_ntop(aid2af(addr->aid), &addr->ba, buf, sizeof(buf)) == NULL)
-		return ("?");
-	else
+	switch (addr->aid) {
+	case AID_INET:
+	case AID_INET6:
+		if (inet_ntop(aid2af(addr->aid), &addr->ba, buf,
+		    sizeof(buf)) == NULL)
+			return ("?");
 		return (buf);
+	case AID_VPN_IPv4:
+		if (inet_ntop(AF_INET, &addr->vpn4.addr, tbuf,
+		    sizeof(tbuf)) == NULL)
+			return ("?");
+		snprintf(buf, sizeof(buf), "%s %s", log_rd(addr->vpn4.rd),
+		   tbuf);
+		return (buf);
+	}
+	return ("???");
 }
 
 const char *
@@ -88,6 +101,64 @@ log_as(u_int32_t as)
 			return ("?");
 	}
 	return (buf);
+}
+
+const char *
+log_rd(u_int64_t rd)
+{
+	static char	buf[32];
+	struct in_addr	addr;
+	u_int32_t	u32;
+	u_int16_t	u16;
+
+	rd = betoh64(rd);
+	switch (rd >> 48) {
+	case EXT_COMMUNITY_TWO_AS:
+		u32 = rd & 0xffffffff;
+		u16 = (rd >> 32) & 0xffff;
+		snprintf(buf, sizeof(buf), "rd %i:%i", u16, u32);
+		break;
+	case EXT_COMMUNITY_FOUR_AS:
+		u32 = (rd >> 16) & 0xffffffff;
+		u16 = rd & 0xffff;
+		snprintf(buf, sizeof(buf), "rd %s:%i", log_as(u32), u16);
+		break;
+	case EXT_COMMUNITY_IPV4:
+		u32 = (rd >> 16) & 0xffffffff;
+		u16 = rd & 0xffff;
+		addr.s_addr = htonl(u32);
+		snprintf(buf, sizeof(buf), "rd %s:%i", inet_ntoa(addr), u16);
+		break;
+	default:
+		return ("rd ?");
+	}
+	return (buf);
+}
+
+/* NOTE: this function does not check if the type/subtype combo is
+ * actually valid. */
+const char *
+log_ext_subtype(u_int8_t subtype)
+{
+	static char etype[6];
+
+	switch (subtype) {
+	case EXT_COMMUNITY_ROUTE_TGT:
+		return ("rt");	/* route target */
+	case EXT_CUMMUNITY_ROUTE_ORIG:
+		return ("soo");	/* source of origin */
+	case EXT_COMMUNITY_OSPF_DOM_ID:
+		return ("odi");	/* ospf domain id */
+	case EXT_COMMUNITY_OSPF_RTR_TYPE:
+		return ("ort");	/* ospf route type */
+	case EXT_COMMUNITY_OSPF_RTR_ID:
+		return ("ori");	/* ospf router id */
+	case EXT_COMMUNITY_BGP_COLLECT:
+		return ("bdc");	/* bgp data collection */
+	default:
+		snprintf(etype, sizeof(etype), "[%i]", (int)subtype);
+		return (etype);
+	}
 }
 
 int

@@ -1,4 +1,4 @@
-/*	$OpenBSD: keepalive.c,v 1.2 2009/06/05 22:34:45 michele Exp $ */
+/*	$OpenBSD: keepalive.c,v 1.6 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -37,18 +37,16 @@
 #include "log.h"
 #include "ldpe.h"
 
-int
+void
 send_keepalive(struct nbr *nbr)
 {
-	struct buf	*buf;
+	struct ibuf	*buf;
 	u_int16_t	 size;
 
 	if (nbr->iface->passive)
-		return (0);
+		return;
 
-	log_debug("send_keepalive: neighbor ID %s", inet_ntoa(nbr->id));
-
-	if ((buf = buf_open(LDP_MAX_LEN)) == NULL)
+	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_keepalive");
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg);
@@ -59,18 +57,13 @@ send_keepalive(struct nbr *nbr)
 
 	gen_msg_tlv(buf, MSG_TYPE_KEEPALIVE, size);
 
-	bufferevent_write(nbr->bev, buf->buf, buf->wpos);
-	buf_free(buf);
-
-	return (0);
+	evbuf_enqueue(&nbr->wbuf, buf);
 }
 
 int
 recv_keepalive(struct nbr *nbr, char *buf, u_int16_t len)
 {
 	struct ldp_msg *ka;
-
-	log_debug("recv_keepalive: neighbor ID %s", inet_ntoa(nbr->id));
 
 	ka = (struct ldp_msg *)buf;
 
