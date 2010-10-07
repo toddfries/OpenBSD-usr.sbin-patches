@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.26 2009/03/29 19:18:20 stsp Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.35 2010/08/22 20:55:10 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -31,6 +31,7 @@ struct vertex	*vertex_get(struct lsa *, struct rde_nbr *, struct lsa_tree *);
 
 int		 lsa_link_check(struct lsa *, u_int16_t);
 int		 lsa_intra_a_pref_check(struct lsa *, u_int16_t);
+int		 lsa_asext_check(struct lsa *, u_int16_t);
 void		 lsa_timeout(int, short, void *);
 void		 lsa_refresh(struct vertex *);
 int		 lsa_equal(struct lsa *, struct lsa *);
@@ -53,13 +54,13 @@ lsa_compare(struct vertex *a, struct vertex *b)
 		return (-1);
 	if (a->type > b->type)
 		return (1);
-	if (a->ls_id < b->ls_id)
-		return (-1);
-	if (a->ls_id > b->ls_id)
-		return (1);
 	if (a->adv_rtr < b->adv_rtr)
 		return (-1);
 	if (a->adv_rtr > b->adv_rtr)
+		return (1);
+	if (a->ls_id < b->ls_id)
+		return (-1);
+	if (a->ls_id > b->ls_id)
 		return (1);
 	return (0);
 }
@@ -242,18 +243,10 @@ lsa_check(struct rde_nbr *nbr, struct lsa *lsa, u_int16_t len)
 			return (0);
 		break;
 	case LSA_TYPE_EXTERNAL:
-		if ((len % (3 * sizeof(u_int32_t))) ||
-		    len < sizeof(lsa->hdr) + sizeof(lsa->data.asext)) {
-			log_warnx("lsa_check: bad LSA as-external packet");
-			return (0);
-		}
-		metric = ntohl(lsa->data.asext.metric);
-		if (metric & ~(LSA_METRIC_MASK | LSA_ASEXT_E_FLAG)) {
-			log_warnx("lsa_check: bad LSA as-external metric");
-			return (0);
-		}
 		/* AS-external-LSA are silently discarded in stub areas */
 		if (nbr->area->stub)
+			return (0);
+		if (!lsa_asext_check(lsa, len))
 			return (0);
 		break;
 	default:
@@ -343,6 +336,62 @@ lsa_intra_a_pref_check(struct lsa *lsa, u_int16_t len)
 }
 
 int
+lsa_asext_check(struct lsa *lsa, u_int16_t len)
+{
+	char			*buf = (char *)lsa;
+	struct lsa_asext	*asext;
+	struct in6_addr		 fw_addr;
+	u_int32_t		 metric;
+	u_int16_t		 ref_ls_type;
+	int			 rv;
+	u_int16_t		 total_len;
+
+	asext = (struct lsa_asext *)(buf + sizeof(lsa->hdr));
+
+	if ((len % sizeof(u_int32_t)) ||
+	    len < sizeof(lsa->hdr) + sizeof(*asext)) {
+		log_warnx("lsa_asext_check: bad LSA as-external packet");
+		return (0);
+	}
+
+	total_len = sizeof(lsa->hdr) + sizeof(*asext);
+	rv = lsa_get_prefix(&asext->prefix, len, NULL);
+	if (rv == -1) {
+		log_warnx("lsa_asext_check: bad LSA as-external packet");
+		return (0);
+	}
+	total_len += rv - sizeof(struct lsa_prefix);
+
+	metric = ntohl(asext->metric);
+	if (metric & LSA_ASEXT_F_FLAG) {
+		if (total_len + sizeof(fw_addr) < len) {
+			bcopy(buf + total_len, &fw_addr, sizeof(fw_addr));
+			if (IN6_IS_ADDR_UNSPECIFIED(&fw_addr) ||
+			    IN6_IS_ADDR_LINKLOCAL(&fw_addr)) {
+				log_warnx("lsa_asext_check: bad LSA "
+				    "as-external forwarding address");
+				return (0);
+			}
+		}
+		total_len += sizeof(fw_addr);
+	}
+
+	if (metric & LSA_ASEXT_T_FLAG)
+		total_len += sizeof(u_int32_t);
+
+	ref_ls_type = asext->prefix.metric;
+	if (ref_ls_type != 0)
+		total_len += sizeof(u_int32_t);
+
+	if (len != total_len) {
+		log_warnx("lsa_asext_check: bad LSA as-external length");
+		return (0);
+	}
+
+	return (1);
+}
+
+int
 lsa_self(struct lsa *lsa)
 {
 	return rde_router_id() == lsa->hdr.adv_rtr;
@@ -383,6 +432,7 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 	struct lsa_tree	*tree;
 	struct vertex	*new, *old;
 	struct timeval	 tv, now, res;
+	int		 update = 1;
 
 	if (LSA_IS_SCOPE_AS(ntohs(lsa->hdr.type)))
 		tree = &asext_tree;
@@ -411,14 +461,15 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 				fatal("lsa_add");
 			return (1);
 		}
-		if (!lsa_equal(new->lsa, old->lsa)) {
-			if (ntohs(lsa->hdr.type) != LSA_TYPE_EXTERNAL)
-				nbr->area->dirty = 1;
-			start_spf_timer();
-		}
+		if (lsa_equal(new->lsa, old->lsa))
+			update = 0;
 		vertex_free(old);
 		RB_INSERT(lsa_tree, tree, new);
-	} else {
+	}
+
+	if (update) {
+		if (ntohs(lsa->hdr.type) == LSA_TYPE_LINK)
+			orig_intra_area_prefix_lsas(nbr->area);
 		if (ntohs(lsa->hdr.type) != LSA_TYPE_EXTERNAL)
 			nbr->area->dirty = 1;
 		start_spf_timer();
@@ -533,43 +584,101 @@ lsa_find_tree(struct lsa_tree *tree, u_int16_t type, u_int32_t ls_id,
 struct vertex *
 lsa_find_rtr(struct area *area, u_int32_t rtr_id)
 {
+	return lsa_find_rtr_frag(area, rtr_id, 0);
+}
+
+struct vertex *
+lsa_find_rtr_frag(struct area *area, u_int32_t rtr_id, unsigned int n)
+{
 	struct vertex	*v;
-	struct vertex	*r;
+	struct vertex	 key;
+	unsigned int	 i;
 
-	/* A router can originate multiple router LSAs,
-	 * differentiated by link state ID. Our job is
-	 * to find among those the LSA with the lowest
-	 * link state ID, because this is where the options
-	 * field and router-type bits come from. */
+	key.ls_id = 0;
+	key.adv_rtr = ntohl(rtr_id);
+	key.type = LSA_TYPE_ROUTER;
 
-	r = NULL;
-	/* XXX speed me up */
-	RB_FOREACH(v, lsa_tree, &area->lsa_tree) {
-		if (v->deleted)
-			continue;
-
-		if (v->type == LSA_TYPE_ROUTER &&
-		    v->adv_rtr == ntohl(rtr_id)) {
-			if (r == NULL)
-				r = v;
-			else if (v->ls_id < r->ls_id)
-				r = v;
+	i = 0;
+	v = RB_NFIND(lsa_tree, &area->lsa_tree, &key);
+	while (v) {
+		if (v->type != LSA_TYPE_ROUTER ||
+		    v->adv_rtr != ntohl(rtr_id)) {
+			/* no more interesting LSAs */
+			v = NULL;
+			break;
 		}
+		if (!v->deleted) {
+			if (i >= n)
+				break;
+			i++;
+		}
+		v = RB_NEXT(lsa_tree, &area->lsa_tree, v);
 	}
 
-	if (r)
-		lsa_age(r);
+	if (v) {
+		if (i == n)
+			lsa_age(v);
+		else
+			v = NULL;
+	}
 
-	return (r);
+	return (v);
+}
+
+u_int32_t
+lsa_find_lsid(struct lsa_tree *tree, u_int16_t type, u_int32_t adv_rtr,
+    int (*cmp)(struct lsa *, struct lsa *), struct lsa *lsa)
+{
+#define MIN(x, y)	((x) < (y) ? (x) : (y))
+	struct vertex	*v;
+	struct vertex	 key;
+	u_int32_t	 min, cur;
+
+	key.ls_id = 0;
+	key.adv_rtr = ntohl(adv_rtr);
+	key.type = ntohs(type);
+
+	cur = 0;
+	min = 0xffffffffU;
+	v = RB_NFIND(lsa_tree, tree, &key);
+	while (v) {
+		if (v->type != key.type ||
+		    v->adv_rtr != key.adv_rtr) {
+			/* no more interesting LSAs */
+			min = MIN(min, cur + 1);
+			return (htonl(min));
+		}
+		if (cmp(lsa, v->lsa) == 0) {
+			/* match, return this ls_id */
+			return (htonl(v->ls_id));
+		}
+		if (v->ls_id > cur + 1)
+			min = cur + 1;
+		cur = v->ls_id;
+		if (cur + 1 < cur)
+			fatalx("King Bula sez: somebody got to many LSA");
+		v = RB_NEXT(lsa_tree, tree, v);
+	}
+	min = MIN(min, cur + 1);
+	return (htonl(min));
+#undef MIN
 }
 
 u_int16_t
 lsa_num_links(struct vertex *v)
 {
+	unsigned int	 n = 1;
+	u_int16_t	 nlinks = 0;
+
 	switch (v->type) {
 	case LSA_TYPE_ROUTER:
-		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr) -
-		    sizeof(struct lsa_rtr)) / sizeof(struct lsa_rtr_link));
+		do {
+			nlinks += ((ntohs(v->lsa->hdr.len) -
+			    sizeof(struct lsa_hdr) - sizeof(struct lsa_rtr)) /
+			    sizeof(struct lsa_rtr_link));
+			v = lsa_find_rtr_frag(v->area, htonl(v->adv_rtr), n++);
+		} while (v);
+		return nlinks;
 	case LSA_TYPE_NETWORK:
 		return ((ntohs(v->lsa->hdr.len) - sizeof(struct lsa_hdr) -
 		    sizeof(struct lsa_net)) / sizeof(struct lsa_net_link));
@@ -604,7 +713,7 @@ lsa_snap(struct rde_nbr *nbr, u_int32_t peerid)
 		if (tree == &nbr->area->lsa_tree) {
 			tree = &nbr->iface->lsa_tree;
 			continue;
-		} else 
+		} else
 			tree = &asext_tree;
 
 	} while (1);
@@ -680,7 +789,9 @@ lsa_timeout(int fd, short event, void *bula)
 			v->deleted = 0;
 
 			/* schedule recalculation of the RIB */
-			if (v->lsa->hdr.type != LSA_TYPE_EXTERNAL)
+			if (ntohs(v->lsa->hdr.type) == LSA_TYPE_LINK)
+				orig_intra_area_prefix_lsas(v->area);
+			if (ntohs(v->lsa->hdr.type) != LSA_TYPE_EXTERNAL)
 				v->area->dirty = 1;
 			start_spf_timer();
 
@@ -716,7 +827,11 @@ lsa_refresh(struct vertex *v)
 	u_int16_t	 len;
 
 	/* refresh LSA by increasing sequence number by one */
-	v->lsa->hdr.age = htons(DEFAULT_AGE);
+	if (v->self && ntohs(v->lsa->hdr.age) >= MAX_AGE)
+		/* self originated network that is currently beeing removed */
+		v->lsa->hdr.age = htons(MAX_AGE);
+	else
+		v->lsa->hdr.age = htons(DEFAULT_AGE);
 	seqnum = ntohl(v->lsa->hdr.seq_num);
 	if (seqnum++ == MAX_SEQ_NUM)
 		/* XXX fix me */
@@ -770,9 +885,11 @@ lsa_merge(struct rde_nbr *nbr, struct lsa *lsa, struct vertex *v)
 	/* overwrite the lsa all other fields are unaffected */
 	free(v->lsa);
 	v->lsa = lsa;
-	start_spf_timer();
+	if (v->type == LSA_TYPE_LINK)
+		orig_intra_area_prefix_lsas(nbr->area);
 	if (v->type != LSA_TYPE_EXTERNAL)
 		nbr->area->dirty = 1;
+	start_spf_timer();
 
 	/* set correct timeout for reflooding the LSA */
 	clock_gettime(CLOCK_MONOTONIC, &tp);
@@ -818,7 +935,7 @@ lsa_equal(struct lsa *a, struct lsa *b)
 		return (0);
 	if (a->hdr.len != b->hdr.len)
 		return (0);
-	/* LSA with age MAX_AGE are never equal */
+	/* LSAs with age MAX_AGE are never equal */
 	if (a->hdr.age == htons(MAX_AGE) || b->hdr.age == htons(MAX_AGE))
 		return (0);
 	if (memcmp(&a->data, &b->data, ntohs(a->hdr.len) -
@@ -834,7 +951,7 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	struct lsa_prefix	*lp = buf;
 	u_int32_t		*buf32, *addr = NULL;
 	u_int8_t		 prefixlen;
-	u_int16_t		 consumed = 0;
+	u_int16_t		 consumed;
 
 	if (len < sizeof(*lp))
 		return (-1);
@@ -850,9 +967,10 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 	}
 
 	buf32 = (u_int32_t *)(lp + 1);
-	consumed += sizeof(*lp);
+	consumed = sizeof(*lp);
 
-	for (; ((prefixlen + 31) / 32) > 0; prefixlen -= 32) {
+	for (prefixlen = LSA_PREFIXSIZE(prefixlen) / sizeof(u_int32_t);
+	    prefixlen > 0; prefixlen--) {
 		if (len < consumed + sizeof(u_int32_t))
 			return (-1);
 		if (addr)
@@ -862,4 +980,3 @@ lsa_get_prefix(void *buf, u_int16_t len, struct rt_prefix *p)
 
 	return (consumed);
 }
-

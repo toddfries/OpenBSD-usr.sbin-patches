@@ -1,4 +1,4 @@
-$OpenBSD: OpenBSD::Ustar.pod,v 1.13 2009/12/17 11:41:30 espie Exp $
+$OpenBSD: OpenBSD::Ustar.pod,v 1.16 2010/09/14 10:04:36 espie Exp $
 
 =head1 NAME
 
@@ -10,7 +10,7 @@ OpenBSD::Ustar - simple access to Ustar C<tar(1)> archives
     # for reading
 
     open(my $in, "<", $arcnameforreading) or die;
-    $rdarc = OpenBSD::Ustar->new($in, $destdir);
+    $rdarc = OpenBSD::Ustar->new($in, $state, $destdir);
     while (my $o = $rdarc->next) {
     	# decide whether we want to extract it, change object attributes
 	$o->create;
@@ -19,7 +19,7 @@ OpenBSD::Ustar - simple access to Ustar C<tar(1)> archives
 
     # for writing
     open(my $out, ">", $arcnameforwriting) or die;
-    $wrarc = OpenBSD::Ustar->new($fh, $destdir);
+    $wrarc = OpenBSD::Ustar->new($fh, $state, $destdir);
     # loop
     	my $o = $wrarc->prepare($filename);
 	# tweak some entry parameters
@@ -29,9 +29,9 @@ OpenBSD::Ustar - simple access to Ustar C<tar(1)> archives
 
     # for copying
     open(my $in, "<", $arcnameforreading) or die;
-    $rdarc = OpenBSD::Ustar->new($in, $destdir);
+    $rdarc = OpenBSD::Ustar->new($in, $state, $destdir);
     open(my $out, ">", $arcnameforwriting) or die;
-    $wrarc = OpenBSD::Ustar->new($fh, $destdir);
+    $wrarc = OpenBSD::Ustar->new($fh, $state, $destdir);
     while (my $o = $rdarc->next) {
     	$o->copy($wrarc);
     }
@@ -49,6 +49,9 @@ C<new>. For archive reading, the filehandle should support
 C<read>. C<OpenBSD::Ustar> does not rely on C<seek> or C<rewind> in order
 to be usable on pipe outputs. For archive writing, the filehandle should
 support C<print>.
+
+Error messages and fatal errors will be handled through the C<$state> object,
+which should conform to C<OpenBSD::State(3p)> (uses C<errsay> and C<fatal>).
 
 Note that read and write support are mutually exclusive, though there is
 no need to specify the mode used at creation time; it is implicitly
@@ -136,6 +139,10 @@ filename
 
 C<chmod(2)> mode
 
+=item C<$o-E<gt>{atime}>
+
+C<utime(2)> access time
+
 =item C<$o-E<gt>{mtime}>
 
 C<utime(2)> modification time
@@ -162,9 +169,10 @@ name of the source link, if applicable
 
 =back
 
-The fields C<name>, C<mode>, C<mtime>, C<uid>, C<gid> and C<linkname>
+The fields C<name>, C<mode>, C<atime>, C<mtime>, C<uid>, C<gid> and C<linkname>
 can be altered before calling C<$o-E<gt>create> or C<$o-E<gt>write>,
 and will properly influence the resulting file.
+C<atime> and C<mtime> can be undef to set those to the current time.
 
 The relationship between C<uid> and C<uname>, and C<gid> and C<gname>
 conforms to the USTAR format usual behavior.

@@ -1,17 +1,19 @@
-# $OpenBSD: Makefile,v 1.56 2009/12/26 17:00:49 espie Exp $
+# $OpenBSD: Makefile,v 1.68 2010/07/04 18:30:28 espie Exp $
 
 .include <bsd.own.mk>
 
 MAN1=pkg_add.1 pkg_info.1 pkg_create.1 pkg_delete.1 pkg_merge.1 \
 	pkg.1 pkg_mklocatedb.1
-MAN5=package.5
-MAN=${MAN1} ${MAN5}
+MAN5=package.5 pkg.conf.5
+MAN8=pkg_check.8
+MAN=${MAN1} ${MAN5} ${MAN8}
 NOPROG=
 
 POD2MAN=/usr/bin/pod2man
 
 PACKAGES= \
     OpenBSD/Add.pm \
+    OpenBSD/AddCreateDelete.pm \
     OpenBSD/AddDelete.pm \
     OpenBSD/ArcCheck.pm \
     OpenBSD/CollisionReport.pm \
@@ -23,7 +25,11 @@ PACKAGES= \
     OpenBSD/Handle.pm \
     OpenBSD/IdCache.pm \
     OpenBSD/Interactive.pm \
+    OpenBSD/LibSpec.pm \
+    OpenBSD/LibSpec/Build.pm \
+    OpenBSD/Log.pm \
     OpenBSD/Mtree.pm \
+    OpenBSD/OldLibs.pm \
     OpenBSD/PackageInfo.pm \
     OpenBSD/PackageLocation.pm \
     OpenBSD/PackageLocator.pm \
@@ -36,15 +42,23 @@ PACKAGES= \
     OpenBSD/PackingElement.pm \
     OpenBSD/PackingList.pm \
     OpenBSD/Paths.pm \
+    OpenBSD/PkgAdd.pm \
     OpenBSD/PkgCfl.pm \
+    OpenBSD/PkgCheck.pm \
     OpenBSD/PkgConfig.pm \
+    OpenBSD/PkgCreate.pm \
+    OpenBSD/PkgDelete.pm \
+    OpenBSD/PkgInfo.pm \
     OpenBSD/PkgSpec.pm \
+    OpenBSD/ProgressMeter/Term.pm \
     OpenBSD/ProgressMeter.pm \
     OpenBSD/Replace.pm \
     OpenBSD/RequiredBy.pm \
     OpenBSD/Search.pm \
+    OpenBSD/Signature.pm \
     OpenBSD/SharedItems.pm \
     OpenBSD/SharedLibs.pm \
+    OpenBSD/State.pm \
     OpenBSD/Subst.pm \
     OpenBSD/Temp.pm \
     OpenBSD/Tracker.pm \
@@ -55,16 +69,20 @@ PACKAGES= \
     OpenBSD/md5.pm \
     OpenBSD/x509.pm
 
-PACKAGEDIRS=OpenBSD  OpenBSD/PackageRepository
+PACKAGEDIRS=OpenBSD  OpenBSD/PackageRepository OpenBSD/ProgressMeter \
+    OpenBSD/LibSpec
 
 SCRIPTS= \
-    pkg_add \
-    pkg_info \
-    pkg_create \
-    pkg_delete \
     pkg_merge \
     pkg_mklocatedb \
     pkg
+
+SCRIPTS_LNK = \
+    pkg pkg_add \
+    pkg pkg_check \
+    pkg pkg_create \
+    pkg pkg_delete \
+    pkg pkg_info
 
 LIBBASE=/usr/libdata/perl5
 
@@ -80,6 +98,7 @@ PODS= \
     OpenBSD::PkgSpec \
     OpenBSD::RequiredBy \
     OpenBSD::Search \
+    OpenBSD::State \
     OpenBSD::Ustar \
     OpenBSD::Vstat
 
@@ -104,9 +123,11 @@ $p.3p: pod/$p.pod
 .ifndef NOMAN
 MANALL+=${MAN1:S/.1$/.cat1/}
 MANALL+=${MAN5:S/.5$/.cat5/}
+MANALL+=${MAN8:S/.8$/.cat8/}
 .  ifdef MANPS
 PSALL+= ${MAN1:S/.1$/.ps1/}
 PSALL+= ${MAN5:S/.5$/.ps5/}
+PSALL+= ${MAN8:S/.8$/.ps8/}
 .  endif
 .endif
 
@@ -136,7 +157,9 @@ realinstall:
 	${INSTALL} ${INSTALL_COPY} -o ${BINOWN} -g ${BINGRP} -m ${BINMODE} \
 		${.CURDIR}/$i ${DESTDIR}${BINDIR}/$i
 .endfor
-
+.for i j in ${SCRIPTS_LNK}
+	cd ${DESTDIR}${BINDIR} && ln -f $i $j
+.endfor
 
 .include <bsd.prog.mk>
 .PHONY: mansrc.build

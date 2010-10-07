@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCfl.pm,v 1.29 2009/12/12 17:18:11 espie Exp $
+# $OpenBSD: PkgCfl.pm,v 1.34 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -38,7 +38,7 @@ sub make_conflict_list
 	push(@$l, OpenBSD::Search::PkgSpec->new(".libs-$stem-*"));
 	if (defined $plist->{conflict}) {
 		for my $cfl (@{$plist->{conflict}}) {
-		    push(@$l, OpenBSD::Search::PkgSpec->new($cfl->name));
+		    push(@$l, $cfl->spec);
 		}
 	}
 	bless $l, $class;
@@ -47,11 +47,20 @@ sub make_conflict_list
 sub conflicts_with
 {
 	my ($self, @pkgnames) = @_;
-	my @l = ();
-	for my $cfl (@$self) {
-		push(@l, $cfl->filter(@pkgnames));
+	if (wantarray) {
+		my @l = ();
+		for my $cfl (@$self) {
+			push(@l, $cfl->filter(@pkgnames));
+		}
+		return @l;
+	} else {
+		for my $cfl (@$self) {
+			if ($cfl->filter(@pkgnames)) {
+				return 1;
+			}
+		}
+		return 0;
 	}
-	return @l;
 }
 
 sub register($$)
@@ -71,7 +80,7 @@ sub fill_conflict_lists($)
 {
 	my $state = shift;
 	for my $pkg (installed_packages()) {
-		my $plist = OpenBSD::PackingList->from_installation($pkg, 
+		my $plist = OpenBSD::PackingList->from_installation($pkg,
 		    \&OpenBSD::PackingList::ConflictOnly);
 		next unless defined $plist;
 		if (!defined $plist->pkgname) {

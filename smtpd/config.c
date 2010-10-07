@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.9 2009/11/12 12:35:03 jacekm Exp $	*/
+/*	$OpenBSD: config.c,v 1.12 2010/05/27 15:36:04 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -58,8 +58,6 @@ purge_config(struct smtpd *env, u_int8_t what)
 	struct listener	*l;
 	struct map	*m;
 	struct rule	*r;
-	struct cond	*c;
-	struct opt	*o;
 	struct ssl	*s;
 	struct mapel	*me;
 
@@ -86,14 +84,6 @@ purge_config(struct smtpd *env, u_int8_t what)
 	if (what & PURGE_RULES) {
 		while ((r = TAILQ_FIRST(env->sc_rules)) != NULL) {
 			TAILQ_REMOVE(env->sc_rules, r, r_entry);
-			while ((c = TAILQ_FIRST(&r->r_conditions)) != NULL) {
-				TAILQ_REMOVE(&r->r_conditions, c, c_entry);
-				free(c);
-			}
-			while ((o = TAILQ_FIRST(&r->r_options)) != NULL) {
-				TAILQ_REMOVE(&r->r_options, o, o_entry);
-				free(o);
-			}
 			free(r);
 		}
 		free(env->sc_rules);
@@ -218,7 +208,9 @@ config_peers(struct smtpd *env, struct peer *p, u_int peercount)
 			    env->sc_pipes[src][dst][count]);
 			env->sc_ievs[dst][count].handler =  p[i].cb;
 			env->sc_ievs[dst][count].events = EV_READ;
-			env->sc_ievs[dst][count].data = env;
+			env->sc_ievs[dst][count].proc = dst;
+			env->sc_ievs[dst][count].data = &env->sc_ievs[dst][count];
+			env->sc_ievs[dst][count].env = env;
 
 			event_set(&(env->sc_ievs[dst][count].ev),
 			    env->sc_ievs[dst][count].ibuf.fd,

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SCP.pm,v 1.20 2010/01/05 11:31:07 espie Exp $
+# $OpenBSD: SCP.pm,v 1.24 2010/07/02 11:50:50 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -40,7 +40,7 @@ sub initiate
 
 	my ($rdfh, $wrfh);
 
-	$self->{controller} = open2($rdfh, $wrfh, OpenBSD::Paths->ssh, 
+	$self->{controller} = open2($rdfh, $wrfh, OpenBSD::Paths->ssh,
 	    $self->{host}, 'perl', '-x');
 	$self->{cmdfh} = $wrfh;
 	$self->{getfh} = $rdfh;
@@ -56,8 +56,8 @@ sub initiate
 	}
 	seek(DATA, 0, 0);
 }
-	
-	
+
+
 sub may_exist
 {
 	my ($self, $name) = @_;
@@ -82,7 +82,7 @@ sub grab_object
 	$_ = <$getfh>;
 	chomp;
 	if (m/^ERROR:/o) {
-		die "transfer error: $_";
+		$self->{state}->fatal("transfer error: #1", $_);
 	}
 	if (m/^TRANSFER:\s+(\d+)/o) {
 		my $buffsize = 10 * 1024;
@@ -92,10 +92,10 @@ sub grab_object
 		my $n;
 
 		do {
-			$n = read($getfh, $buffer, 
+			$n = read($getfh, $buffer,
 				$remaining < $buffsize ? $remaining :$buffsize);
 			if (!defined $n) {
-				die "Error reading\n";
+				$self->{state}->fatal("Error reading: #1", $!);
 			}
 			$remaining -= $n;
 			if ($n > 0) {
@@ -136,14 +136,14 @@ sub list
 		my $_;
 		$_ = <$getfh>;
 		if (!defined $_) {
-			die "Could not initiate SSH session\n";
+			$self->{state}->fatal("Could not initiate SSH session");
 		}
 		chomp;
 		if (m/^ERROR:/o) {
-			die $_;
+			$self->{state}->fatal("#1", $_);
 		}
 		if (!m/^SUCCESS:/o) {
-			die "Synchronization error\n";
+			$self->{state}->fatal("Synchronization error");
 		}
 		while (<$getfh>) {
 			chomp;

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_add.1,v 1.91 2010/01/04 00:20:05 espie Exp $
+.\"	$OpenBSD: pkg_add.1,v 1.102 2010/08/01 23:03:48 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -15,7 +15,7 @@
 .\" Jordan K. Hubbard
 .\"
 .\"
-.Dd $Mdocdate: January 4 2010 $
+.Dd $Mdocdate: August 1 2010 $
 .Dt PKG_ADD 1
 .Os
 .Sh NAME
@@ -24,10 +24,13 @@
 .Sh SYNOPSIS
 .Nm pkg_add
 .Bk -words
-.Op Fl acIinqrsUuvxz
+.Op Fl acIimnqrsUuvxz
 .Op Fl A Ar arch
 .Op Fl B Ar pkg-destdir
-.Op Fl F Ar keywords
+.Oo Fl D Ar name
+.Ns Oo Ns = Ns Ar value
+.Oc
+.Oc
 .Op Fl L Ar localbase
 .Op Fl l Ar file
 .Op Fl P Ar type
@@ -225,12 +228,15 @@ While replacing packages, delete extra configuration file in the old package,
 mentioned as
 .Dl @extra file
 in the packing-list.
-.It Fl F Ar keywords
+.It Xo
+.Fl D
+.Ar name Ns Op = Ns Ar value
+.Xc
 Force installation of the package.
-.Ar keywords
-is a comma-separated list of keywords that state what failsafes
+.Ar name
+is a keyword that states what failsafe
 should be waived.
-These include:
+Recognized keywords include:
 .Pp
 .Bl -tag -width "updatedependsXX" -compact
 .It Ar allversions
@@ -241,9 +247,9 @@ architecture recorded in package may not match.
 by default, if dependencies are too strict,
 .Nm
 will merge updates together to make sure everything stays in synch.
-.Fl F Ar dontmerge
+.Fl D Ar dontmerge
 disables that behavior.
-.It Ar downgrades
+.It Ar downgrade
 don't filter out package versions older than what's currently installed.
 .It Ar installed
 in update mode, reinstall an existing package with the same signature.
@@ -305,6 +311,10 @@ and
 will try its best to reproduce the installation, even if the
 version numbers don't quite match and even if some packages cannot
 be found.
+.It Fl m
+Causes
+.Nm
+to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually install a package, just report the steps that
 would be taken if it was.
@@ -341,7 +351,7 @@ will refuse to replace packages as soon as it needs to run scripts that
 might fail
 .Po
 use
-.Fl F Ar update
+.Fl D Ar update
 to force the replacement
 .Pc ;
 .Nm
@@ -349,7 +359,7 @@ will also refuse to replace packages when the dependencies don't quite
 match
 .Po
 use
-.Fl F Ar updatedepends
+.Fl D Ar updatedepends
 to force the replacement
 .Pc .
 .It Fl s
@@ -362,7 +372,7 @@ information it needs.
 .It Fl U
 Update dependencies if required before installing the new package(s).
 .It Fl u
-Update the given
+Update the given installed
 .Ar pkgname(s) ,
 and anything it depends upon.
 If no
@@ -397,7 +407,7 @@ also shows dependencies adjustments, and
 .Fl vvvvv
 shows everything.
 .It Fl x
-Disable progress-meter.
+Disable progress meter.
 .It Fl z
 Fuzzy package addition:
 .Nm
@@ -440,7 +450,7 @@ For each new package in an updateset,
 .Nm
 extracts the package's
 .Dq packing information
-(the packing list, description, and installation/deinstallation scripts)
+(the packing-list, description, and installation/deinstallation scripts)
 into a special staging directory in
 .Pa /var/tmp
 (or
@@ -473,7 +483,7 @@ and
 .Cm @wantlib
 directives; see
 .Xr pkg_create 1 )
-are read from the packing list.
+are read from the packing-list.
 If any of these dependencies are not currently fulfilled,
 an attempt is made to find a package that meets them and install it,
 looking first in the current updateset, then in the list of packages
@@ -488,7 +498,9 @@ and enough space to store files.
 .It
 If the package contains an
 .Ar install
-script, it is executed with the following arguments:
+script (deprecated,
+.Cm @exec
+is more versatile), it is executed with the following arguments:
 .Bl -tag -width indentindent
 .It Ar pkg-name
 The name of the package being installed.
@@ -501,12 +513,13 @@ If the
 .Ar install
 script exits with a non-zero status code, the installation is terminated.
 .It
-The packing list is used as a guide for extracting
+The packing-list is used as a guide for extracting
 files from the package into their final locations.
 .It
 If an
 .Ar install
-script exists for the package, it is executed with the following arguments:
+script exists for the package (deprecated),
+it is executed with the following arguments:
 .Bl -tag -width indentindent
 .It Ar pkg_name
 The name of the package being installed.
@@ -551,7 +564,7 @@ When replacing packages, the procedure is slightly different.
 .It
 A check is made to determine if a similar package is already installed.
 If its signature is identical to that of the new package, no replacement
-is performed (unless -F installed is specified).
+is performed (unless -D installed is specified).
 .It
 A check is made to determine what old package(s) the new package(s) should
 replace, using conflicts.
@@ -567,8 +580,8 @@ update to those packages.
 .It
 A check is made to determine whether the old packages will be deleted without
 issue, and whether the new packages will install correctly.
-This includes refusing to run any code (unless -F update), and verifying
-that the new package still matches dependencies (unless -F updatedepends).
+This includes refusing to run any code (unless -D update), and verifying
+that the new package still matches dependencies (unless -D updatedepends).
 .It
 Shared libraries deserve special treatment: each shared library from the old
 packages that does no longer exist in the new packages, but that is required
@@ -615,7 +628,7 @@ package first, which may contain exceptions to these rules.
 This special package contains global information, such as packages that
 can be deleted because they're now part of base, or stem changes.
 .It
-Version matching occurs: unless -F downgrade, only packages with newer
+Version matching occurs: unless -D downgrade, only packages with newer
 versions will be considered as update candidates.
 Note that version matching is costly, thus
 .Ev PKG_PATH

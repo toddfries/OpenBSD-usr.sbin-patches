@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpctl.c,v 1.154 2009/12/16 15:42:19 claudio Exp $ */
+/*	$OpenBSD: bgpctl.c,v 1.161 2010/09/02 14:03:21 sobrado Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -56,6 +56,7 @@ void		 print_timer(const char *, time_t);
 static char	*fmt_timeframe(time_t t);
 static char	*fmt_timeframe_core(time_t t);
 void		 show_fib_head(void);
+void		 show_fib_tables_head(void);
 void		 show_network_head(void);
 void		 show_fib_flags(u_int16_t);
 int		 show_fib_msg(struct imsg *);
@@ -127,8 +128,11 @@ main(int argc, char *argv[])
 	if ((res = parse(argc, argv)) == NULL)
 		exit(1);
 
-	if (res->action == IRRFILTER)
+	if (res->action == IRRFILTER) {
+		if (!(res->flags & (F_IPV4|F_IPV6)))
+			res->flags |= (F_IPV4|F_IPV6);
 		irr_main(res->as.as, res->flags, res->irr_outdir);
+	}
 
 	memcpy(&neighbor.addr, &res->peeraddr, sizeof(neighbor.addr));
 	strlcpy(neighbor.descr, res->peerdesc, sizeof(neighbor.descr));
@@ -164,23 +168,31 @@ main(int argc, char *argv[])
 		break;
 	case SHOW_FIB:
 		if (!res->addr.aid) {
-			struct buf	*msg;
+			struct ibuf	*msg;
+			sa_family_t	 af;
 
-			if ((msg = imsg_create(ibuf, IMSG_CTL_KROUTE, 0, 0,
-			    sizeof(res->flags) + sizeof(res->af))) == NULL)
+			af = aid2af(res->aid);
+			if ((msg = imsg_create(ibuf, IMSG_CTL_KROUTE,
+			    res->rtableid, 0, sizeof(res->flags) +
+			    sizeof(af))) == NULL)
 				errx(1, "imsg_create failure");
 			if (imsg_add(msg, &res->flags, sizeof(res->flags)) ==
 			    -1 ||
-			    imsg_add(msg, &res->af, sizeof(res->af)) == -1)
+			    imsg_add(msg, &af, sizeof(af)) == -1)
 				errx(1, "imsg_add failure");
 			imsg_close(ibuf, msg);
 		} else
-			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0, -1,
-			    &res->addr, sizeof(res->addr));
+			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, res->rtableid,
+			    0, -1, &res->addr, sizeof(res->addr));
 		show_fib_head();
 		break;
+	case SHOW_FIB_TABLES:
+		imsg_compose(ibuf, IMSG_CTL_SHOW_FIB_TABLES, 0, 0, -1, NULL, 0);
+		show_fib_tables_head();
+		break;
 	case SHOW_NEXTHOP:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_NEXTHOP, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_NEXTHOP, res->rtableid, 0, -1,
+		    NULL, 0);
 		show_nexthop_head();
 		break;
 	case SHOW_INTERFACE:
@@ -219,7 +231,7 @@ main(int argc, char *argv[])
 		memcpy(&ribreq.neighbor, &neighbor,
 		    sizeof(ribreq.neighbor));
 		strlcpy(ribreq.rib, res->rib, sizeof(ribreq.rib));
-		ribreq.af = res->af;
+		ribreq.aid = res->aid;
 		ribreq.flags = res->flags;
 		imsg_compose(ibuf, type, 0, 0, -1, &ribreq, sizeof(ribreq));
 		if (!(res->flags & F_CTL_DETAIL))
@@ -236,12 +248,14 @@ main(int argc, char *argv[])
 		errx(1, "action==FIB");
 		break;
 	case FIB_COUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, res->rtableid, 0, -1,
+		    NULL, 0);
 		printf("couple request sent.\n");
 		done = 1;
 		break;
 	case FIB_DECOUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, res->rtableid, 0, -1,
+		    NULL, 0);
 		printf("decouple request sent.\n");
 		done = 1;
 		break;
@@ -289,7 +303,7 @@ main(int argc, char *argv[])
 		break;
 	case NETWORK_SHOW:
 		bzero(&ribreq, sizeof(ribreq));
-		ribreq.af = res->af;
+		ribreq.aid = res->aid;
 		strlcpy(ribreq.rib, res->rib, sizeof(ribreq.rib));
 		imsg_compose(ibuf, IMSG_CTL_SHOW_NETWORK, 0, 0, -1,
 		    &ribreq, sizeof(ribreq));
@@ -337,6 +351,8 @@ main(int argc, char *argv[])
 				done = show_summary_terse_msg(&imsg, nodescr);
 				break;
 			case SHOW_FIB:
+			case SHOW_FIB_TABLES:
+			case NETWORK_SHOW:
 				done = show_fib_msg(&imsg);
 				break;
 			case SHOW_NEXTHOP:
@@ -363,9 +379,6 @@ main(int argc, char *argv[])
 				break;
 			case SHOW_RIB_MEM:
 				done = show_rib_memory_msg(&imsg);
-				break;
-			case NETWORK_SHOW:
-				done = show_fib_msg(&imsg);
 				break;
 			case NEIGHBOR:
 			case NEIGHBOR_UP:
@@ -756,6 +769,12 @@ show_fib_head(void)
 }
 
 void
+show_fib_tables_head(void)
+{
+	printf("%-5s %-20s %-8s\n", "Table", "Description", "State");
+}
+
+void
 show_network_head(void)
 {
 	printf("flags: S = Static\n");
@@ -799,56 +818,44 @@ show_fib_flags(u_int16_t flags)
 int
 show_fib_msg(struct imsg *imsg)
 {
-	struct kroute		*k;
-	struct kroute6		*k6;
+	struct kroute_full	*kf;
+	struct ktable		*kt;
 	char			*p;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CTL_KROUTE:
 	case IMSG_CTL_SHOW_NETWORK:
-		if (imsg->hdr.len < IMSG_HEADER_SIZE + sizeof(struct kroute))
+		if (imsg->hdr.len < IMSG_HEADER_SIZE + sizeof(*kf))
 			errx(1, "wrong imsg len");
-		k = imsg->data;
+		kf = imsg->data;
 
-		show_fib_flags(k->flags);
+		show_fib_flags(kf->flags);
 
-		if (asprintf(&p, "%s/%u", inet_ntoa(k->prefix), k->prefixlen) ==
-		    -1)
+		if (asprintf(&p, "%s/%u", log_addr(&kf->prefix),
+		    kf->prefixlen) == -1)
 			err(1, NULL);
-		printf("%4i %-20s ", k->priority, p);
+		printf("%4i %-20s ", kf->priority, p);
 		free(p);
 
-		if (k->nexthop.s_addr)
-			printf("%s", inet_ntoa(k->nexthop));
-		else if (k->flags & F_CONNECTED)
-			printf("link#%u", k->ifindex);
+		if (kf->flags & F_CONNECTED)
+			printf("link#%u", kf->ifindex);
+		else
+			printf("%s", log_addr(&kf->nexthop));
 		printf("\n");
 
 		break;
-	case IMSG_CTL_KROUTE6:
-	case IMSG_CTL_SHOW_NETWORK6:
-		if (imsg->hdr.len < IMSG_HEADER_SIZE + sizeof(struct kroute6))
+	case IMSG_CTL_SHOW_FIB_TABLES:
+		if (imsg->hdr.len < IMSG_HEADER_SIZE + sizeof(*kt))
 			errx(1, "wrong imsg len");
-		k6 = imsg->data;
+		kt = imsg->data;
 
-		show_fib_flags(k6->flags);
-
-		if (asprintf(&p, "%s/%u", log_in6addr(&k6->prefix),
-		    k6->prefixlen) == -1)
-			err(1, NULL);
-		printf("%4i %-20s ", k6->priority, p);
-		free(p);
-
-		if (!IN6_IS_ADDR_UNSPECIFIED(&k6->nexthop))
-			printf("%s", log_in6addr(&k6->nexthop));
-		else if (k6->flags & F_CONNECTED)
-			printf("link#%u", k6->ifindex);
-		printf("\n");
+		printf("%5i %-20s %-8s%s\n", kt->rtableid, kt->descr,
+		    kt->fib_sync ? "coupled" : "decoupled",
+		    kt->fib_sync != kt->fib_conf ? "*" : "");
 
 		break;
 	case IMSG_CTL_END:
 		return (1);
-		break;
 	default:
 		break;
 	}
@@ -917,7 +924,7 @@ show_nexthop_msg(struct imsg *imsg)
 			} else if (asprintf(&s1, ", %s", get_linkstate(
 			    p->kif.media_type, p->kif.link_state)) == -1)
 					err(1, NULL);
-			if (asprintf(&s, "%s (%s%s)", p->kif.ifname, 
+			if (asprintf(&s, "%s (%s%s)", p->kif.ifname,
 			    p->kif.flags & IFF_UP ? "UP" : "DOWN", s1) == -1)
 				err(1, NULL);
 			printf("%-15s", s);
@@ -1051,7 +1058,7 @@ show_rib_summary_head(void)
 	printf(
 	    "flags: * = Valid, > = Selected, I = via IBGP, A = Announced\n");
 	printf("origin: i = IGP, e = EGP, ? = Incomplete\n\n");
-	printf("%-5s %-20s%-15s  %5s %5s %s\n", "flags", "destination",
+	printf("%-5s %-20s %-15s  %5s %5s %s\n", "flags", "destination",
 	    "gateway", "lpref", "med", "aspath origin");
 }
 
@@ -1089,26 +1096,26 @@ print_flags(u_int8_t flags, int sum)
 	char	*p = flagstr;
 
 	if (sum) {
-		if (flags & F_RIB_ANNOUNCE)
+		if (flags & F_PREF_ANNOUNCE)
 			*p++ = 'A';
-		if (flags & F_RIB_INTERNAL)
+		if (flags & F_PREF_INTERNAL)
 			*p++ = 'I';
-		if (flags & F_RIB_ELIGIBLE)
+		if (flags & F_PREF_ELIGIBLE)
 			*p++ = '*';
-		if (flags & F_RIB_ACTIVE)
+		if (flags & F_PREF_ACTIVE)
 			*p++ = '>';
 		*p = '\0';
 		printf("%-5s ", flagstr);
 	} else {
-		if (flags & F_RIB_INTERNAL)
+		if (flags & F_PREF_INTERNAL)
 			printf("internal");
 		else
 			printf("external");
-		if (flags & F_RIB_ELIGIBLE)
+		if (flags & F_PREF_ELIGIBLE)
 			printf(", valid");
-		if (flags & F_RIB_ACTIVE)
+		if (flags & F_PREF_ACTIVE)
 			printf(", best");
-		if (flags & F_RIB_ANNOUNCE)
+		if (flags & F_PREF_ANNOUNCE)
 			printf(", announced");
 	}
 }
@@ -1125,7 +1132,7 @@ show_rib_summary_msg(struct imsg *imsg)
 		memcpy(&rib, imsg->data, sizeof(rib));
 
 		print_prefix(&rib.prefix, rib.prefixlen, rib.flags);
-		printf("%-15s ", log_addr(&rib.exit_nexthop));
+		printf(" %-15s ", log_addr(&rib.exit_nexthop));
 
 		printf(" %5u %5u ", rib.local_pref, rib.med);
 
@@ -1229,7 +1236,7 @@ show_rib_detail_msg(struct imsg *imsg, int nodescr)
 		case ATTR_AGGREGATOR:
 			memcpy(&as, data, sizeof(as));
 			memcpy(&id, data + sizeof(as), sizeof(id));
-			printf("    Aggregator: %s [%s]\n", 
+			printf("    Aggregator: %s [%s]\n",
 			    log_as(ntohl(as)), inet_ntoa(id));
 			break;
 		case ATTR_ORIGINATOR_ID:
@@ -1409,11 +1416,11 @@ show_ext_community(u_char *data, u_int16_t len)
 		case EXT_COMMUNITY_OPAQUE:
 			memcpy(&ext, data + i, sizeof(ext));
 			ext = betoh64(ext) & 0xffffffffffffLL;
-			printf("%s 0x%llx", log_ext_subtype(subtype), ext); 
+			printf("%s 0x%llx", log_ext_subtype(subtype), ext);
 			break;
 		default:
 			memcpy(&ext, data + i, sizeof(ext));
-			printf("0x%llx", betoh64(ext)); 
+			printf("0x%llx", betoh64(ext));
 		}
 		if (i + 8 < len)
 			printf(", ");

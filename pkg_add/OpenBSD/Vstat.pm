@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Vstat.pm,v 1.54 2010/01/05 11:00:57 espie Exp $
+# $OpenBSD: Vstat.pm,v 1.62 2010/08/01 10:03:24 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -23,6 +23,82 @@
 
 use strict;
 use warnings;
+
+{
+package OpenBSD::Vstat::Object;
+my $cache = {};
+my $x = undef;
+my $dummy = bless \$x, __PACKAGE__;
+
+sub new
+{
+	my ($class, $value) = @_;
+	if (!defined $value) {
+		return $dummy;
+	}
+	if (!defined $cache->{$value}) {
+		$cache->{$value} = bless \$value, $class;
+	}
+	return $cache->{$value};
+}
+
+sub exists
+{
+	return 1;
+}
+
+sub value
+{
+	my $self = shift;
+	return $$self;
+}
+
+sub none
+{
+	return OpenBSD::Vstat::Object::None->new;
+}
+
+}
+
+{
+package OpenBSD::Vstat::Object::None;
+our @ISA = qw(OpenBSD::Vstat::Object);
+
+my $x = undef;
+my $none = bless \$x, __PACKAGE__;
+
+sub exists
+{
+	return 0;
+}
+
+sub new
+{
+	return $none;
+}
+}
+
+{
+package OpenBSD::Vstat::Object::Directory;
+our @ISA = qw(OpenBSD::Vstat::Object);
+
+sub new
+{
+	my ($class, $fname, $set, $o) = @_;
+	bless { name => $fname, set => $set, o => $o }, $class;
+}
+
+# XXX directories don't do anything until you test for their presence.
+# which only happens if you want to replace a directory with a file.
+sub exists
+{
+	my $self = shift;
+	require OpenBSD::SharedItems;
+
+	return OpenBSD::SharedItems::check_shared($self->{set}, $self->{o});
+}
+
+}
 
 package OpenBSD::Vstat;
 use File::Basename;
@@ -67,10 +143,21 @@ sub exists
 	my ($self, $name) = @_;
 	for my $v (@{$self->{v}}) {
 		if (defined $v->{$name}) {
-			return $v->{$name};
+			return $v->{$name}->exists;
 		}
 	}
 	return -e $name;
+}
+
+sub value
+{
+	my ($self, $name) = @_;
+	for my $v (@{$self->{v}}) {
+		if (defined $v->{$name}) {
+			return $v->{$name}->value;
+		}
+	}
+	return undef;
 }
 
 sub synchronize
@@ -105,20 +192,34 @@ sub drop_changes
 sub add
 {
 	my ($self, $name, $size, $value) = @_;
-	if (defined $value) {
-		$self->{v}[0]->{$name} = $value;
-	} else {
-		$self->{v}[0]->{$name} = 1;
-	}
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->new($value);
 	return defined($size) ? $self->account_for($name, $size) : undef;
 }
 
 sub remove
 {
 	my ($self, $name, $size) = @_;
-	$self->{v}[0]->{$name} = 0;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->none;
 	return defined($size) ? $self->account_later($name, -$size) : undef;
 }
+
+sub remove_first
+{
+	my ($self, $name, $size) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->none;
+	return defined($size) ? $self->account_for($name, -$size) : undef;
+}
+
+# since directories may become files during updates, we may have to remove
+# them early, so we need to record them: store exactly as much info as needed
+# for SharedItems.
+sub remove_directory
+{
+	my ($self, $name, $o) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object::Directory->new($name, 
+	    $self->{state}->{current_set}, $o);
+}
+
 
 sub tally
 {
@@ -156,7 +257,7 @@ sub run
 	my $state = shift;
 	my $code = pop;
 	open(my $cmd, "-|", @_) or
-		$state->errsay("Can't run ",join(' ', @_))
+		$state->errsay("Can't run #1", join(' ', @_))
 		and return;
 	my $_;
 	while (<$cmd>) {
@@ -164,9 +265,9 @@ sub run
 	}
 	if (!close($cmd)) {
 		if ($!) {
-			$state->errsay("Error running ", join(' ', @_),": $!");
+			$state->errsay("Error running #1: #2", join(' ', @_), $!);
 		} else {
-			$state->errsay("Exit status $? from ", join(' ', @_));
+			$state->errsay("Exit status #1 from #2", join(' ', @_), $?);
 		}
 	}
 }
@@ -183,7 +284,7 @@ sub ask_mount
 			my ($dev, $opts) = ($1, $2);
 			$class->new($dev, $opts);
 		} else {
-			$state->errsay("Can't parse mount line: $_");
+			$state->errsay("Can't parse mount line: #1", $_);
 		}
 	});
 }
@@ -291,7 +392,7 @@ sub noexec
 sub new
 {
 	my ($class, $dev, $opts) = @_;
-	my $n = bless { commited_use => 0, used => 0, delayed => 0, 
+	my $n = bless { commited_use => 0, used => 0, delayed => 0,
 	    hw => 0, dev => $dev }, $class;
 	if (defined $opts) {
 		$n->parse_opts($opts);
@@ -317,10 +418,10 @@ sub report_ro
 	my ($s, $state, $fname) = @_;
 
 	if ($state->verbose >= 3 or ++($s->{problems}) < 4) {
-		$state->errsay("Error: ", $s->name, 
-		    " is read-only ($fname)");
+		$state->errsay("Error: #1 is read-only (#2)",
+		    $s->name, $fname);
 	} elsif ($s->{problems} == 4) {
-		$state->errsay("Error: ... more files on ", $s->name);
+		$state->errsay("Error: ... more files on #1", $s->name);
 	}
 	$state->{problems}++;
 }
@@ -330,10 +431,10 @@ sub report_overflow
 	my ($s, $state, $fname) = @_;
 
 	if ($state->verbose >= 3 or ++($s->{problems}) < 4) {
-		$state->errsay("Error: ", $s->name,
-		    " is not large enough ($fname)");
+		$state->errsay("Error: #1 is not large enough (#2)",
+		    $s->name, $fname);
 	} elsif ($s->{problems} == 4) {
-		$state->errsay("Error: ... more files do not fit on ", 
+		$state->errsay("Error: ... more files do not fit on #1",
 		    $s->name);
 	}
 	$state->{problems}++;
@@ -343,7 +444,7 @@ sub report_overflow
 sub report_noexec
 {
 	my ($s, $state, $fname) = @_;
-	$state->errsay("Error: ", $s->name, " is noexec ($fname)");
+	$state->errsay("Error: #1 is noexec (#2)", $s->name, $fname);
 	$state->{problems}++;
 }
 
@@ -373,13 +474,13 @@ sub tally
 
 	return  if $data->{used} == 0;
 	$state->print($data->name, ": ", $data->{used}, " bytes");
-	my $avail = $data->avail; 
+	my $avail = $data->avail;
 	if ($avail < 0) {
-		$state->print(" (missing ", int(-$avail+1), " blocks)");
+		$state->print(" (missing #1 blocks)", int(-$avail+1));
 	} elsif ($data->{hw} >0 && $data->{hw} > $data->{used}) {
-		$state->print(" (highwater ", $data->{hw}, " bytes)");
+		$state->print(" (highwater #1 bytes)", $data->{hw});
 	}
-	$state->say;
+	$state->print("\n");
 }
 
 package OpenBSD::MountPoint::Fail;

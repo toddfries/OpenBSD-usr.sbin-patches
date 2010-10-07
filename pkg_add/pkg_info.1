@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_info.1,v 1.34 2009/10/11 20:09:48 jmc Exp $
+.\"	$OpenBSD: pkg_info.1,v 1.39 2010/06/09 10:25:17 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -15,7 +15,7 @@
 .\" Jordan K. Hubbard
 .\"
 .\"
-.Dd $Mdocdate: October 11 2009 $
+.Dd $Mdocdate: June 9 2010 $
 .Dt PKG_INFO 1
 .Os
 .Sh NAME
@@ -24,7 +24,7 @@
 .Sh SYNOPSIS
 .Nm pkg_info
 .Bk -words
-.Op Fl AacCDdfIiKkLMmPqRrSstUv
+.Op Fl AaCcdfIKLMmPqRSstUv
 .Op Fl E Ar filename
 .Op Fl e Ar pkg-name
 .Op Fl l Ar str
@@ -68,12 +68,10 @@ Show information for all currently installed packages,
 including internal packages.
 .It Fl a
 Show information for all currently installed packages.
-.It Fl c
-Show the one-line comment field for each package.
 .It Fl C
 Show certificate information for signed packages.
-.It Fl D
-Show the install-message file (if any) for each package (deprecated option).
+.It Fl c
+Show the one-line comment field for each package.
 .It Fl d
 Show the long-description field for each package.
 .It Fl E Ar filename
@@ -112,21 +110,17 @@ For example,
 will match any package that was compiled according to
 .Pa ${PORTSDIR}/x11/kde/base3 .
 .It Fl f
-Show the packing list instructions for each package.
+Show the packing-list instructions for each package.
 .It Fl I
 Show the index entry for each package.
-.It Fl i
-Show the install script (if any) for each package.
 .It Fl K
 Prefix file names with category keyword (e.g., @file, @lib).
 Always used together with
 .Fl L .
-.It Fl k
-Show the de-install script (if any) for each package.
 .It Fl L
 Show the files within each package.
 This is different from just
-viewing the packing list, since full pathnames for everything
+viewing the packing-list, since full pathnames for everything
 are generated.
 .It Fl l Ar str
 Prefix each information category header (see
@@ -157,8 +151,6 @@ in emitting report headers and such, just dump the
 raw info (basically, assume a non-human reading).
 .It Fl R
 Show which packages require a given package.
-.It Fl r
-Show the requirements script (if any) for each package.
 .It Fl S
 Show the package signature for each package.
 This signature is a unique tag showing the package name, and the version number

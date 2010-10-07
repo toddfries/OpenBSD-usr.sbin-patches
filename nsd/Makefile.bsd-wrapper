@@ -1,10 +1,10 @@
-#	$OpenBSD: Makefile.bsd-wrapper,v 1.12 2007/12/09 13:39:42 jakob Exp $
+#	$OpenBSD: Makefile.bsd-wrapper,v 1.5 2010/08/22 09:30:18 jakob Exp $
 
 .include <bsd.own.mk>
 
 BINDIR=		/usr/sbin
 CHROOTDIR=	/var/nsd
-USER=		named
+USER=		_nsd
 
 XCFLAGS=	CC="${CC}" CFLAGS="${CFLAGS} ${COPTS}" LDFLAGS="${LDFLAGS}" \
 		YACC="/usr/bin/yacc"
@@ -14,20 +14,18 @@ CONFIGURE_OPTS=	--prefix=/usr \
 		--with-ssl=/usr \
 		--with-user=${USER} \
 		--with-nsd-conf-file=/etc/nsd.conf \
+		--with-chroot=${CHROOTDIR} \
 		--with-pidfile=${CHROOTDIR}/nsd.pid \
 		--with-zonesdir=${CHROOTDIR}/zones \
 		--with-dbfile=${CHROOTDIR}/nsd.db \
 		--with-difffile=${CHROOTDIR}/ixfr.db \
 		--with-xfrdfile=${CHROOTDIR}/xfrd.state \
-		--enable-root-server \
-		--enable-nsid
+		--enable-root-server
 
-PROG=	nsd zonec \
-	nsd-notify nsd-checkconf nsd-patch nsd-xfer
+PROG=	nsd nsd-zonec nsd-notify nsd-checkconf nsd-patch nsd-xfer
 
-MAN=	nsd.8 nsdc.8 zonec.8 \
-	nsd-notify.8 nsd-checkconf.8 nsd-patch.8 nsd-xfer.8 \
-	nsd.conf.5
+MAN=	nsd.8 nsdc.8 nsd-zonec.8 nsd-notify.8 nsd-checkconf.8 nsd-patch.8 \
+	nsd-xfer.8 nsd.conf.5
 
 
 all:	config.status
