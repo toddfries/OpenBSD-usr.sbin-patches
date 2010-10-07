@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageLocator.pm,v 1.76 2008/10/20 10:25:16 espie Exp $
+# $OpenBSD: PackageLocator.pm,v 1.96 2010/08/07 21:19:04 espie Exp $
 #
-# Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -23,106 +23,85 @@ package OpenBSD::PackageLocator;
 use OpenBSD::PackageRepositoryList;
 use OpenBSD::PackageRepository;
 
-# this returns an archive handle from an uninstalled package name, currently
-# There is a cache available.
+my $default_path;
 
-my %packages;
-my $pkgpath = OpenBSD::PackageRepositoryList->new;
+sub build_default_path
+{
+	my ($self, $state) = @_;
+	$default_path = OpenBSD::PackageRepositoryList->new($state);
 
-if (defined $ENV{PKG_PATH}) {
-	my $v = $ENV{PKG_PATH};
-	$v =~ s/^\:+//o;
-	$v =~ s/\:+$//o;
-	while (my $o = OpenBSD::PackageRepository->parse(\$v)) {
-		$pkgpath->add($o);
+	if (defined $ENV{PKG_PATH}) {
+		my $v = $ENV{PKG_PATH};
+		$v =~ s/^\:+//o;
+		$v =~ s/\:+$//o;
+		while (my $o = OpenBSD::PackageRepository->parse(\$v, $state)) {
+			$default_path->add($o);
+		}
+		return;
 	}
-} else {
-	$pkgpath->add(OpenBSD::PackageRepository->new("./"));
+	$default_path->add(OpenBSD::PackageRepository->new("./", $state)->can_be_empty);
+	if (my $i = $state->config->value("installpath")) {
+		$default_path->add(OpenBSD::PackageRepository->new($i, $state));
+	}
 }
 
-# rebuild PKG_PATH
-#$ENV{PKG_PATH} = $pkgpath->print_without_src;
+sub default_path
+{
+	if (!defined $default_path) {
+		&build_default_path;
+	}
+	return $default_path;
+}
 
 sub path_parse
 {
-	use File::Basename;
-	use OpenBSD::Paths;
-	my $pkg_db = $ENV{"PKG_DBDIR"} || OpenBSD::Paths->pkgdb;
-
-	my ($pkgname, $path) = fileparse(shift);
-	my $repo;
-
-	if ($path eq $pkg_db.'/') {
-		$repo = OpenBSD::PackageRepository::Installed->new;
-	} else {
-		$repo = OpenBSD::PackageRepository->new($path);
+	my ($self, $pkgname, $state, $path) = (@_, './');
+	if ($pkgname =~ m/^(.*[\/\:])(.*)/) {
+		($pkgname, $path) = ($2, $1);
 	}
 
-	return ($repo, $path, $pkgname);
+	return (OpenBSD::PackageRepository->new($path, $state), $pkgname);
 }
 
 sub find
 {
-	my ($class, $_, $arch) = @_;
+	my ($self, $_, $arch, $state) = @_;
 
-	if ($_ eq '-') {
-		my $repository = OpenBSD::PackageRepository::Local::Pipe->_new('./');
-		my $package = $repository->find(undef, $arch);
-		return $package;
-	}
-	if (exists $packages{$_}) {
-		return $packages{$_};
-	}
 	my $package;
-	if (m/\//o) {
-		my ($repository, undef, $pkgname) = path_parse($_);
+	if (m/[\/\:]/o) {
+		my ($repository, $pkgname) = $self->path_parse($_, $state);
 		$package = $repository->find($pkgname, $arch);
 		if (defined $package) {
-			$pkgpath->add($repository);
+			$self->default_path($state)->add($repository);
 		}
 	} else {
-		$package = $pkgpath->find($_, $arch);
+		$package = $self->default_path($state)->find($_, $arch);
 	}
-	$packages{$_} = $package if defined($package);
 	return $package;
 }
 
 sub grabPlist
 {
-	my ($class, $_, $arch, $code) = @_;
+	my ($self, $_, $arch, $code, $state) = @_;
 
-	if ($_ eq '-') {
-		my $repository = OpenBSD::PackageRepository::Local::Pipe->_new('./');
-		my $plist = $repository->grabPlist(undef, $arch, $code);
-		return $plist;
-	}
 	my $plist;
-	if (m/\//o) {
-		my ($repository, undef, $pkgname) = path_parse($_);
+	if (m/[\/\:]/o) {
+		my ($repository, $pkgname) = $self->path_parse($_, $state);
 		$plist = $repository->grabPlist($pkgname, $arch, $code);
 		if (defined $plist) {
-			$pkgpath->add($repository);
+			$self->default_path($state)->add($repository);
 		}
 	} else {
-		$plist = $pkgpath->grabPlist($_, $arch, $code);
+		$plist = $self->default_path($state)->grabPlist($_, $arch, $code);
 	}
 	return $plist;
 }
 
-sub cleanup
-{
-	$pkgpath->cleanup;
-}
-
-sub match
-{
-	my ($class, @search) = @_;
-	return $pkgpath->match(@search);
-}
-
 sub match_locations
 {
-	my ($class, @search) = @_;
-	return $pkgpath->match_locations(@search);
+	my ($self, @search) = @_;
+	my $state = pop @search;
+	return $self->default_path($state)->match_locations(@search);
 }
+
 1;

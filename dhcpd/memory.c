@@ -1,4 +1,4 @@
-/*	$OpenBSD: memory.c,v 1.15 2008/05/07 12:19:20 beck Exp $ */
+/*	$OpenBSD: memory.c,v 1.20 2010/03/27 14:11:38 krw Exp $ */
 
 /*
  * Copyright (c) 1995, 1996, 1997, 1998 The Internet Software Consortium.
@@ -228,7 +228,7 @@ new_address_range(struct iaddr low, struct iaddr high, struct subnet *subnet,
 	}
 
 	/* Get a lease structure for each address in the range. */
-	address_range = new_leases(max - min + 1, "new_address_range");
+	address_range = calloc(max - min + 1, sizeof(struct lease));
 	if (!address_range) {
 		strlcpy(lowbuf, piaddr(low), sizeof(lowbuf));
 		strlcpy(highbuf, piaddr(high), sizeof(highbuf));
@@ -257,14 +257,10 @@ new_address_range(struct iaddr low, struct iaddr high, struct subnet *subnet,
 			if (!h)
 				warning("No hostname for %s", inet_ntoa(ia));
 			else {
-				int len = strlen(h->h_name) + 1;
-
-				address_range[i].hostname = malloc(len);
-				if (!address_range[i].hostname)
+				address_range[i].hostname = strdup(h->h_name);
+				if (address_range[i].hostname == NULL)
 					error("no memory for hostname %s.",
 					    h->h_name);
-				strlcpy(address_range[i].hostname,
-				    h->h_name, len);
 			}
 		}
 
@@ -302,7 +298,7 @@ new_address_range(struct iaddr low, struct iaddr high, struct subnet *subnet,
 			address_range[lhost - i].client_hostname =
 			    lp->client_hostname;
 			supersede_lease(&address_range[lhost - i], lp, 0);
-			free_lease(lp, "new_address_range");
+			free(lp);
 		} else
 			plp = lp;
 	}
@@ -411,7 +407,7 @@ enter_lease(struct lease *lease)
 
 	/* If we don't have a place for this lease yet, save it for later. */
 	if (!comp) {
-		comp = new_lease("enter_lease");
+		comp = calloc(1, sizeof(struct lease));
 		if (!comp)
 			error("No memory for lease %s\n",
 			    piaddr(lease->ip_addr));
@@ -794,19 +790,24 @@ hw_hash_delete(struct lease *lease)
 struct class *
 add_class(int type, char *name)
 {
-	struct class *class = new_class("add_class");
-	char *tname = malloc(strlen(name) + 1);
+	struct class *class;
+	char *tname;
+
+	class = calloc(1, sizeof(*class));
+	tname = strdup(name);
 
 	if (!vendor_class_hash)
 		vendor_class_hash = new_hash();
 	if (!user_class_hash)
 		user_class_hash = new_hash();
 
-	if (!tname || !class || !vendor_class_hash || !user_class_hash)
+	if (!tname || !class || !vendor_class_hash || !user_class_hash) {
+		warning("No memory for %s.", name);
+		free(class);
+		free(tname);
 		return NULL;
+	}
 
-	memset(class, 0, sizeof *class);
-	strlcpy(tname, name, strlen(name) + 1);
 	class->name = tname;
 
 	if (type)
@@ -815,6 +816,7 @@ add_class(int type, char *name)
 	else
 		add_hash(vendor_class_hash, (unsigned char *)tname,
 		    strlen(tname), (unsigned char *)class);
+
 	return class;
 }
 
@@ -828,7 +830,9 @@ find_class(int type, unsigned char *name, int len)
 struct group *
 clone_group(struct group *group, char *caller)
 {
-	struct group *g = new_group(caller);
+	struct group *g;
+
+	g = calloc(1, sizeof(struct group));
 	if (!g)
 		error("%s: can't allocate new group", caller);
 	*g = *group;

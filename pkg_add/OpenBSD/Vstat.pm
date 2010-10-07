@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Vstat.pm,v 1.43 2007/06/30 11:38:38 espie Exp $
+# $OpenBSD: Vstat.pm,v 1.62 2010/08/01 10:03:24 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -24,67 +24,281 @@
 use strict;
 use warnings;
 
+{
+package OpenBSD::Vstat::Object;
+my $cache = {};
+my $x = undef;
+my $dummy = bless \$x, __PACKAGE__;
+
+sub new
+{
+	my ($class, $value) = @_;
+	if (!defined $value) {
+		return $dummy;
+	}
+	if (!defined $cache->{$value}) {
+		$cache->{$value} = bless \$value, $class;
+	}
+	return $cache->{$value};
+}
+
+sub exists
+{
+	return 1;
+}
+
+sub value
+{
+	my $self = shift;
+	return $$self;
+}
+
+sub none
+{
+	return OpenBSD::Vstat::Object::None->new;
+}
+
+}
+
+{
+package OpenBSD::Vstat::Object::None;
+our @ISA = qw(OpenBSD::Vstat::Object);
+
+my $x = undef;
+my $none = bless \$x, __PACKAGE__;
+
+sub exists
+{
+	return 0;
+}
+
+sub new
+{
+	return $none;
+}
+}
+
+{
+package OpenBSD::Vstat::Object::Directory;
+our @ISA = qw(OpenBSD::Vstat::Object);
+
+sub new
+{
+	my ($class, $fname, $set, $o) = @_;
+	bless { name => $fname, set => $set, o => $o }, $class;
+}
+
+# XXX directories don't do anything until you test for their presence.
+# which only happens if you want to replace a directory with a file.
+sub exists
+{
+	my $self = shift;
+	require OpenBSD::SharedItems;
+
+	return OpenBSD::SharedItems::check_shared($self->{set}, $self->{o});
+}
+
+}
+
 package OpenBSD::Vstat;
 use File::Basename;
 use OpenBSD::Paths;
 
-my $devinfo = {};
-my $devinfo2 = {};
-my $virtual = {};
-my $giveup;
-
-sub create_device($)
+sub stat
 {
-	my $dev = shift;
-	my $n = $devinfo->{$dev};
-	if (!defined $n) {
-		$n = { dev => $dev, used => 0, delayed => 0, problems => 0 };
-		bless $n, "OpenBSD::Vstat::MountPoint";
-		$devinfo->{$dev} = $n;
+	my ($self, $fname) = @_;
+	my $dev = (stat $fname)[0];
+
+	if (!defined $dev && $fname ne '/') {
+		return $self->stat(dirname($fname));
 	}
-	return $n;
+	return OpenBSD::Mounts->find($dev, $fname, $self->{state});
 }
 
-sub init_devices()
+sub account_for
 {
+	my ($self, $name, $size) = @_;
+	my $e = $self->stat($name);
+	$e->{used} += $size;
+	return $e;
+}
+
+sub account_later
+{
+	my ($self, $name, $size) = @_;
+	my $e = $self->stat($name);
+	$e->{delayed} += $size;
+	return $e;
+}
+
+sub new
+{
+	my ($class, $state) = @_;
+
+	bless {v => [{}], state => $state}, $class;
+}
+
+sub exists
+{
+	my ($self, $name) = @_;
+	for my $v (@{$self->{v}}) {
+		if (defined $v->{$name}) {
+			return $v->{$name}->exists;
+		}
+	}
+	return -e $name;
+}
+
+sub value
+{
+	my ($self, $name) = @_;
+	for my $v (@{$self->{v}}) {
+		if (defined $v->{$name}) {
+			return $v->{$name}->value;
+		}
+	}
+	return undef;
+}
+
+sub synchronize
+{
+	my $self = shift;
+
+	OpenBSD::Mounts->synchronize;
+	if ($self->{state}->{not}) {
+		# this is the actual stacking case: in pretend mode,
+		# I have to put a second vfs on top
+		if (@{$self->{v}} == 2) {
+			my $top = shift @{$self->{v}};
+			while (my ($k, $v) = each %$top) {
+				$self->{v}[0]{$k} = $v;
+			}
+		}
+		unshift(@{$self->{v}}, {});
+	} else {
+		$self->{v} = [{}];
+	}
+}
+
+sub drop_changes
+{
+	my $self = shift;
+
+	OpenBSD::Mounts->drop_changes;
+	# drop the top layer
+	$self->{v}[0] = {};
+}
+
+sub add
+{
+	my ($self, $name, $size, $value) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->new($value);
+	return defined($size) ? $self->account_for($name, $size) : undef;
+}
+
+sub remove
+{
+	my ($self, $name, $size) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->none;
+	return defined($size) ? $self->account_later($name, -$size) : undef;
+}
+
+sub remove_first
+{
+	my ($self, $name, $size) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object->none;
+	return defined($size) ? $self->account_for($name, -$size) : undef;
+}
+
+# since directories may become files during updates, we may have to remove
+# them early, so we need to record them: store exactly as much info as needed
+# for SharedItems.
+sub remove_directory
+{
+	my ($self, $name, $o) = @_;
+	$self->{v}[0]->{$name} = OpenBSD::Vstat::Object::Directory->new($name, 
+	    $self->{state}->{current_set}, $o);
+}
+
+
+sub tally
+{
+	my $self = shift;
+
+	OpenBSD::Mounts->tally($self->{state});
+}
+
+package OpenBSD::Mounts;
+
+my $devinfo;
+my $devinfo2;
+my $giveup;
+
+sub giveup
+{
+	if (!defined $giveup) {
+		$giveup = OpenBSD::MountPoint::Fail->new;
+	}
+	return $giveup;
+}
+
+sub new
+{
+	my ($class, $dev, $opts) = @_;
+
+	if (!defined $devinfo->{$dev}) {
+		$devinfo->{$dev} = OpenBSD::MountPoint->new($dev, $opts);
+	}
+	return $devinfo->{$dev};
+}
+
+sub run
+{
+	my $state = shift;
+	my $code = pop;
+	open(my $cmd, "-|", @_) or
+		$state->errsay("Can't run #1", join(' ', @_))
+		and return;
+	my $_;
+	while (<$cmd>) {
+		&$code($_);
+	}
+	if (!close($cmd)) {
+		if ($!) {
+			$state->errsay("Error running #1: #2", join(' ', @_), $!);
+		} else {
+			$state->errsay("Exit status #1 from #2", join(' ', @_), $?);
+		}
+	}
+}
+
+sub ask_mount
+{
+	my ($class, $state) = shift;
+
 	delete $ENV{'BLOCKSIZE'};
-	open(my $cmd1, "-|", OpenBSD::Paths->mount) or print STDERR "Can't run mount\n";
-	while (<$cmd1>) {
+	run($state, OpenBSD::Paths->mount, sub {
+		my $_ = shift;
 		chomp;
 		if (m/^(.*?)\s+on\s+\/.*?\s+type\s+.*?(?:\s+\((.*?)\))?$/o) {
 			my ($dev, $opts) = ($1, $2);
-			my $i = create_device($dev);
-			next unless defined $i;
-			next unless defined $opts;
-			for my $o (split /\,\s*/o, $opts) {
-				if ($o eq 'read-only') {
-					$i->{ro} = 1;
-				} elsif ($o eq 'nodev') {
-					$i->{nodev} = 1;
-				} elsif ($o eq 'nosuid') {
-					$i->{nosuid} = 1;
-				} elsif ($o eq 'noexec') {
-					$i->{noexec} = 1;
-				}
-			}
+			$class->new($dev, $opts);
 		} else {
-			print STDERR "Can't parse mount line: $_\n";
+			$state->errsay("Can't parse mount line: #1", $_);
 		}
-	}
-	close($cmd1) or print STDERR "Error running mount: $!\n";
-	$giveup = { used => 0, dev => '???' };
-	bless $giveup, "OpenBSD::Vstat::Failsafe";
+	});
 }
 
-sub ask_df($)
+sub ask_df
 {
-	my $fname = shift;
-	my $info = $giveup;
+	my ($class, $fname, $state) = @_;
 
-	open(my $cmd2, "-|", OpenBSD::Paths->df, $fname)
-	    or print STDERR "Can't run df\n";
+	my $info = $class->giveup;
 	my $blocksize = 512;
-	while (<$cmd2>) {
+
+	$class->ask_mount($state) if !defined $devinfo;
+	run($state, OpenBSD::Paths->df, "--", $fname, sub {
+		my $_ = shift;
 		chomp;
 		if (m/^Filesystem\s+(\d+)\-blocks/o) {
 			$blocksize = $1;
@@ -92,123 +306,122 @@ sub ask_df($)
 			my ($dev, $avail) = ($1, $2);
 			$info = $devinfo->{$dev};
 			if (!defined $info) {
-				$info = create_device($dev);
+				$info = $class->new($dev);
 			}
 			$info->{avail} = $avail;
 			$info->{blocksize} = $blocksize;
 		}
-	}
+	});
 
-	close($cmd2) or print STDERR "Error running df: $!\n";
 	return $info;
 }
 
-init_devices();
-
-sub filestat($);
-
-sub filestat($)
+sub find
 {
-	my $fname = shift;
-	my $dev = (stat $fname)[0];
-
-	if (!defined $dev && $fname ne '/') {
-		return filestat(dirname($fname));
-	}
+	my ($class, $dev, $fname, $state) = @_;
 	if (!defined $dev) {
-		return $giveup;
-	} else {
-		if (!defined $devinfo2->{$dev}) {
-			return $devinfo2->{$dev} = ask_df($fname);
-		} else {
-			return $devinfo2->{$dev};
-		}
+		return $class->giveup;
 	}
-}
-
-sub vexists($)
-{
-	my $name = shift;
-	if (defined $virtual->{$name}) {
-		return $virtual->{$name};
-	} else {
-		return -e $name;
+	if (!defined $devinfo2->{$dev}) {
+		$devinfo2->{$dev} = $class->ask_df($fname, $state);
 	}
-}
-
-sub account_for($$)
-{
-	my ($name, $size) = @_;
-	my $e = filestat($name);
-	$e->{used} += $size;
-	return $e;
-}
-
-sub account_later($$)
-{
-	my ($name, $size) = @_;
-	my $e = filestat($name);
-	$e->{delayed} += $size;
-	return $e;
+	return $devinfo2->{$dev};
 }
 
 sub synchronize
 {
-	while (my ($k, $v) = each %$devinfo) {
-		$v->{used} += $v->{delayed};
-		$v->{delayed} = 0;
+	for my $v (values %$devinfo2) {
+		$v->synchronize;
 	}
 }
 
-sub add($$;$)
+sub drop_changes
 {
-	my ($name, $size, $value) = @_;
-	if (defined $value) {
-		$virtual->{$name} = $value;
-	} else {
-		$virtual->{$name} = 1;
+	for my $v (values %$devinfo2) {
+		$v->drop_changes;
 	}
-	return defined($size) ? account_for($name, $size) : undef;
 }
 
-sub remove($$)
+sub tally
 {
-	my ($name, $size) = @_;
-	$virtual->{$name} = 0;
-	return defined($size) ? account_later($name, -$size) : undef;
+	my ($self, $state) = @_;
+
+	for my $v ((sort {$a->name cmp $b->name } values %$devinfo2), $self->giveup) {
+		$v->tally($state);
+	}
 }
 
-sub tally()
+package OpenBSD::MountPoint;
+
+sub parse_opts
 {
-	while (my ($device, $data) = each %$devinfo) {
-		if ($data->{used} != 0) {
-			print $device, ": ", $data->{used}, " bytes";
-			my $avail = $data->avail; 
-			if ($avail < 0) {
-				print " (missing ", int(-$avail+1), " blocks)";
-			}
-			print "\n";
+	my ($self, $opts) = @_;
+	for my $o (split /\,\s*/o, $opts) {
+		if ($o eq 'read-only') {
+			$self->{ro} = 1;
+		} elsif ($o eq 'nodev') {
+			$self->{nodev} = 1;
+		} elsif ($o eq 'nosuid') {
+			$self->{nosuid} = 1;
+		} elsif ($o eq 'noexec') {
+			$self->{noexec} = 1;
 		}
 	}
 }
 
-package OpenBSD::Vstat::MountPoint;
+sub ro
+{
+	return shift->{ro};
+}
+
+sub nodev
+{
+	return shift->{nodev};
+}
+
+sub nosuid
+{
+	return shift->{nosuid};
+}
+
+sub noexec
+{
+	return shift->{noexec};
+}
+
+sub new
+{
+	my ($class, $dev, $opts) = @_;
+	my $n = bless { commited_use => 0, used => 0, delayed => 0,
+	    hw => 0, dev => $dev }, $class;
+	if (defined $opts) {
+		$n->parse_opts($opts);
+	}
+	return $n;
+}
+
+
 sub avail
 {
-	my $self = shift;
-
+	my ($self, $used) = @_;
 	return $self->{avail} - $self->{used}/$self->{blocksize};
+}
+
+sub name
+{
+	my $self = shift;
+	return $self->{dev};
 }
 
 sub report_ro
 {
 	my ($s, $state, $fname) = @_;
 
-	if ($state->{very_verbose} or ++($s->{problems}) < 4) {
-		print STDERR "Error: ", $s->{dev}, 
-		    " is read-only ($fname)\n";
+	if ($state->verbose >= 3 or ++($s->{problems}) < 4) {
+		$state->errsay("Error: #1 is read-only (#2)",
+		    $s->name, $fname);
 	} elsif ($s->{problems} == 4) {
-		print STDERR "Error: ... more files on ", $s->{dev}, "\n";
+		$state->errsay("Error: ... more files on #1", $s->name);
 	}
 	$state->{problems}++;
 }
@@ -217,12 +430,12 @@ sub report_overflow
 {
 	my ($s, $state, $fname) = @_;
 
-	if ($state->{very_verbose} or ++($s->{problems}) < 4) {
-		print STDERR "Error: ", $s->{dev}, 
-		    " is not large enough ($fname)\n";
+	if ($state->verbose >= 3 or ++($s->{problems}) < 4) {
+		$state->errsay("Error: #1 is not large enough (#2)",
+		    $s->name, $fname);
 	} elsif ($s->{problems} == 4) {
-		print STDERR "Error: ... more files do not fit on ", 
-		    $s->{dev}, "\n";
+		$state->errsay("Error: ... more files do not fit on #1",
+		    $s->name);
 	}
 	$state->{problems}++;
 	$state->{overflow} = 1;
@@ -231,16 +444,59 @@ sub report_overflow
 sub report_noexec
 {
 	my ($s, $state, $fname) = @_;
-	print STDERR "Error: ", $s->{dev}, " is noexec ($fname)\n";
+	$state->errsay("Error: #1 is noexec (#2)", $s->name, $fname);
 	$state->{problems}++;
 }
 
-package OpenBSD::Vstat::Failsafe;
-our @ISA=(qw(OpenBSD::Vstat::MountPoint));
+sub synchronize
+{
+	my $v = shift;
+
+	if ($v->{used} > $v->{hw}) {
+		$v->{hw} = $v->{used};
+	}
+	$v->{used} += $v->{delayed};
+	$v->{delayed} = 0;
+	$v->{commited_use} = $v->{used};
+}
+
+sub drop_changes
+{
+	my $v = shift;
+
+	$v->{used} = $v->{commited_use};
+	$v->{delayed} = 0;
+}
+
+sub tally
+{
+	my ($data, $state) = @_;
+
+	return  if $data->{used} == 0;
+	$state->print($data->name, ": ", $data->{used}, " bytes");
+	my $avail = $data->avail;
+	if ($avail < 0) {
+		$state->print(" (missing #1 blocks)", int(-$avail+1));
+	} elsif ($data->{hw} >0 && $data->{hw} > $data->{used}) {
+		$state->print(" (highwater #1 bytes)", $data->{hw});
+	}
+	$state->print("\n");
+}
+
+package OpenBSD::MountPoint::Fail;
+our @ISA=qw(OpenBSD::MountPoint);
 
 sub avail
 {
 	return 1;
+}
+
+sub new
+{
+	my $class = shift;
+	my $n = $class->SUPER::new('???');
+	$n->{avail} = 0;
+	return $n;
 }
 
 1;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_spf.c,v 1.67 2009/01/07 21:16:36 claudio Exp $ */
+/*	$OpenBSD: rde_spf.c,v 1.69 2010/02/16 08:22:42 dlg Exp $ */
 
 /*
  * Copyright (c) 2005 Esben Norby <norby@openbsd.org>
@@ -595,7 +595,8 @@ start_spf_timer(void)
 	switch (rdeconf->spf_state) {
 	case SPF_IDLE:
 		timerclear(&tv);
-		tv.tv_sec = rdeconf->spf_delay;
+		tv.tv_sec = rdeconf->spf_delay / 1000;
+		tv.tv_usec = (rdeconf->spf_delay % 1000) * 1000;
 		rdeconf->spf_state = SPF_DELAY;
 		if (evtimer_add(&rdeconf->ev, &tv) == -1)
 			fatal("start_spf_timer");
@@ -629,7 +630,8 @@ start_spf_holdtimer(struct ospfd_conf *conf)
 	switch (conf->spf_state) {
 	case SPF_DELAY:
 		timerclear(&tv);
-		tv.tv_sec = conf->spf_hold_time;
+		tv.tv_sec = rdeconf->spf_hold_time / 1000;
+		tv.tv_usec = (rdeconf->spf_hold_time % 1000) * 1000;
 		conf->spf_state = SPF_HOLD;
 		if (evtimer_add(&conf->ev, &tv) == -1)
 			fatal("start_spf_holdtimer");
@@ -1001,7 +1003,7 @@ get_rtr_link(struct vertex *v, int idx)
 		    rtr_link->num_tos * sizeof(u_int32_t);
 	}
 
-	return (NULL);
+	fatalx("get_rtr_link: index not found");
 }
 
 /* network LSA links */
@@ -1027,7 +1029,7 @@ get_net_link(struct vertex *v, int idx)
 		off += sizeof(struct lsa_net_link);
 	}
 
-	return (NULL);
+	fatalx("get_net_link: index not found");
 }
 
 /* misc */

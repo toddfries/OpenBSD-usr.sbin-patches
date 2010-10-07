@@ -1,4 +1,4 @@
-/*	$OpenBSD: ssl.c,v 1.22 2009/10/03 07:59:55 jacekm Exp $	*/
+/*	$OpenBSD: ssl.c,v 1.28 2010/06/01 23:06:25 jacekm Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -23,7 +23,6 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 
 #include <ctype.h>
 #include <event.h>
@@ -53,7 +52,7 @@ void	 ssl_connect(int, short, void *);
 
 SSL	*ssl_client_init(int, char *, size_t, char *, size_t);
 
-int	 ssl_buf_read(SSL *, struct buf_read *);
+int	 ssl_buf_read(SSL *, struct ibuf_read *);
 int	 ssl_buf_write(SSL *, struct msgbuf *);
 
 DH	*get_dh512(void);
@@ -152,8 +151,8 @@ ssl_read(int fd, short event, void *p)
 	int			 ssl_err;
 	short			 what;
 	size_t			 len;
-	char			 rbuf[READ_BUF_SIZE];
-	int			 howmuch = READ_BUF_SIZE;
+	char			 rbuf[IBUF_READ_SIZE];
+	int			 howmuch = IBUF_READ_SIZE;
 
 	what = EVBUFFER_READ;
 	ret = ssl_err = 0;
@@ -551,7 +550,7 @@ ssl_session_accept(int fd, short event, void *p)
 	session_bufferevent_new(s);
 	event_set(&s->s_bev->ev_read, s->s_fd, EV_READ, ssl_read, s->s_bev);
 	event_set(&s->s_bev->ev_write, s->s_fd, EV_WRITE, ssl_write, s->s_bev);
-	session_pickup(s, NULL);
+	session_pickup(s);
 
 	return;
 retry:
@@ -654,13 +653,18 @@ ssl_session_destroy(struct session *s)
 }
 
 int
-ssl_buf_read(SSL *s, struct buf_read *r)
+ssl_buf_read(SSL *s, struct ibuf_read *r)
 {
+	char	*buf = r->buf + r->wpos;
+	ssize_t	 bufsz = sizeof(r->buf) - r->wpos;
 	int	 ret;
 
-	ret = SSL_read(s, r->buf + r->wpos, sizeof(r->buf) - r->wpos);
+	if (bufsz == 0) {
+		errno = EMSGSIZE;
+		return (SSL_ERROR_SYSCALL);
+	}
 
-	if (ret > 0)
+	if ((ret = SSL_read(s, buf, bufsz)) > 0)
 		r->wpos += ret;
 
 	return SSL_get_error(s, ret);
@@ -669,7 +673,7 @@ ssl_buf_read(SSL *s, struct buf_read *r)
 int
 ssl_buf_write(SSL *s, struct msgbuf *msgbuf)
 {
-	struct buf	*buf;
+	struct ibuf	*buf;
 	int		 ret;
 	
 	buf = TAILQ_FIRST(&msgbuf->bufs);

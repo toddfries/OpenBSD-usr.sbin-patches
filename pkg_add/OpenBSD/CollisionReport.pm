@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: CollisionReport.pm,v 1.20 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: CollisionReport.pm,v 1.38 2010/07/11 07:27:25 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -21,16 +21,15 @@ use warnings;
 package OpenBSD::CollisionReport;
 use OpenBSD::PackingList;
 use OpenBSD::PackageInfo;
-use OpenBSD::Vstat;
 
 sub find_collisions
 {
-	my ($todo, $verbose) = @_;
+	my ($todo, $state) = @_;
+	my $verbose = $state->verbose >= 3;
 	my $bypkg = {};
 	for my $name (keys %$todo) {
-		my $p = OpenBSD::Vstat::vexists $name;
-		if (ref $p) {
-			my $pkg = $$p;
+		my $pkg = $state->vstat->value($state->{destdir}.$name);
+		if (defined $pkg) {
 			push(@{$bypkg->{$pkg}}, $name);
 			delete $todo->{$name};
 		}
@@ -41,8 +40,8 @@ sub find_collisions
 		return $bypkg;
 	}
 	for my $pkg (installed_packages()) {
-		print "Looking for collisions in $pkg\n" if $verbose;
-		my $plist = OpenBSD::PackingList->from_installation($pkg, 
+		$state->say("Looking for collisions in #1", $pkg) if $verbose;
+		my $plist = OpenBSD::PackingList->from_installation($pkg,
 		    \&OpenBSD::PackingList::FilesOnly);
 		next if !defined $plist;
 		for my $item (@{$plist->{items}}) {
@@ -51,21 +50,22 @@ sub find_collisions
 			if (defined $todo->{$name}) {
 				push(@{$bypkg->{$pkg}}, $name);
 				delete $todo->{$name};
-				return $bypkg;
 			}
 		}
 	}
 	return $bypkg;
 }
 
-sub collision_report($$)
+sub collision_report
 {
-	my ($list, $state) = @_;
+	my ($list, $state, $set) = @_;
 
-	if ($state->{defines}->{removecollisions}) {
+	my $destdir = $state->{destdir};
+
+	if ($state->defines('removecollisions')) {
 		require OpenBSD::Error;
 		for my $f (@$list) {
-			OpenBSD::Error::Unlink(1, $f->fullname);
+			$state->unlink(1, $destdir.$f->fullname);
 		}
 		return;
 	}
@@ -73,14 +73,15 @@ sub collision_report($$)
 	my $clueless_bat;
 	my $clueless_bat2;
 	my $found = 0;
-	
-	print "Collision: the following files already exist\n";
-	if (!$state->{defines}->{dontfindcollisions}) {
-		my $bypkg = find_collisions(\%todo, $state->{verbose});
+
+	$state->errsay("Collision in #1: the following files already exist",
+	    $set->print);
+	if (!$state->defines('dontfindcollisions')) {
+		my $bypkg = find_collisions(\%todo, $state);
 		for my $pkg (sort keys %$bypkg) {
 		    for my $item (sort @{$bypkg->{$pkg}}) {
 		    	$found++;
-			print "\t$item ($pkg)\n";
+			$state->errsay("\t#1 (#2)", $item, $pkg);
 		    }
 		    if ($pkg =~ m/^(?:partial\-|borked\.\d+$)/o) {
 			$clueless_bat = $pkg;
@@ -91,52 +92,50 @@ sub collision_report($$)
 		}
 	}
 	if (%todo) {
-		my $destdir = $state->{destdir};
 
 		for my $item (sort keys %todo) {
-		    if (defined $todo{$item}) {
-			    my $old = $todo{$item};
+			my $old = $todo{$item};
+		    $state->errprint("\t#1", $item);
+		    if (defined $old && -f $destdir.$item) {
 			    my $d = $old->new($destdir.$item);
+
 			    if ($d->equals($old)) {
-				print "\t$item (same checksum)\n";
+				    $state->errsay(" (same checksum)");
 			    } else {
-				print "\t$item (different checksum)\n";
+				    $state->errsay(" (different checksum)");
 			    }
 		    } else {
-			    print "\t$item\n";
+			    $state->errsay;
 		    }
 	    	}
 	}
 	if (defined $clueless_bat) {
-		print "The package name $clueless_bat suggests that a former installation\n";
-		print "of a similar package got interrupted.  It is likely that\n";
-		print "\tpkg_delete $clueless_bat\n";
-		print "will solve the problem\n";
+		$state->errprint("The package name #1 suggests that a former installation\n".
+		    "of a similar package got interrupted.  It is likely that\n".
+		    "\tpkg_delete #1\n".
+		    "will solve the problem\n", $clueless_bat);
 	}
 	if (defined $clueless_bat2) {
-		print "The package name $clueless_bat2 suggests remaining libraries\n";
-		print "from a former package update.  It is likely that\n";
-		print "\tpkg_delete $clueless_bat2\n";
-		print "will solve the problem\n";
+		$state->errprint("The package name #1 suggests remaining libraries\n".
+		    "from a former package update.  It is likely that\n".
+		    "\tpkg_delete #1\n".
+		    "will solve the problem\n", $clueless_bat2);
 	}
 	my $dorepair = 0;
 	if ($found == 0) {
-		if ($state->{defines}->{repair}) {
+		if ($state->defines('repair')) {
 			$dorepair = 1;
 		} elsif ($state->{interactive}) {
-			require OpenBSD::Interactive;
-			if (OpenBSD::Interactive::confirm(
-	    "It seems to be a missing package registration\nRepair", 1, 0)) {
+			if ($state->confirm("It seems to be a missing package registration\nRepair", 0)) {
 				$dorepair = 1;
 			}
 		}
 	}
 	if ($dorepair == 1) {
-		require OpenBSD::Error;
 		for my $f (@$list) {
 
-			if (OpenBSD::Error::Unlink($state->{verbose}, 
-			    $f->fullname)) {
+			if ($state->unlink($state->verbose >= 2,
+			    $destdir.$f->fullname)) {
 				$state->{problems}--;
 			} else {
 				return;

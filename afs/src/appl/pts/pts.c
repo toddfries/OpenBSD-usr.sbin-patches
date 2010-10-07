@@ -726,6 +726,7 @@ listowned_1 (struct rx_connection *conn, const char *user)
     }
 
     free(pr.val);
+    free(name);
     return 0;
 }
 
@@ -787,7 +788,7 @@ create_cmd(int argc, char **argv, int groupp, const char *cmd_name)
 
     if (!groupp)
 	memmove (&createuserarg[1], &createuserarg[2],
-		 6 * sizeof(createuserarg[0]));
+		 5 * sizeof(createuserarg[0]));
 	
     if (agetarg (createuserarg, argc, argv, &optind, AARG_AFSSTYLE)) {
 	aarg_printusage(createuserarg, cmd_name, NULL, AARG_AFSSTYLE);

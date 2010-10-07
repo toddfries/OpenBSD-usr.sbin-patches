@@ -1,4 +1,4 @@
-/*	$OpenBSD: ber.c,v 1.2 2009/06/04 18:03:07 jsg Exp $ */
+/*	$OpenBSD: ber.c,v 1.7 2010/06/14 13:46:08 martinh Exp $ */
 
 /*
  * Copyright (c) 2007 Reyk Floeter <reyk@vantronix.net>
@@ -101,7 +101,7 @@ ber_unlink_elements(struct ber_element *prev)
 
 	if ((prev->be_encoding == BER_TYPE_SEQUENCE ||
 	    prev->be_encoding == BER_TYPE_SET) &&
-	    prev->be_sub == NULL) {
+	    prev->be_sub != NULL) {
 		elm = prev->be_sub;
 		prev->be_sub = NULL;
 	} else {
@@ -415,13 +415,11 @@ ber_oid2ber(struct ber_oid *o, u_int8_t *buf, size_t len)
 int
 ber_string2oid(const char *oidstr, struct ber_oid *o)
 {
-	size_t			 len;
 	char			*sp, *p, str[BUFSIZ];
 	const char		*errstr;
 
 	if (strlcpy(str, oidstr, sizeof(str)) >= sizeof(str))
 		return (-1);
-	len = strlen(str);
 	bzero(o, sizeof(*o));
 
 	/* Parse OID strings in the common forms n.n.n, n_n_n_n, or n-n-n */
@@ -702,7 +700,7 @@ ber_scanf_elements(struct ber_element *ber, char *fmt, ...)
 			if (ber->be_encoding != BER_TYPE_SEQUENCE &&
 			    ber->be_encoding != BER_TYPE_SET)
 				goto fail;
-			if (ber->be_sub == NULL || level >= _MAX_SEQ)
+			if (ber->be_sub == NULL || level >= _MAX_SEQ-1)
 				goto fail;
 			parent[++level] = ber;
 			ber = ber->be_sub;
@@ -740,10 +738,7 @@ ber_scanf_elements(struct ber_element *ber, char *fmt, ...)
  *	root	fully populated element tree
  *
  * returns:
- *	0	on success
- *
- * returns:
- *	0	on success
+ *      >=0     number of bytes written
  *	-1	on failure and sets errno
  */
 int
@@ -828,10 +823,6 @@ ber_free_elements(struct ber_element *root)
 	free(root);
 }
 
-/*
- * internal functions
- */
-
 size_t
 ber_calc_len(struct ber_element *root)
 {
@@ -863,11 +854,15 @@ ber_calc_len(struct ber_element *root)
 	return (root->be_len + size);
 }
 
+/*
+ * internal functions
+ */
+
 static int
 ber_dump_element(struct ber *ber, struct ber_element *root)
 {
 	unsigned long long l;
-	int i, pos;
+	int i;
 	uint8_t u;
 
 	ber_dump_header(ber, root);
@@ -876,7 +871,6 @@ ber_dump_element(struct ber *ber, struct ber_element *root)
 	case BER_TYPE_BOOLEAN:
 	case BER_TYPE_INTEGER:
 	case BER_TYPE_ENUMERATED:
-		pos = (root->be_numeric > 0);
 		l = (unsigned long long)root->be_numeric;
 		for (i = root->be_len; i > 0; i--) {
 			u = (l >> ((i - 1) * 8)) & 0xff;
@@ -1142,18 +1136,18 @@ ber_read_element(struct ber *ber, struct ber_element *elm)
 				return -1;
 		}
 		next = elm->be_sub;
-		do {
+		while (len > 0) {
 			r = ber_read_element(ber, next);
 			if (r == -1)
 				return -1;
-			if (next->be_next == NULL) {
+			len -= r;
+			if (len > 0 && next->be_next == NULL) {
 				if ((next->be_next = ber_get_element(0)) ==
 				    NULL)
 					return -1;
 			}
 			next = next->be_next;
-			len -= r;
-		} while (len > 0);
+		}
 		break;
 	}
 	return totlen;

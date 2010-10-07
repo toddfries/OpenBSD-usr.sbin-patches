@@ -1,4 +1,4 @@
-/*	$OpenBSD: dns.c,v 1.18 2009/11/05 12:11:53 jsing Exp $	*/
+/*	$OpenBSD: dns.c,v 1.23 2010/09/08 13:32:13 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -29,6 +29,7 @@
 #include <event.h>
 #include <netdb.h>
 #include <resolv.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -49,7 +50,7 @@ void		 parent_dispatch_dns(int, short, void *);
 
 int		 dns(void);
 void		 dns_dispatch_parent(int, short, void *);
-void		 lookup_a(struct imsgev *, struct dns *, int);
+void		 lookup_a(struct imsgev *, struct dns *, int, int);
 void		 lookup_mx(struct imsgev *, struct dns *);
 int		 get_mxlist(char *, char *, struct dns **);
 void		 free_mxlist(struct dns *);
@@ -117,7 +118,13 @@ dns_async(struct smtpd *env, struct imsgev *asker, int type, struct dns *query)
 	rd->asker = asker;
 	query->env = env;
 
-	fd = dns();
+	/* dns() will fail if we are scarce on resources or processes */
+	if ((fd = dns()) == -1) {
+		query->error = EAI_AGAIN;
+		imsg_compose_event(rd->asker, type, 0, 0, -1, query, sizeof(*query));
+		return;
+	}
+
 	imsg_init(&rd->iev.ibuf, fd);
 	rd->iev.handler = parent_dispatch_dns;
 	rd->iev.events = EV_READ;
@@ -196,14 +203,21 @@ dns(void)
 	pid_t		 pid;
 	struct imsgev	*iev;
 
-	if (socketpair(AF_UNIX, SOCK_STREAM, AF_UNSPEC, fd) == -1)
-		fatal("socketpair");
+	if (socketpair(AF_UNIX, SOCK_STREAM, AF_UNSPEC, fd) == -1) {
+		log_warn("socketpair");
+		return -1;
+	}
 
 	session_socket_blockmode(fd[0], BM_NONBLOCK);
 	session_socket_blockmode(fd[1], BM_NONBLOCK);
 
-	if ((pid = fork()) == -1)
-		fatal("dns: fork");
+	if ((pid = fork()) == -1) {
+		log_warn("fork");
+		close(fd[0]);
+		close(fd[1]);
+		return -1;
+	}
+
 	if (pid > 0) {
 		close(fd[1]);
 		return (fd[0]);
@@ -225,7 +239,8 @@ dns(void)
 	event_set(&iev->ev, iev->ibuf.fd, iev->events, iev->handler, iev->data);
 	event_add(&iev->ev, NULL);
 
-	event_dispatch();
+	if (event_dispatch() < 0)
+		fatal("event_dispatch");
 	_exit(0);
 }
 
@@ -261,7 +276,7 @@ dns_dispatch_parent(int sig, short event, void *p)
 
 		switch (imsg.hdr.type) {
 		case IMSG_DNS_A:
-			lookup_a(iev, imsg.data, 1);
+			lookup_a(iev, imsg.data, 0, 1);
 			break;
 
 		case IMSG_DNS_MX:
@@ -283,12 +298,13 @@ dns_dispatch_parent(int sig, short event, void *p)
 }
 
 void
-lookup_a(struct imsgev *iev, struct dns *query, int finalize)
+lookup_a(struct imsgev *iev, struct dns *query, int numeric, int finalize)
 {
 	struct addrinfo	*res0, *res, hints;
 	char		*port = NULL;
 
-	log_debug("lookup_a %s:%d", query->host, query->port);
+	log_debug("lookup_a %s:%d%s", query->host, query->port,
+	    numeric ? " (numeric)" : "");
 
 	if (query->port && asprintf(&port, "%u", query->port) == -1)
 		fatal(NULL);
@@ -296,6 +312,8 @@ lookup_a(struct imsgev *iev, struct dns *query, int finalize)
 	bzero(&hints, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
+	if (numeric)
+		hints.ai_flags = AI_NUMERICHOST;
 
 	query->error = getaddrinfo(query->host, port, &hints, &res0);
 	if (query->error)
@@ -308,11 +326,10 @@ lookup_a(struct imsgev *iev, struct dns *query, int finalize)
 	freeaddrinfo(res0);
 end:
 	free(port);
-	if (finalize) {
-		log_debug("lookup_a %s", query->error ? "failed" : "success");
+	log_debug("lookup_a %s", query->error ? "failed" : "success");
+	if (finalize)
 		imsg_compose_event(iev, IMSG_DNS_A_END, 0, 0, -1, query,
 		    sizeof(*query));
-	}
 }
 
 void
@@ -322,6 +339,12 @@ lookup_mx(struct imsgev *iev, struct dns *query)
 	int		 success = 0;
 
 	log_debug("lookup_mx %s", query->host);
+
+	/* if ip address, skip MX lookup */
+	/* XXX: maybe do it just once in parse.y? */
+	lookup_a(iev, query, 1, 0);
+	if (!query->error)
+		goto end;
 
 	query->error = get_mxlist(query->host, query->env->sc_hostname, &mx0);
 	if (query->error)
@@ -337,7 +360,7 @@ lookup_mx(struct imsgev *iev, struct dns *query)
 	for (mx = mx0; mx; mx = mx->next) {
 		mx->port = query->port;
 		mx->id = query->id;
-		lookup_a(iev, mx, 0);
+		lookup_a(iev, mx, 0, 0);
 		if (!mx->error)
 			success++;
 	}
@@ -355,14 +378,17 @@ int
 get_mxlist(char *host, char *self, struct dns **res)
 {
 	struct mx	 tab[MAX_MX_COUNT];
-	unsigned char	 buf[PACKETSZ], *p, *endp;
+	unsigned char	 *p, *endp;
 	int		 ntab, i, ret, type, n, maxprio, cname_ok = 3;
 	int		 qdcount, ancount;
-
+	union {
+		HEADER	 hdr;
+		char	 buf[PACKETSZ];
+	} answer;
 again:
 	ntab = 0;
 	maxprio = 16384;
-	ret = res_query(host, C_IN, T_MX, buf, sizeof(buf));
+	ret = res_query(host, C_IN, T_MX, answer.buf, sizeof(answer.buf));
 	if (ret < 0) {
 		switch (h_errno) {
 		case TRY_AGAIN:
@@ -378,10 +404,10 @@ again:
 		fatal("get_mxlist: res_query");
 	}
 
-	p = buf + HFIXEDSZ;
-	endp = buf + ret;
-	qdcount = ntohs(((HEADER *)buf)->qdcount);
-	ancount = ntohs(((HEADER *)buf)->ancount);
+	p = answer.buf + HFIXEDSZ;
+	endp = answer.buf + ret;
+	qdcount = ntohs(((HEADER *)answer.buf)->qdcount);
+	ancount = ntohs(((HEADER *)answer.buf)->ancount);
 
 	if (qdcount < 1)
 		return (EAI_FAIL);
@@ -405,7 +431,7 @@ again:
 		if (type == T_CNAME) {
 			if (cname_ok-- == 0)
 				return (EAI_FAIL);
-			ret = dn_expand(buf, endp, p, tab[0].host,
+			ret = dn_expand(answer.buf, endp, p, tab[0].host,
 			    sizeof(tab[0].host));
 			if (ret < 0)
 				return (EAI_FAIL);
@@ -421,7 +447,7 @@ again:
 
 		GETSHORT(tab[ntab].prio, p);
 
-		ret = dn_expand(buf, endp, p, tab[ntab].host,
+		ret = dn_expand(answer.buf, endp, p, tab[ntab].host,
 		    sizeof(tab[ntab].host));
 		if (ret < 0)
 			return (EAI_FAIL);

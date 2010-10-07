@@ -1,7 +1,0 @@
-? .git
-? .gitignore
-? status.log
-? up.log
-? ppp/ppp/obj
-? ppp/pppctl/obj
-C ppp/ppp/route.c

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Search.pm,v 1.16 2009/11/10 14:37:20 espie Exp $
+# $OpenBSD: Search.pm,v 1.24 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2007 Marc Espie <espie@openbsd.org>
 #
@@ -23,7 +23,7 @@ sub match_locations
 {
 	my ($self, $o) = @_;
 	require OpenBSD::PackageLocation;
-	
+
 	my @l = map {$o->new_location($_)} $self->match($o);
 	return \@l;
 }
@@ -61,10 +61,17 @@ sub add_pkgpath_hint
 {
 	my ($self, $pkgpath) = @_;
 	$self->{pkgpath} = $pkgpath;
+	return $self;
 }
 
 sub spec_class
 { "OpenBSD::PkgSpec" }
+
+sub is_valid
+{
+	my $self = shift;
+	return $self->{spec}->is_valid;
+}
 
 package OpenBSD::Search::Exact;
 our @ISA=(qw(OpenBSD::Search::PkgSpec));
@@ -84,7 +91,7 @@ sub new
 		# XXX
 		return OpenBSD::Search::Exact->new("$1-*-$2");
     	}
-	return bless {stem => $stem}, $class;
+	return bless {"$stem" => 1}, $class;
 }
 
 sub split
@@ -95,16 +102,28 @@ sub split
 	return $class->new(OpenBSD::PackageName::splitstem($pkgname));
 }
 
+sub add_stem
+{
+	my ($self, $extra) = @_;
+	$self->{$extra} = 1;
+
+}
+
 sub match
 {
 	my ($self, $o) = @_;
-	return $o->stemlist->find($self->{stem});
+
+	my @r = ();
+	for my $k (keys %$self) {
+		push(@r, $o->stemlist->find($k));
+	}
+	return @r;
 }
 
 sub _keep
 {
 	my ($self, $stem) = @_;
-	return $self->{stem} eq $stem;
+	return defined $self->{$stem};
 }
 
 sub filter
@@ -114,7 +133,7 @@ sub filter
 	require OpenBSD::PackageName;
 	for my $pkg (@l) {
 		if ($self->_keep(OpenBSD::PackageName::splitstem($pkg))) {
-			push(@result, $pkg); 
+			push(@result, $pkg);
 		}
 	}
 	return @result;
@@ -126,14 +145,22 @@ our @ISA=(qw(OpenBSD::Search::Stem));
 sub match
 {
 	my ($self, $o) = @_;
-	return $o->stemlist->find_partial($self->{stem});
+	my @r = ();
+	for my $k (keys %$self) {
+		push(@r, $o->stemlist->find_partial($k));
+	}
+	return @r;
 }
 
 sub _keep
 {
 	my ($self, $stem) = @_;
-	my $partial = $self->{stem};
-	return $stem =~ /\Q$partial\E/;
+	for my $partial (keys %$self) {
+		if ($stem =~ /\Q$partial\E/) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 package OpenBSD::Search::FilterLocation;
@@ -153,7 +180,7 @@ sub filter_locations
 
 sub more_recent_than
 {
-	my ($class, $name) = @_;
+	my ($class, $name, $rfound) = @_;
 	require OpenBSD::PackageName;
 
 	my $f = OpenBSD::PackageName->from_string($name);
@@ -165,6 +192,9 @@ sub {
 	for my $e (@$l) {
 		if ($f->{version}->compare($e->pkgname->{version}) <= 0) {
 			push(@$r, $e);
+		}
+		if (ref $rfound) {
+			$$rfound = 1;
 		}
 	}
 	return $r;
@@ -200,7 +230,7 @@ sub {
 
 			if ($f->pkgname->{version}->compare($e->pkgname->{version}) < 0) {
 			    $f = $e;
-			} 
+			}
 			$keep = 0;
 			last;
 

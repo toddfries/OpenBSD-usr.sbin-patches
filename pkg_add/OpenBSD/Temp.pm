@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Temp.pm,v 1.15 2009/11/10 11:36:56 espie Exp $
+# $OpenBSD: Temp.pm,v 1.20 2010/06/30 10:51:04 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -22,60 +22,35 @@ package OpenBSD::Temp;
 
 use File::Temp;
 use OpenBSD::Paths;
+use OpenBSD::Error;
 
 our $tempbase = $ENV{'PKG_TMPDIR'} || OpenBSD::Paths->vartmp;
 
 my $dirs = {};
 my $files = {};
 
-sub cleanup
-{
-	my $caught;
-	my $h = sub { $caught = shift; };
-	{
-	    require File::Path;
+my $cleanup = sub {
+	require File::Path;
 
-	    local $SIG{'INT'} = $h;
-	    local $SIG{'QUIT'} = $h;
-	    local $SIG{'HUP'} = $h;
-	    local $SIG{'KILL'} = $h;
-	    local $SIG{'TERM'} = $h;
-
-	    while (my ($name, $pid) = each %$files) {
-		    unlink($name) if $pid == $$;
-	    }
-	    while (my ($dir, $pid) = each %$dirs) {
-		    File::Path::rmtree([$dir]) if $pid == $$;
-	    }
+	while (my ($name, $pid) = each %$files) {
+		unlink($name) if $pid == $$;
 	}
-	if (defined $caught) {
-		kill $caught, $$;
+	while (my ($dir, $pid) = each %$dirs) {
+		File::Path::rmtree([$dir]) if $pid == $$;
 	}
-}
-
-END {
-	cleanup();
-}
-
-my $handler = sub {
-	my ($sig) = @_;
-	cleanup();
-	$SIG{$sig} = 'DEFAULT';
-	kill $sig, $$;
 };
 
-$SIG{'INT'} = $handler;
-$SIG{'QUIT'} = $handler;
-$SIG{'HUP'} = $handler;
-$SIG{'KILL'} = $handler;
-$SIG{'TERM'} = $handler;
+END {
+	&$cleanup;
+}
+OpenBSD::Handler->register($cleanup);
 
 sub dir
 {
 	my $caught;
 	my $h = sub { $caught = shift; };
 	my $dir;
-		
+
 	{
 	    local $SIG{'INT'} = $h;
 	    local $SIG{'QUIT'} = $h;
@@ -96,7 +71,7 @@ sub file
 	my $caught;
 	my $h = sub { $caught = shift; };
 	my ($fh, $file);
-		
+
 	{
 	    local $SIG{'INT'} = $h;
 	    local $SIG{'QUIT'} = $h;

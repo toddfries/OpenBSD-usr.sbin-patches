@@ -1,4 +1,4 @@
-/*	$OpenBSD: init.c,v 1.2 2009/06/05 22:34:45 michele Exp $ */
+/*	$OpenBSD: init.c,v 1.5 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -37,20 +37,20 @@
 #include "log.h"
 #include "ldpe.h"
 
-int	gen_init_prms_tlv(struct buf *, struct nbr *, u_int16_t);
+int	gen_init_prms_tlv(struct ibuf *, struct nbr *, u_int16_t);
 
-int
+void
 send_init(struct nbr *nbr)
 {
-	struct buf		*buf;
+	struct ibuf		*buf;
 	u_int16_t		 size;
 
 	if (nbr->iface->passive)
-		return (0);
+		return;
 
 	log_debug("send_init: neighbor ID %s", inet_ntoa(nbr->id));
 
-	if ((buf = buf_open(LDP_MAX_LEN)) == NULL)
+	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_init");
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg) + SESS_PRMS_SIZE;
@@ -65,10 +65,7 @@ send_init(struct nbr *nbr)
 
 	gen_init_prms_tlv(buf, nbr, size);
 
-	bufferevent_write(nbr->bev, buf->buf, buf->wpos);
-	buf_free(buf);
-
-	return (0);
+	evbuf_enqueue(&nbr->wbuf, buf);
 }
 
 int
@@ -108,7 +105,7 @@ recv_init(struct nbr *nbr, char *buf, u_int16_t len)
 }
 
 int
-gen_init_prms_tlv(struct buf *buf, struct nbr *nbr, u_int16_t size)
+gen_init_prms_tlv(struct ibuf *buf, struct nbr *nbr, u_int16_t size)
 {
 	struct sess_prms_tlv	parms;
 
@@ -127,5 +124,5 @@ gen_init_prms_tlv(struct buf *buf, struct nbr *nbr, u_int16_t size)
 	/* XXX: nbr lspace */
 	parms.lspace_id = 0;
 
-	return (buf_add(buf, &parms, SESS_PRMS_SIZE));
+	return (ibuf_add(buf, &parms, SESS_PRMS_SIZE));
 }
