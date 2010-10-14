@@ -62,7 +62,6 @@ void		lka_rcpt_action(struct smtpd *, char *, struct path *);
 void		lka_session_destroy(struct smtpd *, struct lkasession *);
 void		lka_expansion_done(struct smtpd *, struct lkasession *);
 void		lka_session_fail(struct smtpd *, struct lkasession *, struct submit_status *);
-void		dns_setup(void);
 
 void
 lka_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
@@ -285,7 +284,6 @@ lka_shutdown(void)
 void
 lka_setup_events(struct smtpd *env)
 {
-	dns_setup();
 }
 
 void
@@ -335,7 +333,6 @@ lka(struct smtpd *env)
 	imsg_callback = lka_imsg;
 	event_init();
 	SPLAY_INIT(&env->lka_sessions);
-	SPLAY_INIT(&env->dns_sessions);
 
 	signal_set(&ev_sigint, SIGINT, lka_sig_handler, env);
 	signal_set(&ev_sigterm, SIGTERM, lka_sig_handler, env);
