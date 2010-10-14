@@ -82,8 +82,10 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			s->datafd = -1;
 
 			/* establish host name */
-			if (b->rule.r_action == A_RELAYVIA)
+			if (b->rule.r_action == A_RELAYVIA) {
 				s->host = strdup(b->rule.r_value.relayhost.hostname);
+				s->flags |= MTA_FORCE_MX;
+			}
 			else
 				s->host = strdup(b->hostname);
 			if (s->host == NULL)
@@ -230,6 +232,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
+	log_debug("imsg: %d", imsg->hdr.type);
 	fatalx("mta_imsg: unexpected imsg");
 }
 
@@ -361,7 +364,10 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		/*
 		 * Lookup MX record.
 		 */
-		dns_query_mx(s->env, s->host, 0, s->id);
+		if (s->flags & MTA_FORCE_MX)
+			dns_query_a(s->env, s->host, s->port, s->id);
+		else
+			dns_query_mx(s->env, s->host, 0, s->id);
 		break;
 
 	case MTA_DATA:

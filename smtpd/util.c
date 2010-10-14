@@ -200,6 +200,15 @@ ss_to_text(struct sockaddr_storage *ss)
 	return (buf);
 }
 
+void
+ss_to_buffer(struct sockaddr_storage *ss, char *buffer)
+{
+	buffer[0] = '\0';
+	if (getnameinfo((struct sockaddr *)ss, ss->ss_len, buffer,
+		NI_MAXHOST, NULL, 0, NI_NUMERICHOST))
+		fatalx("ss_to_text: getnameinfo");
+}
+
 int
 valid_message_id(char *mid)
 {

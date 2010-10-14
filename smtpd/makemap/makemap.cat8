@@ -1,0 +1,81 @@
+MAKEMAP(8)              OpenBSD System Manager's Manual             MAKEMAP(8)
+
+NNAAMMEE
+     mmaakkeemmaapp - create database maps for smtpd
+
+SSYYNNOOPPSSIISS
+     mmaakkeemmaapp [--oo _d_b_f_i_l_e] [--tt _t_y_p_e] _f_i_l_e
+
+DDEESSCCRRIIPPTTIIOONN
+     Maps provide a generic interface for associating textual key to a value.
+     Such associations may be accessed through a plaintext file, database, or
+     DNS.  The format of these file types is described below.  mmaakkeemmaapp itself
+     creates the database maps used by keyed map lookups specified in
+     smtpd.conf(5).
+
+     mmaakkeemmaapp reads input from _f_i_l_e and writes data to a file whose name is
+     made by adding a ``.db'' suffix to _f_i_l_e.  In all cases, mmaakkeemmaapp reads
+     lines consisting of words separated by whitespace.  The first word of a
+     line is the database key; the remainder represents the mapped value.  The
+     database key and value may optionally be separated by the colon
+     character.
+
+     The options are as follows:
+
+     --oo _d_b_f_i_l_e
+             Write the generated database to _d_b_f_i_l_e.
+
+     --tt _t_y_p_e
+             Specify the format of the resulting map file.  The default map
+             format is suitable for storing simple, unstructured, key-to-value
+             string associations.  However, if the mapped value has special
+             meaning, as in the case of the virtual domains file, a suitable
+             _t_y_p_e must be provided.  The available output types are:
+
+             aalliiaasseess  The mapped value is a comma-separated list of mail
+                      destinations.  This format can be used for building user
+                      aliases and virtual domains files.
+
+             sseett      There is no mapped value - a map of this type will only
+                      allow for the lookup of keys.  This format can be used
+                      for building primary domain maps.
+
+
+PPRRIIMMAARRYY DDOOMMAAIINNSS
+     Primary domains can be kept in maps.  To create a primary domain map, add
+     each primary domain on a single line by itself.
+
+     In addition to adding an entry to the primary domain map, one must add a
+     filter rule that accepts mail for the domain map, for example:
+
+           map "primary" { source db "/etc/mail/primary.db" }
+           accept for domain map "primary" deliver to mbox
+
+VVIIRRTTUUAALL DDOOMMAAIINNSS
+     Virtual domains are kept in maps.  To create single virtual address, add
+     ``user@example.com  user'' to the virtual map.  To handle all mail
+     destined to any user at example.com, add ``@example.com     user'' to the
+     virtual map.
+
+     In addition to adding an entry to the virtual map, one must add a filter
+     rule that accepts mail for virtual domains, for example:
+
+           map "vdomains" { source db "/etc/mail/vdomains.db" }
+           accept for virtual "vdomains" deliver to mbox
+
+FFIILLEESS
+     _/_e_t_c_/_m_a_i_l_/_a_l_i_a_s_e_s     List of user mail aliases.
+     _/_e_t_c_/_m_a_i_l_/_v_i_r_t_u_a_l     List of hosted virtual domains.
+     _/_e_t_c_/_m_a_i_l_/_s_e_c_r_e_t_s     List of remote host credentials.
+
+EEXXIITT SSTTAATTUUSS
+     The mmaakkeemmaapp utility exits 0 on success, and >0 if an error occurs.
+
+SSEEEE AALLSSOO
+     aliases(5), smtpd.conf(5), editmap(8), newaliases(8), smtpd(8)
+
+HHIISSTTOORRYY
+     The mmaakkeemmaapp command first appeared in OpenBSD 4.6 as a replacement for
+     the equivalent command shipped with sendmail.
+
+OpenBSD 4.8                    September 3, 2010                   OpenBSD 4.8

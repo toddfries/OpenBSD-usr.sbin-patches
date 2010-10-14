@@ -17,7 +17,10 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include			 <imsg.h>
+#include <imsg.h>
+#include "asr.h"
+#include "dnsutil.h"
+
 
 #ifndef nitems
 #define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
@@ -621,6 +624,8 @@ struct smtpd {
 	SPLAY_HEAD(batchtree, batch)		 batch_queue;
 	SPLAY_HEAD(childtree, child)		 children;
 	SPLAY_HEAD(lkatree, lkasession)		 lka_sessions;
+	SPLAY_HEAD(dnstree, dnssession)		 dns_sessions;
+
 	SPLAY_HEAD(mtatree, mta_session)	 mta_sessions;
 	LIST_HEAD(mdalist, mda_session)		 mda_sessions;
 
@@ -725,6 +730,8 @@ struct dns {
 	char			 host[MAXHOSTNAMELEN];
 	int			 port;
 	int			 error;
+	int			 type;
+	struct imsgev		*asker;
 	struct sockaddr_storage	 ss;
 	struct smtpd		*env;
 	struct dns		*next;
@@ -776,6 +783,23 @@ struct lkasession {
 	struct submit_status		 ss;
 };
 
+struct mx {
+	char	host[MAXHOSTNAMELEN];
+	int	prio;
+	struct mx *next;
+};
+
+struct dnssession {
+	SPLAY_ENTRY(dnssession)		 nodes;
+	u_int64_t			 id;
+	struct dns			 query;
+	struct event			 ev;
+	struct asr_query		*aq;
+	struct mx			 mxarray[MAX_MX_COUNT];
+	size_t				 mxarraysz;
+	struct mx			*mxcurrent;
+};
+
 enum mta_state {
 	MTA_INVALID_STATE,
 	MTA_INIT,
@@ -793,6 +817,7 @@ enum mta_state {
 #define	MTA_FORCE_SMTPS		0x2
 #define	MTA_ALLOW_PLAIN		0x4
 #define	MTA_USE_AUTH		0x8
+#define	MTA_FORCE_MX		0x10
 
 struct mta_relay {
 	TAILQ_ENTRY(mta_relay)	 entry;
@@ -901,7 +926,9 @@ void	 imsg_dispatch(int, short, void *);
 /* lka.c */
 pid_t		 lka(struct smtpd *);
 int		 lkasession_cmp(struct lkasession *, struct lkasession *);
+int		 dnssession_cmp(struct dnssession *, struct dnssession *);
 SPLAY_PROTOTYPE(lkatree, lkasession, nodes, lkasession_cmp);
+SPLAY_PROTOTYPE(dnstree, dnssession, nodes, dnssession_cmp);
 
 /* mfa.c */
 pid_t		 mfa(struct smtpd *);
@@ -1047,6 +1074,7 @@ int		 recipient_to_path(struct path *, char *);
 int		 valid_localpart(char *);
 int		 valid_domainpart(char *);
 char		*ss_to_text(struct sockaddr_storage *);
+void		 ss_to_buffer(struct sockaddr_storage *, char *);
 int		 valid_message_id(char *);
 int		 valid_message_uid(char *);
 char		*time_to_text(time_t);
