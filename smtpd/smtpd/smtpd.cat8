@@ -1,0 +1,68 @@
+SMTPD(8)                OpenBSD System Manager's Manual               SMTPD(8)
+
+NNAAMMEE
+     ssmmttppdd - Simple Mail Transfer Protocol daemon
+
+SSYYNNOOPPSSIISS
+     ssmmttppdd [--ddnnvv] [--DD _m_a_c_r_o=_v_a_l_u_e] [--ff _f_i_l_e]
+
+DDEESSCCRRIIPPTTIIOONN
+     ssmmttppdd is a Simple Mail Transfer Protocol (SMTP) daemon which can be used
+     as a machine's primary mail system.  ssmmttppdd can listen on a network
+     interface and handle SMTP transactions; it can also be fed messages
+     through the standard sendmail(8) interface.  It can relay messages
+     through remote mail transfer agents or store them locally using either
+     the mbox or maildir format.  This implementation supports SMTP as defined
+     by RFC 5321 as well as several extensions.  A running ssmmttppdd can be
+     controlled through smtpctl(8).
+
+     The options are as follows:
+
+     --DD _m_a_c_r_o=_v_a_l_u_e
+             Define _m_a_c_r_o to be set to _v_a_l_u_e on the command line.  Overrides
+             the definition of _m_a_c_r_o in the configuration file.
+
+     --dd      Do not daemonize.  If this option is specified, ssmmttppdd will run in
+             the foreground and log to _s_t_d_e_r_r.
+
+     --ff _f_i_l_e
+             Specify an alternative configuration file.
+
+     --nn      Configtest mode.  Only check the configuration file for validity.
+
+     --vv      Produce more verbose output.
+
+     ssmmttppdd is not enabled by default.  In order to use it as the system
+     mailer, ensure the mail queue is empty, then stop sendmail(8):
+
+           # pkill sendmail
+
+     Modify the current mailwrapper(8) settings by editing _/_e_t_c_/_m_a_i_l_e_r_._c_o_n_f:
+
+           sendmail        /usr/sbin/smtpctl
+           send-mail       /usr/sbin/smtpctl
+           mailq           /usr/sbin/smtpctl
+           makemap         /usr/libexec/smtpd/makemap
+           newaliases      /usr/libexec/smtpd/makemap
+
+     Rebuild the aliases database, and enable the daemon:
+
+           # newaliases
+           # echo "sendmail_flags=NO" >> /etc/rc.conf.local
+           # echo "smtpd_flags=" >> /etc/rc.conf.local
+           # smtpd
+
+FFIILLEESS
+     /etc/mail/smtpd.conf    Default ssmmttppdd configuration file.
+     /var/run/smtpd.sock     UNIX-domain socket used for communication with
+                             smtpctl(8).
+
+SSEEEE AALLSSOO
+     smtpd.conf(5), mailwrapper(8), smtpctl(8)
+
+     _S_i_m_p_l_e _M_a_i_l _T_r_a_n_s_f_e_r _P_r_o_t_o_c_o_l, RFC 5321, October 2008.
+
+HHIISSTTOORRYY
+     The ssmmttppdd program first appeared in OpenBSD 4.6.
+
+OpenBSD 4.8                      May 24, 2010                      OpenBSD 4.8
