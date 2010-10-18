@@ -30,6 +30,7 @@ enum {
 #define ASR_NOREC	0x01	/* recusrsion not wanted */
 
 struct asr_result {
+
 	int		 ar_fd;
 	int		 ar_timeout;
 	int		 ar_err;

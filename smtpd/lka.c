@@ -62,7 +62,6 @@ void		lka_rcpt_action(struct smtpd *, char *, struct path *);
 void		lka_session_destroy(struct smtpd *, struct lkasession *);
 void		lka_expansion_done(struct smtpd *, struct lkasession *);
 void		lka_session_fail(struct smtpd *, struct lkasession *, struct submit_status *);
-void		dns_setup(void);
 
 void
 lka_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
@@ -78,7 +77,7 @@ lka_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	struct map		*map;
 	void			*tmp;
 
-	if (imsg->hdr.type == IMSG_DNS_A || imsg->hdr.type == IMSG_DNS_MX ||
+	if (imsg->hdr.type == IMSG_DNS_HOST || imsg->hdr.type == IMSG_DNS_MX ||
 	    imsg->hdr.type == IMSG_DNS_PTR) {
 		dns_async(env, iev, imsg->hdr.type, imsg->data);
 		return;
@@ -285,7 +284,6 @@ lka_shutdown(void)
 void
 lka_setup_events(struct smtpd *env)
 {
-	dns_setup();
 }
 
 void

@@ -161,7 +161,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			mta_pickup(mta_lookup(env, secret->id), secret->secret);
 			return;
 
-		case IMSG_DNS_A:
+		case IMSG_DNS_HOST:
 			dns = imsg->data;
 			s = mta_lookup(env, dns->id);
 			relay = calloc(1, sizeof *relay);
@@ -171,7 +171,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
  			TAILQ_INSERT_TAIL(&s->relays, relay, entry);
 			return;
 
-		case IMSG_DNS_A_END:
+		case IMSG_DNS_HOST_END:
 			dns = imsg->data;
 			mta_pickup(mta_lookup(env, dns->id), &dns->error);
 			return;
@@ -365,7 +365,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		 * Lookup MX record.
 		 */
 		if (s->flags & MTA_FORCE_MX)
-			dns_query_a(s->env, s->host, s->port, s->id);
+			dns_query_host(s->env, s->host, s->port, s->id);
 		else
 			dns_query_mx(s->env, s->host, 0, s->id);
 		break;
