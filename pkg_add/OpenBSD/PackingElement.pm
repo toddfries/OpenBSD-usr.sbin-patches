@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.183 2010/08/03 14:07:27 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.185 2010/10/19 11:37:59 sthen Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -478,6 +478,7 @@ sub keyword() { "shell" }
 __PACKAGE__->register_with_factory;
 
 package OpenBSD::PackingElement::Manpage;
+use File::Basename;
 our @ISA=qw(OpenBSD::PackingElement::FileBase);
 
 sub keyword() { "man" }
@@ -519,7 +520,7 @@ sub format
 	my @extra = ();
 	# extra preprocessors as described in man.
 	if ($line =~ m/^\'\\\"\s+(.*)$/o) {
-		for my $letter (split $1) {
+		for my $letter (split '', $1) {
 			if ($letter =~ m/[ept]/o) {
 				push(@extra, "-$letter");
 			} elsif ($letter eq 'r') {
@@ -528,6 +529,10 @@ sub format
 		}
 	}
 	open my $oldout, '>&STDOUT';
+	my $dir = dirname("$base/$out");
+	unless (-d $dir) {
+		mkdir($dir);
+	}
 	open STDOUT, '>', "$base/$out" or die "Can't write to $base/$out";
 	system(OpenBSD::Paths->groff,
 	    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--', $fname);
