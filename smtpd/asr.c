@@ -178,16 +178,16 @@ int asr_prepare_dns_query(struct asr_query *);
 int asr_send_dns_query(struct asr_query *);
 int asr_recv_dns_response(struct asr_query *, struct asr_result *);
 
-int pass0(char **, int,  void *, void *);
-int pass1(char **, int,  void *, void *);
+int pass0(char **, int, void *, void *);
+int pass1(char **, int, void *, void *);
 int ccount(const char *, char);
 int asr_parse_line(FILE *, char **, int);
 int asr_cmp_fqdn_name(const char *, char *);
 int asr_is_fqdn(const char *);
-int asr_get_port(const char *, const char *, int);
 int asr_parse_hosts_cb(char **, int, void *, void *);
-int asr_add_sockaddr(struct asr_query *, int, int, int, struct sockaddr *, int);
-
+int asr_get_port(const char *, const char *, int);
+int asr_add_sockaddr(struct asr_query *, int, int, int, struct sockaddr *,
+    int);
 
 #ifdef ASR_DEBUG
 
@@ -195,6 +195,7 @@ void asr_dump(struct asr *);
 void asr_dump_query(struct asr_query *);
 
 int asr_debug = 0;
+
 
 void
 asr_dump(struct asr *a)
@@ -891,7 +892,7 @@ asr_prepare_dns_query(struct asr_query *aq)
 		sizeof(aq->aq_query.q_dname)) == -1)
 		return (-1);
 
-        aq->aq_reqid = arc4random();
+        aq->aq_reqid = res_randomid();
 
 	memset(&h, 0, sizeof h);
 	h.id = aq->aq_reqid;
@@ -1112,10 +1113,14 @@ asr_send_dns_query(struct asr_query *aq)
 
 	if (aq->aq_fd == -1)
 		aq->aq_fd = asr_create_udp_socket();
+
+	if (connect(aq->aq_fd, sa, sa->sa_len) == -1)
+		return (-1);
+
 	aq->aq_timeout = ad->ad_timeout;
 
 	for(;;) {
-		e = sendto(aq->aq_fd, aq->aq_opkt, aq->aq_opktlen, 0, sa, sa->sa_len);
+		e = send(aq->aq_fd, aq->aq_opkt, aq->aq_opktlen, 0);
 		if (e == -1) {
 			if (errno != EINTR)
 				return (e);

@@ -185,8 +185,8 @@ enum imsg_type {
 	IMSG_SMTP_PAUSE,
 	IMSG_SMTP_RESUME,
 
-	IMSG_DNS_A,
-	IMSG_DNS_A_END,
+	IMSG_DNS_HOST,
+	IMSG_DNS_HOST_END,
 	IMSG_DNS_MX,
 	IMSG_DNS_PTR
 };
@@ -897,7 +897,7 @@ __dead void	fatalx(const char *);
 
 
 /* dns.c */
-void		 dns_query_a(struct smtpd *, char *, int, u_int64_t);
+void		 dns_query_host(struct smtpd *, char *, int, u_int64_t);
 void		 dns_query_mx(struct smtpd *, char *, int, u_int64_t);
 void		 dns_query_ptr(struct smtpd *, struct sockaddr_storage *,
 		     u_int64_t);

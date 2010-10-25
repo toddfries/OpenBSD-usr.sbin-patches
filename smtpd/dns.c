@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
+#include <sys/stat.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -37,12 +38,13 @@
 #include "smtpd.h"
 
 void	dns_setup(void);
+int	dns_resolver_updated(void);
 struct dnssession *dnssession_init(struct smtpd *, struct dns *);
 void	dnssession_destroy(struct smtpd *, struct dnssession *);
 void	dnssession_mx_insert(struct dnssession *, struct mx *);
 void	dns_asr_handler(int, short, void *);
 void	dns_asr_mx_handler(int, short, void *);
-void	lookup_a(struct imsgev *, struct dns *, int, int);
+void	lookup_host(struct imsgev *, struct dns *, int, int);
 void	lookup_mx(struct imsgev *, struct dns *);
 void	lookup_ptr(struct imsgev *, struct dns *);
 
@@ -53,7 +55,7 @@ struct asr *asr = NULL;
  */
 
 void
-dns_query_a(struct smtpd *env, char *host, int port, u_int64_t id)
+dns_query_host(struct smtpd *env, char *host, int port, u_int64_t id)
 {
 	struct dns	 query;
 
@@ -62,8 +64,8 @@ dns_query_a(struct smtpd *env, char *host, int port, u_int64_t id)
 	query.port = port;
 	query.id = id;
 
-	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_DNS_A, 0, 0, -1, &query,
-	    sizeof(query));
+	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_DNS_HOST, 0, 0, -1,
+	    &query, sizeof(query));
 }
 
 void
@@ -96,7 +98,8 @@ dns_query_ptr(struct smtpd *env, struct sockaddr_storage *ss, u_int64_t id)
 		
 		addr = ((struct sockaddr_in *)ss)->sin_addr.s_addr;
 
-		bsnprintf(query.host, sizeof(query.host), "%d.%d.%d.%d.in-addr.arpa",
+		bsnprintf(query.host, sizeof(query.host),
+		    "%d.%d.%d.%d.in-addr.arpa",
 		    (addr >> 24) & 0xff,
 		    (addr >> 16) & 0xff,
 		    (addr >> 8) & 0xff,
@@ -155,16 +158,34 @@ dns_query_ptr(struct smtpd *env, struct sockaddr_storage *ss, u_int64_t id)
 }
 
 /* LKA interface */
+int
+dns_resolver_updated(void)
+{
+	struct stat sb;
+	static time_t mtime = 0;
+
+	/* first run, we need a resolver context */
+	if (mtime == 0)
+		return 1;
+
+	if (stat(_PATH_RESCONF, &sb) < 0) {
+		log_warnx("dns_resolver_updated: please check %s",
+			_PATH_RESCONF);
+		return 0;
+	}
+
+	/* no change since last time */
+	if (mtime == sb.st_mtime)
+		return 0;
+
+	/* resolv.conf has been updated */
+	mtime = sb.st_mtime;
+	return 1;
+}
+
 void
 dns_setup(void)
 {
-	/* XXX */
-	/* if we already have a context, release it.
-	 * when smtpd supports reloading, we will want more code here to
-	 * update or invalidate pending dnssessions.
-	 *
-	 * -- gilles@
-	 */
 	if (asr)
 		asr_done(asr);
 
@@ -177,10 +198,13 @@ void
 dns_async(struct smtpd *env, struct imsgev *asker, int type, struct dns *query)
 {
 	struct dnssession *dnssession;
-	int asrtype;
+
+	if (dns_resolver_updated())
+		dns_setup();
 
 	if (asr == NULL) {
-		log_warnx("dns_async: resolver is disabled, please check /etc/resolv.conf");
+		log_warnx("dns_async: resolver is disabled, please check %s",
+		    _PATH_RESCONF);
 		goto noasr;
 	}
 
@@ -191,35 +215,34 @@ dns_async(struct smtpd *env, struct imsgev *asker, int type, struct dns *query)
 	
 	switch (type) {
 	case IMSG_DNS_PTR:
-		asrtype = T_PTR;
+		dnssession->aq = asr_query_dns(asr, T_PTR, C_IN, query->host, 0);
 		break;
-	case IMSG_DNS_A:
-		asrtype = T_A;
+	case IMSG_DNS_HOST:
+		dnssession->aq = asr_query_host(asr, query->host, PF_UNSPEC);
 		break;
 	case IMSG_DNS_MX:
-		asrtype = T_MX;
+		dnssession->aq = asr_query_dns(asr, T_MX, C_IN, query->host, 0);
 		break;
 	default:
 		goto err;
 	}
-
 	/* query and set up event to handle answer */
-	dnssession->aq = asr_query_dns(asr, asrtype, C_IN, query->host, 0);
 	if (dnssession->aq == NULL)
 		goto err;
 	dns_asr_handler(-1, -1, dnssession);
 	return;
 
 err:
-	log_debug("dns_async: ASR internal error, while attempting to resolve `%s'", query->host);
+	log_debug("dns_async: ASR error while attempting to resolve `%s'",
+	    query->host);
 	dnssession_destroy(env, dnssession);
+
 noasr:
 	query->error = EAI_AGAIN;
 	if (type != IMSG_DNS_PTR)
-		type = IMSG_DNS_A_END;
+		type = IMSG_DNS_HOST_END;
 	imsg_compose_event(asker, type, 0, 0, -1, query, sizeof(*query));
 }
-
 
 void
 dns_asr_handler(int fd, short event, void *arg)
@@ -232,6 +255,7 @@ dns_asr_handler(int fd, short event, void *arg)
 	struct query	q;
 	struct rr rr;
 	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	struct asr_result ar;
 	struct timeval tv = { 0, 0 };
 	char *p;
@@ -295,22 +319,32 @@ dns_asr_handler(int fd, short event, void *arg)
 		dnssession_destroy(env, dnssession);
 		break;
 
-	case IMSG_DNS_A:
+	case IMSG_DNS_HOST:
 		cnt = h.ancount;
 		for (; cnt; cnt--) {
 			if (unpack_rr(&pack, &rr) < 0)
 				goto err;
 
-			query->ss.ss_len = sizeof(struct sockaddr_in);
-			query->ss.ss_family = AF_INET;
-			in = (struct sockaddr_in *)&query->ss;
-			in->sin_addr = rr.rr.in_a.addr;
+			if (rr.rr_type == T_A) {
+				query->ss.ss_len = sizeof(struct sockaddr_in);
+				query->ss.ss_family = AF_INET;
+				in = (struct sockaddr_in *)&query->ss;
+				in->sin_addr = rr.rr.in_a.addr;
+			}
+			else if (rr.rr_type == T_AAAA) {
+				query->ss.ss_len = sizeof(struct sockaddr_in6);
+				query->ss.ss_family = AF_INET6;
+				in6 = (struct sockaddr_in6 *)&query->ss;
+				in6->sin6_addr = rr.rr.in_aaaa.addr6;
+			}
 
 			query->error = 0;
-			imsg_compose_event(query->asker, IMSG_DNS_A, 0, 0, -1, query, sizeof(*query));
+			imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1,
+			    query, sizeof(*query));
 		}
 		free(ar.ar_data);
-		imsg_compose_event(query->asker, IMSG_DNS_A_END, 0, 0, -1, query, sizeof(*query));
+		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
+		    query, sizeof(*query));
 		dnssession_destroy(env, dnssession);
 		break;
 
@@ -364,8 +398,9 @@ dns_asr_handler(int fd, short event, void *arg)
 err:
 	free(ar.ar_data);
 	if (query->type != IMSG_DNS_PTR)
-		query->type = IMSG_DNS_A_END;
-	imsg_compose_event(query->asker, query->type, 0, 0, -1, query, sizeof(*query));
+		query->type = IMSG_DNS_HOST_END;
+	imsg_compose_event(query->asker, query->type, 0, 0, -1, query,
+	    sizeof(*query));
 	dnssession_destroy(env, dnssession);
 }
 
@@ -382,6 +417,7 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 	struct query	q;
 	struct rr rr;
 	struct sockaddr_in *in;
+	struct sockaddr_in6 *in6;
 	struct asr_result ar;
 	struct timeval tv = { 0, 0 };
 	int cnt;
@@ -430,17 +466,28 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 		if (unpack_rr(&pack, &rr) < 0)
 			goto err;
 
-		query->ss.ss_len = sizeof(struct sockaddr_in);
-		query->ss.ss_family = AF_INET;
-		in = (struct sockaddr_in *)&query->ss;
-		in->sin_addr = rr.rr.in_a.addr;
+		if (rr.rr_type == T_A) {
+			query->ss.ss_len = sizeof(struct sockaddr_in);
+			query->ss.ss_family = AF_INET;
+			in = (struct sockaddr_in *)&query->ss;
+			in->sin_addr = rr.rr.in_a.addr;
+		}
+		else if (rr.rr_type == T_AAAA) {
+			query->ss.ss_len = sizeof(struct sockaddr_in6);
+			query->ss.ss_family = AF_INET6;
+			in6 = (struct sockaddr_in6 *)&query->ss;
+			in6->sin6_addr = rr.rr.in_aaaa.addr6;
+		}
+
 		query->error = 0;
-		imsg_compose_event(query->asker, IMSG_DNS_A, 0, 0, -1, query, sizeof(*query));
+		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
+		    sizeof(*query));
 	}
 	free(ar.ar_data);
 
 	if (dnssession->mxcurrent == &dnssession->mxarray[dnssession->mxarraysz - 1]) {
-		imsg_compose_event(query->asker, IMSG_DNS_A_END, 0, 0, -1, query, sizeof(*query));
+		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
+		    query, sizeof(*query));
 		dnssession_destroy(env, dnssession);
 		return;
 	}
@@ -456,7 +503,8 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 
 err:
 	free(ar.ar_data);
-	imsg_compose_event(query->asker, IMSG_DNS_A_END, 0, 0, -1, query, sizeof(*query));
+	imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1, query,
+	    sizeof(*query));
 	dnssession_destroy(env, dnssession);
 	return;
 }

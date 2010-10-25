@@ -176,3 +176,6 @@ int	    dname_is_wildcard(const char *);
 int	    dname_is_reverse(const char *);
 int	    dname_check_label(const char*, size_t);
 const char* dname_up(const char*, unsigned int);
+
+/* res_random.c */
+unsigned int res_randomid(void);
