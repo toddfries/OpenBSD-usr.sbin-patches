@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.25 2010/10/25 18:00:10 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.27 2010/10/27 14:35:56 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -157,7 +157,12 @@ sub compute_checksum
 	if (defined $base) {
 		$fname = $base.$fname;
 	}
-
+	for my $field (qw(symlink link size)) {  # md5
+		if (defined $result->{$field}) {
+			$state->error("User tried to define @#1 for #2", 
+			    $field, $fname);
+		}
+	}
 	if (-l $fname) {
 		if (!defined $base) {
 			$state->error("special file #1 can't be a symlink",
@@ -232,6 +237,16 @@ sub prepare_for_archival
 sub copy_over
 {
 }
+package OpenBSD::PackingElement::RcScript;
+sub archive
+{
+	my ($self, $state) = @_;
+	if ($self->name =~ m/^\//) {
+		$state->{archive}->destdir($state->{base});
+	}
+	$self->SUPER::archive($state);
+}
+
 package OpenBSD::PackingElement::SpecialFile;
 sub archive
 {
