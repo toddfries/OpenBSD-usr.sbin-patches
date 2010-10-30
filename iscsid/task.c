@@ -118,7 +118,7 @@ task_pdu_cb(struct connection *c, struct pdu *p)
 		break;
 	default:
 log_pdu(p, 1);
-		log_warnx("not handled yet. fix me");
+		log_warnx("op code: 0x%x not handled yet. fix me",ISCSI_PDU_OPCODE(ipdu->opcode));
 		pdu_free(p);
 	}
 }
