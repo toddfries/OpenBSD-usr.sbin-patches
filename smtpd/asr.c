@@ -37,7 +37,7 @@
 
 #define DEFAULT_CONFFILE	"/etc/resolv.conf"
 #define DEFAULT_HOSTFILE	"/etc/hosts"
-#define DEFAULT_CONF		"lookup bind file\nameserver 127.0.0.1\n"
+#define DEFAULT_CONF		"lookup bind file\nnameserver 127.0.0.1\n"
 #define DEFAULT_LOOKUP		"lookup bind file"
 
 #define ASR_MAXNS	5

@@ -243,8 +243,6 @@ dns_asr_handler(int fd, short event, void *arg)
 	}
 
 	if (query->type == IMSG_DNS_HOST) {
-		free(ar.ar_cname);
-		ar.ar_cname = NULL;
 		query->error = 0;
 		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
 		    query, sizeof(*query));
