@@ -405,7 +405,7 @@ dump_pkt(const void *data, size_t len)
 	struct rr	rr;
 	int		i, an, ns, ar, n;
 
-	packed_init(&p, (const char *)data, len);
+	packed_init(&p, (char*)data, len);
 
 	if (unpack_header(&p, &h) == -1) {
 		printf("bad packet: %s\n", p.err);

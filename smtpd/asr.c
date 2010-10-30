@@ -16,6 +16,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -31,6 +32,8 @@
 
 #include "asr.h"
 #include "dnsutil.h"
+
+#define unused __attribute__ ((unused))
 
 #define DEFAULT_CONFFILE	"/etc/resolv.conf"
 #define DEFAULT_HOSTFILE	"/etc/hosts"
@@ -65,19 +68,21 @@ struct asr_db {
 struct asr {
 	int		 a_refcount;
 	int		 a_ndots;
+	int		 a_forcetcp;
 	char		*a_domain;
 	int		 a_domcount;
 	char		*a_dom[ASR_MAXDOM];
 	int		 a_dbcount;
 	struct asr_db	 a_db[ASR_MAXDB];
+	int		 a_family[3];
 };
 
 struct asr_acache {
-	struct asr_acache	*aa_next;
+	struct asr_acache		*aa_next;
 	union {
-		struct sockaddr		any;
-		struct sockaddr_in	in;
-		struct sockaddr_in6	in6;
+		struct sockaddr		 sa;
+		struct sockaddr_in	 sain;
+		struct sockaddr_in6	 sain6;
 	} aa_sa;
 };
 
@@ -92,18 +97,19 @@ struct asr_query {
 	int			 aq_fd;
 
 	int			 aq_dom_idx;
+	int			 aq_family_idx;
 	int			 aq_db_idx;
 	int			 aq_ns_idx;
 	int			 aq_ns_cycles;
-
 	/* for dns */
 	char 			*aq_fqdn;   /* the fqdn being looked for */
 	struct query		 aq_query;
 	uint16_t		 aq_reqid;
-	char			 aq_opkt[PACKET_MAXLEN];
-	size_t			 aq_opktlen;
-	void			*aq_pktin;
-	size_t			 aq_pktlen;
+	void			*aq_buf;
+	size_t			 aq_buflen;
+	size_t			 aq_bufsize;
+	size_t			 aq_bufoffset; /* for TCP */
+	uint16_t		 aq_datalen; /* for TCP */
 	struct packed		 aq_packed;
 	int			 aq_nanswer;
 
@@ -127,75 +133,91 @@ struct asr_query {
 	struct addrinfo		*aq_ailast;
 };
 
+#define AQ_FAMILY(p) ((p)->aq_asr->a_family[(p)->aq_family_idx])
+#define AQ_DB(p) (&((p)->aq_asr->a_db[(p)->aq_db_idx]))
+#define AQ_NS_SA(p) (AQ_DB(p)->ad_sa[(p)->aq_ns_idx])
+#define AQ_BUF_LEFT(p) ((p)->aq_bufsize -  (p)->aq_buflen)
+#define AQ_BUF_DATA(p) ((p)->aq_buf +  (p)->aq_bufoffset)
+#define AQ_BUF_LEN(p) ((p)->aq_buflen - (p)->aq_bufoffset)
+#define AQ_BUF_WPOS(p) ((p)->aq_buf + (p)->aq_buflen)
+ 
 enum asr_state {
 	ASR_STATE_INIT,
 	ASR_STATE_NEXT_DOMAIN,
-	ASR_STATE_QUERY_DOMAIN,
+	ASR_STATE_SEARCH_DOMAIN,
 	ASR_STATE_NEXT_DB,
 	ASR_STATE_QUERY_DB,
+	ASR_STATE_NEXT_FAMILY,
+	ASR_STATE_LOOKUP_FAMILY,
 	ASR_STATE_NEXT_NS,
 	ASR_STATE_QUERY_NS,
 	ASR_STATE_READ_RR,
 	ASR_STATE_QUERY_FILE,
 	ASR_STATE_READ_FILE,
-	ASR_STATE_SEND,
-	ASR_STATE_RECV,
+	ASR_STATE_UDP_SEND,
+	ASR_STATE_UDP_RECV,
+	ASR_STATE_TCP_WRITE,
+	ASR_STATE_TCP_READ,
+	ASR_STATE_PACKET,
 	ASR_STATE_NEXT_MATCH,
 	ASR_STATE_TRY_MATCH,
 	ASR_STATE_SUBQUERY,
 	ASR_STATE_HALT,
 };
 
-int  asr_sockaddr_from_rr(struct sockaddr *, struct rr *);
-int  asr_sockaddr_parse(struct sockaddr *, int, const char *);
-void asr_sockaddr_set_port(struct sockaddr *, int);
+/* misc utility functions */
+int	ccount(const char *, char);
+int	asr_sockaddr_from_rr(struct sockaddr *, struct rr *);
+int	asr_sockaddr_parse(struct sockaddr *, int, const char *);
+void	asr_sockaddr_set_port(struct sockaddr *, int);
+int	asr_get_port(const char *, const char *, int);
+int	asr_is_fqdn(const char *);
+int	asr_cmp_fqdn_name(const char*, char*);
+char *	asr_make_fqdn(const char *, const char *);
+int	asr_connect(const struct sockaddr *, int);
+
+/* query functions */
+struct asr_query * asr_query_new(struct asr *, int);
+void		   asr_query_free(struct asr_query *);
+int asr_run_dns(struct asr_query *, struct asr_result *);
+int asr_run_host(struct asr_query *, struct asr_result *);
+int asr_run_addrinfo(struct asr_query *, struct asr_result *);
+
+/* a few helpers */
+int asr_ensure_buf(struct asr_query *, size_t);
+int asr_setup_query(struct asr_query *);
+int asr_udp_send(struct asr_query *);
+int asr_udp_recv(struct asr_query *);
+int asr_tcp_write(struct asr_query *);
+int asr_tcp_read(struct asr_query *);
+int asr_parse_hosts_cb(char **, int, void*, void*);
+int asr_parse_namedb_line(FILE *, char **, int);
+int asr_add_sockaddr(struct asr_query *, int, int, int, struct sockaddr*, int);
+int asr_validate_packet(struct asr_query *);
+const char * asr_error(int);
 
 /* config parsing */
 int asr_parse_nameserver(struct sockaddr *, const char *);
-
 int asr_parse_conf_file(struct asr *, const char *);
 int asr_parse_conf_str(struct asr *, const char *);
 int asr_parse_conf_cb(const char *,
 		      int(*)(char **, int, void *, void *),
 		      void *,
 		      void *);
-
 int   asr_add_searchdomain(struct asr *, const char *);
 int   asr_db_add_nameserver(struct asr_db *, const char *);
 void  asr_db_done(struct asr_db *);
-char *asr_make_fqdn(const char *, const char *);
-
-struct asr_query * asr_query_new(struct asr *, int);
-
-void asr_query_free(struct asr_query *);
-
-int asr_run_dns(struct asr_query *, struct asr_result *);
-int asr_run_host(struct asr_query *, struct asr_result *);
-int asr_run_addrinfo(struct asr_query *, struct asr_result *);
-
-int asr_create_udp_socket(void);
-int asr_prepare_dns_query(struct asr_query *);
-int asr_send_dns_query(struct asr_query *);
-int asr_recv_dns_response(struct asr_query *, struct asr_result *);
-
-int pass0(char **, int, void *, void *);
-int pass1(char **, int, void *, void *);
-int ccount(const char *, char);
-int asr_parse_line(FILE *, char **, int);
-int asr_cmp_fqdn_name(const char *, char *);
-int asr_is_fqdn(const char *);
-int asr_parse_hosts_cb(char **, int, void *, void *);
-int asr_get_port(const char *, const char *, int);
-int asr_add_sockaddr(struct asr_query *, int, int, int, struct sockaddr *,
-    int);
 
 #ifdef ASR_DEBUG
 
 void asr_dump(struct asr *);
 void asr_dump_query(struct asr_query *);
 
-int asr_debug = 0;
+struct kv { int code; const char *name; };
 
+static const char*	kvlookup(struct kv *, int);
+
+int asr_debug = 0;
 
 void
 asr_dump(struct asr *a)
@@ -209,6 +231,13 @@ asr_dump(struct asr *a)
 	printf("SEARCH\n");
 	for(i = 0; i < a->a_domcount; i++)
 		printf("   \"%s\"\n", a->a_dom[i]);
+	printf("OPTIONS\n");
+	printf(" forcetcp: %i\n", a->a_forcetcp);
+	printf(" ndots: %i\n", a->a_ndots);
+	printf(" family: ");
+	for(i = 0; a->a_family[i] != -1; i++)
+		printf(" %s", (a->a_family[i] == AF_INET) ? "inet" : "inet6");
+	printf("\n");
 	printf("DB\n");
 	for(ad = a->a_db, i = 0; i < a->a_dbcount; i++, ad++) {
 		switch (ad->ad_type) {
@@ -234,9 +263,7 @@ asr_dump(struct asr *a)
 	printf("------------------------------------\n");
 }
 
-struct kv { int code; const char *name; };
-
-const char *
+static const char *
 kvlookup(struct kv *kv, int code)
 {
 	while (kv->name) {
@@ -264,16 +291,21 @@ struct kv kv_db_type[] = {
 struct kv kv_state[] = {
 	{ ASR_STATE_INIT,		"ASR_STATE_INIT"		},
 	{ ASR_STATE_NEXT_DOMAIN,	"ASR_STATE_NEXT_DOMAIN"		},
-	{ ASR_STATE_QUERY_DOMAIN,	"ASR_STATE_QUERY_DOMAIN"	},
+	{ ASR_STATE_SEARCH_DOMAIN,	"ASR_STATE_SEARCH_DOMAIN"	},
 	{ ASR_STATE_NEXT_DB,		"ASR_STATE_NEXT_DB"		},
 	{ ASR_STATE_QUERY_DB,		"ASR_STATE_QUERY_DB"		},
+	{ ASR_STATE_NEXT_FAMILY,	"ASR_STATE_NEXT_FAMILY"		},
+	{ ASR_STATE_LOOKUP_FAMILY,	"ASR_STATE_LOOKUP_FAMILY"	},
 	{ ASR_STATE_NEXT_NS,		"ASR_STATE_NEXT_NS"		},
 	{ ASR_STATE_QUERY_NS,		"ASR_STATE_QUERY_NS"		},
 	{ ASR_STATE_READ_RR,		"ASR_STATE_READ_RR"		},
 	{ ASR_STATE_QUERY_FILE,		"ASR_STATE_QUERY_FILE"		},
 	{ ASR_STATE_READ_FILE,		"ASR_STATE_READ_FILE"		},
-	{ ASR_STATE_SEND,		"ASR_STATE_SEND"		},
-	{ ASR_STATE_RECV,		"ASR_STATE_RECV"		},
+	{ ASR_STATE_UDP_SEND,		"ASR_STATE_UDP_SEND"		},
+	{ ASR_STATE_UDP_RECV,		"ASR_STATE_UDP_RECV"		},
+	{ ASR_STATE_TCP_WRITE,		"ASR_STATE_TCP_WRITE"		},
+	{ ASR_STATE_TCP_READ,		"ASR_STATE_TCP_READ"		},
+	{ ASR_STATE_PACKET,		"ASR_STATE_PACKET"		},
 	{ ASR_STATE_NEXT_MATCH,		"ASR_STATE_NEXT_MATCH"		},
 	{ ASR_STATE_TRY_MATCH,		"ASR_STATE_TRY_MATCH"		},
 	{ ASR_STATE_SUBQUERY,		"ASR_STATE_SUBQUERY"		},
@@ -292,9 +324,12 @@ struct kv kv_transition[] = {
 void
 asr_dump_query(struct asr_query *aq)
 {
-	printf("%-25s dom %-2i db %-2i ns %-2i ns_cycles %-2i fd %-2i %ims",
+	printf("%-25s fqdn=%s dom %-2i fam %-2i famidx %-2i db %-2i ns %-2i ns_cycles %-2i fd %-2i %ims",
 		kvlookup(kv_state, aq->aq_state),
+		aq->aq_fqdn,
 		aq->aq_dom_idx,
+		aq->aq_family,
+		aq->aq_family_idx,
 		aq->aq_db_idx,
 		aq->aq_ns_idx,
 		aq->aq_ns_cycles,
@@ -304,415 +339,6 @@ asr_dump_query(struct asr_query *aq)
 }
 
 #endif /* ASR_DEBUG */
-
-int
-asr_sockaddr_from_rr(struct sockaddr *sa, struct rr *rr)
-{
-	struct sockaddr_in	*in;
-	struct sockaddr_in6	*in6;
-
-	if (rr->rr_class != C_IN)
-		return (-1);
-
-	switch (rr->rr_type) {
-	case T_A:
-		in = (struct sockaddr_in*)sa;
-		memset(in, 0, sizeof *in);
-		in->sin_len = sizeof *in;
-		in->sin_family = PF_INET;
-		in->sin_addr = rr->rr.in_a.addr;
-		in->sin_port = 0;
-		return (0);
-	case T_AAAA:
-		in6 = (struct sockaddr_in6*)sa;
-		memset(in6, 0, sizeof *in6);
-		in6->sin6_len = sizeof *in6;
-		in6->sin6_family = PF_INET6;
-		in6->sin6_addr = rr->rr.in_aaaa.addr6;
-		in6->sin6_port = 0;
-		return (0);
-	}
-
-	return (-1);
-}
-
-int
-asr_sockaddr_parse(struct sockaddr *sa, int family, const char *str)
-{
-	struct in_addr		 ina;
-	struct in6_addr		 in6a;
-	struct sockaddr_in	*in;
-	struct sockaddr_in6	*in6;
-
-	switch (family) {
-	case PF_UNSPEC:
-		if (asr_sockaddr_parse(sa, PF_INET, str) == 0)
-			return (0);
-		return asr_sockaddr_parse(sa, PF_INET6, str);
-
-	case PF_INET:
-		if (inet_pton(PF_INET, str, &ina) != 1)
-			return (-1);
-
-		in = (struct sockaddr_in *)sa;
-		memset(in, 0, sizeof *in);
-		in->sin_len = sizeof(struct sockaddr_in);
-		in->sin_family = PF_INET;
-		in->sin_addr.s_addr = ina.s_addr;
-		return (0);
-
-	case PF_INET6:
-		if (inet_pton(PF_INET6, str, &in6a) != 1)
-			return (-1);
-
-		in6 = (struct sockaddr_in6 *)sa;
-		memset(in6, 0, sizeof *in6);
-		in6->sin6_len = sizeof(struct sockaddr_in6);
-		in6->sin6_family = PF_INET6;
-		in6->sin6_addr = in6a;
-		return (0);
-	}
-
-	/* not reached */
-	return (-1);
-}
-
-void
-asr_sockaddr_set_port(struct sockaddr *sa, int portno)
-{
-	struct sockaddr_in	*in;
-	struct sockaddr_in6	*in6;
-
-	switch (sa->sa_family) {
-	case PF_INET:
-		in = (struct sockaddr_in *)sa;
-		in->sin_port = portno;
-		break;
-	case PF_INET6:
-		in6 = (struct sockaddr_in6 *)sa;
-		in6->sin6_port = portno;
-		break;
-	}
-}
-
-
-
-int
-asr_parse_nameserver(struct sockaddr *sa, const char *s)
-{
-	const char	*estr;
-	char		 buf[256];
-	char		*port = NULL;
-	in_port_t	 portno = htons(53);
-
-	if (*s == '[') {
-		strlcpy(buf, s + 1, sizeof buf);
-		s = buf;
-		port = strchr(buf, ']');
-		if (port == NULL)
-			return (-1);
-		*port++ = '\0';
-		if (*port != ':')
-			return (-1);
-		port++;
-	}
-	
-	if (port) {
-		portno = htons(strtonum(port, 1, USHRT_MAX, &estr));
-		if (estr)
-			return (-1);
-	}
-
-	if (asr_sockaddr_parse(sa, PF_UNSPEC, s) == -1)
-		return (-1);
-
-	asr_sockaddr_set_port(sa, portno);
-
-	return (0);
-}
-
-
-int
-asr_db_add_nameserver(struct asr_db *ad, const char *nameserver)
-{
-	struct sockaddr_storage	ss;
-
-	if (ad->ad_type != ASR_DB_DNS)
-		return (-1);
-
-	if (ad->ad_count == ASR_MAXNS)
-		return (-1);
-
-	if (asr_parse_nameserver((struct sockaddr*)&ss, nameserver))
-		return (-1);
-
-	if ((ad->ad_sa[ad->ad_count] = calloc(1, ss.ss_len)) == NULL)
-		return (0);
-
-	memmove(ad->ad_sa[ad->ad_count], &ss, ss.ss_len);
-	ad->ad_count += 1;
-
-	return (1);
-}
-
-int
-asr_add_searchdomain(struct asr *asr, const char *domain)
-{
-	if (asr->a_domcount == ASR_MAXDOM)
-		return (-1);
-
-	if ((asr->a_dom[asr->a_domcount] = asr_make_fqdn(domain, NULL)) == NULL)
-		return (0);
-
-	asr->a_domcount += 1;
-
-	return (1);
-}
-
-
-int
-pass0(char **tok, int n,  void *a0, void *a1)
-{
-	struct asr	*asr = (struct asr*)a0;
-	struct asr_db	*ad;
-	int		*nscount = (int*)a1;
-	int		 i, j;
-
-	/* search for lookup, domain, and count nameservers */
-
-	if (!strcmp(tok[0], "nameserver")) {
-		*nscount += 1;
-
-	} else if (!strcmp(tok[0], "domain")) {
-
-		if (n != 2)
-			return (0);
-
-		if (asr->a_domain)
-			return (0);
-
-		asr->a_domain = strdup(tok[1]);
-
-	} else if (!strcmp(tok[0], "lookup")) {
-
-		/* ignore the line if we already set lookup */
-		if (asr->a_dbcount != 0)
-			return (0);
-
-		if (n - 1 > ASR_MAXDB)
-			return (0);
-
-		/* ensure that each lookup is only given once */
-		for(i = 1; i < n; i++)
-			for(j = i + 1; j < n; j++)
-				if (!strcmp(tok[i], tok[j]))
-					return (0);
-
-		for(i = 1, ad = asr->a_db; i < n;
-		    i++, asr->a_dbcount++, ad++) {
-
-			if (!strcmp(tok[i], "yp")) {
-				ad->ad_type = ASR_DB_YP;
-
-			} else if (!strcmp(tok[i], "bind")) {
-				ad->ad_type = ASR_DB_DNS;
-				ad->ad_count = 0;
-				ad->ad_timeout = 1000;
-				ad->ad_retries = 3;
-
-			} else if (!strcmp(tok[i], "file")) {
-
-				ad->ad_type = ASR_DB_FILE;
-				ad->ad_path = strdup(DEFAULT_HOSTFILE);
-
-			} else {
-				/* ignore the line */
-				asr->a_dbcount = 0;
-				return (0);
-			}
-		}
-	} else if (!strcmp(tok[0], "search")) {
-		/* resolv.conf says the last line wins */
-		for(i = 0; i < asr->a_domcount; i++)
-			free(asr->a_dom[i]);
-		asr->a_domcount = 0;
-		for(i = 1; i < n; i++)
-			asr_add_searchdomain(asr, tok[i]);
-	}
-
-	return (0);
-}
-
-int
-pass1(char **tok, int n,  void *a0, void *a1)
-{
-	struct asr_db *ad = (struct asr_db*) a0;
-
-	/* fill the DNS db with the specified nameservers */
-
-	if (!strcmp(tok[0], "nameserver")) {
-		if (n != 2)
-			return (0);
-		asr_db_add_nameserver(ad, tok[1]);
-	}
-	return (0);
-}
-
-int
-asr_parse_conf_cb(const char	 *conf,
-		  int		(*cb)(char**, int, void*, void*),
-		  void		 *arg0,
-		  void		 *arg1)
-{
-	size_t		 len;
-	const char	*line;
-	char		 buf[1024];
-	char		*tok[10], **tp, *cp;
-	int		 ntok;
-
-	line = conf;
-	while (*line) {
-		len = strcspn(line, "\n\0");
-		if (len < sizeof buf) {
-			memmove(buf, line, len);
-			buf[len] = '\0';
-		} else
-			buf[0] = '\0';
-		line += len;
-		if (*line == '\n')
-			line++;
-		buf[strcspn(buf, ";#")] = '\0';
-		for(cp = buf, tp = tok, ntok = 0;
-		    tp < &tok[10] && (*tp = strsep(&cp, " \t")) != NULL;)
-			if (**tp != '\0') {
-				tp++;
-				ntok++;
-			}
-		*tp = NULL;
-
-		if (tok[0] == NULL)
-			continue;
-
-		if (cb(tok, ntok, arg0, arg1))
-			break;
-	}
-
-	return (0);
-}
-
-int
-ccount(const char *s, char c)
-{
-	int	n = 0;
-
-	while(*s)
-		if (*s++ == c)
-			n += 1;
-
-	return (n);
-}
-
-int
-asr_parse_conf_str(struct asr *asr, const char *conf)
-{
-	char		 buf[512], *ch;
-	struct asr_db	*ad;
-	int		 i;
-	int		 nscount = 0;
-
-
-	asr_parse_conf_cb(conf, pass0, asr, &nscount);
-
-	if (asr->a_dbcount == 0) {
-		/* no lookup directive */
-		asr_parse_conf_cb(DEFAULT_LOOKUP, pass0, asr, &nscount);
-	}
-
-	ad = NULL;
-	for(i = 0; i < asr->a_dbcount; i++)
-		if (asr->a_db[i].ad_type == ASR_DB_DNS) {
-			ad = &asr->a_db[i];
-			break;
-		}
-
-	if (nscount && ad)
-		asr_parse_conf_cb(conf, pass1, ad, NULL);
-
-	if (asr->a_domain == NULL)
-		if (gethostname(buf, sizeof buf) == 0) {
-			ch = strchr(buf, '.');
-			if (ch)
-				asr->a_domain = strdup(ch + 1);
-			else /* assume root see resolv.conf(5) */
-				asr->a_domain = strdup("");
-		}
-
-	if (asr->a_domcount == 0)
-		for(ch = asr->a_domain; ch; ) {
-			asr_add_searchdomain(asr, ch);
-			ch = strchr(ch, '.');
-			if (ch && ccount(++ch, '.') == 0)
-				break;
-		}
-
-	return (0);
-}
-
-int
-asr_parse_conf_file(struct asr *a, const char * path)
-{
-	FILE	*cf;
-	char	 buf[1024];
-	ssize_t	 r;
-
-	cf = fopen(path, "r");
-	if (cf == NULL)
-		return (-1);
-
-	/* XXX make sure we read the whole file */
-	r = fread(buf, 1, sizeof buf - 1, cf);
-	fclose(cf);
-	if (r == -1)
-		return (-1);
-	buf[r] = '\0';
- 
-	return asr_parse_conf_str(a, buf);
-}
-
-/**********************
- * namedb parser
- **********************/
-
-int
-asr_parse_line(FILE		 *file,
-	       char		**tokens,
-	       int		  ntoken)
-{
-	size_t	  len;
-	char	 *buf, *cp, **tp;
-	int	  ntok;
-
-  again:
-	if ((buf = fgetln(file, &len)) == NULL)
-		return (-1);
-
-	if (buf[len - 1] == '\n')
-		len--;
-
-	buf[len] = '\0';
-	buf[strcspn(buf, "#")] = '\0';
-	for(cp = buf, tp = tokens, ntok = 0;
-	    ntok < ntoken && (*tp = strsep(&cp, " \t")) != NULL;)
-		if (**tp != '\0') {
-			tp++;
-			ntok++;
-		}
-	*tp = NULL;
-	if (tokens[0] == NULL)
-		goto again;
-
-	return (ntok);
-}
 
 struct asr *
 asr_resolver(const char *conf)
@@ -735,6 +361,9 @@ asr_resolver(const char *conf)
 
 	asr->a_refcount = 1;
 	asr->a_ndots = 1;
+	asr->a_family[0] = AF_INET;
+	asr->a_family[1] = AF_INET6;
+	asr->a_family[2] = -1;
 
 	if (conf == NULL) {
 		r = asr_parse_conf_file(asr, DEFAULT_CONFFILE);
@@ -754,46 +383,6 @@ asr_resolver(const char *conf)
 #endif
 
 	return (asr);
-}
-
-struct asr_query *
-asr_query_new(struct asr *asr, int type)
-{
-	struct asr_query	*aq;
-
-	if ((aq = calloc(1, sizeof(*aq))) == NULL)
-		return (NULL);
-
-	aq->aq_asr = asr;
-	aq->aq_fd = -1;
-	aq->aq_type = type;
-	asr->a_refcount += 1;
-
-	aq->aq_state = ASR_STATE_INIT;
-
-	return (aq);
-}
-
-void
-asr_db_done(struct asr_db *ad)
-{
-	int	i;
-
-	switch(ad->ad_type) {
-	case ASR_DB_DNS:
-		for(i = 0; i < ad->ad_count; i++)
-			free(ad->ad_sa[i]);
-		break;
-
-	case ASR_DB_YP:
-		break;
-
-	case ASR_DB_FILE:
-		free(ad->ad_path);
-		break;
-	default:
-		errx(1, "asr_db_done: unknown db type");
-	}
 }
 
 void
@@ -817,104 +406,12 @@ asr_done(struct asr *asr)
 	}
 }
 
-int
-asr_cmp_fqdn_name(const char *fqdn, char *name)
-{
-	int i;
-
-	/* compare a fqdn with a name that my not end with a dot */
-
-	for (i = 0; fqdn[i] && name[i]; i++)
-		if (fqdn[i] != name[i])
-			return (-1);
-
-	if (fqdn[i] == name[i])
-		return (0);
-
-	if (fqdn[i] == 0 || fqdn[i] != '.' || fqdn[i+1] != 0)
-		return (-1);
-
-	return (0);
-}
-
-
-int
-asr_is_fqdn(const char *name)
-{
-	size_t	len;
-
-	len = strlen(name);
-	return (len > 0 && name[len -1] == '.');
-}
-
-char *
-asr_make_fqdn(const char *name, const char *domain)
-{
-	char	*fqdn;
-	size_t	 len;
-
-	if (domain == NULL)
-		domain = ".";
-#ifdef ASR_DEBUG
-	else
-		if (!asr_is_fqdn(domain))
-			errx(1, "domain is not FQDN: %s", domain);
-#endif
-
-	len = strlen(name);
-	if (len == 0) {
-		fqdn = strdup(domain);
-	} else if (name[len - 1] !=  '.') {
-		if (domain[0] == '.')
-			domain += 1;
-		len += strlen(domain) + 2;
-		fqdn = malloc(len);
-		if (fqdn == NULL)
-			return (NULL);
-		strlcpy(fqdn, name, len);
-		strlcat(fqdn, ".", len);
-		strlcat(fqdn, domain, len);
-	} else {
-		fqdn = strdup(name);
-	}
-
-	return (fqdn);
-}
-
-int
-asr_prepare_dns_query(struct asr_query *aq)
-{
-	struct packed		 p;
-	struct header		 h;
-
-	if (dname_from_fqdn(aq->aq_fqdn,
-		aq->aq_query.q_dname,
-		sizeof(aq->aq_query.q_dname)) == -1)
-		return (-1);
-
-        aq->aq_reqid = res_randomid();
-
-	memset(&h, 0, sizeof h);
-	h.id = aq->aq_reqid;
-	if (!(aq->aq_flags & ASR_NOREC))
-		h.flags |= RD_MASK;
-	h.qdcount = 1;
-
-	packed_init(&p, aq->aq_opkt, sizeof(aq->aq_opkt));
-	pack_header(&p, &h);
-	pack_query(&p, aq->aq_query.q_type, aq->aq_query.q_class,
-		aq->aq_query.q_dname);
-	aq->aq_opktlen = p.offset;
-
-	return (0);
-}
-
 struct asr_query *
-asr_query_dns(struct asr	*asr,
-	      uint16_t		 type,
-	      uint16_t		 class,
-	      const char	*name,
-	      int		 flags)
+asr_query_dns(struct asr *asr,
+	      uint16_t	 type,
+	      uint16_t	 class,
+	      const char *name,
+	      int	 flags)
 {
 	struct asr_query	*aq;
 
@@ -929,19 +426,16 @@ asr_query_dns(struct asr	*asr,
 		goto abort;
 
 	return (aq);
-
-abort:
+    abort:
 	asr_query_free(aq);
-
 	return (NULL);
 }
 
-
 struct asr_query *
-asr_query_addrinfo(struct asr			*asr,
-		   const char			*hostname,
-		   const char			*servname,
-		   const struct addrinfo	*hints)
+asr_query_addrinfo(struct asr		 *asr,
+		   const char		 *hostname,
+		   const char		 *servname,
+		   const struct addrinfo *hints)
 {
 	struct asr_query	*aq;
 
@@ -960,23 +454,22 @@ asr_query_addrinfo(struct asr			*asr,
 	}
 
 	return (aq);
-
-abort:
+    abort:
 	asr_query_free(aq);
 	return (NULL);
 }
 
 int
-asr_parse_hosts_cb(char **tok, int n,  void *a0, void *a1)
+asr_parse_hosts_cb(char **tok, int n, void *a0, void *a1)
 {
 	struct asr_query	*aq = (struct asr_query*) a0;
 	struct asr_result	*ar = (struct asr_result*) a1;
-	int	i;
+	int			 i;
 
 	for (i = 1; i < n; i++) {
 		if (strcmp(tok[i], aq->aq_host))
 			continue;
-		if (asr_sockaddr_parse(&ar->ar_sa.any, aq->aq_family, tok[0]) == -1)
+		if (asr_sockaddr_parse(&ar->ar_sa.sa, aq->aq_family, tok[0]) == -1)
 			continue;
 		ar->ar_cname = strdup(tok[1]);
 		return (1);
@@ -986,9 +479,7 @@ asr_parse_hosts_cb(char **tok, int n,  void *a0, void *a1)
 }
 
 struct asr_query *
-asr_query_host(struct asr *asr,
-	       const char *host,
-	       int	   family)
+asr_query_host(struct asr *asr, const char *host, int family)
 {
 	struct asr_query	*aq;
 
@@ -1003,19 +494,16 @@ asr_query_host(struct asr *asr,
 	aq->aq_family = family;
 
 	return (aq);
-
-abort:
+    abort:
 	asr_query_free(aq);
 	return (NULL);
 }
-
 
 void
 asr_abort(struct asr_query *aq)
 {
 	asr_query_free(aq);
 }
-
 
 int
 asr_run(struct asr_query *aq, struct asr_result *ar)
@@ -1082,131 +570,574 @@ asr_run_sync(struct asr_query *aq, struct asr_result *ar)
 }
 
 int
-asr_create_udp_socket(void)
+asr_sockaddr_from_rr(struct sockaddr *sa, struct rr *rr)
 {
-	int	sockfd;
-	int	flags;
+	struct sockaddr_in	*sin;
+	struct sockaddr_in6	*sin6;
 
-	if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-		err(1, "socket");
+	if (rr->rr_class != C_IN)
+		return (-1);
 
-	if ((flags = fcntl(sockfd, F_GETFL, 0)) == -1)
-		err(1, "fcntl F_GETFL");
+	switch (rr->rr_type) {
+	case T_A:
+		sin = (struct sockaddr_in*)sa;
+		memset(sin, 0, sizeof *sin);
+		sin->sin_len = sizeof *sin;
+		sin->sin_family = PF_INET;
+		sin->sin_addr = rr->rr.in_a.addr;
+		sin->sin_port = 0;
+		return (0);
+	case T_AAAA:
+		sin6 = (struct sockaddr_in6*)sa;
+		memset(sin6, 0, sizeof *sin6);
+		sin6->sin6_len = sizeof *sin6;
+		sin6->sin6_family = PF_INET6;
+		sin6->sin6_addr = rr->rr.in_aaaa.addr6;
+		sin6->sin6_port = 0;
+		return (0);
+	}
 
-	flags |= O_NONBLOCK;
-
-	if ((flags = fcntl(sockfd, F_SETFL, flags)) == -1)
-		err(1, "fcntl F_SETFL");
-
-	return (sockfd);
+	return (-1);
 }
 
 int
-asr_send_dns_query(struct asr_query *aq)
+asr_sockaddr_parse(struct sockaddr *sa, int family, const char *str)
 {
-	struct asr_db	*ad;
-	struct sockaddr	*sa;
-	ssize_t		 e;
+	struct in_addr		 ina;
+	struct in6_addr		 in6a;
+	struct sockaddr_in	*sin;
+	struct sockaddr_in6	*sin6;
 
-	ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-	sa = ad->ad_sa[aq->aq_ns_idx];
+	switch (family) {
+	case PF_UNSPEC:
+		if (asr_sockaddr_parse(sa, PF_INET, str) == 0)
+			return (0);
+		return asr_sockaddr_parse(sa, PF_INET6, str);
 
-	if (aq->aq_fd == -1)
-		aq->aq_fd = asr_create_udp_socket();
+	case PF_INET:
+		if (inet_pton(PF_INET, str, &ina) != 1)
+			return (-1);
 
-	if (connect(aq->aq_fd, sa, sa->sa_len) == -1)
+		sin = (struct sockaddr_in *)sa;
+		memset(sin, 0, sizeof *sin);
+		sin->sin_len = sizeof(struct sockaddr_in);
+		sin->sin_family = PF_INET;
+		sin->sin_addr.s_addr = ina.s_addr;
+		return (0);
+
+	case PF_INET6:
+		if (inet_pton(PF_INET6, str, &in6a) != 1)
+			return (-1);
+
+		sin6 = (struct sockaddr_in6 *)sa;
+		memset(sin6, 0, sizeof *sin6);
+		sin6->sin6_len = sizeof(struct sockaddr_in6);
+		sin6->sin6_family = PF_INET6;
+		sin6->sin6_addr = in6a;
+		return (0);
+	}
+
+	/* not reached */
+	return (-1);
+}
+
+void
+asr_sockaddr_set_port(struct sockaddr *sa, int portno)
+{
+	struct sockaddr_in	*sin;
+	struct sockaddr_in6	*sin6;
+
+	switch (sa->sa_family) {
+	case PF_INET:
+		sin = (struct sockaddr_in *)sa;
+		sin->sin_port = portno;
+		break;
+	case PF_INET6:
+		sin6 = (struct sockaddr_in6 *)sa;
+		sin6->sin6_port = portno;
+		break;
+	}
+}
+
+int
+asr_parse_nameserver(struct sockaddr *sa, const char *s)
+{
+	const char	*estr;
+	char		 buf[256];
+	char		*port = NULL;
+	in_port_t	 portno = htons(53);
+
+	if (*s == '[') {
+		strlcpy(buf, s + 1, sizeof buf);
+		s = buf;
+		port = strchr(buf, ']');
+		if (port == NULL)
+			return (-1);
+		*port++ = '\0';
+		if (*port != ':')
+			return (-1);
+		port++;
+	}
+	
+	if (port) {
+		portno = htons(strtonum(port, 1, USHRT_MAX, &estr));
+		if (estr)
+			return (-1);
+	}
+
+	if (asr_sockaddr_parse(sa, PF_UNSPEC, s) == -1)
 		return (-1);
 
-	aq->aq_timeout = ad->ad_timeout;
+	asr_sockaddr_set_port(sa, portno);
 
-	for(;;) {
-		e = send(aq->aq_fd, aq->aq_opkt, aq->aq_opktlen, 0);
-		if (e == -1) {
-			if (errno != EINTR)
-				return (e);
-			continue;
+	return (0);
+}
+
+int
+asr_db_add_nameserver(struct asr_db *ad, const char *nameserver)
+{
+	struct sockaddr_storage	ss;
+
+	if (ad->ad_type != ASR_DB_DNS)
+		return (-1);
+
+	if (ad->ad_count == ASR_MAXNS)
+		return (-1);
+
+	if (asr_parse_nameserver((struct sockaddr*)&ss, nameserver))
+		return (-1);
+
+	if ((ad->ad_sa[ad->ad_count] = calloc(1, ss.ss_len)) == NULL)
+		return (0);
+
+	memmove(ad->ad_sa[ad->ad_count], &ss, ss.ss_len);
+	ad->ad_count += 1;
+
+	return (1);
+}
+
+int
+asr_add_searchdomain(struct asr *asr, const char *domain)
+{
+	if (asr->a_domcount == ASR_MAXDOM)
+		return (-1);
+
+	if ((asr->a_dom[asr->a_domcount] = asr_make_fqdn(domain, NULL)) == NULL)
+		return (0);
+
+	asr->a_domcount += 1;
+
+	return (1);
+}
+
+static int
+pass0(char **tok, int n, void *a0, void *a1)
+{
+	struct asr	*asr = (struct asr*)a0;
+	struct asr_db	*ad;
+	int		*nscount = (int*)a1;
+	int		 i, j, d;
+	const char	*e;
+
+	/* search for lookup, domain, family, options, and count nameservers */
+
+	if (!strcmp(tok[0], "nameserver")) {
+		*nscount += 1;
+
+	} else if (!strcmp(tok[0], "domain")) {
+		if (n != 2)
+			return (0);
+		if (asr->a_domain)
+			return (0);
+		asr->a_domain = strdup(tok[1]);
+	} else if (!strcmp(tok[0], "lookup")) {
+		/* ignore the line if we already set lookup */
+		if (asr->a_dbcount != 0)
+			return (0);
+		if (n - 1 > ASR_MAXDB)
+			return (0);
+		/* ensure that each lookup is only given once */
+		for(i = 1; i < n; i++)
+			for(j = i + 1; j < n; j++)
+				if (!strcmp(tok[i], tok[j]))
+					return (0);
+		for(i = 1, ad = asr->a_db; i < n;
+		    i++, asr->a_dbcount++, ad++) {
+
+			if (!strcmp(tok[i], "yp")) {
+				ad->ad_type = ASR_DB_YP;
+
+			} else if (!strcmp(tok[i], "bind")) {
+				ad->ad_type = ASR_DB_DNS;
+				ad->ad_count = 0;
+				ad->ad_timeout = 1000;
+				ad->ad_retries = 3;
+
+			} else if (!strcmp(tok[i], "file")) {
+				ad->ad_type = ASR_DB_FILE;
+				ad->ad_path = strdup(DEFAULT_HOSTFILE);
+			} else {
+				/* ignore the line */
+				asr->a_dbcount = 0;
+				return (0);
+			}
 		}
-		break;
+	} else if (!strcmp(tok[0], "search")) {
+		/* resolv.conf says the last line wins */
+		for(i = 0; i < asr->a_domcount; i++)
+			free(asr->a_dom[i]);
+		asr->a_domcount = 0;
+		for(i = 1; i < n; i++)
+			asr_add_searchdomain(asr, tok[i]);
+	} else if (!strcmp(tok[0], "family")) {
+		if (n == 1 || n > 3)
+			return (0);
+		for (i = 1; i < n; i++)
+			if (strcmp(tok[i], "inet4") && strcmp(tok[i], "inet6"))
+				return (0);
+		for (i = 1; i < n; i++)
+			asr->a_family[i - 1] = strcmp(tok[i], "inet4") ? \
+			    AF_INET6 : AF_INET;
+		asr->a_family[i - 1] = -1;
+	} else if (!strcmp(tok[0], "option")) {
+		for(i = 1; i < n; i++) {
+			if (!strcmp(tok[i], "tcp"))
+				asr->a_forcetcp = 1;
+			else if ((!strncmp(tok[i], "ndots:", 6))) {
+				e = NULL;
+				d = strtonum(tok[i] + 6, 1, 16, &e);
+				if (e == NULL)
+					asr->a_ndots = d;
+			}
+		}
+	}
+
+	return (0);
+}
+
+static int
+pass1(char **tok, int n, void *a0, unused void *a1)
+{
+	struct asr_db *ad = (struct asr_db*) a0;
+
+	/* fill the DNS db with the specified nameservers */
+
+	if (!strcmp(tok[0], "nameserver")) {
+		if (n != 2)
+			return (0);
+		asr_db_add_nameserver(ad, tok[1]);
+	}
+	return (0);
+}
+
+int
+asr_parse_conf_cb(const char	 *str,
+		  int		(*cb)(char**, int, void*, void*),
+		  void		 *arg0,
+		  void		 *arg1)
+{
+	size_t		 len;
+	const char	*line;
+	char		 buf[1024];
+	char		*tok[10], **tp, *cp;
+	int		 ntok;
+
+	line = str;
+	while (*line) {
+		len = strcspn(line, "\n\0");
+		if (len < sizeof buf) {
+			memmove(buf, line, len);
+			buf[len] = '\0';
+		} else
+			buf[0] = '\0';
+		line += len;
+		if (*line == '\n')
+			line++;
+		buf[strcspn(buf, ";#")] = '\0';
+		for(cp = buf, tp = tok, ntok = 0;
+		    tp < &tok[10] && (*tp = strsep(&cp, " \t")) != NULL;)
+			if (**tp != '\0') {
+				tp++;
+				ntok++;
+			}
+		*tp = NULL;
+
+		if (tok[0] == NULL)
+			continue;
+
+		if (cb(tok, ntok, arg0, arg1))
+			break;
 	}
 
 	return (0);
 }
 
 int
-asr_recv_dns_response(struct asr_query *aq, struct asr_result *ar)
+ccount(const char *s, char c)
 {
-	struct packed	p;
-	struct header	h;
-	struct query	q;
-	struct rr	rr;
-	char		buf[PACKET_MAXLEN];
-	int		r;
-	struct sockaddr	*sa;
-	socklen_t	 sl;
-	ssize_t		 len;
+	int	n = 0;
 
-	sa = &ar->ar_sa.any;
+	while(*s)
+		if (*s++ == c)
+			n += 1;
 
-    retry:
-	sl = sizeof(ar->ar_sa);
-	len = recvfrom(aq->aq_fd, buf, sizeof buf, 0, sa, &sl);
-	if (len == -1) {
-		if (errno == EINTR)
-			goto retry;
-		if (errno == EAGAIN)
-			return (-2);
+	return (n);
+}
+
+int
+asr_parse_conf_str(struct asr *asr, const char *str)
+{
+	char		 buf[512], *ch;
+	struct asr_db	*ad;
+	int		 i;
+	int		 nscount = 0;
+
+
+	asr_parse_conf_cb(str, pass0, asr, &nscount);
+
+	if (asr->a_dbcount == 0) {
+		/* no lookup directive */
+		asr_parse_conf_cb(DEFAULT_LOOKUP, pass0, asr, &nscount);
+	}
+
+	ad = NULL;
+	for(i = 0; i < asr->a_dbcount; i++)
+		if (asr->a_db[i].ad_type == ASR_DB_DNS) {
+			ad = &asr->a_db[i];
+			break;
+		}
+
+	if (nscount && ad)
+		asr_parse_conf_cb(str, pass1, ad, NULL);
+
+	if (asr->a_domain == NULL)
+		if (gethostname(buf, sizeof buf) == 0) {
+			ch = strchr(buf, '.');
+			if (ch)
+				asr->a_domain = strdup(ch + 1);
+			else /* assume root see resolv.conf(5) */
+				asr->a_domain = strdup("");
+		}
+
+	if (asr->a_domcount == 0)
+		for(ch = asr->a_domain; ch; ) {
+			asr_add_searchdomain(asr, ch);
+			ch = strchr(ch, '.');
+			if (ch && ccount(++ch, '.') == 0)
+				break;
+		}
+
+	return (0);
+}
+
+int
+asr_parse_conf_file(struct asr *a, const char *path)
+{
+	FILE	*cf;
+	char	 buf[1024];
+	ssize_t	 r;
+
+	cf = fopen(path, "r");
+	if (cf == NULL)
+		return (-1);
+
+	/* XXX make sure we read the whole file */
+	r = fread(buf, 1, sizeof buf - 1, cf);
+	fclose(cf);
+	if (r == -1)
+		return (-1);
+	buf[r] = '\0';
+ 
+	return asr_parse_conf_str(a, buf);
+}
+
+int
+asr_parse_namedb_line(FILE *file, char **tokens, int ntoken)
+{
+	size_t	  len;
+	char	 *buf, *cp, **tp;
+	int	  ntok;
+
+  again:
+	if ((buf = fgetln(file, &len)) == NULL)
+		return (-1);
+
+	if (buf[len - 1] == '\n')
+		len--;
+
+	buf[len] = '\0';
+	buf[strcspn(buf, "#")] = '\0';
+	for(cp = buf, tp = tokens, ntok = 0;
+	    ntok < ntoken && (*tp = strsep(&cp, " \t")) != NULL;)
+		if (**tp != '\0') {
+			tp++;
+			ntok++;
+		}
+	*tp = NULL;
+	if (tokens[0] == NULL)
+		goto again;
+
+	return (ntok);
+}
+
+struct asr_query *
+asr_query_new(struct asr *asr, int type)
+{
+	struct asr_query	*aq;
+
+	if ((aq = calloc(1, sizeof(*aq))) == NULL)
+		return (NULL);
+
+	aq->aq_asr = asr;
+	aq->aq_fd = -1;
+	aq->aq_type = type;
+	asr->a_refcount += 1;
+
+	aq->aq_state = ASR_STATE_INIT;
+
+	return (aq);
+}
+
+void
+asr_db_done(struct asr_db *ad)
+{
+	int	i;
+
+	switch(ad->ad_type) {
+	case ASR_DB_DNS:
+		for(i = 0; i < ad->ad_count; i++)
+			free(ad->ad_sa[i]);
+		break;
+
+	case ASR_DB_YP:
+		break;
+
+	case ASR_DB_FILE:
+		free(ad->ad_path);
+		break;
+	default:
+		errx(1, "asr_db_done: unknown db type");
+	}
+}
+
+const char *
+asr_error(int v)
+{
+	switch(v) {
+	case ASR_OK:
+		return "no error";
+	case EASR_MEMORY:
+		return "out of memory";
+	case EASR_TIMEDOUT:
+		return "all nameservers timed out";
+	case EASR_NAMESERVER:
+		return "no nameserver specified";
+	case EASR_FAMILY:
+		return "invalid address family";
+	case EASR_NOTFOUND:
+		return "not found";
+	case EASR_NAME:
+		return "invalid domain name";
+	default:
+		return "unknown error code";
+	}
+}
+
+int
+asr_cmp_fqdn_name(const char *fqdn, char *name)
+{
+	int i;
+
+	/* compare a fqdn with a name that may not end with a dot */
+
+	for (i = 0; fqdn[i] && name[i]; i++)
+		if (fqdn[i] != name[i])
+			return (-1);
+
+	if (fqdn[i] == name[i])
+		return (0);
+
+	if (fqdn[i] == 0 || fqdn[i] != '.' || fqdn[i+1] != 0)
+		return (-1);
+
+	return (0);
+}
+
+int
+asr_is_fqdn(const char *name)
+{
+	size_t	len;
+
+	len = strlen(name);
+	return (len > 0 && name[len -1] == '.');
+}
+
+char *
+asr_make_fqdn(const char *name, const char *domain)
+{
+	char	*fqdn;
+	size_t	 len;
+
+	if (domain == NULL)
+		domain = ".";
+#ifdef ASR_DEBUG
+	else
+		if (!asr_is_fqdn(domain))
+			errx(1, "domain is not FQDN: %s", domain);
+#endif
+
+	len = strlen(name);
+	if (len == 0) {
+		fqdn = strdup(domain);
+	} else if (name[len - 1] !=  '.') {
+		if (domain[0] == '.')
+			domain += 1;
+		len += strlen(domain) + 2;
+		fqdn = malloc(len);
+		if (fqdn == NULL)
+			return (NULL);
+		strlcpy(fqdn, name, len);
+		strlcat(fqdn, ".", len);
+		strlcat(fqdn, domain, len);
+	} else {
+		fqdn = strdup(name);
+	}
+
+	return (fqdn);
+}
+
+int
+asr_setup_query(struct asr_query *aq)
+{
+	struct packed		 p;
+	struct header		 h;
+
+	if (dname_from_fqdn(aq->aq_fqdn,
+		aq->aq_query.q_dname,
+		sizeof(aq->aq_query.q_dname)) == -1) {
 		return (-1);
 	}
 
-	packed_init(&p, buf, len);
+        aq->aq_reqid = res_randomid();
 
-	/* NOTE: We are very strict about what we accept as a valid dns response,
-	 * to make sure we don't throw stupid things back to the upper layers.
-	 * Though, we might want to be a more lenient in some cases, so we
-	 * want to be able to tweak the behaviour through the query flags:
-	 *      - ignore non-critical problems in header flags
-	 *	- accept truncated packet, as long as the answer is complete
-	 */
+	memset(&h, 0, sizeof h);
+	h.id = aq->aq_reqid;
+	if (!(aq->aq_flags & ASR_NOREC))
+		h.flags |= RD_MASK;
+	h.qdcount = 1;
 
-	unpack_header(&p, &h);
-	if (p.err)
-		return (-1);
-	if (h.id != aq->aq_reqid)
-		return (-1);
-	if (h.qdcount != 1)
-		return (-1);
-	if ((h.flags & Z_MASK) != 0)
-		return (-1);	/* should be zero, we could allow this */
-	if (h.flags & TC_MASK)
-		return (-1);	/* truncated. we could allow this */
-	if (OPCODE(h.flags) != OP_QUERY)
-		return (-1);	/* actually, it depends on the request */
-	if ((h.flags & QR_MASK) == 0)
-		return (-1);	/* not a response */
+	if (aq->aq_buf == NULL) {
+		aq->aq_bufsize = PACKET_MAXLEN;
+		if ((aq->aq_buf = malloc(aq->aq_bufsize)) == NULL)
+			return (-2);
+	}
+	aq->aq_bufoffset = 0;
 
-	unpack_query(&p, &q);
-	if (p.err)
-		return (-1);
-	if (q.q_type != aq->aq_query.q_type ||
-	    q.q_class != aq->aq_query.q_class ||
-	    strcasecmp(q.q_dname, aq->aq_query.q_dname))
-		return (-1);
-
-	/* validate the rest of the packet */
-	for(r = h.ancount + h.nscount + h.arcount; r; r--)
-		unpack_rr(&p, &rr);
-
-	if (p.err || (p.offset != (size_t)len))
-		return (-1);
-
-	/* return the data */
-	ar->ar_datalen = len;
-	ar->ar_data = calloc(1, len);
-	/* XXX report to the user */
-	if (ar->ar_data == NULL)
-		return (-1);
-
-	memmove(ar->ar_data, buf, len);
+	packed_init(&p, aq->aq_buf, aq->aq_bufsize);
+	pack_header(&p, &h);
+	pack_query(&p, aq->aq_query.q_type, aq->aq_query.q_class,
+		aq->aq_query.q_dname);
+	aq->aq_buflen = p.offset;
 
 	return (0);
 }
@@ -1229,26 +1160,287 @@ asr_query_free(struct asr_query *aq)
 		free(aq->aq_host);
 	if (aq->aq_fqdn)
 		free(aq->aq_fqdn);
-	if (aq->aq_pktin)
-		free(aq->aq_pktin);
+	if (aq->aq_buf)
+		free(aq->aq_buf);
 	if (aq->aq_hostname)
 		free(aq->aq_hostname);
 	if (aq->aq_servname)
 		free(aq->aq_servname);
-	if (aq->aq_fd != -1) {
+	if (aq->aq_fd != -1)
 		close(aq->aq_fd);
-		aq->aq_fd = -1;
-	}
 	asr_done(aq->aq_asr);
 	free(aq);
 }
 
+int
+asr_connect(const struct sockaddr *sa, int socktype)
+{
+	int	sock;
+	int	flags;
+
+	if ((sock = socket(AF_INET, socktype, 0)) == -1)
+		goto fail;
+
+	if ((flags = fcntl(sock, F_GETFL, 0)) == -1)
+		goto fail;
+
+	flags |= O_NONBLOCK;
+
+	if ((flags = fcntl(sock, F_SETFL, flags)) == -1)
+		goto fail;
+
+	if (connect(sock, sa, sa->sa_len) == -1) {
+		if (errno == EINPROGRESS)
+			return (sock);
+		goto fail;
+	}
+
+	return (sock);
+
+    fail:
+	if (sock != -1)
+		close(sock);
+	return (-1);
+}
+
+int
+asr_ensure_buf(struct asr_query *aq, size_t n)
+{
+	char	*t;
+
+	if (aq->aq_buf == NULL) {
+		aq->aq_buf = malloc(n);
+		if (aq->aq_buf == NULL)
+			return (-1);
+		aq->aq_bufsize = n;
+		return (0);
+	}
+
+	if (aq->aq_bufsize > n)
+		return (0);
+
+	t = realloc(aq->aq_buf, n);
+	if (t == NULL)
+		return (-1);
+	aq->aq_buf = t;
+	aq->aq_bufsize = n;
+
+	return (0);
+}
+
+int
+asr_validate_packet(struct asr_query *aq)
+{
+	struct packed	 p;
+	struct header	 h;
+	struct query	 q;
+	struct rr	 rr;
+	int		 r;
+
+	packed_init(&p, aq->aq_buf, aq->aq_buflen);
+
+	unpack_header(&p, &h);
+	if (p.err)
+		return (-1);
+	if (h.id != aq->aq_reqid)
+		return (-1);
+	if (h.qdcount != 1)
+		return (-1);
+	if ((h.flags & Z_MASK) != 0)
+		return (-1);	/* should be zero, we could allow this */
+	if (h.flags & TC_MASK)
+		return (-2);
+	if (OPCODE(h.flags) != OP_QUERY)
+		return (-1);	/* actually, it depends on the request */
+	if ((h.flags & QR_MASK) == 0)
+		return (-1);	/* not a response */
+
+	unpack_query(&p, &q);
+	if (p.err)
+		return (-1);
+	if (q.q_type != aq->aq_query.q_type ||
+	    q.q_class != aq->aq_query.q_class ||
+	    strcasecmp(q.q_dname, aq->aq_query.q_dname))
+		return (-1);
+
+	/* validate the rest of the packet */
+	for(r = h.ancount + h.nscount + h.arcount; r; r--)
+		unpack_rr(&p, &rr);
+
+	if (p.err || (p.offset != aq->aq_buflen))
+		return (-1);
+
+	return (0);
+}
+
+int
+asr_udp_send(struct asr_query *aq)
+{
+	ssize_t		 n;
+
+	aq->aq_fd = asr_connect(AQ_NS_SA(aq), SOCK_DGRAM);
+	if (aq->aq_fd == -1)
+		return (-1);
+
+	aq->aq_timeout = AQ_DB(aq)->ad_timeout;
+
+	n = send(aq->aq_fd, aq->aq_buf, aq->aq_buflen, 0);
+	if (n == -1) {
+		if (errno == EAGAIN)
+			return (-2); /* timeout */
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+asr_udp_recv(struct asr_query *aq)
+{
+	ssize_t		 n;
+
+	n = recv(aq->aq_fd, aq->aq_buf, aq->aq_bufsize, 0);
+	if (n == -1) {
+		if (errno == EAGAIN)
+			return (-2); /* timeout */
+		return (-1);
+	}
+
+	aq->aq_buflen = n;
+
+	switch (asr_validate_packet(aq)) {
+	case -2:
+		return (1); /* truncated */
+	case -1:
+		return (-1);
+	default:
+		break;
+	}
+
+	return (0);
+}
+
+int
+asr_tcp_write(struct asr_query *aq)
+{
+	struct iovec	iov[2];
+	uint16_t	len;
+	ssize_t		n;
+	int		i;
+	socklen_t	sl;
+	int		se;
+
+	if (aq->aq_fd == -1) { /* connect */
+		aq->aq_fd = asr_connect(AQ_NS_SA(aq), SOCK_STREAM);
+		if (aq->aq_fd == -1)
+			return (-1);
+		aq->aq_timeout = AQ_DB(aq)->ad_timeout;
+		return (1);
+	}
+
+	i = 0;
+	if (aq->aq_datalen == 0) {
+		/* check connection first */
+		sl = sizeof(se);
+		if (getsockopt(aq->aq_fd, SOL_SOCKET, SO_ERROR, &se, &sl) == -1) {
+			warn("getsockopt");
+			return (-1);
+		}
+		if (se)
+			return -1;
+
+		/* need to send datalen first */
+		len = htons(aq->aq_buflen);
+		iov[i].iov_base = &len;
+		iov[i].iov_len = sizeof(len);
+		i++;
+	}
+
+	iov[i].iov_base = AQ_BUF_DATA(aq);
+	iov[i].iov_len = AQ_BUF_LEN(aq);
+	i++;
+
+	n = writev(aq->aq_fd, iov, i);
+	if (n == -1) {
+		if (errno == EAGAIN)
+			return (-2); /* timeout */
+		warn("writev");
+		return (-1);
+	}
+
+	if (aq->aq_datalen == 0 && n < 2) {
+		/* we want to write the data len */
+		warnx("short write");
+		return (-1);
+	}
+	
+	if (aq->aq_datalen == 0) {
+		aq->aq_datalen = len;
+		n -= 2;
+	}
+
+	aq->aq_bufoffset += n;
+	if (aq->aq_bufoffset == aq->aq_buflen) {
+		aq->aq_datalen = 0;
+		return (0); /* all sent */
+	}
+
+	aq->aq_timeout = AQ_DB(aq)->ad_timeout;
+	return (1);
+}
+
+int
+asr_tcp_read(struct asr_query *aq)
+{
+	uint16_t	len;
+	ssize_t		n;
+
+	if (aq->aq_datalen == 0) {
+		n = read(aq->aq_fd, &len, sizeof(len));
+		if (n == -1) {
+			if (errno == EAGAIN) /* timeout */
+				return (-2);
+			return (-1);
+		}
+		if (n < 2) {
+			warnx("short read");
+			return (-1);
+		}
+		aq->aq_datalen = ntohs(len);
+		aq->aq_bufoffset = 0;
+		aq->aq_buflen = 0;
+
+		if (asr_ensure_buf(aq, aq->aq_datalen) == -1)
+			return (-3); /* ENOMEM */
+
+		return (1); /* need more data */
+	}
+
+	n = read(aq->aq_fd, AQ_BUF_WPOS(aq), AQ_BUF_LEFT(aq));
+	if (n == -1) {
+		if (errno == EAGAIN) /* timeout */
+			return (-2);
+		warn("read");
+		return (-1);
+	}
+	if (n == 0) {
+		warnx("closed");
+		return (-1);
+	}
+	aq->aq_buflen += n;
+
+	if (aq->aq_buflen != aq->aq_datalen)
+		return (1); /* need more data */
+
+	if (asr_validate_packet(aq) != 0)
+		return (-1);
+
+	return (0);
+}
 
 int
 asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 {
-	struct asr_db	*ad;
-
 	for(;;) { /* block not indented on purpose */
 #ifdef ASR_DEBUG
 	if (asr_debug) {
@@ -1259,11 +1451,6 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 	switch(aq->aq_state) {
 
 	case ASR_STATE_INIT:
-		if (asr_prepare_dns_query(aq) == -1) {
-			ar->ar_err = EINVAL;
-			aq->aq_state = ASR_STATE_HALT;
-			break;
-		}
 		aq->aq_ns_cycles = -1;
 		aq->aq_db_idx = 0;
 		aq->aq_state = ASR_STATE_QUERY_DB;
@@ -1276,14 +1463,15 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 
 	case ASR_STATE_QUERY_DB:
 		if (aq->aq_db_idx >= aq->aq_asr->a_dbcount) {
-			ar->ar_err = (aq->aq_ns_cycles == -1) ? 
-				ENODEV : ETIMEDOUT;
+			if (aq->aq_ns_cycles == -1)
+				ar->ar_err = EASR_NAMESERVER;
+			else
+				ar->ar_err = EASR_TIMEDOUT;
 			aq->aq_state = ASR_STATE_HALT;
 			break;
 		}
 
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-		if (ad->ad_type != ASR_DB_DNS) {
+		if (AQ_DB(aq)->ad_type != ASR_DB_DNS) {
 			aq->aq_state = ASR_STATE_NEXT_DB;
 			break;
 		}
@@ -1293,13 +1481,18 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 		break;
 
 	case ASR_STATE_NEXT_NS:
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
+		/* close the current fd if any */
+		if (aq->aq_fd != -1) {
+			close(aq->aq_fd);
+			aq->aq_fd = -1;
+		}
+
 		aq->aq_ns_idx += 1;
-		if (aq->aq_ns_idx >= ad->ad_count) {
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
 			aq->aq_ns_idx = 0;
 			aq->aq_ns_cycles++;
 		}
-		if (aq->aq_ns_cycles >= ad->ad_retries) {
+		if (aq->aq_ns_cycles >= AQ_DB(aq)->ad_retries) {
 			aq->aq_state = ASR_STATE_NEXT_DB;
 			break;
 		}
@@ -1307,17 +1500,31 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 		break;
 
 	case ASR_STATE_QUERY_NS:
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-		if (aq->aq_ns_idx >= ad->ad_count) {
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
 			aq->aq_state = ASR_STATE_NEXT_NS;
 			break;
 		}
-		aq->aq_state = ASR_STATE_SEND;
+		switch (asr_setup_query(aq)) {
+		case -2:
+			ar->ar_err = EASR_MEMORY;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		case -1:
+			ar->ar_err = EASR_NAME;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		default:
+			break;
+		}
+		if (aq->aq_asr->a_forcetcp)
+			aq->aq_state = ASR_STATE_TCP_WRITE;
+		else
+			aq->aq_state = ASR_STATE_UDP_SEND;
 		break;
 
-	case ASR_STATE_SEND:
-		if (asr_send_dns_query(aq) == 0) {
-			aq->aq_state = ASR_STATE_RECV;
+	case ASR_STATE_UDP_SEND:
+		if (asr_udp_send(aq) == 0) {
+			aq->aq_state = ASR_STATE_UDP_RECV;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
 			return (ASR_NEED_READ);
@@ -1325,41 +1532,72 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 		aq->aq_state = ASR_STATE_NEXT_NS;
 		break;
 
-	case ASR_STATE_RECV:
-		switch (asr_recv_dns_response(aq, ar)) {
+	case ASR_STATE_UDP_RECV:
+		switch (asr_udp_recv(aq)) {
 		case -2: /* timeout */
-			aq->aq_state = ASR_STATE_NEXT_NS;
-			break;
 		case -1: /* fail */
 			aq->aq_state = ASR_STATE_NEXT_NS;
 			break;
-		default:
-			ar->ar_err = 0;
-			aq->aq_state = ASR_STATE_HALT;
+		case 0: /* done */
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1: /* truncated */
+			close(aq->aq_fd);
+			aq->aq_fd = -1;
+			aq->aq_state = ASR_STATE_TCP_WRITE;
 			break;
 		}
 		break;
 
-	case ASR_STATE_HALT:
-		switch(ar->ar_err) {
+	case ASR_STATE_TCP_WRITE:
+		switch (asr_tcp_write(aq)) {
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
 		case 0:
-			ar->ar_errstr = NULL;
-			break;
-		case ENOMEM:
-			ar->ar_errstr = "out if memory";
-			break;
-		case EINVAL:
-			ar->ar_errstr = "invalid address family";
-			break;
-		case ENODEV:
-			ar->ar_errstr = "no nameserver specified";
-			break;
-		case ETIMEDOUT:
-			ar->ar_errstr = "nameservers timeout";
-			break;
-		default:
-			ar->ar_errstr = "unknown error";
+			aq->aq_state = ASR_STATE_TCP_READ;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_READ);
+		case 1:
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_WRITE);
 		}
+		break;
+
+	case ASR_STATE_TCP_READ:
+		switch (asr_tcp_read(aq)) {
+		case -3:
+			aq->aq_state = ASR_STATE_HALT;
+			ar->ar_err = EASR_MEMORY;
+			break;
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0:
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1:
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_READ);
+		}
+		break;
+
+	case ASR_STATE_PACKET:
+		memmove(&ar->ar_sa.sa, AQ_NS_SA(aq), AQ_NS_SA(aq)->sa_len);
+		ar->ar_datalen = aq->aq_buflen;
+		ar->ar_data = aq->aq_buf;
+		aq->aq_buf = NULL;
+		ar->ar_err = ASR_OK;
+		aq->aq_state = ASR_STATE_HALT;
+		break;
+
+	case ASR_STATE_HALT:
+		ar->ar_errstr = asr_error(ar->ar_err);
 		return (ASR_DONE);
 
 	default:
@@ -1367,16 +1605,14 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 	}}
 }
 
-
 int
 asr_run_host(struct asr_query *aq, struct asr_result *ar)
 {
 	struct header	 h;
 	struct query	 q;
 	struct rr	 rr;
-	struct asr_db	*ad;
 	char		*tok[10];
-	int		 ntok = 10, i, n;
+	int		 ntok = 10, i, n, family;
 
 	for(;;) { /* block not indented on purpose */
 #ifdef ASR_DEBUG
@@ -1389,8 +1625,9 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 
 	case ASR_STATE_INIT:
 		if (aq->aq_family != AF_INET &&
-		    aq->aq_family != AF_INET6) {
-			ar->ar_err = EINVAL;
+		    aq->aq_family != AF_INET6 &&
+		    aq->aq_family != AF_UNSPEC) {
+			ar->ar_err = EASR_FAMILY;
 			aq->aq_state = ASR_STATE_HALT;
 			break;
 		}
@@ -1399,23 +1636,23 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		/* check if we need to try it as an absolute name first */
 		if (ccount(aq->aq_host, '.') >= aq->aq_asr->a_ndots)
 			aq->aq_dom_idx = -1;
-		aq->aq_state = ASR_STATE_QUERY_DOMAIN;
+		aq->aq_state = ASR_STATE_SEARCH_DOMAIN;
 		break;
 
 	case ASR_STATE_NEXT_DOMAIN:
 		/* no domain search for fully qualified names */
 		if (asr_is_fqdn(aq->aq_host)) {
-			ar->ar_err = ENOENT;
+			ar->ar_err = EASR_NOTFOUND;
 			aq->aq_state = ASR_STATE_HALT;
 			break;
 		}
 		aq->aq_dom_idx += 1;
-		aq->aq_state = ASR_STATE_QUERY_DOMAIN;
+		aq->aq_state = ASR_STATE_SEARCH_DOMAIN;
 		break;
 
-	case ASR_STATE_QUERY_DOMAIN:
+	case ASR_STATE_SEARCH_DOMAIN:
 		if (aq->aq_dom_idx >= aq->aq_asr->a_domcount) {
-			ar->ar_err = ENOENT;
+			ar->ar_err = EASR_NOTFOUND;
 			aq->aq_state = ASR_STATE_HALT;
 			break;
 		}
@@ -1429,16 +1666,39 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 			    aq->aq_asr->a_dom[aq->aq_dom_idx]);
 
 		if (aq->aq_fqdn == NULL) {
-			ar->ar_err = ENOMEM;
+			ar->ar_err = EASR_MEMORY;
 			aq->aq_state = ASR_STATE_HALT;
 			break;
 		}
 		aq->aq_db_idx = 0;
+		aq->aq_family_idx = 0;
+		aq->aq_state = ASR_STATE_LOOKUP_FAMILY;
+		break;
+
+	case ASR_STATE_NEXT_FAMILY:
+		aq->aq_family_idx += 1;
+		if ((aq->aq_family != AF_UNSPEC) || (AQ_FAMILY(aq) == -1)) {
+			/* The family was specified, or we have 
+			 *  tried all families with this DB
+			 */
+			if (aq->aq_count) {
+				ar->ar_count = aq->aq_count;
+				ar->ar_err = ASR_OK;
+				aq->aq_state = ASR_STATE_HALT;
+			} else
+				aq->aq_state = ASR_STATE_NEXT_DB;
+			break;
+		}
+		aq->aq_state = ASR_STATE_LOOKUP_FAMILY;
+		break;
+
+	case ASR_STATE_LOOKUP_FAMILY:
 		aq->aq_state = ASR_STATE_QUERY_DB;
 		break;
 
 	case ASR_STATE_NEXT_DB:
 		aq->aq_db_idx += 1;
+		aq->aq_family_idx = 0;
 		aq->aq_state = ASR_STATE_QUERY_DB;
 		break;
 
@@ -1448,16 +1708,19 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 			break;
 		}
 
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-		switch(ad->ad_type) {
+		switch(AQ_DB(aq)->ad_type) {
 		case ASR_DB_DNS:
-			if (aq->aq_family == AF_INET)
+			family = aq->aq_family;
+			if (family == AF_UNSPEC)
+				family = AQ_FAMILY(aq);
+			if (family == AF_INET)
 				aq->aq_query.q_type = T_A;
-			else /* AF_INET6 */
+			else if (family == AF_INET6)
 				aq->aq_query.q_type = T_AAAA;
+			else
+				errx(1, "bad family: %i", family);
 			aq->aq_query.q_class = C_IN;
 			aq->aq_flags = 0;
-			asr_prepare_dns_query(aq); /* can't fail */
 			aq->aq_ns_cycles = 0;
 			aq->aq_ns_idx = 0;
 			aq->aq_state = ASR_STATE_QUERY_NS;
@@ -1471,13 +1734,18 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		break;
 
 	case ASR_STATE_NEXT_NS:
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
+		/* close the current fd if any */
+		if (aq->aq_fd != -1) {
+			close(aq->aq_fd);
+			aq->aq_fd = -1;
+		}
+
 		aq->aq_ns_idx += 1;
-		if (aq->aq_ns_idx >= ad->ad_count) {
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
 			aq->aq_ns_idx = 0;
 			aq->aq_ns_cycles++;
 		}
-		if (aq->aq_ns_cycles >= ad->ad_retries) {
+		if (aq->aq_ns_cycles >= AQ_DB(aq)->ad_retries) {
 			aq->aq_state = ASR_STATE_NEXT_DB;
 			break;
 		}
@@ -1485,17 +1753,31 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		break;
 
 	case ASR_STATE_QUERY_NS:
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-		if (aq->aq_ns_idx >= ad->ad_count) {
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
 			aq->aq_state = ASR_STATE_NEXT_NS;
 			break;
 		}
-		aq->aq_state = ASR_STATE_SEND;
+		switch (asr_setup_query(aq)) {
+		case -2:
+			ar->ar_err = EASR_MEMORY;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		case -1:
+			ar->ar_err = EASR_NAME;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		default:
+			break;
+		}
+		if (aq->aq_asr->a_forcetcp)
+			aq->aq_state = ASR_STATE_TCP_WRITE;
+		else
+			aq->aq_state = ASR_STATE_UDP_SEND;
 		break;
 
-	case ASR_STATE_SEND:
-		if (asr_send_dns_query(aq) == 0) {
-			aq->aq_state = ASR_STATE_RECV;
+	case ASR_STATE_UDP_SEND:
+		if (asr_udp_send(aq) == 0) {
+			aq->aq_state = ASR_STATE_UDP_RECV;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
 			return (ASR_NEED_READ);
@@ -1503,34 +1785,76 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		aq->aq_state = ASR_STATE_NEXT_NS;
 		break;
 
-	case ASR_STATE_RECV:
-		switch (asr_recv_dns_response(aq, ar)) {
+	case ASR_STATE_UDP_RECV:
+		switch (asr_udp_recv(aq)) {
 		case -2: /* timeout */
 		case -1: /* fail */
 			aq->aq_state = ASR_STATE_NEXT_NS;
 			break;
-		default:
-			aq->aq_pktin = ar->ar_data;
-			aq->aq_pktlen = ar->ar_datalen;
-			packed_init(&aq->aq_packed, aq->aq_pktin, aq->aq_pktlen);
-			unpack_header(&aq->aq_packed, &h);
-			aq->aq_nanswer = h.ancount;
-			for(; h.qdcount; h.qdcount--)
-				unpack_query(&aq->aq_packed, &q);
-			aq->aq_state = ASR_STATE_READ_RR;
+		case 0: /* done */
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1: /* truncated */
+			close(aq->aq_fd);
+			aq->aq_fd = -1;
+			aq->aq_state = ASR_STATE_TCP_WRITE;
 			break;
 		}
 		break;
 
+	case ASR_STATE_TCP_WRITE:
+		switch (asr_tcp_write(aq)) {
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0:
+			aq->aq_state = ASR_STATE_TCP_READ;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_READ);
+		case 1:
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_WRITE);
+		}
+		break;
+
+	case ASR_STATE_TCP_READ:
+		switch (asr_tcp_read(aq)) {
+		case -3:
+			aq->aq_state = ASR_STATE_HALT;
+			ar->ar_err = EASR_MEMORY;
+			break;
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0:
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1:
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_NEED_READ);
+		}
+		break;
+
+	case ASR_STATE_PACKET:
+		packed_init(&aq->aq_packed, aq->aq_buf, aq->aq_buflen);
+		unpack_header(&aq->aq_packed, &h);
+		aq->aq_nanswer = h.ancount;
+		for(; h.qdcount; h.qdcount--)
+			unpack_query(&aq->aq_packed, &q);
+		aq->aq_state = ASR_STATE_READ_RR;
+		break;
+
 	case ASR_STATE_READ_RR:
 		if (aq->aq_nanswer == 0) {
-			free(aq->aq_pktin);
-			aq->aq_pktin = NULL;
-			if (aq->aq_count) {
-				ar->ar_err = 0;
-				aq->aq_state = ASR_STATE_HALT;
-			} else
-				aq->aq_state = ASR_STATE_NEXT_NS;
+			free(aq->aq_buf);
+			aq->aq_buf = NULL;
+			/* done with this NS, try with next family */
+			aq->aq_state = ASR_STATE_NEXT_FAMILY;
 			break;
 		}
 		aq->aq_nanswer -= 1;
@@ -1539,15 +1863,14 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		    rr.rr_class == aq->aq_query.q_class) {
 			aq->aq_count += 1;
 			ar->ar_count = aq->aq_count;
-			asr_sockaddr_from_rr(&ar->ar_sa.any, &rr);
+			asr_sockaddr_from_rr(&ar->ar_sa.sa, &rr);
 			ar->ar_cname = NULL; /* XXX */
 			return (ASR_YIELD);
 		}
 		break;
 
 	case ASR_STATE_QUERY_FILE:
-		ad = &aq->aq_asr->a_db[aq->aq_db_idx];
-		aq->aq_file = fopen(ad->ad_path, "r");
+		aq->aq_file = fopen(AQ_DB(aq)->ad_path, "r");
 		if (aq->aq_file == NULL)
 			aq->aq_state = ASR_STATE_NEXT_DB;
 		else
@@ -1555,15 +1878,12 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 		break;
 
 	case ASR_STATE_READ_FILE:
-		n = asr_parse_line(aq->aq_file, tok, ntok);
+		n = asr_parse_namedb_line(aq->aq_file, tok, ntok);
 		if (n == -1) {
 			fclose(aq->aq_file);
 			aq->aq_file = NULL;
-			if (aq->aq_count) {
-				ar->ar_err = 0;
-				aq->aq_state = ASR_STATE_HALT;
-			} else
-				aq->aq_state = ASR_STATE_NEXT_DB;
+			/* XXX as an optimization, the file could be parsed only once */
+			aq->aq_state = ASR_STATE_NEXT_FAMILY;
 			break;
 		}
 
@@ -1573,7 +1893,10 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 			if (aq->aq_dom_idx <= 0 && !strcmp(aq->aq_host, tok[i])) {
 			} else if (asr_cmp_fqdn_name(aq->aq_fqdn, tok[i]) == -1)
 				continue;
-			if (asr_sockaddr_parse(&ar->ar_sa.any, aq->aq_family, tok[0]) == -1)
+			family = aq->aq_family;
+			if (family == AF_UNSPEC)
+				family = AQ_FAMILY(aq);
+			if (asr_sockaddr_parse(&ar->ar_sa.sa, family, tok[0]) == -1)
 				continue;
 
 			aq->aq_count += 1;
@@ -1585,34 +1908,16 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 
 	case ASR_STATE_HALT:
 		ar->ar_count = aq->aq_count;
-		switch(ar->ar_err) {
-		case 0:
-			ar->ar_errstr = NULL;
-			break;
-		case ENOMEM:
-			ar->ar_errstr = "out if memory";
-			break;
-		case ENOENT:
-			ar->ar_errstr = "not found";
-			break;
-		case EINVAL:
-			ar->ar_errstr = "invalid address family";
-			break;
-		default:
-			ar->ar_errstr = "unknown error";
-		}
-
+		ar->ar_errstr = asr_error(ar->ar_err);
 		return (ASR_DONE);
 
 	default:
-		errx(1, "asr_run_dns: unknown state");
+		errx(1, "asr_run_host: unknown state");
 	}}
 }
 
 int
-asr_get_port(const char *servname,
-	     const char *proto,
-	     int numonly)
+asr_get_port(const char *servname, const char *proto, int numonly)
 {
 	struct servent		se;
 	struct servent_data	sed;
@@ -1644,16 +1949,16 @@ asr_get_port(const char *servname,
 
 int
 asr_add_sockaddr(struct asr_query *aq,
-	int family,
-	int socktype,
-	int protocol,
-	struct sockaddr	*sa,
-	int cache)
+		 int family,
+		 int socktype,
+		 int protocol,
+		 struct sockaddr *sa,
+		 int cache)
 {
 	struct asr_acache	*a;
 	struct addrinfo		*ai;
-	struct sockaddr_in	*in;
-	struct sockaddr_in6	*in6;
+	struct sockaddr_in	*sin;
+	struct sockaddr_in6	*sin6;
 	const char		*proto;
 	int			 port;
 
@@ -1672,7 +1977,7 @@ asr_add_sockaddr(struct asr_query *aq,
 	if (proto) {
 		port = asr_get_port(aq->aq_servname, proto,
 				    aq->aq_flags & AI_NUMERICSERV);
-		if (port == -1)
+		if (port == -1) /* XXX need a different error code */
 			return (-1);
 	}
 
@@ -1689,12 +1994,12 @@ asr_add_sockaddr(struct asr_query *aq,
 	if (port != -1) {
 		switch(family) {
 		case PF_INET:
-			in = (struct sockaddr_in*)ai->ai_addr;
-			in->sin_port = port;
+			sin = (struct sockaddr_in*)ai->ai_addr;
+			sin->sin_port = port;
 			break;
 		case PF_INET6:
-			in6 = (struct sockaddr_in6*)ai->ai_addr;
-			in6->sin6_port = port;
+			sin6 = (struct sockaddr_in6*)ai->ai_addr;
+			sin6->sin6_port = port;
 			break;
 		}
 	}
@@ -1714,7 +2019,7 @@ asr_add_sockaddr(struct asr_query *aq,
 	if (a == NULL)
 		return (0); /* XXX is this actually a failure ? */
 
-	memmove(&a->aa_sa.any, sa, sa->sa_len);
+	memmove(&a->aa_sa.sa, sa, sa->sa_len);
 
 	if (aq->aq_addrcache == NULL)
 		aq->aq_addrcache = a;
@@ -1868,13 +2173,13 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 		/* check for addr-by-family cache */
 		stop = 0;
 		for(ac = aq->aq_addrcache; ac; ac = ac->aa_next) {
-			if (ac->aa_sa.any.sa_family == family) {
+			if (ac->aa_sa.sa.sa_family == family) {
 				stop += 1;
 				r = asr_add_sockaddr(aq,
 					matches[aq->aq_match_idx].family,
 					matches[aq->aq_match_idx].socktype,
 					matches[aq->aq_match_idx].protocol,
-					&ac->aa_sa.any, 0);
+					&ac->aa_sa.sa, 0);
 				if (r == -1) {
 					ar->ar_err = EAI_MEMORY;
 					aq->aq_state = ASR_STATE_HALT;
@@ -1892,12 +2197,12 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 			else /* PF_INET6 */
 				str = (aq->aq_flags & AI_PASSIVE) ? "::" : "::1";
 			 /* can't fail */
-			asr_sockaddr_parse(&aa.aa_sa.any, family, str);
+			asr_sockaddr_parse(&aa.aa_sa.sa, family, str);
 			r = asr_add_sockaddr(aq,
 				matches[aq->aq_match_idx].family,
 				matches[aq->aq_match_idx].socktype,
 				matches[aq->aq_match_idx].protocol,
-				&aa.aa_sa.any, 1);
+				&aa.aa_sa.sa, 1);
 			if (r == -1) {
 				ar->ar_err = EAI_MEMORY;
 				aq->aq_state = ASR_STATE_HALT;
@@ -1909,7 +2214,7 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 		/* try numeric addresses */
 		stop = 0;
 		for (i = 0; families[i] != -1; i++) {
-			if (asr_sockaddr_parse(&aa.aa_sa.any,
+			if (asr_sockaddr_parse(&aa.aa_sa.sa,
 					       families[i],
 					       aq->aq_hostname) == -1)
 				continue;
@@ -1923,7 +2228,7 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 				matches[aq->aq_match_idx].family,
 				matches[aq->aq_match_idx].socktype,
 				matches[aq->aq_match_idx].protocol,
-				&aa.aa_sa.any, 1);
+				&aa.aa_sa.sa, 1);
 			if (r == -1) {
 				ar->ar_err = EAI_MEMORY;
 				aq->aq_state = ASR_STATE_HALT;
@@ -1959,7 +2264,7 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 				matches[aq->aq_match_idx].family,
 				matches[aq->aq_match_idx].socktype,
 				matches[aq->aq_match_idx].protocol,
-				&ar->ar_sa.any, 1);
+				&ar->ar_sa.sa, 1);
 			free(ar->ar_cname);
 			if (r == -1) {
 				ar->ar_err = EAI_MEMORY;

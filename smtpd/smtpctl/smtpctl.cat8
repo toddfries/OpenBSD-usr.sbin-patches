@@ -7,7 +7,8 @@ SSYYNNOOPPSSIISS
      ssmmttppccttll _c_o_m_m_a_n_d [_a_r_g_u_m_e_n_t _._._.]
 
 DDEESSCCRRIIPPTTIIOONN
-     The ssmmttppccttll program controls smtpd(8).
+     The ssmmttppccttll program controls smtpd(8).  Commands may be abbreviated to
+     the minimum unambiguous prefix; for example, sshh ss for sshhooww ssttaattss.
 
      The following commands are available:
 
@@ -75,4 +76,4 @@ SSEEEE AALLSSOO
 HHIISSTTOORRYY
      The ssmmttppccttll program first appeared in OpenBSD 4.6.
 
-OpenBSD 4.8                     October 9, 2010                    OpenBSD 4.8
+OpenBSD 4.8                    October 18, 2010                    OpenBSD 4.8

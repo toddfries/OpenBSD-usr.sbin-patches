@@ -38,6 +38,55 @@ DDEESSCCRRIIPPTTIIOONN
 
      The syntax of ssmmttppdd..ccoonnff is described below.
 
+     eexxppiirree _n _{_s_|_m_|_h_|_d_}
+             Specify how long a message can stay in the queue.  The default
+             value is 4 days.  For example:
+
+                   expire 4d       # expire after 4 days
+                   expire 10h      # expire after 10 hours
+
+     hhoossttnnaammee _n_a_m_e
+             Specify the domain name of the server.  By default the current
+             host name is used, as returned by hostname(1).
+
+     lliisstteenn oonn _i_n_t_e_r_f_a_c_e [ppoorrtt _p_o_r_t] [ttllss | ssmmttppss] [cceerrttiiffiiccaattee _n_a_m_e] [eennaabbllee
+              aauutthh]
+             Specify an _i_n_t_e_r_f_a_c_e and _p_o_r_t to listen on.  An IP address or
+             domain name may be used in place of _i_n_t_e_r_f_a_c_e.
+
+             Secured connections are provided either using STARTTLS (ttllss), by
+             default on port 25, or SMTPS (ssmmttppss), by default on port 465.
+             Creation of certificates is documented in starttls(8).  If no
+             certificate _n_a_m_e is specified, the _/_e_t_c_/_m_a_i_l_/_c_e_r_t_s directory is
+             searched for a file named by joining the interface name with a
+             .crt extension, e.g. _/_e_t_c_/_m_a_i_l_/_c_e_r_t_s_/_f_x_p_0_._c_r_t.
+
+             If the eennaabbllee aauutthh parameter is used, any remote sender that
+             passed SMTPAUTH is treated as if it was the server's local user
+             that was sending the mail.  This means that filter rules using
+             "from local" will be matched.
+
+     mmaapp _m_a_p { ssoouurrccee _t_y_p_e _s_o_u_r_c_e }
+             Maps are used to provide additional configuration information for
+             smtpd(8).
+
+             _m_a_p may be named freely.
+
+             _t_y_p_e may be one of the following:
+
+             db       Mappings are stored in a file created using makemap(8).
+                      This is the default type if none is specified.
+             dns      Not implemented yet.
+             plain    Mappings are stored in a plain text file using the same
+                      format as used to generate makemap(8) mappings.
+
+             _s_o_u_r_c_e specifies the source of the map data.  It must be an
+             absolute path to a file for the ``file'' and ``db'' map types, or
+             a domain name for the ``dns'' map type.
+
+     ssiizzee _n  Specify a maximum message size of _n bytes.  The argument may
+             contain a multiplier, as documented in scan_scaled(3).
+
      aacccceepptt | rreejjeecctt
              smtpd(8) accepts and rejects messages based on information
              gathered during the SMTP session.
@@ -112,7 +161,7 @@ DDEESSCCRRIIPPTTIIOONN
                      DNS system.
 
              rreellaayy vviiaa _h_o_s_t [ppoorrtt _p_o_r_t] [ttllss | ssmmttppss | ssssll] [cceerrttiiffiiccaattee _n_a_m_e]
-                      [eennaabbllee aauutthh]
+                      [aauutthh _m_a_p]
                      Mail is relayed through the specified _h_o_s_t and _p_o_r_t.
 
                      The communication channel may be secured using the ttllss or
@@ -124,60 +173,12 @@ DDEESSCCRRIIPPTTIIOONN
                      certificate.  Creation of certificates is documented in
                      starttls(8).
 
-                     If an SMTPAUTH session with _h_o_s_t is desired, use the
-                     eennaabbllee aauutthh parameter.
+                     If an SMTPAUTH session with _h_o_s_t is desired, use the aauutthh
+                     parameter to specify the _m_a_p that holds the credentials.
 
-     eexxppiirree _n _{_s_|_m_|_h_|_d_}
-             Specify how long a message can stay in the queue.  The default
-             value is 4 days.  For example:
-
-                   expire 4d       # expire after 4 days
-                   expire 10h      # expire after 10 hours
-
-     hhoossttnnaammee _n_a_m_e
-             Specify the domain name of the server.  By default the current
-             host name is used, as returned by hostname(1).
-
-     lliisstteenn oonn _i_n_t_e_r_f_a_c_e [ppoorrtt _p_o_r_t] [ttllss | ssmmttppss] [cceerrttiiffiiccaattee _n_a_m_e] [eennaabbllee
-              aauutthh]
-             Specify an _i_n_t_e_r_f_a_c_e and _p_o_r_t to listen on.  An IP address or
-             domain name may be used in place of _i_n_t_e_r_f_a_c_e.
-
-             Secured connections are provided either using STARTTLS (ttllss), by
-             default on port 25, or SMTPS (ssmmttppss), by default on port 465.
-             Creation of certificates is documented in starttls(8).  If no
-             certificate _n_a_m_e is specified, the _/_e_t_c_/_m_a_i_l_/_c_e_r_t_s directory is
-             searched for a file named by joining the interface name with a
-             .crt extension, e.g. _/_e_t_c_/_m_a_i_l_/_c_e_r_t_s_/_f_x_p_0_._c_r_t.
-
-             If the eennaabbllee aauutthh parameter is used, any remote sender that
-             passed SMTPAUTH is treated as if it was the server's local user
-             that was sending the mail.  This means that filter rules using
-             "from local" will be matched.
-
-     mmaapp _m_a_p { ssoouurrccee _t_y_p_e _s_o_u_r_c_e }
-             Maps are used to provide additional configuration information for
-             smtpd(8).
-
-             _m_a_p may be named freely except for the following:
-
-             secrets     Map queried for remote host credentials.  See
-                         makemap(8).
-
-             _t_y_p_e may be one of the following:
-
-             db       Mappings are stored in a file created using makemap(8).
-                      This is the default type if none is specified.
-             dns      Not implemented yet.
-             plain    Mappings are stored in a plain text file using the same
-                      format as used to generate makemap(8) mappings.
-
-             _s_o_u_r_c_e specifies the source of the map data.  It must be an
-             absolute path to a file for the ``file'' and ``db'' map types, or
-             a domain name for the ``dns'' map type.
-
-     ssiizzee _n  Specify a maximum message size of _n bytes.  The argument may
-             contain a multiplier, as documented in scan_scaled(3).
+             eexxppiirree _n _{_s_|_m_|_h_|_d_}
+                     Specify how long a message that matched this rule can
+                     stay in the queue.
 
 FFIILLEESS
      _/_e_t_c_/_m_a_i_l_/_s_m_t_p_d_._c_o_n_f     Default smtpd(8) configuration file.
@@ -205,7 +206,7 @@ EEXXAAMMPPLLEESS
            map aliases { source db "/etc/mail/aliases.db" }
            map secrets { source db "/etc/mail/secrets.db" }
            accept for local deliver to mbox
-           accept for all relay via smtp.gmail.com tls enable auth
+           accept for all relay via smtp.gmail.com tls auth "secrets"
 
      In this second example, the aim is to permit mail relaying for any user
      that can authenticate using their normal login credentials.  An RSA
@@ -234,4 +235,4 @@ SSEEEE AALLSSOO
 HHIISSTTOORRYY
      smtpd(8) first appeared in OpenBSD 4.6.
 
-OpenBSD 4.8                    September 8, 2010                   OpenBSD 4.8
+OpenBSD 4.8                    October 29, 2010                    OpenBSD 4.8

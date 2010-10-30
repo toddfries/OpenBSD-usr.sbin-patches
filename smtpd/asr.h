@@ -29,8 +29,18 @@ enum {
 
 #define ASR_NOREC	0x01	/* recusrsion not wanted */
 
-struct asr_result {
+enum {
+	ASR_OK = 0,
+	EASR_MEMORY,
+	EASR_TIMEDOUT,
+	EASR_NAMESERVER,
+	EASR_FAMILY,
+	EASR_NOTFOUND,
+	EASR_NAME,
+	EASR_PARAM
+};
 
+struct asr_result {
 	int		 ar_fd;
 	int		 ar_timeout;
 	int		 ar_err;
@@ -41,10 +51,10 @@ struct asr_result {
 	void		*ar_data;
 	size_t		 ar_datalen;
 	union {
-		struct sockaddr		any;
-		struct sockaddr_in	in;
-		struct sockaddr_in6	in6;
-	} 		 ar_sa;
+		struct sockaddr		sa;
+		struct sockaddr_in	sain;
+		struct sockaddr_in6	sain6;
+	}	ar_sa;
 };
 
 struct asr_query;

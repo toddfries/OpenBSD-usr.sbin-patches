@@ -1,3 +1,8 @@
+/*
+ * Copied from: lib/libc/net/res_random.c
+ *
+ *  -- eric@
+ */
 /* $OpenBSD: res_random.c,v 1.17 2008/04/13 00:28:35 djm Exp $ */
 
 /*
@@ -86,7 +91,7 @@ struct prf_ctx {
 };
 
 #define PFAC_N 3
-const static u_int16_t pfacts[PFAC_N] = {
+static const u_int16_t pfacts[PFAC_N] = {
 	2, 
 	3,
 	2729
@@ -103,20 +108,19 @@ static long ru_reseed;
 
 static u_int16_t pmod(u_int16_t, u_int16_t, u_int16_t);
 static void res_initid(void);
-u_int permute15(u_int);
 
 /*
  * Do a fast modular exponation, returned value will be in the range
  * of 0 - (mod-1)
  */
 static u_int16_t
-pmod(u_int16_t gen, u_int16_t exponent, u_int16_t mod)
+pmod(u_int16_t gen, u_int16_t exp, u_int16_t mod)
 {
 	u_int16_t s, t, u;
 
 	s = 1;
 	t = gen;
-	u = exponent;
+	u = exp;
 
 	while (u) {
 		if (u & 1)
@@ -130,7 +134,7 @@ pmod(u_int16_t gen, u_int16_t exponent, u_int16_t mod)
 /*
  * 15-bit permutation based on Luby-Rackoff block cipher
  */
-u_int
+static u_int
 permute15(u_int in)
 {
 	int i;
