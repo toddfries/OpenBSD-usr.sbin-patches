@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.312 2010/10/15 07:45:32 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.314 2010/11/18 12:51:24 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -247,7 +247,7 @@ session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
 	peer_cnt = 0;
 	ctl_cnt = 0;
 
-	if ((conf = malloc(sizeof(struct bgpd_config))) == NULL)
+	if ((conf = calloc(1, sizeof(struct bgpd_config))) == NULL)
 		fatal(NULL);
 	if ((conf->listen_addrs = calloc(1, sizeof(struct listen_addrs))) ==
 	    NULL)
@@ -1458,6 +1458,8 @@ session_notification(struct peer *p, u_int8_t errcode, u_int8_t subcode,
 	if (p->stats.last_sent_errcode)	/* some notification already sent */
 		return;
 
+	log_notification(p, errcode, subcode, data, datalen, "sending");
+
 	if ((buf = session_newmsg(NOTIFICATION,
 	    MSGSIZE_NOTIFICATION_MIN + datalen)) == NULL) {
 		bgp_fsm(p, EVNT_CON_FATAL);
@@ -2057,7 +2059,7 @@ parse_notification(struct peer *peer)
 	p += sizeof(subcode);
 	datalen -= sizeof(subcode);
 
-	log_notification(peer, errcode, subcode, p, datalen);
+	log_notification(peer, errcode, subcode, p, datalen, "received");
 	peer->errcnt++;
 
 	if (errcode == ERR_OPEN && subcode == ERR_OPEN_CAPA) {
