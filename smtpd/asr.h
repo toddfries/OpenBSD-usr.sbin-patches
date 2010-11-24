@@ -27,7 +27,7 @@ enum {
 	ASR_DONE
 };
 
-#define ASR_NOREC	0x01	/* recusrsion not wanted */
+#define ASR_NOREC	0x01
 
 enum {
 	ASR_OK = 0,

@@ -204,6 +204,8 @@ dns_asr_handler(int fd, short event, void *arg)
 	int cnt;
 	int ret;
 
+	bzero(&ar, sizeof (ar));
+
 	switch ((ret = asr_run(dnssession->aq, &ar))) {
 	case ASR_NEED_READ:
 		tv.tv_usec = ar.ar_timeout * 1000;

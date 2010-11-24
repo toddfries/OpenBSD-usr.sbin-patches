@@ -38,21 +38,21 @@ ssize_t
 dname_expand(const unsigned char *data, size_t len, size_t offset,
     size_t *newoffset, char *dst, size_t max)
 {
-	size_t		 n, count, end, ptr;
+	size_t		 n, count, end, ptr, start;
 	ssize_t		 res;
 
 	if (offset >= len)
 		return (-1);
 
 	res = 0;
-	end = offset;
+	end = start = offset;
 
 	for(; (n = data[offset]); ) {
 		if ((n & 0xc0) == 0xc0) {
 			if (offset + 2 > len)
 				return (-1);
 			ptr = 256 * (n & ~0xc0) + data[offset + 1];
-			if (ptr >= offset)
+			if (ptr >= start)
 				return (-1);
 			if (end < offset + 2)
 				end = offset + 2;
@@ -91,8 +91,9 @@ const char *
 dname_nthlabel(int n, const unsigned char *data, size_t len, size_t offset)
 {
 	int		 i;
-	size_t		 c, ptr;
+	size_t		 c, ptr, start;
 
+	start = offset;
 	for(i = 0;;) {
 		c = data[offset];
 		if (c == 0)
@@ -101,7 +102,7 @@ dname_nthlabel(int n, const unsigned char *data, size_t len, size_t offset)
 			if (len < offset + 2)
 				return (NULL);
 			ptr = 256 * (c & ~0xc0) + data[offset + 1];
-			if (ptr >= offset)
+			if (ptr >= start)
 				return (NULL);
 			offset = ptr;
 			continue;
@@ -117,14 +118,15 @@ dname_nthlabel(int n, const unsigned char *data, size_t len, size_t offset)
 ssize_t
 dname_count_labels(const unsigned char *data, size_t len, size_t offset)
 {
-	size_t c, n, ptr;
+	size_t c, n, ptr, start;
 
+	start = offset;
 	for(n = 0; (c = data[offset]); ) {
 		if ((c & 0xc0) == 0xc0) {
 			if (len < offset + 2)
 				return (-1);
 			ptr = 256 * (c & ~0xc0) + data[offset + 1];
-			if (ptr >= offset)
+			if (ptr >= start)
 				return (-1);
 			offset = ptr;
 			continue;

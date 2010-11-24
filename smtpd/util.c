@@ -43,6 +43,9 @@
 
 #include "smtpd.h"
 
+const char *log_in6addr(const struct in6_addr *);
+const char *log_sockaddr(struct sockaddr *);
+
 int
 bsnprintf(char *str, size_t size, const char *format, ...)
 {
@@ -208,23 +211,7 @@ ss_to_text(struct sockaddr_storage *ss)
 		p = buf + 5;
 		in6_addr = &in6->sin6_addr;
 		bsnprintf(p, NI_MAXHOST,
-		    "%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x:%x%x",
-		    in6_addr->s6_addr[0],
-		    in6_addr->s6_addr[1],
-		    in6_addr->s6_addr[2],
-		    in6_addr->s6_addr[3],
-		    in6_addr->s6_addr[4],
-		    in6_addr->s6_addr[5],
-		    in6_addr->s6_addr[6],
-		    in6_addr->s6_addr[7],
-		    in6_addr->s6_addr[8],
-		    in6_addr->s6_addr[9],
-		    in6_addr->s6_addr[10],
-		    in6_addr->s6_addr[11],
-		    in6_addr->s6_addr[12],
-		    in6_addr->s6_addr[13],
-		    in6_addr->s6_addr[14],
-		    in6_addr->s6_addr[15]);
+		    log_in6addr(in6_addr));
 	}
 
 	return (buf);
@@ -616,4 +603,39 @@ session_socket_error(int fd)
 		fatal("session_socket_error: getsockopt");
 
 	return (error);
+}
+
+const char *
+log_in6addr(const struct in6_addr *addr)
+{
+	struct sockaddr_in6	sa_in6;
+	u_int16_t		tmp16;
+
+	bzero(&sa_in6, sizeof(sa_in6));
+	sa_in6.sin6_len = sizeof(sa_in6);
+	sa_in6.sin6_family = AF_INET6;
+	memcpy(&sa_in6.sin6_addr, addr, sizeof(sa_in6.sin6_addr));
+
+	/* XXX thanks, KAME, for this ugliness... adopted from route/show.c */
+	if (IN6_IS_ADDR_LINKLOCAL(&sa_in6.sin6_addr) ||
+	    IN6_IS_ADDR_MC_LINKLOCAL(&sa_in6.sin6_addr)) {
+		memcpy(&tmp16, &sa_in6.sin6_addr.s6_addr[2], sizeof(tmp16));
+		sa_in6.sin6_scope_id = ntohs(tmp16);
+		sa_in6.sin6_addr.s6_addr[2] = 0;
+		sa_in6.sin6_addr.s6_addr[3] = 0;
+	}
+
+	return (log_sockaddr((struct sockaddr *)&sa_in6));
+}
+
+const char *
+log_sockaddr(struct sockaddr *sa)
+{
+	static char	buf[NI_MAXHOST];
+
+	if (getnameinfo(sa, sa->sa_len, buf, sizeof(buf), NULL, 0,
+	    NI_NUMERICHOST))
+		return ("(unknown)");
+	else
+		return (buf);
 }
