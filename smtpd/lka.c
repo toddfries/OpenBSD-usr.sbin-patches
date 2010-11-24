@@ -334,7 +334,6 @@ lka(struct smtpd *env)
 	imsg_callback = lka_imsg;
 	event_init();
 	SPLAY_INIT(&env->lka_sessions);
-	SPLAY_INIT(&env->dns_sessions);
 
 	signal_set(&ev_sigint, SIGINT, lka_sig_handler, env);
 	signal_set(&ev_sigterm, SIGTERM, lka_sig_handler, env);

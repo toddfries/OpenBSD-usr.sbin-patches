@@ -234,7 +234,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	log_debug("imsg: %d", imsg->hdr.type);
 	fatalx("mta_imsg: unexpected imsg");
 }
 

@@ -91,67 +91,9 @@ dns_query_ptr(struct smtpd *env, struct sockaddr_storage *ss, u_int64_t id)
 	query.ss = *ss;
 	query.id = id;
 
-	/* we need to construct a PTR query */
-	switch (ss->ss_family) {
-	case AF_INET: {
-		in_addr_t addr;
-		
-		addr = ((struct sockaddr_in *)ss)->sin_addr.s_addr;
-
-		bsnprintf(query.host, sizeof(query.host),
-		    "%d.%d.%d.%d.in-addr.arpa",
-		    (addr >> 24) & 0xff,
-		    (addr >> 16) & 0xff,
-		    (addr >> 8) & 0xff,
-		    addr & 0xff);
-		break;
-	}
-	case AF_INET6: {
-		struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)ss;
-		struct in6_addr	*in6_addr;
-
-		in6_addr = &in6->sin6_addr;
-		bsnprintf(query.host, sizeof(query.host),
-		    "%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d."
-		    "%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d."
-		    "ip6.arpa",
-		    in6_addr->s6_addr[15] & 0xf,
-		    (in6_addr->s6_addr[15] >> 4) & 0xf,
-		    in6_addr->s6_addr[14] & 0xf,
-		    (in6_addr->s6_addr[14] >> 4) & 0xf,
-		    in6_addr->s6_addr[13] & 0xf,
-		    (in6_addr->s6_addr[13] >> 4) & 0xf,
-		    in6_addr->s6_addr[12] & 0xf,
-		    (in6_addr->s6_addr[12] >> 4) & 0xf,
-		    in6_addr->s6_addr[11] & 0xf,
-		    (in6_addr->s6_addr[11] >> 4) & 0xf,
-		    in6_addr->s6_addr[10] & 0xf,
-		    (in6_addr->s6_addr[10] >> 4) & 0xf,
-		    in6_addr->s6_addr[9] & 0xf,
-		    (in6_addr->s6_addr[9] >> 4) & 0xf,
-		    in6_addr->s6_addr[8] & 0xf,
-		    (in6_addr->s6_addr[8] >> 4) & 0xf,
-		    in6_addr->s6_addr[7] & 0xf,
-		    (in6_addr->s6_addr[7] >> 4) & 0xf,
-		    in6_addr->s6_addr[6] & 0xf,
-		    (in6_addr->s6_addr[6] >> 4) & 0xf,
-		    in6_addr->s6_addr[5] & 0xf,
-		    (in6_addr->s6_addr[5] >> 4) & 0xf,
-		    in6_addr->s6_addr[4] & 0xf,
-		    (in6_addr->s6_addr[4] >> 4) & 0xf,
-		    in6_addr->s6_addr[3] & 0xf,
-		    (in6_addr->s6_addr[3] >> 4) & 0xf,
-		    in6_addr->s6_addr[2] & 0xf,
-		    (in6_addr->s6_addr[2] >> 4) & 0xf,
-		    in6_addr->s6_addr[1] & 0xf,
-		    (in6_addr->s6_addr[1] >> 4) & 0xf,
-		    in6_addr->s6_addr[0] & 0xf,
-		    (in6_addr->s6_addr[0] >> 4) & 0xf);
-		break;
-	}
-	default:
+	if (strlcpy(query.host, ss_to_ptr(ss), sizeof (query.host))
+	    >= sizeof (query.host))
 		fatalx("dns_query_ptr");
-	}
 
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_DNS_PTR, 0, 0, -1, &query,
 	    sizeof(query));
@@ -191,7 +133,8 @@ dns_setup(void)
 
 	asr = asr_resolver(NULL);
 	if (asr == NULL)
-		log_warnx("dns_setup: unable to initialize resolver, please check /etc/resolv.conf");
+		log_warnx("dns_setup: unable to initialize resolver, "
+		    "please check /etc/resolv.conf");
 }
 
 void
@@ -214,11 +157,11 @@ dns_async(struct smtpd *env, struct imsgev *asker, int type, struct dns *query)
 	dnssession = dnssession_init(env, query);
 	
 	switch (type) {
+	case IMSG_DNS_HOST:
+		dnssession->aq = asr_query_host(asr, query->host, AF_UNSPEC);
+		break;
 	case IMSG_DNS_PTR:
 		dnssession->aq = asr_query_dns(asr, T_PTR, C_IN, query->host, 0);
-		break;
-	case IMSG_DNS_HOST:
-		dnssession->aq = asr_query_host(asr, query->host, PF_UNSPEC);
 		break;
 	case IMSG_DNS_MX:
 		dnssession->aq = asr_query_dns(asr, T_MX, C_IN, query->host, 0);
@@ -226,6 +169,7 @@ dns_async(struct smtpd *env, struct imsgev *asker, int type, struct dns *query)
 	default:
 		goto err;
 	}
+
 	/* query and set up event to handle answer */
 	if (dnssession->aq == NULL)
 		goto err;
@@ -254,18 +198,15 @@ dns_asr_handler(int fd, short event, void *arg)
 	struct header	h;
 	struct query	q;
 	struct rr rr;
-	struct sockaddr_in *in;
-	struct sockaddr_in6 *in6;
 	struct asr_result ar;
 	struct timeval tv = { 0, 0 };
 	char *p;
 	int cnt;
+	int ret;
 
-	query->error = EAI_AGAIN;
-	if (event == EV_TIMEOUT)
-		goto err;
+	bzero(&ar, sizeof (ar));
 
-	switch (asr_run(dnssession->aq, &ar)) {
+	switch ((ret = asr_run(dnssession->aq, &ar))) {
 	case ASR_NEED_READ:
 		tv.tv_usec = ar.ar_timeout * 1000;
 		event_set(&dnssession->ev, ar.ar_fd, EV_READ,
@@ -280,14 +221,35 @@ dns_asr_handler(int fd, short event, void *arg)
 		event_add(&dnssession->ev, &tv);
 		return;
 
+	case ASR_YIELD:
 	case ASR_DONE:
 		break;
 	}
 
+	query->error = EAI_AGAIN;
+
+	if (ret == ASR_YIELD) {
+		free(ar.ar_cname);
+		query->error = 0;
+		query->ss = *(struct sockaddr_storage *)&ar.ar_sa.sa;
+		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
+		    sizeof(*query));
+		dns_asr_handler(-1, -1, dnssession);
+		return;
+	}
+
+	/* ASR_DONE */
 	if (ar.ar_err) {
-		/* XXX should be the case, but just to be sure. eric@ */
-		ar.ar_data = NULL;
+		query->error = ar.ar_err;
 		goto err;
+	}
+
+	if (query->type == IMSG_DNS_HOST) {
+		query->error = 0;
+		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
+		    query, sizeof(*query));
+		dnssession_destroy(env, dnssession);
+		return;
 	}
 
 	packed_init(&pack, ar.ar_data, ar.ar_datalen);
@@ -299,58 +261,29 @@ dns_asr_handler(int fd, short event, void *arg)
 		goto err;
 	}
 
-	switch (query->type) {
-	case IMSG_DNS_PTR:
+	if (query->type == IMSG_DNS_PTR) {
 		if (h.ancount > 1) {
 			log_debug("dns_asr_handler: PTR query returned several answers.");
 			log_debug("dns_asr_handler: keeping only first result.");
 		}
 		if (unpack_rr(&pack, &rr) < 0)
 			goto err;
-		free(ar.ar_data);
 
 		print_dname(rr.rr.ptr.ptrname, query->host, sizeof (query->host));
 		if ((p = strrchr(query->host, '.')) != NULL)
 			*p = '\0';
-
+		free(ar.ar_data);
+		
 		query->error = 0;
 		imsg_compose_event(query->asker, IMSG_DNS_PTR, 0, 0, -1, query,
 		    sizeof(*query));
 		dnssession_destroy(env, dnssession);
-		break;
+		return;
+	}
 
-	case IMSG_DNS_HOST:
-		cnt = h.ancount;
-		for (; cnt; cnt--) {
-			if (unpack_rr(&pack, &rr) < 0)
-				goto err;
-
-			if (rr.rr_type == T_A) {
-				query->ss.ss_len = sizeof(struct sockaddr_in);
-				query->ss.ss_family = AF_INET;
-				in = (struct sockaddr_in *)&query->ss;
-				in->sin_addr = rr.rr.in_a.addr;
-			}
-			else if (rr.rr_type == T_AAAA) {
-				query->ss.ss_len = sizeof(struct sockaddr_in6);
-				query->ss.ss_family = AF_INET6;
-				in6 = (struct sockaddr_in6 *)&query->ss;
-				in6->sin6_addr = rr.rr.in_aaaa.addr6;
-			}
-
-			query->error = 0;
-			imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1,
-			    query, sizeof(*query));
-		}
-		free(ar.ar_data);
-		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
-		    query, sizeof(*query));
-		dnssession_destroy(env, dnssession);
-		break;
-
-	case IMSG_DNS_MX: {
+	if (query->type == IMSG_DNS_MX) {
 		struct mx mx;
-
+		
 		cnt = h.ancount;
 		for (; cnt; cnt--) {
 			if (unpack_rr(&pack, &rr) < 0)
@@ -362,12 +295,10 @@ dns_asr_handler(int fd, short event, void *arg)
 			mx.prio =  rr.rr.mx.preference;
 
 			/* sorted insert that will not overflow MAX_MX_COUNT */
-			dnssession->mxarraysz = h.ancount - cnt;
-			if (dnssession->mxarraysz > MAX_MX_COUNT)
-				dnssession->mxarraysz = MAX_MX_COUNT;
 			dnssession_mx_insert(dnssession, &mx);
 		}
 		free(ar.ar_data);
+		ar.ar_data = NULL;
 
 		/* The T_MX scenario is a bit trickier than T_PTR and T_A lookups.
 		 * Rather than forwarding the answers to the process that queried,
@@ -381,17 +312,13 @@ dns_asr_handler(int fd, short event, void *arg)
 		 * -- gilles@
 		 */
 		dnssession->mxcurrent = &dnssession->mxarray[0];
-		dnssession->aq = asr_query_dns(asr, T_A, C_IN,
-		    dnssession->mxcurrent->host, 0);
+		dnssession->aq = asr_query_host(asr,
+		    dnssession->mxcurrent->host, AF_UNSPEC);
 		if (dnssession->aq == NULL)
 			goto err;
 
 		dns_asr_mx_handler(-1, -1, dnssession);
-		break;
-	}
-
-	default:
-		fatalx("unknown dns query type");
+		return;
 	}
 	return;
 
@@ -412,21 +339,12 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 	struct dnssession *dnssession = arg;
 	struct dns *query = &dnssession->query;
 	struct smtpd *env = query->env;
-	struct packed pack;
-	struct header	h;
-	struct query	q;
-	struct rr rr;
-	struct sockaddr_in *in;
-	struct sockaddr_in6 *in6;
 	struct asr_result ar;
 	struct timeval tv = { 0, 0 };
-	int cnt;
+	struct mx *lastmx;
+	int ret;
 
-	query->error = EAI_AGAIN;
-	if (event == EV_TIMEOUT)
-		goto err;
-
-	switch (asr_run(dnssession->aq, &ar)) {
+	switch ((ret = asr_run(dnssession->aq, &ar))) {
 	case ASR_NEED_READ:
 		tv.tv_usec = ar.ar_timeout * 1000;
 		event_set(&dnssession->ev, ar.ar_fd, EV_READ,
@@ -441,68 +359,44 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 		event_add(&dnssession->ev, &tv);
 		return;
 
+	case ASR_YIELD:
 	case ASR_DONE:
 		break;
 	}
 
-	if (ar.ar_err) {
-		/* XXX should be the case, but just to be sure. eric@ */
-		ar.ar_data = NULL;
-		goto err;
-	}
+	query->error = EAI_AGAIN;
 
-	packed_init(&pack, ar.ar_data, ar.ar_datalen);
-	if (unpack_header(&pack, &h) < 0 ||
-	    unpack_query(&pack, &q) < 0)
-		goto err;
-
-	if (h.ancount == 0) {
-		query->error = EAI_NONAME;
-		goto err;
-	}
-
-	cnt = h.ancount;
-	for (; cnt; cnt--) {
-		if (unpack_rr(&pack, &rr) < 0)
-			goto err;
-
-		if (rr.rr_type == T_A) {
-			query->ss.ss_len = sizeof(struct sockaddr_in);
-			query->ss.ss_family = AF_INET;
-			in = (struct sockaddr_in *)&query->ss;
-			in->sin_addr = rr.rr.in_a.addr;
-		}
-		else if (rr.rr_type == T_AAAA) {
-			query->ss.ss_len = sizeof(struct sockaddr_in6);
-			query->ss.ss_family = AF_INET6;
-			in6 = (struct sockaddr_in6 *)&query->ss;
-			in6->sin6_addr = rr.rr.in_aaaa.addr6;
-		}
-
+	if (ret == ASR_YIELD) {
+		free(ar.ar_cname);
+		query->ss = *(struct sockaddr_storage *)&ar.ar_sa.sa;
 		query->error = 0;
 		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
 		    sizeof(*query));
-	}
-	free(ar.ar_data);
-
-	if (dnssession->mxcurrent == &dnssession->mxarray[dnssession->mxarraysz - 1]) {
-		imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1,
-		    query, sizeof(*query));
-		dnssession_destroy(env, dnssession);
+		dns_asr_mx_handler(-1, -1, dnssession);
 		return;
 	}
 
-	dnssession->mxcurrent++;
-	dnssession->aq = asr_query_dns(asr, T_A, C_IN,
-	    dnssession->mxcurrent->host, 0);
-	if (dnssession->aq == NULL)
-		goto err;
-	dns_asr_mx_handler(-1, -1, dnssession);
+	/* ASR_DONE */
+	if (ar.ar_err) {
+		query->error = ar.ar_err;
+		goto end;
+	}
 
+	lastmx = &dnssession->mxarray[dnssession->mxarraysz - 1];
+	if (dnssession->mxcurrent == lastmx) {
+		query->error = 0;
+		goto end;
+	}
+
+	dnssession->mxcurrent++;
+	dnssession->aq = asr_query_host(asr, dnssession->mxcurrent->host,
+	    AF_UNSPEC);
+	if (dnssession->aq == NULL)
+		goto end;
+	dns_asr_mx_handler(-1, -1, dnssession);
 	return;
 
-err:
-	free(ar.ar_data);
+end:
 	imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0, 0, -1, query,
 	    sizeof(*query));
 	dnssession_destroy(env, dnssession);
@@ -528,6 +422,7 @@ void
 dnssession_destroy(struct smtpd *env, struct dnssession *dnssession)
 {
 	SPLAY_REMOVE(dnstree, &env->dns_sessions, dnssession);
+	event_del(&dnssession->ev);
 	free(dnssession);
 }
 
@@ -536,9 +431,13 @@ dnssession_mx_insert(struct dnssession *dnssession, struct mx *mx)
 {
         size_t i;
         size_t j;
-	
+
+	if (dnssession->mxarraysz > MAX_MX_COUNT)
+		dnssession->mxarraysz = MAX_MX_COUNT;
+
         if (dnssession->mxarraysz == 0) {
                 dnssession->mxarray[0] = *mx;
+		dnssession->mxarraysz++;
                 return;
         }
 
@@ -548,6 +447,7 @@ dnssession_mx_insert(struct dnssession *dnssession, struct mx *mx)
 
         if (i < MAX_MX_COUNT)
                 dnssession->mxarray[i] = *mx;
+	dnssession->mxarraysz++;
         return;
 
 insert:

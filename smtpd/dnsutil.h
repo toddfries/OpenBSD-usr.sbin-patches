@@ -125,6 +125,8 @@ struct rr_dynamic {
 	} rd;
 };
 
+
+
 /* pack.c */
 void	packed_init(struct packed*, char*, size_t);
 
@@ -148,6 +150,13 @@ int	pack_dname(struct packed*, const char*);
 int	pack_query(struct packed*, uint16_t, uint16_t, const char*);
 int	pack_rrdynamic(struct packed*, const struct rr_dynamic *rr);
 
+/* sockaddr.c */
+int	sockaddr_from_rr(struct sockaddr *, struct rr *);
+int	sockaddr_from_str(struct sockaddr *, int, const char *);
+void	sockaddr_set_port(struct sockaddr *, int);
+int	sockaddr_connect(const struct sockaddr *, int);
+int	sockaddr_listen(const struct sockaddr *, int);
+
 /* print.c */
 const char *print_host(struct sockaddr*, char*, size_t);
 const char *print_addr(struct sockaddr*, char*, size_t);
@@ -156,8 +165,6 @@ const char *print_header(struct header*, char*, size_t);
 const char *print_query(struct query*, char*, size_t);
 const char *print_rr(struct rr*, char*, size_t);
 const char *print_rrdynamic(struct rr_dynamic*, char*, size_t);
-/* XXX move */
-void	    dump_pkt(const void *, size_t);
 
 const char *typetostr(uint16_t);
 const char *classtostr(uint16_t);
@@ -171,6 +178,7 @@ const char *inet6_ntoa(struct in6_addr);
 size_t	    dname_len(const char *);
 size_t	    dname_depth(const char *);
 ssize_t	    dname_from_fqdn(const char*, char*, size_t);
+ssize_t	    dname_from_sockaddr(const struct sockaddr *, char*, size_t);
 int	    dname_is_in(const char*, const char*);
 int	    dname_is_wildcard(const char *);
 int	    dname_is_reverse(const char *);
