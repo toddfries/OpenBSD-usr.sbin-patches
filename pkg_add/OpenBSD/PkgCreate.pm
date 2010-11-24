@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.23 2010/10/02 13:33:05 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.27 2010/10/27 14:35:56 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -157,7 +157,12 @@ sub compute_checksum
 	if (defined $base) {
 		$fname = $base.$fname;
 	}
-
+	for my $field (qw(symlink link size)) {  # md5
+		if (defined $result->{$field}) {
+			$state->error("User tried to define @#1 for #2", 
+			    $field, $fname);
+		}
+	}
 	if (-l $fname) {
 		if (!defined $base) {
 			$state->error("special file #1 can't be a symlink",
@@ -232,6 +237,16 @@ sub prepare_for_archival
 sub copy_over
 {
 }
+package OpenBSD::PackingElement::RcScript;
+sub archive
+{
+	my ($self, $state) = @_;
+	if ($self->name =~ m/^\//) {
+		$state->{archive}->destdir($state->{base});
+	}
+	$self->SUPER::archive($state);
+}
+
 package OpenBSD::PackingElement::SpecialFile;
 sub archive
 {
@@ -390,7 +405,13 @@ sub makesum_plist
 		return $self->SUPER::makesum_plist($plist, $state);
 	}
 	my $dest = $self->source_to_dest;
-	$self->format($state->{base}, $self->cwd."/".$dest);
+	my $out = $state->{base}.$self->cwd."/".$dest;
+	$self->format($state, $self->cwd."/".$dest);
+	if (-z $out) {
+		$state->errsay("groff produced empty result for #1", $dest);
+		$state->errsay("\tkeeping source manpage");
+		return $self->SUPER::makesum_plist($plist, $state);
+	}
 	my $e = OpenBSD::PackingElement::Manpage->add($plist, $dest);
 	$e->compute_checksum($e, $state, $state->{base});
 }

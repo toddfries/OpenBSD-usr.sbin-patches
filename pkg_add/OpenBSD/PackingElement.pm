@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.185 2010/10/19 11:37:59 sthen Exp $
+# $OpenBSD: PackingElement.pm,v 1.187 2010/10/27 14:35:56 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -464,6 +464,25 @@ sub destate
 	$self->compute_modes($state);
 }
 
+package OpenBSD::PackingElement::RcScript;
+use File::Basename;
+our @ISA = qw(OpenBSD::PackingElement::FileBase);
+
+sub keyword() { "rcscript" }
+__PACKAGE__->register_with_factory;
+
+sub destate
+{
+	my ($self, $state) = @_;
+	$self->compute_fullname($state, 1);
+	if ($self->name =~ m/^\//) {
+		$state->set_cwd(dirname($self->name));
+	}
+	$state->{lastfile} = $self;
+	$state->{lastchecksummable} = $self;
+	$self->compute_modes($state);
+}
+
 package OpenBSD::PackingElement::InfoFile;
 our @ISA=qw(OpenBSD::PackingElement::FileBase);
 
@@ -512,8 +531,11 @@ sub source_to_dest
 # assumes the source is nroff, launches nroff
 sub format
 {
-	my ($self, $base, $out) = @_;
-	my $fname = $base."/".$self->fullname;
+	my ($self, $state, $dest) = @_;
+
+	my $base = $state->{base};
+	my $fname = $base.$self->fullname;
+	$dest = "$base$dest";
 	open(my $fh, '<', $fname) or die "Can't read $fname";
 	my $line = <$fh>;
 	close $fh;
@@ -528,15 +550,22 @@ sub format
 			}
 		}
 	}
-	open my $oldout, '>&STDOUT';
-	my $dir = dirname("$base/$out");
-	unless (-d $dir) {
-		mkdir($dir);
+	my $d = dirname($dest);
+	unless (-d $d) {
+		mkdir($d);
 	}
-	open STDOUT, '>', "$base/$out" or die "Can't write to $base/$out";
-	system(OpenBSD::Paths->groff,
-	    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--', $fname);
-	open STDOUT, '>&', $oldout;
+	if (my ($dir, $file) = $fname =~ m/^(.*)\/([^\/]+\/[^\/]+)$/) {
+		$state->system(sub {
+		    open STDOUT, '>', "$dest" or 
+			die "Can't write to $dest";
+		    chdir($dir) or die "Can't chdir to $dir";
+		    }, 
+		    OpenBSD::Paths->groff,
+		    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--', 
+		    $file);
+	} else {
+		die "Can't parse source name $fname";
+	}
 }
 
 package OpenBSD::PackingElement::Mandoc;
