@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.91 2010/10/09 22:12:26 gilles Exp $	*/
+/*	$OpenBSD: runner.c,v 1.93 2010/11/24 23:27:04 todd Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -461,6 +461,8 @@ runner_process_batchqueue(struct smtpd *env)
 			}
 			env->stats->runner.bounces_active++;
 			env->stats->runner.bounces++;
+			SET_IF_GREATER(env->stats->runner.bounces_active,
+				env->stats->runner.bounces_maxactive);
 			break;
 
 		case T_MDA_BATCH:
@@ -473,6 +475,8 @@ runner_process_batchqueue(struct smtpd *env)
 			free(m);
 			env->stats->mda.sessions_active++;
 			env->stats->mda.sessions++;
+			SET_IF_GREATER(env->stats->mda.sessions_active,
+				env->stats->mda.sessions_maxactive);
 			break;
 
 		case T_MTA_BATCH:
@@ -491,6 +495,8 @@ runner_process_batchqueue(struct smtpd *env)
 			    sizeof *batchp);
 			env->stats->mta.sessions_active++;
 			env->stats->mta.sessions++;
+			SET_IF_GREATER(env->stats->mta.sessions_active,
+				env->stats->mta.sessions_maxactive);
 			break;
 
 		default:
@@ -514,9 +520,10 @@ runner_message_schedule(struct message *messagep, time_t tm)
 		return 1;
 
 	/* Batch has been in the queue for too long and expired */
-	if (tm - messagep->creation >= SMTPD_QUEUE_EXPIRY) {
-		message_set_errormsg(messagep, "message expired after sitting in queue for %d days",
-			SMTPD_QUEUE_EXPIRY / 60 / 60 / 24);
+	if (tm - messagep->creation >= messagep->expire) {
+		message_set_errormsg(messagep,
+		    "message expired after sitting in queue for %d days",
+		    messagep->expire / 60 / 60 / 24);
 		bounce_record_message(messagep);
 		queue_remove_envelope(messagep);
 		return 0;
@@ -755,6 +762,8 @@ batch_record(struct smtpd *env, struct message *messagep)
 
 	TAILQ_INSERT_TAIL(&batchp->messages, messagep, entry);
 	env->stats->runner.active++;
+	SET_IF_GREATER(env->stats->runner.active,
+		env->stats->runner.maxactive);
 	return batchp;
 }
 

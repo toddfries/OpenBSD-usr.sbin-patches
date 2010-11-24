@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.195 2010/10/09 22:05:35 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.198 2010/11/24 23:27:04 todd Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -103,6 +103,11 @@
 	((s)->s_l->flags & F_AUTH && (s)->s_flags & F_SECURE && \
 	 !((s)->s_flags & F_AUTHENTICATED))
 
+#define SET_IF_GREATER(x,y) do { y = MAX(x,y); } while(0)
+		
+
+typedef u_int32_t	objid_t;
+
 struct netaddr {
 	struct sockaddr_storage ss;
 	int bits;
@@ -113,6 +118,7 @@ struct relayhost {
 	char hostname[MAXHOSTNAMELEN];
 	u_int16_t port;
 	char cert[PATH_MAX];
+	objid_t secmapid;
 };
 
 enum imsg_type {
@@ -210,8 +216,6 @@ struct ctl_conn {
 	struct imsgev		 iev;
 };
 TAILQ_HEAD(ctl_connlist, ctl_conn);
-
-typedef u_int32_t		 objid_t;
 
 struct ctl_id {
 	objid_t		 id;
@@ -340,6 +344,7 @@ struct rule {
 
 	char				*r_user;
 	objid_t				 r_amap;
+	time_t				 r_qexpire;
 };
 
 enum path_flags {
@@ -452,6 +457,7 @@ struct message {
 
 	time_t				 creation;
 	time_t				 lasttry;
+	time_t				 expire;
 	u_int8_t			 retry;
 	enum message_flags		 flags;
 	enum message_status		 status;
@@ -638,19 +644,24 @@ struct s_queue {
 
 struct s_runner {
 	size_t		active;
+	size_t		maxactive;
 	size_t		bounces_active;
+	size_t		bounces_maxactive;
 	size_t		bounces;
 };
 
 struct s_session {
 	size_t		sessions;
 	size_t		sessions_active;
+	size_t		sessions_maxactive;
 
 	size_t		smtps;
 	size_t		smtps_active;
+	size_t		smtps_maxactive;
 
 	size_t		starttls;
 	size_t		starttls_active;
+	size_t		starttls_maxactive;
 
 	size_t		read_error;
 	size_t		read_timeout;
@@ -667,11 +678,13 @@ struct s_session {
 struct s_mda {
 	size_t		sessions;
 	size_t		sessions_active;
+	size_t		sessions_maxactive;
 };
 
 struct s_control {
 	size_t		sessions;
 	size_t		sessions_active;
+	size_t		sessions_maxactive;
 };
 
 struct stats {
@@ -732,6 +745,7 @@ struct dns {
 
 struct secret {
 	u_int64_t		 id;
+	objid_t			 secmapid;
 	char			 host[MAXHOSTNAMELEN];
 	char			 secret[MAX_LINE_SIZE];
 };
@@ -811,6 +825,7 @@ struct mta_session {
 	int			 flags;
 	TAILQ_HEAD(,message)	 recipients;
 	TAILQ_HEAD(,mta_relay)	 relays;
+	objid_t			 secmapid;
 	char			*secret;
 	int			 fd;
 	int			 datafd;

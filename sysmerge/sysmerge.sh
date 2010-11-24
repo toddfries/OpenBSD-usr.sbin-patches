@@ -1,6 +1,6 @@
 #!/bin/ksh -
 #
-# $OpenBSD: sysmerge.sh,v 1.63 2010/08/21 09:32:00 sthen Exp $
+# $OpenBSD: sysmerge.sh,v 1.66 2010/11/11 10:46:10 ajacoutot Exp $
 #
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
 # Copyright (c) 2008, 2009, 2010 Antoine Jacoutot <ajacoutot@openbsd.org>
@@ -59,7 +59,7 @@ error_rm_wrkdir() {
 }
 
 usage() {
-	echo "usage: ${0##*/} [-bd] [-s src | etcXX.tgz] [-x xetcXX.tgz]" >&2
+	echo "usage: ${0##*/} [-bd] [-s [src | etcXX.tgz]] [-x xetcXX.tgz]" >&2
 }
 
 trap "restore_bak; clean_src; rm -rf ${WRKDIR}; exit 1" 1 2 3 13 15
@@ -422,7 +422,7 @@ diff_loop() {
 				echo ""
 			fi
 		else
-			echo "===> ${COMPFILE#.} was not found on the target system"
+			# file does not exist on the target system
 			if [ "${IS_LINK}" ]; then
 				if [ -n "${DIFFMODE}" ]; then
 					echo ""
@@ -690,6 +690,12 @@ while getopts bds:x: arg; do
 		;;
 	esac
 done
+
+shift $(( OPTIND -1 ))
+if [ $# -ne 0 ]; then
+	usage
+	error_rm_wrkdir
+fi
 
 
 if [ -z "${SRCDIR}" -a -z "${TGZ}" -a -z "${XTGZ}" ]; then
