@@ -210,8 +210,7 @@ ss_to_text(struct sockaddr_storage *ss)
 		strlcpy(buf, "IPv6:", sizeof(buf));
 		p = buf + 5;
 		in6_addr = &in6->sin6_addr;
-		bsnprintf(p, NI_MAXHOST,
-		    log_in6addr(in6_addr));
+		bsnprintf(p, NI_MAXHOST, "%s", log_in6addr(in6_addr));
 	}
 
 	return (buf);
