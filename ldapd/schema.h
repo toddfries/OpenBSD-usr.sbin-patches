@@ -1,4 +1,4 @@
-/*	$OpenBSD: schema.h,v 1.5 2010/09/03 09:39:17 martinh Exp $ */
+/*	$OpenBSD: schema.h,v 1.7 2010/11/04 15:35:00 martinh Exp $ */
 
 /*
  * Copyright (c) 2010 Martin Hedenfalk <martinh@openbsd.org>
@@ -30,6 +30,12 @@ enum usage {
 	USAGE_DSA_OP		/* operational attribute */
 };
 
+enum match_rule_type {
+	MATCH_EQUALITY,
+	MATCH_ORDERING,
+	MATCH_SUBSTR,
+};
+
 struct name {
 	SLIST_ENTRY(name)	 next;
 	char			*name;
@@ -44,6 +50,16 @@ struct syntax {
 					size_t len);
 };
 
+struct match_rule
+{
+	char			*oid;
+	char			*name;
+	enum match_rule_type	 type;
+	int			(*prepare)(char *value, size_t len);
+	const char		*syntax_oid;
+	const char		**alt_syntax_oids;
+};
+
 struct attr_type {
 	RB_ENTRY(attr_type)	 link;
 	char			*oid;
@@ -51,9 +67,9 @@ struct attr_type {
 	char			*desc;
 	int			 obsolete;
 	struct attr_type	*sup;
-	char			*equality;
-	char			*ordering;
-	char			*substr;
+	const struct match_rule	*equality;
+	const struct match_rule	*ordering;
+	const struct match_rule	*substr;
 	const struct syntax	*syntax;
 	int			 single;
 	int			 collective;
@@ -142,6 +158,8 @@ int			 schema_dump_object(struct object *obj,
 			    char *buf, size_t size);
 int			 schema_dump_attribute(struct attr_type *obj,
 			    char *buf, size_t size);
+int			 schema_dump_match_rule(struct match_rule *mr,
+			    char *buf, size_t size);
 
 struct attr_type	*lookup_attribute_by_oid(struct schema *schema, char *oid);
 struct attr_type	*lookup_attribute_by_name(struct schema *schema, char *name);
@@ -154,6 +172,11 @@ int			 is_oidstr(const char *oidstr);
 
 /* syntax.c */
 const struct syntax	*syntax_lookup(const char *oid);
+
+/* matching.c */
+extern struct match_rule match_rules[];
+extern int num_match_rules;
+const struct match_rule *match_rule_lookup(const char *oid);
 
 #endif
 
