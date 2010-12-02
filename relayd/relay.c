@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.125 2010/11/24 13:57:05 jsg Exp $	*/
+/*	$OpenBSD: relay.c,v 1.127 2010/11/30 14:49:14 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -24,7 +24,6 @@
 #include <sys/un.h>
 #include <sys/tree.h>
 #include <sys/hash.h>
-#include <sys/resource.h>
 
 #include <net/if.h>
 #include <netinet/in_systm.h>
@@ -460,19 +459,9 @@ relay_init(void)
 	struct relay	*rlay;
 	struct host	*host;
 	struct timeval	 tv;
-	struct rlimit	 rl;
 
-	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("relay_init: failed to get resource limit");
-	log_debug("relay_init: max open files %d", rl.rlim_max);
-
-	/*
-	 * Allow the maximum number of open file descriptors for this
-	 * login class (which should be the class "daemon" by default).
-	 */
-	rl.rlim_cur = rl.rlim_max;
-	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("relay_init: failed to set resource limit");
+	/* Unlimited file descriptors (use system limits) */
+	socket_rlimit(-1);
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
 		if ((rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)) &&
@@ -2721,11 +2710,11 @@ relay_ssl_ctx_create(struct relay *rlay)
 void
 relay_ssl_transaction(struct rsession *con, struct ctl_relay_event *cre)
 {
-	struct relay	*rlay = (struct relay *)con->se_relay;
-	SSL		*ssl;
-	SSL_METHOD	*method;
-	void		(*cb)(int, short, void *);
-	u_int		 flags = EV_TIMEOUT;
+	struct relay		*rlay = (struct relay *)con->se_relay;
+	SSL			*ssl;
+	const SSL_METHOD	*method;
+	void			(*cb)(int, short, void *);
+	u_int			 flags = EV_TIMEOUT;
 
 	ssl = SSL_new(rlay->rl_ssl_ctx);
 	if (ssl == NULL)
