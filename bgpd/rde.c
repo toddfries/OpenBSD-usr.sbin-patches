@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.301 2010/11/18 12:18:31 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.303 2010/11/30 15:33:06 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -1372,6 +1372,7 @@ bad_len:
 	switch (type) {
 	case ATTR_UNDEF:
 		/* ignore and drop path attributes with a type code of 0 */
+		plen += attr_len;
 		break;
 	case ATTR_ORIGIN:
 		if (attr_len != 1)
@@ -2725,7 +2726,7 @@ rde_up_dump_upcall(struct rib_entry *re, void *ptr)
 	struct rde_peer		*peer = ptr;
 
 	if (re->ribid != peer->ribid)
-		fatalx("King Bula: monsterous evil horror.");
+		fatalx("King Bula: monstrous evil horror.");
 	if (re->active == NULL)
 		return;
 	up_generate_updates(rules_l, peer, re->active, NULL);

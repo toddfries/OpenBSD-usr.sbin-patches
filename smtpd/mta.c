@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.94 2010/10/29 09:16:07 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.97 2010/11/29 15:25:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -24,22 +24,19 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 #include <errno.h>
 #include <event.h>
+#include <imsg.h>
 #include <netdb.h>
 #include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
 #include "client.h"
+#include "log.h"
 
 void			 mta_imsg(struct smtpd *, struct imsgev *, struct imsg *);
 
@@ -82,8 +79,10 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			s->datafd = -1;
 
 			/* establish host name */
-			if (b->rule.r_action == A_RELAYVIA)
+			if (b->rule.r_action == A_RELAYVIA) {
 				s->host = strdup(b->rule.r_value.relayhost.hostname);
+				s->flags |= MTA_FORCE_MX;
+			}
 			else
 				s->host = strdup(b->hostname);
 			if (s->host == NULL)
@@ -161,7 +160,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			mta_pickup(mta_lookup(env, secret->id), secret->secret);
 			return;
 
-		case IMSG_DNS_A:
+		case IMSG_DNS_HOST:
 			dns = imsg->data;
 			s = mta_lookup(env, dns->id);
 			relay = calloc(1, sizeof *relay);
@@ -171,7 +170,7 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
  			TAILQ_INSERT_TAIL(&s->relays, relay, entry);
 			return;
 
-		case IMSG_DNS_A_END:
+		case IMSG_DNS_HOST_END:
 			dns = imsg->data;
 			mta_pickup(mta_lookup(env, dns->id), &dns->error);
 			return;
@@ -364,7 +363,10 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		/*
 		 * Lookup MX record.
 		 */
-		dns_query_mx(s->env, s->host, 0, s->id);
+		if (s->flags & MTA_FORCE_MX)
+			dns_query_host(s->env, s->host, s->port, s->id);
+		else
+			dns_query_mx(s->env, s->host, 0, s->id);
 		break;
 
 	case MTA_DATA:

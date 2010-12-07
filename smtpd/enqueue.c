@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.39 2010/10/09 22:05:35 gilles Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.41 2010/11/28 14:35:58 gilles Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -25,17 +25,12 @@
 
 #include <ctype.h>
 #include <err.h>
-#include <errno.h>
 #include <event.h>
-#include <fcntl.h>
-#include <netdb.h>
+#include <imsg.h>
 #include <pwd.h>
-#include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
