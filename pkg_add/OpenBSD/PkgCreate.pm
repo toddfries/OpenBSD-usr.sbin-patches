@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.29 2010/12/05 09:41:55 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.40 2011/01/04 14:23:05 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -20,6 +20,8 @@ use strict;
 use warnings;
 
 use OpenBSD::AddCreateDelete;
+use OpenBSD::Dependencies;
+use OpenBSD::SharedLibs;
 
 package OpenBSD::PkgCreate::State;
 our @ISA = qw(OpenBSD::AddCreateDelete::State);
@@ -159,9 +161,12 @@ sub compute_checksum
 	}
 	for my $field (qw(symlink link size)) {  # md5
 		if (defined $result->{$field}) {
-			$state->error("User tried to define @#1 for #2", 
+			$state->error("User tried to define @#1 for #2",
 			    $field, $fname);
 		}
+	}
+	if (defined $self->{wtempname}) {
+		$fname = $self->{wtempname};
 	}
 	if (-l $fname) {
 		if (!defined $base) {
@@ -239,6 +244,10 @@ sub copy_over
 }
 
 sub discover_directories
+{
+}
+
+sub remove_temp
 {
 }
 
@@ -419,13 +428,15 @@ sub makesum_plist
 		return $self->SUPER::makesum_plist($plist, $state);
 	}
 	my $dest = $self->source_to_dest;
-	my $out = $state->{base}.$self->cwd."/".$dest;
 	my $d = dirname($self->cwd."/".$dest);
+	my ($fh, $tempname) = OpenBSD::Temp::permanent_file(
+	    $ENV{TMPDIR} // '/tmp', "manpage.".basename($dest));
+	chmod 0444, $fh;
 	if (-d $state->{base}.$d) {
 		undef $d;
 	}
-	$self->format($state, $self->cwd."/".$dest);
-	if (-z $out) {
+	$self->format($state, $tempname, $fh);
+	if (-z $tempname) {
 		$state->errsay("groff produced empty result for #1", $dest);
 		$state->errsay("\tkeeping source manpage");
 		return $self->SUPER::makesum_plist($plist, $state);
@@ -435,7 +446,18 @@ sub makesum_plist
 		OpenBSD::PackingElement::Dir->add($plist, dirname($dest));
 	}
 	my $e = OpenBSD::PackingElement::Manpage->add($plist, $dest);
+	$e->{wtempname} = $tempname;
 	$e->compute_checksum($e, $state, $state->{base});
+}
+
+sub remove_temp
+{
+	my $self = shift;
+
+	if (defined $self->{wtempname}) {
+		unlink($self->{wtempname});
+		$self->{wtempname} = undef;
+	}
 }
 
 package OpenBSD::PackingElement::Depend;
@@ -516,6 +538,175 @@ sub close
 {
 	my $self = shift;
 	close($self->{fh});
+}
+
+# special solver class for PkgCreate
+package OpenBSD::Dependencies::CreateSolver;
+our @ISA = qw(OpenBSD::Dependencies::SolverBase);
+
+# we need to "hack" a special set
+sub new
+{
+	my ($class, $plist) = @_;
+	bless { set => OpenBSD::PseudoSet->new($plist), bad => [] }, $class;
+}
+
+sub solve_all_depends
+{
+	my ($solver, $state) = @_;
+
+
+	while (1) {
+		my @todo = $solver->solve_depends($state);
+		if (@todo == 0) {
+			return;
+		}
+		$solver->{set}->add_new(@todo);
+	}
+}
+
+sub really_solve_dependency
+{
+	my ($self, $state, $dep, $package) = @_;
+
+	# look in installed packages
+	my $v = $self->find_dep_in_installed($state, $dep);
+	if (!defined $v) {
+		$v = $self->find_dep_in_self($state, $dep);
+	}
+
+	# and in portstree otherwise
+	if (!defined $v) {
+		$v = $self->solve_from_ports($state, $dep, $package);
+	}
+	return $v;
+}
+
+sub solve_from_ports
+{
+	my ($self, $state, $dep, $package) = @_;
+
+	my $portsdir = $state->defines('PORTSDIR');
+	return undef unless defined $portsdir;
+	my $plist = $self->ask_tree($state, $dep, $portsdir,
+	    'print-plist-with-depends');
+	if ($? != 0 || !defined $plist->pkgname) {
+		$plist = $self->ask_tree($state, $dep, $portsdir,
+		    'print-plist');
+	}
+	if ($? != 0 || !defined $plist->pkgname) {
+		$state->error("Can't obtain dependency #1 from ports tree",
+		    $dep->{pattern});
+		return undef;
+	}
+	if ($dep->spec->filter($plist->pkgname) == 0) {
+		$state->error("Dependency #1 doesn't match FULLPKGNAME: #2",
+		    $dep->{pattern}, $plist->pkgname);
+		return undef;
+	}
+
+	OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
+	$self->add_dep($plist);
+	return $plist->pkgname;
+}
+
+sub ask_tree
+{
+	my ($self, $state, $dep, $portsdir, $action) = @_;
+
+	my $make = OpenBSD::Paths->make;
+	my $pid = open(my $fh, "-|");
+	if (!defined $pid) {
+		$state->fatal("cannot fork: $!");
+	}
+	if ($pid == 0) {
+		chdir $portsdir or exit 2;
+		open STDERR, '>', '/dev/null';
+		$ENV{SUBDIR} = $dep->{pkgpath};
+		$ENV{ECHO_MSG} = ':';
+		exec $make ('make', $action);
+	}
+	my $plist = OpenBSD::PackingList->read($fh,
+	    \&OpenBSD::PackingList::PrelinkStuffOnly);
+	close($fh);
+	return $plist;
+}
+
+sub errsay_library
+{
+	my ($solver, $state, $h) = @_;
+
+	$state->errsay("Can't create #1 because of libraries", $h->pkgname);
+}
+
+# we don't want old libs
+sub find_old_lib
+{
+	return undef;
+}
+
+package OpenBSD::PseudoHandle;
+sub new
+{
+	my ($class, $plist) = @_;
+	bless { plist => $plist}, $class;
+}
+
+sub pkgname
+{
+	my $self = shift;
+
+	return $self->{plist}->pkgname;
+}
+
+package OpenBSD::PseudoSet;
+sub new
+{
+	my ($class, @elements) = @_;
+
+	my $o = bless {}, $class;
+	$o->add_new(@elements);
+}
+
+sub add_new
+{
+	my ($self, @elements) = @_;
+	for my $i (@elements) {
+		push(@{$self->{new}}, OpenBSD::PseudoHandle->new($i));
+	}
+	return $self;
+}
+
+sub newer
+{
+	return @{shift->{new}};
+}
+
+
+sub newer_names
+{
+	return map {$_->pkgname} @{shift->{new}};
+}
+
+sub older
+{
+	return ();
+}
+
+sub older_names
+{
+	return ();
+}
+
+sub kept
+{
+	return ();
+}
+
+sub print
+{
+	my $self = shift;
+	return $self->{new}[0]->pkgname;
 }
 
 package OpenBSD::PkgCreate;
@@ -841,6 +1032,20 @@ sub show_bad_symlinks
 	}
 }
 
+sub check_dependencies
+{
+	my ($self, $plist, $state) = @_;
+
+	my $solver = OpenBSD::Dependencies::CreateSolver->new($plist);
+	$solver->solve_all_depends($state);
+	# look for libraries in the "real" tree
+	$state->{destdir} = '/';
+	if (!$solver->solve_wantlibs($state)) {
+		$state->{bad}++;
+	}
+}
+
+
 sub parse_and_run
 {
 	my ($self, $cmd) = @_;
@@ -938,6 +1143,8 @@ sub parse_and_run
 
 	$plist->discover_directories($state);
 	unless (defined $state->opt('q') && defined $state->opt('n')) {
+		$state->set_status("checking dependencies");
+		$self->check_dependencies($plist, $state);
 		$state->set_status("checksumming");
 		if ($regen_package) {
 			$state->progress->visit_with_count($plist, 'verify_checksum', $state);
@@ -949,8 +1156,7 @@ sub parse_and_run
 	}
 
 	if (!defined $plist->pkgname) {
-		$state->error("can't write unnamed packing-list");
-		return 1;
+		$state->fatal("can't write unnamed packing-list");
 	}
 
 	if (defined $state->opt('q')) {
@@ -963,15 +1169,14 @@ sub parse_and_run
 	}
 
 	if ($plist->{deprecated}) {
-		$state->error("found obsolete constructs");
-		return 1;
+		$state->fatal("found obsolete constructs");
 	}
 
 	$plist->avert_duplicates_and_other_checks($state);
 	$state->{stash} = {};
 
-	if ($state->{bad} && $state->{subst}->empty('REGRESSION_TESTING')) {
-		return 1;
+	if ($state->{bad} && !$state->defines('REGRESSION_TESTING')) {
+		$state->fatal("can't continue");
 	}
 	$state->{bad} = 0;
 
@@ -995,6 +1200,7 @@ sub parse_and_run
 	} else {
 		$self->create_package($state, $plist, $wname);
 	}
+	$plist->remove_temp;
 	}catch {
 		print STDERR "$0: $_\n";
 		return 1;

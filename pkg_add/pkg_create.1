@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_create.1,v 1.68 2010/10/27 17:26:03 espie Exp $
+.\"	$OpenBSD: pkg_create.1,v 1.71 2011/01/02 22:58:45 fgsch Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -21,7 +21,7 @@
 .\" [jkh] Took John's changes back and made some additional extensions for
 .\" better integration with FreeBSD's new ports collection.
 .\"
-.Dd $Mdocdate: October 27 2010 $
+.Dd $Mdocdate: January 2 2011 $
 .Dt PKG_CREATE 1
 .Os
 .Sh NAME
@@ -45,6 +45,7 @@
 .Op Fl W Ar wantedlib
 .Fl d Ar desc
 .Fl D Ar COMMENT Ns = Ns Ar value
+.Fl D Ar PORTSDIR Ns = Ns Ar value
 .Fl f Ar packinglist
 .Fl p Ar prefix
 .Ar pkg-name
@@ -86,6 +87,26 @@ see
 records extra information in the packing-list, such as the existence
 of symlinks and hard links, computes and stores file checksums, and
 verifies that all special objects are properly annotated in the packing-list.
+.Pp
+It will also check all
+.Cm @wantlib
+for reachability, by looking into all installed
+.Cm @depend .
+It may also ask the ports tree for extra dependencies,
+provided some other
+.Cm @depend
+refers to the same
+.Ev BASE_PKGPATH
+.Po
+see
+.Xr bsd.port.mk 5
+.Pc .
+The rationale is that those libraries must already be present for
+the package to build correctly, and thus be reachable through the
+subset of
+.Cm @depend
+that are not pure
+.Ev RUN_DEPENDS .
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
@@ -792,6 +813,7 @@ and not during true deletions.
 Original location of the package, automatically recorded in installed packages
 by
 .Xr pkg_add 1 .
+.Pp
 .It Cm @wantlib Ar libspec
 Package needs a shared library to work.
 .Ar libspec

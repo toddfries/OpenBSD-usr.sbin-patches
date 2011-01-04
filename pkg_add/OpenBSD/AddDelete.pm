@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.40 2010/12/05 09:41:55 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.44 2010/12/29 13:03:05 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -58,13 +58,13 @@ sub framework
 	my ($self, $state) = @_;
 
 	my $do = sub {
-		lock_db($state->{not}) unless $state->defines('nolock');
+		lock_db($state->{not}, $state) unless $state->defines('nolock');
 		$state->check_root;
 		$self->process_parameters($state);
 		my $dielater = $self->do_the_main_work($state);
 		# cleanup various things
 		$state->{recorder}->cleanup($state);
-		OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
+		$state->ldconfig->ensure;
 		OpenBSD::PackingElement::Fontdir::finish_fontdirs($state);
 		$state->progress->clear;
 		$state->log->dump;
@@ -82,7 +82,7 @@ sub framework
 		try {
 			&$do;
 		} catch {
-			print STDERR "$0: $_\n";
+			$state->errsay("#1: #2", $0, $_);
 			OpenBSD::Handler->reset;
 			if ($_ =~ m/^Caught SIG(\w+)/o) {
 				kill $1, $$;
@@ -285,12 +285,6 @@ sub status
 	return $self->{status};
 }
 
-sub defines
-{
-	my ($self, $k) = @_;
-	return $self->{subst}->value($k);
-}
-
 sub updateset
 {
 	my $self = shift;
@@ -331,6 +325,78 @@ sub check_dir
 	my ($self, $dir) = @_;
 	unless (-d $dir) {
 	    $self->fatal("#1: #2 is not a directory", $0, $dir);
+	}
+}
+
+OpenBSD::Auto::cache(ldconfig,
+    sub {
+    	my $self = shift;
+	return OpenBSD::LdConfig->new($self);
+    });
+
+# this is responsible for running ldconfig when needed
+package OpenBSD::LdConfig;
+
+sub new
+{
+	my ($class, $state) = @_;
+	bless { state => $state, todo => 0 }, $class;
+}
+
+# called once to figure out which directories are actually used
+sub init
+{
+	my $self = shift;
+	my $state = $self->{state};
+	my $destdir = $state->{destdir};
+
+	$self->{ldconfig} = [OpenBSD::Paths->ldconfig];
+
+	$self->{path} = {};
+	if ($destdir ne '') {
+		unshift @{$self->{ldconfig}}, OpenBSD::Paths->chroot, '--',
+		    $destdir;
+	}
+	open my $fh, "-|", @{$self->{ldconfig}}, "-r";
+	if (defined $fh) {
+		my $_;
+		while (<$fh>) {
+			if (m/^\s*search directories:\s*(.*?)\s*$/o) {
+				for my $d (split(/\:/o, $1)) {
+					$self->{path}{$d} = 1;
+				}
+				last;
+			}
+		}
+		close($fh);
+	} else {
+		$state->errsay("Can't find ldconfig");
+	}
+}
+
+# called from libs to figure out whether ldconfig should be rerun
+sub mark_directory
+{
+	my ($self, $name) = @_;
+	if (!defined $self->{path}) {
+		$self->init;
+	}
+	require File::Basename;
+	my $d = File::Basename::dirname($name);
+	if ($self->{path}{$d}) {
+		$self->{todo} = 1;
+	}
+}
+
+# call before running any command (or at end) to run ldconfig just in time
+sub ensure
+{
+	my $self = shift;
+	if ($self->{todo}) {
+		my $state = $self->{state};
+		$state->vsystem(@{$self->{ldconfig}}, "-R")
+		    unless $state->{not};
+		$self->{todo} = 0;
 	}
 }
 

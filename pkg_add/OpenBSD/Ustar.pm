@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Ustar.pm,v 1.65 2010/10/02 13:36:56 espie Exp $
+# $OpenBSD: Ustar.pm,v 1.70 2011/01/03 19:02:01 espie Exp $
 #
 # Copyright (c) 2002-2007 Marc Espie <espie@openbsd.org>
 #
@@ -40,7 +40,6 @@ use constant {
 	MAXGROUPNAME => 32
 };
 
-use File::Path ();
 use File::Basename ();
 use OpenBSD::IdCache;
 use OpenBSD::Paths;
@@ -75,9 +74,10 @@ sub fatal
 
 sub new_object
 {
-	my ($self, $h) = @_;
+	my ($self, $h, $class) = @_;
 	$h->{archive} = $self;
 	$h->{destdir} = $self->{destdir};
+	bless $h, $class;
 	return $h;
 }
 
@@ -128,8 +128,8 @@ sub next
 	}
 	# decode header
 	my ($name, $mode, $uid, $gid, $size, $mtime, $chksum, $type,
-	$linkname, $magic, $version, $uname, $gname, $major, $minor,
-	$prefix, $pad) = unpack(USTAR_HEADER, $header);
+	    $linkname, $magic, $version, $uname, $gname, $major, $minor,
+	    $prefix, $pad) = unpack(USTAR_HEADER, $header);
 	if ($magic ne "ustar\0" || $version ne '00') {
 		$self->fatal("Not an ustar archive header");
 	}
@@ -158,7 +158,7 @@ sub next
 	}
 
 	$size = oct($size);
-	my $result= $self->new_object({
+	my $result= {
 	    name => $name,
 	    mode => $mode,
 	    atime => $mtime,
@@ -171,12 +171,17 @@ sub next
 	    size => $size,
 	    major => $major,
 	    minor => $minor,
-	});
+	};
 	if (defined $types->{$type}) {
-		$types->{$type}->new($result);
+		$self->new_object($result, $types->{$type});
 	} else {
 		$self->fatal("Unsupported type #1", $type);
 	}
+	if (!$result->isFile && $result->{size} != 0) {
+		$self->fatal("Bad archive: non null size for #1 (#2)", 
+		    $types->{$type}, $result->{name});
+	}
+
 	# adjust swallow
 	$self->{swallow} = $size;
 	if ($size % 512) {
@@ -209,9 +214,6 @@ sub mkheader
 	my ($prefix, $name) = split_name($entry->name);
 	my $linkname = $entry->{linkname};
 	my $size = $entry->{size};
-	if (!$entry->isFile) {
-		$size = 0;
-	}
 	my ($major, $minor);
 	if ($entry->isDevice) {
 		$major = $entry->{major};
@@ -281,14 +283,15 @@ sub mkheader
 
 sub prepare
 {
-	my ($self, $filename) = @_;
+	my ($self, $filename, $destdir) = @_;
 
-	my $realname = "$self->{destdir}/$filename";
+	$destdir //= $self->{destdir};
+	my $realname = "$destdir/$filename";
 
 	my ($dev, $ino, $mode, $uid, $gid, $rdev, $size, $mtime) =
 	    (lstat $realname)[0,1,2,4,5,6, 7,9];
 
-	my $entry = $self->new_object({
+	my $entry = {
 		key => "$dev/$ino",
 		name => $filename,
 		realname => $realname,
@@ -301,24 +304,27 @@ sub prepare
 		gname => $gnamecache->lookup($gid),
 		major => $rdev/256,
 		minor => $rdev%256,
-	});
+	};
 	my $k = $entry->{key};
+	my $class = "OpenBSD::Ustar::File"; # default
 	if (defined $self->{key}->{$k}) {
 		$entry->{linkname} = $self->{key}->{$k};
-		bless $entry, "OpenBSD::Ustar::HardLink";
+		$class = "OpenBSD::Ustar::HardLink";
 	} elsif (-l $realname) {
 		$entry->{linkname} = readlink($realname);
-		bless $entry, "OpenBSD::Ustar::SoftLink";
+		$class = "OpenBSD::Ustar::SoftLink";
 	} elsif (-p _) {
-		bless $entry, "OpenBSD::Ustar::Fifo";
+		$class = "OpenBSD::Ustar::Fifo";
 	} elsif (-c _) {
-		bless $entry, "OpenBSD::Ustar::CharDevice";
+		$class = "OpenBSD::Ustar::CharDevice";
 	} elsif (-b _) {
-		bless $entry, "OpenBSD::Ustar::BlockDevice";
+		$class ="OpenBSD::Ustar::BlockDevice";
 	} elsif (-d _) {
-		bless $entry, "OpenBSD::Ustar::Dir";
-	} else {
-		bless $entry, "OpenBSD::Ustar::File";
+		$class = "OpenBSD::Ustar::Dir";
+	}
+	$self->new_object($entry, $class);
+	if (!$entry->isFile) {
+		$entry->{size} = 0;
 	}
 	return $entry;
 }
@@ -355,21 +361,17 @@ sub fh
 }
 
 package OpenBSD::Ustar::Object;
-sub new
-{
-	my ($class, $object) = @_;
-
-	bless $object, $class;
-	if ($object->{size} != 0) {
-		$object->fatal("Bad archive: non null size for #1", $class);
-	}
-	return $object;
-}
 
 sub fatal
 {
 	my ($self, @args) = @_;
 	$self->{archive}->fatal(@args);
+}
+
+sub system
+{
+	my ($self, @args) = @_;
+	$self->{archive}{state}->system(@args);
 }
 
 sub errsay
@@ -403,16 +405,27 @@ sub set_modes
 	chown $self->{uid}, $self->{gid}, $self->{destdir}.$self->name;
 	chmod $self->{mode}, $self->{destdir}.$self->name;
 	if (defined $self->{mtime} || defined $self->{atime}) {
-		utime $self->{atime} // time, $self->{mtime} // time, 
+		utime $self->{atime} // time, $self->{mtime} // time,
 		    $self->{destdir}.$self->name;
 	}
+}
+
+sub ensure_dir
+{
+	my ($self, $dir) = @_;
+	return if -d $dir;
+	$self->ensure_dir(File::Basename::dirname($dir));
+	if (mkdir($dir)) {
+		return;
+	}
+	$self->fatal("Error making directory #1: #2", $dir, $!);
 }
 
 sub make_basedir
 {
 	my $self = shift;
 	my $dir = $self->{destdir}.File::Basename::dirname($self->name);
-	File::Path::mkpath($dir) unless -d $dir;
+	$self->ensure_dir($dir);
 }
 
 sub write
@@ -482,7 +495,7 @@ our @ISA=qw(OpenBSD::Ustar::Object);
 sub create
 {
 	my $self = shift;
-	File::Path::mkpath($self->{destdir}.$self->name);
+	$self->ensure_dir($self->{destdir}.$self->name);
 	$self->set_modes;
 }
 
@@ -496,7 +509,7 @@ our @ISA=qw(OpenBSD::Ustar::Object);
 sub create
 {
 	my $self = shift;
-	$self->make_basedir($self->name);
+	$self->make_basedir;
 	my $linkname = $self->{linkname};
 	if (defined $self->{cwd}) {
 		$linkname=$self->{cwd}.'/'.$linkname;
@@ -530,7 +543,7 @@ our @ISA=qw(OpenBSD::Ustar::Object);
 sub create
 {
 	my $self = shift;
-	$self->make_basedir($self->name);
+	$self->make_basedir;
 	symlink $self->{linkname}, $self->{destdir}.$self->name or
 	    $self->fatal("Can't symlink #1 to #2#3: #4",
 	    	$self->{linkname}, $self->{destdir}, $self->name, $!);
@@ -547,10 +560,11 @@ our @ISA=qw(OpenBSD::Ustar::Object);
 sub create
 {
 	my $self = shift;
-	$self->make_basedir($self->name);
+	$self->make_basedir;
 	require POSIX;
 	POSIX::mkfifo($self->{destdir}.$self->name, $self->{mode}) or
-	    $self->fatal("Can't create fifo #1: #2", $self->name, $!);
+	    $self->fatal("Can't create fifo #1#2: #3", $self->{destdir},
+	    	$self->name, $!);
 	$self->set_modes;
 }
 
@@ -563,8 +577,8 @@ our @ISA=qw(OpenBSD::Ustar::Object);
 sub create
 {
 	my $self = shift;
-	$self->make_basedir($self->name);
-	system(OpenBSD::Paths->mknod,
+	$self->make_basedir;
+	$self->system(OpenBSD::Paths->mknod,
 	    '-m', $self->{mode}, '--', $self->{destdir}.$self->name,
 	    $self->devicetype, $self->{major}, $self->{minor});
 	$self->set_modes;
@@ -655,17 +669,11 @@ sub close
 
 package OpenBSD::Ustar::File;
 our @ISA=qw(OpenBSD::Ustar::Object);
-sub new
-{
-	my ($class, $object) = @_;
-
-	bless $object, $class;
-}
 
 sub create
 {
 	my $self = shift;
-	$self->make_basedir($self->name);
+	$self->make_basedir;
 	my $buffer;
 	my $out = OpenBSD::CompactWriter->new($self->{destdir}.$self->name);
 	if (!defined $out) {
