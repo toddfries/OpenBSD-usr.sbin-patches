@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.188 2010/12/18 10:33:21 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.191 2011/01/02 15:25:45 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -531,11 +531,10 @@ sub source_to_dest
 # assumes the source is nroff, launches nroff
 sub format
 {
-	my ($self, $state, $dest) = @_;
+	my ($self, $state, $dest, $destfh) = @_;
 
 	my $base = $state->{base};
 	my $fname = $base.$self->fullname;
-	$dest = "$base$dest";
 	open(my $fh, '<', $fname) or die "Can't read $fname";
 	my $line = <$fh>;
 	close $fh;
@@ -556,12 +555,13 @@ sub format
 	}
 	if (my ($dir, $file) = $fname =~ m/^(.*)\/([^\/]+\/[^\/]+)$/) {
 		$state->system(sub {
-		    open STDOUT, '>', "$dest" or 
+		    open STDOUT, '>&', $destfh or
 			die "Can't write to $dest";
+		    close $destfh;
 		    chdir($dir) or die "Can't chdir to $dir";
-		    }, 
+		    },
 		    OpenBSD::Paths->groff,
-		    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--', 
+		    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--',
 		    $file);
 	} else {
 		die "Can't parse source name $fname";
@@ -584,20 +584,8 @@ __PACKAGE__->register_with_factory;
 
 sub mark_ldconfig_directory
 {
-	require OpenBSD::SharedLibs;
-
-	my ($self, $destdir) = @_;
-	OpenBSD::SharedLibs::mark_ldconfig_directory($self->fullname,
-	    $destdir);
-}
-
-sub ensure_ldconfig
-{
-	if ($todo) {
-		require OpenBSD::SharedLibs;
-
-		&OpenBSD::SharedLibs::ensure_ldconfig;
-	}
+	my ($self, $state) = @_;
+	$state->ldconfig->mark_directory($self->fullname);
 }
 
 sub parse
@@ -1291,7 +1279,7 @@ sub run
 {
 	my ($self, $state) = @_;
 
-	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
+	$state->ldconfig->ensure;
 	$state->say("#1 #2", $self->keyword, $self->{expanded})
 	    if $state->verbose >= 2;
 	$state->log->system(OpenBSD::Paths->sh, '-c', $self->{expanded})
@@ -1448,7 +1436,7 @@ sub restore_fontdir
 	if (-f "$dirname/fonts.dir.dist") {
 
 		unlink("$dirname/fonts.dir");
-		$state->copy_file("$dirname/fonts.dir.dist", 
+		$state->copy_file("$dirname/fonts.dir.dist",
 		    "$dirname/fonts.dir");
 	}
 }
@@ -1603,7 +1591,7 @@ sub run
 
 	return if $state->{dont_run_scripts};
 
-	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
+	$state->ldconfig->ensure;
 	$state->say("#1 script: #2 #3 #4", $self->beautify, $name, $pkgname,
 	    join(' ', @args)) if $state->verbose >= 2;
 	return if $state->{not};
