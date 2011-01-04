@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.116 2010/10/02 13:33:05 espie Exp $
+# $OpenBSD: Add.pm,v 1.119 2010/12/29 13:03:05 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -50,11 +50,11 @@ sub manpages_index
 
 sub register_installation
 {
-	my $plist = shift;
-	return if $main::not;
+	my ($plist, $state) = @_;
+	return if $state->{not};
 	my $dest = installed_info($plist->pkgname);
 	mkdir($dest);
-	$plist->copy_info($dest);
+	$plist->copy_info($dest, $state);
 	$plist->set_infodir($dest);
 	$plist->to_installation;
 }
@@ -649,7 +649,7 @@ sub install
 	my ($self, $state) = @_;
 	$self->SUPER::install($state);
 	return if $state->{do_faked};
-	$self->mark_ldconfig_directory($state->{destdir});
+	$self->mark_ldconfig_directory($state);
 }
 
 package OpenBSD::PackingElement::SpecialFile;
@@ -687,12 +687,12 @@ sub prepare_for_addition
 
 sub copy_info
 {
-	my ($self, $dest) = @_;
+	my ($self, $dest, $state) = @_;
 	require File::Copy;
 
 	File::Copy::move($self->fullname, $dest) or
-		print STDERR "Problem while moving ", $self->fullname,
-			" into $dest: $!\n";
+	    $state->errsay("Problem while moving #1 into #2: #3", 
+		$self->fullname, $dest, $!);
 }
 
 package OpenBSD::PackingElement::FINSTALL;

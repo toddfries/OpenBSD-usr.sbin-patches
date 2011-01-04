@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Dependencies.pm,v 1.147 2010/12/20 11:55:48 espie Exp $
+# $OpenBSD: Dependencies.pm,v 1.151 2010/12/24 09:04:14 espie Exp $
 #
 # Copyright (c) 2005-2010 Marc Espie <espie@openbsd.org>
 #
@@ -73,7 +73,7 @@ sub dump
 	my ($self, $state) = @_;
 
 	return unless %{$self->{done}};
-	$state->say("Full dependency tree is #1", 
+	$state->say("Full dependency tree is #1",
 	    join(' ', keys %{$self->{done}}));
 }
 
@@ -167,7 +167,7 @@ sub find_in_already_done
 	my ($self, $solver, $state, $obj) = @_;
 	my $r = $self->{known_tags}->{$obj};
 	if (defined $r) {
-		$state->say("Found tag #1 in #2", $obj, $r) 
+		$state->say("Found tag #1 in #2", $obj, $r)
 		    if $state->verbose >= 3;
 	}
 	return $r;
@@ -402,8 +402,6 @@ sub solve_wantlibs
 	my $okay = 1;
 
 	my $lib_finder = OpenBSD::lookup::library->new($solver);
-	$lib_finder->{known}{BUILD} = 1;
-	$lib_finder->{done}{BUILD} = 1;
 	for my $h ($solver->{set}->newer) {
 		for my $lib (@{$h->{plist}->{wantlib}}) {
 			$solver->{localbase} = $h->{plist}->localbase;
@@ -460,20 +458,18 @@ sub check_lib_spec
 	return;
 }
 
-sub find_in_installed
+sub find_dep_in_installed
 {
-	my ($self, $dep) = @_;
+	my ($self, $state, $dep) = @_;
 
 	return $self->find_candidate($dep, @{$self->installed_list});
 }
 
-package OpenBSD::Dependencies::Solver;
-our @ISA = qw(OpenBSD::Dependencies::SolverBase);
-
-sub add_dep
+sub find_dep_in_self
 {
-	my ($self, $d) = @_;
-	$self->{deplist}{$d} = $d;
+	my ($self, $state, $dep) = @_;
+
+	return $self->find_candidate($dep, $self->{set}->newer_names);
 }
 
 use OpenBSD::PackageInfo;
@@ -489,6 +485,16 @@ OpenBSD::Auto::cache(installed_list,
 	}
 );
 
+sub add_dep
+{
+	my ($self, $d) = @_;
+	$self->{deplist}{$d} = $d;
+}
+
+package OpenBSD::Dependencies::Solver;
+our @ISA = qw(OpenBSD::Dependencies::SolverBase);
+
+use OpenBSD::PackageInfo;
 
 sub merge
 {
@@ -580,18 +586,11 @@ sub find_dep_in_repositories
 	}
 }
 
-sub find_dep_in_self
-{
-	my ($self, $state, $dep) = @_;
-
-	return $self->find_candidate($dep, $self->{set}->newer_names);
-}
-
 sub find_dep_in_stuff_to_install
 {
 	my ($self, $state, $dep) = @_;
 
-	my $v = $self->find_candidate($dep, 
+	my $v = $self->find_candidate($dep,
 	    keys %{$state->tracker->{uptodate}});
 	if ($v) {
 		$self->set_global($dep, _cache::installed->new($v));
@@ -643,7 +642,7 @@ sub really_solve_dependency
 		return $v if $v;
 	}
 
-	$v = $self->find_in_installed($dep);
+	$v = $self->find_dep_in_installed($state, $dep);
 	if ($v) {
 		if ($state->{newupdates}) {
 			if ($state->tracker->is_known($v)) {
