@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.120 2010/10/29 09:16:07 gilles Exp $	*/
+/*	$OpenBSD: lka.c,v 1.123 2010/11/29 15:25:55 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -25,12 +25,11 @@
 #include <sys/wait.h>
 
 #include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include <ctype.h>
 #include <errno.h>
 #include <event.h>
-#include <netdb.h>
+#include <imsg.h>
 #include <pwd.h>
 #include <resolv.h>
 #include <signal.h>
@@ -40,12 +39,11 @@
 #include <unistd.h>
 
 #include "smtpd.h"
+#include "log.h"
 
 void		lka_imsg(struct smtpd *, struct imsgev *, struct imsg *);
 __dead void	lka_shutdown(void);
 void		lka_sig_handler(int, short, void *);
-void		lka_setup_events(struct smtpd *);
-void		lka_disable_events(struct smtpd *);
 void		lka_expand_pickup(struct smtpd *, struct lkasession *);
 int		lka_expand_resume(struct smtpd *, struct lkasession *);
 int		lka_resolve_node(struct smtpd *, char *tag, struct path *, struct expandnode *);
@@ -282,16 +280,6 @@ lka_shutdown(void)
 	_exit(0);
 }
 
-void
-lka_setup_events(struct smtpd *env)
-{
-}
-
-void
-lka_disable_events(struct smtpd *env)
-{
-}
-
 pid_t
 lka(struct smtpd *env)
 {
@@ -353,7 +341,6 @@ lka(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 
-	lka_setup_events(env);
 	if (event_dispatch() < 0)
 		fatal("event_dispatch");
 	lka_shutdown();

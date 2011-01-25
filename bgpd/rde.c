@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.301 2010/11/18 12:18:31 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.304 2010/12/23 17:41:40 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -18,6 +18,8 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include <errno.h>
 #include <ifaddrs.h>
@@ -156,6 +158,7 @@ pid_t
 rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
     int debug)
 {
+	struct rlimit		 rl;
 	pid_t			 pid;
 	struct passwd		*pw;
 	struct pollfd		*pfd = NULL;
@@ -184,6 +187,12 @@ rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
 
 	setproctitle("route decision engine");
 	bgpd_process = PROC_RDE;
+
+	if (getrlimit(RLIMIT_DATA, &rl) == -1)
+		fatal("getrlimit");
+	rl.rlim_cur = rl.rlim_max;
+	if (setrlimit(RLIMIT_DATA, &rl) == -1)
+		fatal("setrlimit");
 
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
@@ -1372,6 +1381,7 @@ bad_len:
 	switch (type) {
 	case ATTR_UNDEF:
 		/* ignore and drop path attributes with a type code of 0 */
+		plen += attr_len;
 		break;
 	case ATTR_ORIGIN:
 		if (attr_len != 1)
@@ -2725,7 +2735,7 @@ rde_up_dump_upcall(struct rib_entry *re, void *ptr)
 	struct rde_peer		*peer = ptr;
 
 	if (re->ribid != peer->ribid)
-		fatalx("King Bula: monsterous evil horror.");
+		fatalx("King Bula: monstrous evil horror.");
 	if (re->active == NULL)
 		return;
 	up_generate_updates(rules_l, peer, re->active, NULL);

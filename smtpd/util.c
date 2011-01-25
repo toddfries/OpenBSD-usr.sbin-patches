@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.36 2010/10/09 22:05:35 gilles Exp $	*/
+/*	$OpenBSD: util.c,v 1.38 2010/11/29 15:25:56 gilles Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -26,11 +26,14 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 
+#include <netinet/in.h>
+
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <imsg.h>
 #include <libgen.h>
 #include <netdb.h>
 #include <pwd.h>
@@ -42,6 +45,7 @@
 #include <unistd.h>
 
 #include "smtpd.h"
+#include "log.h"
 
 const char *log_in6addr(const struct in6_addr *);
 const char *log_sockaddr(struct sockaddr *);

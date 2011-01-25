@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_shared.c,v 1.32 2010/10/28 21:15:50 gilles Exp $	*/
+/*	$OpenBSD: queue_shared.c,v 1.35 2010/11/28 14:35:58 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -30,14 +30,14 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
-#include <pwd.h>
+#include <imsg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
+#include "log.h"
 
 #define	QWALK_AGAIN	0x1
 #define	QWALK_RECURSE	0x2
@@ -560,7 +560,7 @@ queue_load_envelope(struct message *messagep, char *evpid)
 
 	fp = fopen(pathname, "r");
 	if (fp == NULL) {
-		if (errno == ENOSPC || errno == ENFILE)
+		if (errno == ENOENT || errno == ENFILE)
 			return 0;
 		fatal("queue_load_envelope: fopen");
 	}
