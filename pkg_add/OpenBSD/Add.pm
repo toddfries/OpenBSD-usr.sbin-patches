@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.119 2010/12/29 13:03:05 espie Exp $
+# $OpenBSD: Add.pm,v 1.122 2011/01/25 11:46:57 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -93,7 +93,7 @@ sub record_partial_installation
 			undef $last->{d};
 		}
 	}
-	register_installation($n);
+	register_installation($n, $state);
 	return $borked;
 }
 
@@ -374,6 +374,9 @@ sub install
 	$self->SUPER::install($state);
 	my $fullname = $self->fullname;
 	my $destdir = $state->{destdir};
+	if ($fullname =~ m,^/usr/local/share/doc/pkg-readmes/,) {
+		$state->{readmes}++;
+	}
 
 	if ($state->{extracted_first}) {
 		if ($state->{not}) {
@@ -455,6 +458,14 @@ sub prepare_to_extract
 		$file->{linkname} = $destdir.$file->{linkname};
 	}
 	return $file;
+}
+
+package OpenBSD::PackingElement::RcScript;
+sub install
+{
+	my ($self, $state) = @_;
+	$state->{add_rcscripts}{$self->fullname} = 1;
+	$self->SUPER::install($state);
 }
 
 package OpenBSD::PackingElement::EndFake;
@@ -716,7 +727,7 @@ sub prepare_for_addition
 		my $key = "update_".OpenBSD::PackageName::splitstem($pkgname);
 		return if $state->defines($key);
 		if ($state->{interactive}) {
-			if ($state->confirm($self->{message}."\n".
+			if ($state->confirm($pkgname.":".$self->{message}."\n".
 			    "Do you want to update now", 0)) {
 			    	return;
 			}
