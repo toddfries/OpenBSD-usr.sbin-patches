@@ -199,12 +199,13 @@ ss_to_text(struct sockaddr_storage *ss)
 		in_addr_t addr;
 		
 		addr = ((struct sockaddr_in *)ss)->sin_addr.s_addr;
+		addr = ntohl(addr);
 		bsnprintf(p, NI_MAXHOST,
 		    "%d.%d.%d.%d",
-		    addr & 0xff,
-		    (addr >> 8) & 0xff,
+		    (addr >> 24) & 0xff,
 		    (addr >> 16) & 0xff,
-		    (addr >> 24) & 0xff);
+		    (addr >> 8) & 0xff,
+		    addr & 0xff);
 	}
 
 	if (ss->ss_family == PF_INET6) {
@@ -231,13 +232,13 @@ ss_to_ptr(struct sockaddr_storage *ss)
 		in_addr_t addr;
 		
 		addr = ((struct sockaddr_in *)ss)->sin_addr.s_addr;
-
+		addr = ntohl(addr);
 		bsnprintf(buffer, sizeof (buffer),
 		    "%d.%d.%d.%d.in-addr.arpa",
-		    (addr >> 24) & 0xff,
-		    (addr >> 16) & 0xff,
+		    addr & 0xff,
 		    (addr >> 8) & 0xff,
-		    addr & 0xff);
+		    (addr >> 16) & 0xff,
+		    (addr >> 24) & 0xff);
 		break;
 	}
 	case AF_INET6: {
