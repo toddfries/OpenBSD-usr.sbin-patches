@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.16 2010/10/02 13:36:56 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.21 2011/01/03 19:01:04 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -668,7 +668,7 @@ sub delete_old_packages
 		try {
 			OpenBSD::Delete::delete_plist($o->plist, $state);
 		} catchall {
-			$state->errprint($_);
+			$state->errsay($_);
 			$state->fatal(partial_install(
 			    "Deinstallation of $oldname failed",
 			    $set, $state));
@@ -737,7 +737,7 @@ sub really_add
 				    $state);
 			} catchall {
 				unless ($state->{interrupted}) {
-					$state->errprint($_);
+					$state->errsay($_);
 					$errors++;
 				}
 			};
@@ -771,7 +771,7 @@ sub really_add
 			}
 		} catchall {
 			unless ($state->{interrupted}) {
-				$state->errprint($_);
+				$state->errsay($_);
 				$errors++;
 			}
 		};
@@ -787,10 +787,10 @@ sub really_add
 	for my $handle ($set->newer) {
 		my $pkgname = $handle->pkgname;
 		my $plist = $handle->plist;
-		OpenBSD::SharedLibs::add_libs_from_plist($plist);
+		OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
 		OpenBSD::Add::tweak_plist_status($plist, $state);
 		$plist->to_cache;
-		OpenBSD::Add::register_installation($plist);
+		OpenBSD::Add::register_installation($plist, $state);
 		add_installed($pkgname);
 		delete $handle->{partial};
 		OpenBSD::PkgCfl::register($plist, $state);
@@ -878,7 +878,7 @@ sub install_set
 
 	my @deps = $set->solver->solve_depends($state);
 	if ($state->verbose >= 2) {
-		$set->solver->dump;
+		$set->solver->dump($state);
 	}
 	if (@deps > 0) {
 		$state->build_deptree($set, @deps);

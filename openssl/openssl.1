@@ -1,4 +1,4 @@
-.\" $OpenBSD: openssl.1,v 1.83 2010/10/17 13:30:37 jmc Exp $
+.\" $OpenBSD: openssl.1,v 1.85 2011/01/20 13:32:19 lum Exp $
 .\" ====================================================================
 .\" Copyright (c) 1998-2002 The OpenSSL Project.  All rights reserved.
 .\"
@@ -112,7 +112,7 @@
 .\"
 .\" OPENSSL
 .\"
-.Dd $Mdocdate: October 17 2010 $
+.Dd $Mdocdate: January 20 2011 $
 .Dt OPENSSL 1
 .Os
 .Sh NAME
@@ -4817,7 +4817,7 @@ certificates to be selected.
 Any PKCS#5 v1.5 or PKCS#12 PBE algorithm name can be used (see the
 .Sx PKCS12 NOTES
 section for more information).
-If a a cipher name
+If a cipher name
 (as output by the
 .Cm list-cipher-algorithms
 command) is specified then it
@@ -8668,7 +8668,7 @@ This is the main section and it specifies the name of another section
 that contains all the options for the
 .Fl reply
 option.
-This default section can be overriden with the
+This default section can be overridden with the
 .Fl section
 command line switch.
 .It Cm oid_file
@@ -8764,7 +8764,7 @@ The default is no.
 .Sh TS ENVIRONMENT VARIABLES
 .Ev OPENSSL_CONF
 contains the path of the configuration file and can be
-overriden by the
+overridden by the
 .Fl config
 command line option.
 .Sh TS EXAMPLES
