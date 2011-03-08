@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.301 2010/11/18 12:18:31 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.307 2011/02/15 12:26:37 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -18,6 +18,8 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #include <errno.h>
 #include <ifaddrs.h>
@@ -156,6 +158,7 @@ pid_t
 rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
     int debug)
 {
+	struct rlimit		 rl;
 	pid_t			 pid;
 	struct passwd		*pw;
 	struct pollfd		*pfd = NULL;
@@ -184,6 +187,12 @@ rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
 
 	setproctitle("route decision engine");
 	bgpd_process = PROC_RDE;
+
+	if (getrlimit(RLIMIT_DATA, &rl) == -1)
+		fatal("getrlimit");
+	rl.rlim_cur = rl.rlim_max;
+	if (setrlimit(RLIMIT_DATA, &rl) == -1)
+		fatal("setrlimit");
 
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
@@ -849,6 +858,7 @@ rde_update_dispatch(struct imsg *imsg)
 	u_int16_t		 attrpath_len;
 	u_int16_t		 nlri_len;
 	u_int8_t		 aid, prefixlen, safi, subtype;
+	u_int32_t		 fas;
 
 	peer = peer_get(imsg->hdr.peerid);
 	if (peer == NULL)	/* unknown peer, cannot happen */
@@ -908,15 +918,17 @@ rde_update_dispatch(struct imsg *imsg)
 
 		/* enforce remote AS if requested */
 		if (asp->flags & F_ATTR_ASPATH &&
-		    peer->conf.enforce_as == ENFORCE_AS_ON)
-			if (peer->conf.remote_as !=
-			    aspath_neighbor(asp->aspath)) {
-				log_peer_warnx(&peer->conf, "bad path, "
-				    "enforce remote-as enabled");
-				rde_update_err(peer, ERR_UPDATE, ERR_UPD_ASPATH,
+		    peer->conf.enforce_as == ENFORCE_AS_ON) {
+			fas = aspath_neighbor(asp->aspath);
+			if (peer->conf.remote_as != fas) {
+			    log_peer_warnx(&peer->conf, "bad path, "
+				"starting with %s, "
+				"enforce neighbor-as enabled", log_as(fas));
+			    rde_update_err(peer, ERR_UPDATE, ERR_UPD_ASPATH,
 				    NULL, 0);
-				goto done;
+			    goto done;
 			}
+		}
 
 		rde_reflector(peer, asp);
 	}
@@ -1372,6 +1384,7 @@ bad_len:
 	switch (type) {
 	case ATTR_UNDEF:
 		/* ignore and drop path attributes with a type code of 0 */
+		plen += attr_len;
 		break;
 	case ATTR_ORIGIN:
 		if (attr_len != 1)
@@ -2725,7 +2738,7 @@ rde_up_dump_upcall(struct rib_entry *re, void *ptr)
 	struct rde_peer		*peer = ptr;
 
 	if (re->ribid != peer->ribid)
-		fatalx("King Bula: monsterous evil horror.");
+		fatalx("King Bula: monstrous evil horror.");
 	if (re->active == NULL)
 		return;
 	up_generate_updates(rules_l, peer, re->active, NULL);
