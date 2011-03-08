@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.187 2010/10/27 14:35:56 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.193 2011/01/23 06:56:53 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -165,6 +165,16 @@ sub copy_deep_if
 	$self->clone->add_object($copy) if defined $h->{$self};
 }
 
+sub finish
+{
+	my ($class, $state) = @_;
+	OpenBSD::PackingElement::Fontdir->finish($state);
+	OpenBSD::PackingElement::RcScript->report($state);
+	if ($state->{readmes}) {
+		$state->say("Look in /usr/local/share/doc/pkg-readmes for extra documentation");
+	}
+}
+
 # Basic class hierarchy
 
 # various stuff that's only linked to objects before/after them
@@ -201,6 +211,7 @@ sub fullname
 	my $fullname = $self->name;
 	if ($fullname !~ m|^/|o && $self->cwd ne '.') {
 		$fullname = $self->cwd."/".$fullname;
+		$fullname =~ s,^//,/,;
 	}
 	return $fullname;
 }
@@ -483,6 +494,22 @@ sub destate
 	$self->compute_modes($state);
 }
 
+sub report
+{
+	my ($class, $state) = @_;
+
+	my @l;
+	for my $script (sort keys %{$state->{add_rcscripts}}) {
+		next if $state->{delete_rcscripts}{$script};
+		push(@l, $script);
+	}
+	if (@l > 0) {
+		$state->say("The following new rcscripts were installed: #1",
+		    join(' ', @l));
+		$state->say("See rc.d(8) for details");
+	}
+}
+
 package OpenBSD::PackingElement::InfoFile;
 our @ISA=qw(OpenBSD::PackingElement::FileBase);
 
@@ -531,11 +558,10 @@ sub source_to_dest
 # assumes the source is nroff, launches nroff
 sub format
 {
-	my ($self, $state, $dest) = @_;
+	my ($self, $state, $dest, $destfh) = @_;
 
 	my $base = $state->{base};
 	my $fname = $base.$self->fullname;
-	$dest = "$base$dest";
 	open(my $fh, '<', $fname) or die "Can't read $fname";
 	my $line = <$fh>;
 	close $fh;
@@ -556,12 +582,13 @@ sub format
 	}
 	if (my ($dir, $file) = $fname =~ m/^(.*)\/([^\/]+\/[^\/]+)$/) {
 		$state->system(sub {
-		    open STDOUT, '>', "$dest" or 
+		    open STDOUT, '>&', $destfh or
 			die "Can't write to $dest";
+		    close $destfh;
 		    chdir($dir) or die "Can't chdir to $dir";
-		    }, 
+		    },
 		    OpenBSD::Paths->groff,
-		    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--', 
+		    '-Tascii', '-mandoc', '-Wall', '-mtty-char', @extra, '--',
 		    $file);
 	} else {
 		die "Can't parse source name $fname";
@@ -584,20 +611,8 @@ __PACKAGE__->register_with_factory;
 
 sub mark_ldconfig_directory
 {
-	require OpenBSD::SharedLibs;
-
-	my ($self, $destdir) = @_;
-	OpenBSD::SharedLibs::mark_ldconfig_directory($self->fullname,
-	    $destdir);
-}
-
-sub ensure_ldconfig
-{
-	if ($todo) {
-		require OpenBSD::SharedLibs;
-
-		&OpenBSD::SharedLibs::ensure_ldconfig;
-	}
+	my ($self, $state) = @_;
+	$state->ldconfig->mark_directory($self->fullname);
 }
 
 sub parse
@@ -1291,7 +1306,7 @@ sub run
 {
 	my ($self, $state) = @_;
 
-	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
+	$state->ldconfig->ensure;
 	$state->say("#1 #2", $self->keyword, $self->{expanded})
 	    if $state->verbose >= 2;
 	$state->log->system(OpenBSD::Paths->sh, '-c', $self->{expanded})
@@ -1444,20 +1459,18 @@ sub update_fontalias
 
 sub restore_fontdir
 {
-	my $dirname = shift;
+	my ($dirname, $state) = @_;
 	if (-f "$dirname/fonts.dir.dist") {
-		require OpenBSD::Error;
 
 		unlink("$dirname/fonts.dir");
-		OpenBSD::Error::Copy("$dirname/fonts.dir.dist", "$dirname/fonts.dir");
+		$state->copy_file("$dirname/fonts.dir.dist",
+		    "$dirname/fonts.dir");
 	}
 }
 
 sub run_if_exists
 {
 	my ($state, $cmd, @l) = @_;
-
-	require OpenBSD::Error;
 
 	if (-x $cmd) {
 		$state->vsystem($cmd, @l);
@@ -1466,9 +1479,9 @@ sub run_if_exists
 	}
 }
 
-sub finish_fontdirs
+sub finish
 {
-	my $state = shift;
+	my ($class, $state) = @_;
 	my @l = keys %fonts_todo;
 	if (@l != 0) {
 		require OpenBSD::Error;
@@ -1480,7 +1493,7 @@ sub finish_fontdirs
 		run_if_exists($state, OpenBSD::Paths->mkfontscale, '--', @l);
 		run_if_exists($state, OpenBSD::Paths->mkfontdir, '--', @l);
 
-		map { restore_fontdir($_) } @l;
+		map { restore_fontdir($_, $state) } @l;
 
 		run_if_exists($state, OpenBSD::Paths->fc_cache, '--', @l);
 	}
@@ -1605,7 +1618,7 @@ sub run
 
 	return if $state->{dont_run_scripts};
 
-	OpenBSD::PackingElement::Lib::ensure_ldconfig($state);
+	$state->ldconfig->ensure;
 	$state->say("#1 script: #2 #3 #4", $self->beautify, $name, $pkgname,
 	    join(' ', @args)) if $state->verbose >= 2;
 	return if $state->{not};

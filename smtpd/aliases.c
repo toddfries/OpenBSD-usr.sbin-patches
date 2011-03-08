@@ -1,4 +1,4 @@
-/*	$OpenBSD: aliases.c,v 1.38 2010/11/24 11:09:43 gilles Exp $	*/
+/*	$OpenBSD: aliases.c,v 1.40 2010/11/28 14:02:46 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -23,15 +23,15 @@
 #include <sys/socket.h>
 
 #include <ctype.h>
-#include <errno.h>
 #include <event.h>
-#include <fcntl.h>
+#include <imsg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <util.h>
 
 #include "smtpd.h"
+#include "log.h"
 
 int aliases_expand_include(struct expandtree *, char *);
 int alias_is_filter(struct expandnode *, char *, size_t);
