@@ -1,4 +1,4 @@
-/*	$OpenBSD: iscsid.h,v 1.2 2010/09/25 16:20:06 sobrado Exp $ */
+/*	$OpenBSD: iscsid.h,v 1.4 2011/01/04 13:19:55 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -153,6 +153,8 @@ struct session_params {
 				 /* 1, 1-to-65535 (min()): LS */
 	u_int16_t		 TargetPortalGroupTag;
 				 /* 1- 65535: IS */
+	u_int16_t		 MaxConnections;
+				 /* 1, 1-65535 (min()): LO */
 	u_int8_t		 InitialR2T;
 				 /* yes, bool (||): LS  */
 	u_int8_t		 ImmediateData;
@@ -236,8 +238,11 @@ struct kvp {
 void	iscsid_ctrl_dispatch(void *, struct pdu *);
 
 struct initiator *initiator_init(void);
-void initiator_cleanup(struct initiator *);
+void	initiator_cleanup(struct initiator *);
 struct session *initiator_t2s(u_int);
+void	initiator_login(struct connection *);
+void	initiator_discovery(struct session *);
+void	initiator_nop_in_imm(struct connection *, struct pdu *);
 
 int	control_init(char *);
 void	control_cleanup(char *);
@@ -252,8 +257,6 @@ void	session_config(struct session *, struct session_config *);
 void	session_task_issue(struct session *, struct task *);
 void	session_schedule(struct session *);
 void	session_task_login(struct connection *);
-void	initiator_login(struct connection *);
-void	initiator_discovery(struct session *);
 
 void	conn_new(struct session *, struct connection_config *);
 void	conn_free(struct connection *);

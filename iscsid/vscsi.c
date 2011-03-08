@@ -1,4 +1,4 @@
-/*	$OpenBSD: vscsi.c,v 1.2 2010/09/25 16:20:06 sobrado Exp $ */
+/*	$OpenBSD: vscsi.c,v 1.4 2011/01/06 15:32:47 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -106,7 +106,11 @@ vscsi_dispatch(int fd, short event, void *arg)
 		sreq->flags |= ISCSI_SCSI_F_R;
 	sreq->bytes = htonl(i2t.datalen);
 
-	/* XXX LUN HANDLING !!!! */
+	/* LUN handling: currently we only do single level LUNs < 256 */
+	if (t->lun >= 256)
+		fatal("vscsi_dispatch: I'm sorry, Dave. "
+		    "I'm afraid I can't do that.");
+	sreq->lun[1] = t->lun;
 
 	bcopy(&i2t.cmd, sreq->cdb, i2t.cmdlen);
 
@@ -149,8 +153,7 @@ vscsi_status(int tag, int status, void *buf, size_t len)
 	t2i.status = status;
 	if (buf) {
 		if (len > sizeof(t2i.sense))
-			fatal("vscsi_status: I'm sorry, Dave. "
-			    "I'm afraid I can't do that.");
+			len = sizeof(t2i.sense);
 		bcopy(buf, &t2i.sense, len);
 	}
 
@@ -269,6 +272,8 @@ vscsi_dataout(struct session *s, struct scsi_task *t, u_int32_t ttt, size_t len)
 		dout->opcode = ISCSI_OP_DATA_OUT;
 		if (off + size == len)
 			dout->flags = 0x80; /* XXX magic value: F flag*/
+		/* LUN handling: currently we only do single level LUNs < 256 */
+		dout->lun[1] = t->lun;
 		dout->ttt = ttt;
 		dout->datasn = htonl(dsn++);
 		t32 = htonl(size);

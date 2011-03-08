@@ -3,7 +3,7 @@
  *
  *  -- eric@
  */
-/* $OpenBSD: res_random.c,v 1.17 2008/04/13 00:28:35 djm Exp $ */
+/* $OpenBSD: res_random.c,v 1.1 2010/11/29 15:25:56 gilles Exp $ */
 
 /*
  * Copyright 1997 Niels Provos <provos@physnet.uni-hamburg.de>

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dns.c,v 1.23 2010/09/08 13:32:13 gilles Exp $	*/
+/*	$OpenBSD: dns.c,v 1.28 2010/12/19 11:24:17 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -28,14 +28,19 @@
 #include <arpa/nameser.h>
 
 #include <event.h>
+#include <imsg.h>
 #include <netdb.h>
 #include <resolv.h>
-#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "asr.h"
+#include "dnsdefs.h"
+#include "dnsutil.h"
 #include "smtpd.h"
+#include "log.h"
 
 void	dns_setup(void);
 int	dns_resolver_updated(void);
@@ -231,7 +236,7 @@ dns_asr_handler(int fd, short event, void *arg)
 	if (ret == ASR_YIELD) {
 		free(ar.ar_cname);
 		query->error = 0;
-		query->ss = *(struct sockaddr_storage *)&ar.ar_sa.sa;
+		memcpy(&query->ss, &ar.ar_sa.sa, sizeof(ar.ar_sa.sa));
 		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
 		    sizeof(*query));
 		dns_asr_handler(-1, -1, dnssession);
@@ -257,6 +262,18 @@ dns_asr_handler(int fd, short event, void *arg)
 		goto err;
 
 	if (h.ancount == 0) {
+		if (query->type == IMSG_DNS_MX) {
+			/* we were looking for MX and got no answer,
+			 * fallback to host.
+			 */
+			query->type = IMSG_DNS_HOST;
+			dnssession->aq = asr_query_host(asr, query->host,
+			    AF_UNSPEC);
+			if (dnssession->aq == NULL)
+				goto err;
+			dns_asr_handler(-1, -1, dnssession);
+			return;
+		}
 		query->error = EAI_NONAME;
 		goto err;
 	}
@@ -368,7 +385,7 @@ dns_asr_mx_handler(int fd, short event, void *arg)
 
 	if (ret == ASR_YIELD) {
 		free(ar.ar_cname);
-		query->ss = *(struct sockaddr_storage *)&ar.ar_sa.sa;
+		memcpy(&query->ss, &ar.ar_sa.sa, sizeof(ar.ar_sa.sa));
 		query->error = 0;
 		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
 		    sizeof(*query));

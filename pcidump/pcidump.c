@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcidump.c,v 1.24 2010/09/05 18:14:33 kettenis Exp $	*/
+/*	$OpenBSD: pcidump.c,v 1.29 2011/01/13 14:29:26 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 David Gwynne <loki@animata.net>
@@ -35,6 +35,10 @@
 
 #define PCIDEV	"/dev/pci"
 
+#ifndef nitems
+#define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
+#endif
+
 __dead void usage(void);
 void scanpcidomain(void);
 int probe(int, int, int);
@@ -56,7 +60,7 @@ usage(void)
 	extern char *__progname;
 
 	fprintf(stderr,
-	    "usage: %s [-v] [-x | -xx] [-d pcidev] [bus:dev:func]\n"
+	    "usage: %s [-v] [-x | -xx | -xxx] [-d pcidev] [bus:dev:func]\n"
 	    "       %s -r file [-d pcidev] bus:dev:func\n",
 	    __progname, __progname);
 	exit(1);
@@ -66,6 +70,7 @@ int pcifd;
 int romfd;
 int verbose = 0;
 int hex = 0;
+int size = 64;
 
 const char *pci_capnames[] = {
 	"Reserved",
@@ -85,9 +90,10 @@ const char *pci_capnames[] = {
 	"AGP8",
 	"Secure",
 	"PCI Express",
-	"Extended Message Signaled Interrupts (MSI-X)"
+	"Extended Message Signaled Interrupts (MSI-X)",
+	"SATA",
+	"PCI Advanced Features"
 };
-#define PCI_CAPNAMES_MAX	PCI_CAP_MSIX
 
 int
 main(int argc, char *argv[])
@@ -130,6 +136,11 @@ main(int argc, char *argv[])
 		if (romfd == -1)
 			err(1, "%s", romfile);
 	}
+
+	if (hex > 1)
+		size = 256;
+	if (hex > 2)
+		size = 4096;
 
 	if (argc == 1)
 		dumpall = 0;
@@ -263,7 +274,7 @@ probe(int bus, int dev, int func)
 	if (verbose)
 		dump(bus, dev, func);
 	if (hex > 0)
-		hexdump(bus, dev, func, hex > 1);
+		hexdump(bus, dev, func, size);
 
 	return (0);
 }
@@ -331,7 +342,7 @@ dump_caplist(int bus, int dev, int func, u_int8_t ptr)
 			return;
 		cap = PCI_CAPLIST_CAP(reg);
 		printf("\t0x%04x: Capability 0x%02x: ", ptr, cap);
-		if (cap > PCI_CAPNAMES_MAX)
+		if (cap >= nitems(pci_capnames))
 			cap = 0;
 		printf("%s\n", pci_capnames[cap]);
 		if (cap == PCI_CAP_PCIEXPRESS)
@@ -616,17 +627,20 @@ dump(int bus, int dev, int func)
 }
 
 void
-hexdump(int bus, int dev, int func, int full)
+hexdump(int bus, int dev, int func, int size)
 {
 	u_int32_t reg;
 	int i;
 
-	for (i = 0; i < (full ? 256 : 64); i += 4) {
+	for (i = 0; i < size; i += 4) {
+		if (pci_read(bus, dev, func, i, &reg) != 0) {
+			if (errno == EINVAL)
+				return;
+			warn("unable to read 0x%02x", i);
+		}
+
 		if ((i % 16) == 0)
 			printf("\t0x%04x:", i);
-
-		if (pci_read(bus, dev, func, i, &reg) != 0)
-			warn("unable to read 0x%02x", i);
 		printf(" %08x", reg);
 
 		if ((i % 16) == 12)

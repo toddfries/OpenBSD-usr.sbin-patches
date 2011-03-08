@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.138 2010/10/26 15:04:37 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.140 2010/12/31 21:22:42 guenther Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -20,6 +20,8 @@
 
 #include <sys/tree.h>
 
+#include <sys/param.h>		/* MAXHOSTNAMELEN */
+#include <limits.h>
 #include <imsg.h>
 
 #define CONF_FILE		"/etc/relayd.conf"
@@ -289,7 +291,9 @@ enum host_error {
 	HCE_ICMP_OK,
 	HCE_ICMP_READ_TIMEOUT,
 	HCE_ICMP_WRITE_TIMEOUT,
-	HCE_TCP_CONNECT_ERROR,
+	HCE_TCP_SOCKET_ERROR,
+	HCE_TCP_SOCKET_LIMIT,
+	HCE_TCP_SOCKET_OPTION,
 	HCE_TCP_CONNECT_FAIL,
 	HCE_TCP_CONNECT_TIMEOUT,
 	HCE_TCP_CONNECT_OK,
@@ -916,6 +920,7 @@ int		 map4to6(struct sockaddr_storage *, struct sockaddr_storage *);
 void		 imsg_event_add(struct imsgev *);
 int	 	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
 		    pid_t, int, void *, u_int16_t);
+void		 socket_rlimit(int);
 
 /* carp.c */
 int	 carp_demote_init(char *, int);
