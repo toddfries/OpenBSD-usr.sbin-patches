@@ -50,7 +50,7 @@ sockaddr_from_rr(struct sockaddr *sa, struct rr *rr)
 		memset(sin6, 0, sizeof *sin6);
 		sin6->sin6_len = sizeof *sin6;
 		sin6->sin6_family = PF_INET6;
-		memcpy(&sin6->sin6_addr, &rr->rr.in_aaaa.addr6, sizeof sin6->sin6_addr);
+		sin6->sin6_addr = rr->rr.in_aaaa.addr6;
 		sin6->sin6_port = 0;
 		return (0);
 
@@ -71,9 +71,9 @@ sockaddr_from_str(struct sockaddr *sa, int family, const char *str)
 
 	switch (family) {
 	case PF_UNSPEC:
-		if (sockaddr_from_str(sa, PF_INET6, str) == 0)
+		if (sockaddr_from_str(sa, PF_INET, str) == 0)
 			return (0);
-		return sockaddr_from_str(sa, PF_INET, str);
+		return sockaddr_from_str(sa, PF_INET6, str);
 
 	case PF_INET:
 		if (inet_pton(PF_INET, str, &ina) != 1)

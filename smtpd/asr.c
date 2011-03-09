@@ -793,7 +793,6 @@ asr_parse_hosts_cb(char **tok, int n, void *a0, void *a1)
 			continue;
 		if (sockaddr_from_str(&ar->ar_sa.sa, aq->aq_family, tok[0]) == -1)
 			continue;
-		
 		ar->ar_cname = strdup(tok[1]);
 		return (1);
 	}

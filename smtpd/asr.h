@@ -54,7 +54,6 @@ struct asr_result {
 		struct sockaddr		sa;
 		struct sockaddr_in	sain;
 		struct sockaddr_in6	sain6;
-		struct sockaddr_storage sass;
 	}	ar_sa;
 };
 

@@ -92,7 +92,6 @@ dns_query_ptr(struct smtpd *env, struct sockaddr_storage *ss, u_int64_t id)
 {
 	struct dns	 query;
 
-	log_debug("dns_query_ptr:  %s", ss_to_text(ss));
 	bzero(&query, sizeof(query));
 	query.ss = *ss;
 	query.id = id;

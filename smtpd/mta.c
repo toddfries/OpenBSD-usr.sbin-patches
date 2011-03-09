@@ -167,8 +167,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			if (relay == NULL)
 				fatal(NULL);
 			relay->sa = dns->ss;
-			log_debug("mta: IMSG_DNS_HOST %s (dns)", ss_to_text(&dns->ss));
-			log_debug("mta: IMSG_DNS_HOST %s (relay)", ss_to_text(&relay->sa));
  			TAILQ_INSERT_TAIL(&s->relays, relay, entry);
 			return;
 
