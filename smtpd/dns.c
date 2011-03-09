@@ -92,6 +92,7 @@ dns_query_ptr(struct smtpd *env, struct sockaddr_storage *ss, u_int64_t id)
 {
 	struct dns	 query;
 
+	log_debug("dns_query_ptr:  %s", ss_to_text(ss));
 	bzero(&query, sizeof(query));
 	query.ss = *ss;
 	query.id = id;
@@ -236,7 +237,7 @@ dns_asr_handler(int fd, short event, void *arg)
 	if (ret == ASR_YIELD) {
 		free(ar.ar_cname);
 		query->error = 0;
-		memcpy(&query->ss, &ar.ar_sa.sa, sizeof(ar.ar_sa.sa));
+		memcpy(&query->ss, &ar.ar_sa.sa, ar.ar_sa.sa.sa_len);
 		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
 		    sizeof(*query));
 		dns_asr_handler(-1, -1, dnssession);

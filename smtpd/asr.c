@@ -63,7 +63,7 @@ struct asr_db {
 	int		 ad_timeout;
 	int		 ad_retries;
 	int		 ad_count;
-	struct sockaddr *ad_sa[ASR_MAXNS];
+	struct sockaddr_storage *ad_sa[ASR_MAXNS];
 };
 
 struct asr_ctx {
@@ -128,7 +128,7 @@ struct asr_query {
 
 #define AQ_FAMILY(p) ((p)->aq_ctx->ac_family[(p)->aq_family_idx])
 #define AQ_DB(p) (&((p)->aq_ctx->ac_db[(p)->aq_db_idx]))
-#define AQ_NS_SA(p) (AQ_DB(p)->ad_sa[(p)->aq_ns_idx])
+#define AQ_NS_SA(p) ((struct sockaddr *)(AQ_DB(p)->ad_sa[(p)->aq_ns_idx]))
 #define AQ_BUF_LEFT(p) ((p)->aq_bufsize -  (p)->aq_buflen)
 #define AQ_BUF_DATA(p) ((p)->aq_buf +  (p)->aq_bufoffset)
 #define AQ_BUF_LEN(p) ((p)->aq_buflen - (p)->aq_bufoffset)
@@ -793,6 +793,7 @@ asr_parse_hosts_cb(char **tok, int n, void *a0, void *a1)
 			continue;
 		if (sockaddr_from_str(&ar->ar_sa.sa, aq->aq_family, tok[0]) == -1)
 			continue;
+		
 		ar->ar_cname = strdup(tok[1]);
 		return (1);
 	}
