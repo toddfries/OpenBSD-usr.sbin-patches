@@ -6,3 +6,4 @@
 .cvsignore
 CVS
 obj
+.svn
