@@ -1,5 +1,6 @@
+/*	$OpenBSD: asr.c,v 1.7 2011/03/27 17:39:17 eric Exp $	*/
 /*
- * Copyright (c) 2010 Eric Faurot <eric@openbsd.org>
+ * Copyright (c) 2010,2011 Eric Faurot <eric@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -49,7 +50,8 @@
 enum asr_query_type {
 	ASR_QUERY_DNS,
 	ASR_QUERY_HOST,
-	ASR_QUERY_ADDRINFO
+	ASR_QUERY_ADDRINFO,
+	ASR_QUERY_CNAME,
 };
 
 enum asr_db_type {
@@ -117,6 +119,13 @@ struct asr_query {
 	int			 aq_count;
 	FILE			*aq_file;
 
+	/* for cname */
+	union {
+		struct sockaddr		sa;
+		struct sockaddr_in	sain;
+		struct sockaddr_in6	sain6;
+	}	aq_sa;
+
 	/* for addrinfo */
 	char			*aq_hostname;
 	char			*aq_servname;
@@ -152,8 +161,6 @@ enum asr_state {
 	ASR_STATE_TCP_WRITE,
 	ASR_STATE_TCP_READ,
 	ASR_STATE_PACKET,
-	ASR_STATE_NEXT_MATCH,
-	ASR_STATE_TRY_MATCH,
 	ASR_STATE_SUBQUERY,
 	ASR_STATE_HALT,
 };
@@ -170,6 +177,7 @@ int   asr_parse_nameserver(struct sockaddr *, const char *);
 int asr_run_dns(struct asr_query *, struct asr_result *);
 int asr_run_host(struct asr_query *, struct asr_result *);
 int asr_run_addrinfo(struct asr_query *, struct asr_result *);
+int asr_run_cname(struct asr_query *, struct asr_result *);
 
 /* a few helpers */
 const char * asr_error(int);
@@ -276,6 +284,7 @@ struct kv kv_query_type[] = {
 	{ ASR_QUERY_DNS,		"ASR_QUERY_DNS"			},
 	{ ASR_QUERY_HOST,		"ASR_QUERY_HOST"		},
 	{ ASR_QUERY_ADDRINFO,		"ASR_QUERY_ADDRINFO"		},
+	{ ASR_QUERY_CNAME,		"ASR_QUERY_CNAME"		},
 	{ 0, NULL }
 };
 
@@ -304,16 +313,13 @@ struct kv kv_state[] = {
 	{ ASR_STATE_TCP_WRITE,		"ASR_STATE_TCP_WRITE"		},
 	{ ASR_STATE_TCP_READ,		"ASR_STATE_TCP_READ"		},
 	{ ASR_STATE_PACKET,		"ASR_STATE_PACKET"		},
-	{ ASR_STATE_NEXT_MATCH,		"ASR_STATE_NEXT_MATCH"		},
-	{ ASR_STATE_TRY_MATCH,		"ASR_STATE_TRY_MATCH"		},
 	{ ASR_STATE_SUBQUERY,		"ASR_STATE_SUBQUERY"		},
 	{ ASR_STATE_HALT,		"ASR_STATE_HALT"		},
 	{ 0, NULL }
 };
 
 struct kv kv_transition[] = {
-	{ ASR_NEED_READ,		"ASR_NEED_READ"			},
-	{ ASR_NEED_WRITE,		"ASR_NEED_WRITE"		},
+	{ ASR_COND,			"ASR_COND"			},
 	{ ASR_YIELD,			"ASR_YIELD"			},
 	{ ASR_DONE,			"ASR_DONE"			},
         { 0, NULL }
@@ -419,6 +425,9 @@ asr_run(struct asr_query *aq, struct asr_result *ar)
 	case ASR_QUERY_ADDRINFO:
 		r = asr_run_addrinfo(aq, ar);
 		break;
+	case ASR_QUERY_CNAME:
+		r = asr_run_cname(aq, ar);
+		break;
 	default:
 		ar->ar_err = EOPNOTSUPP;
 		ar->ar_errstr = "unknown query type";
@@ -443,12 +452,9 @@ asr_run_sync(struct asr_query *aq, struct asr_result *ar)
 	struct pollfd		 fds[1];
 	int			 r;
 
-	for(;;) {
-		r = asr_run(aq, ar);
-		if (r == ASR_DONE || r == ASR_YIELD)
-			break;
+	while((r = asr_run(aq, ar)) == ASR_COND) {
 		fds[0].fd = ar->ar_fd;
-		fds[0].events = (r == ASR_NEED_READ) ? POLLIN : POLLOUT;
+		fds[0].events = (ar->ar_cond == ASR_READ) ? POLLIN : POLLOUT;
 	again:
 		r = poll(fds, 1, ar->ar_timeout);
 		if (r == -1 && errno == EINTR)
@@ -457,7 +463,7 @@ asr_run_sync(struct asr_query *aq, struct asr_result *ar)
 			err(1, "poll");
 	}
 
-	return r;
+	return (r);
 }
 
 void
@@ -774,8 +780,7 @@ asr_ctx_query(struct asr_ctx *ac, int type)
 void
 asr_done(struct asr *asr)
 {
-	if (asr_ctx_unref(asr->a_ctx))
-		return;
+	asr_ctx_unref(asr->a_ctx);
 	if (asr->a_path)
 		free(asr->a_path);
 	free(asr);
@@ -1443,9 +1448,10 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 	case ASR_STATE_UDP_SEND:
 		if (asr_udp_send(aq) == 0) {
 			aq->aq_state = ASR_STATE_UDP_RECV;
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		}
 		aq->aq_state = ASR_STATE_NEXT_NS;
 		break;
@@ -1473,13 +1479,15 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 			break;
 		case 0:
 			aq->aq_state = ASR_STATE_TCP_READ;
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		case 1:
+			ar->ar_cond = ASR_WRITE;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_WRITE);
+			return (ASR_COND);
 		}
 		break;
 
@@ -1497,9 +1505,10 @@ asr_run_dns(struct asr_query *aq, struct asr_result *ar)
 			aq->aq_state = ASR_STATE_PACKET;
 			break;
 		case 1:
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		}
 		break;
 
@@ -1719,9 +1728,10 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 	case ASR_STATE_UDP_SEND:
 		if (asr_udp_send(aq) == 0) {
 			aq->aq_state = ASR_STATE_UDP_RECV;
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		}
 		aq->aq_state = ASR_STATE_NEXT_NS;
 		break;
@@ -1749,13 +1759,15 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 			break;
 		case 0:
 			aq->aq_state = ASR_STATE_TCP_READ;
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		case 1:
+			ar->ar_cond = ASR_WRITE;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_WRITE);
+			return (ASR_COND);
 		}
 		break;
 
@@ -1773,9 +1785,10 @@ asr_run_host(struct asr_query *aq, struct asr_result *ar)
 			aq->aq_state = ASR_STATE_PACKET;
 			break;
 		case 1:
+			ar->ar_cond = ASR_READ;
 			ar->ar_fd = aq->aq_fd;
 			ar->ar_timeout = aq->aq_timeout;
-			return (ASR_NEED_READ);
+			return (ASR_COND);
 		}
 		break;
 
@@ -2203,8 +2216,7 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 
 	case ASR_STATE_SUBQUERY:
 		switch ((r = asr_run(aq->aq_subq, ar))) {
-		case ASR_NEED_READ:
-		case ASR_NEED_WRITE:
+		case ASR_COND:
 			return (r);
 		case ASR_YIELD:
 			if ((r = asr_add_sockaddr(aq, &ar->ar_sa.sa))) {
@@ -2240,5 +2252,269 @@ asr_run_addrinfo(struct asr_query *aq, struct asr_result *ar)
 
 	default:
 		errx(1, "asr_run_addrinfo: unknown state");
+	}}
+}
+
+
+struct asr_query *
+asr_query_cname(struct asr		*asr,
+		const struct sockaddr	*sa,
+		socklen_t		 sl)
+{
+	struct asr_query	*aq;
+
+	asr_check_reload(asr);
+
+	if ((aq = asr_ctx_query(asr->a_ctx, ASR_QUERY_CNAME)) == NULL)
+		return (NULL);
+
+	memmove(&aq->aq_sa.sa, sa, sl);
+	aq->aq_sa.sa.sa_len = sl;
+
+	return (aq);
+}
+
+int
+asr_run_cname(struct asr_query *aq, struct asr_result *ar)
+{
+	struct header	 h;
+	struct query	 q;
+	struct rr	 rr;
+	char		*tok[10], buf[DOMAIN_MAXLEN];
+	int		 ntok = 10, n;
+
+	for(;;) { /* block not indented on purpose */
+#ifdef ASR_DEBUG
+	if (asr_debug) {
+		printf("   ");
+		asr_dump_query(aq);
+	}
+#endif
+	switch(aq->aq_state) {
+
+	case ASR_STATE_INIT:
+		if (aq->aq_sa.sa.sa_family != AF_INET &&
+		    aq->aq_sa.sa.sa_family != AF_INET6) {
+			ar->ar_err = EASR_FAMILY;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		}
+		aq->aq_db_idx = 0;
+		aq->aq_count = 0;
+		aq->aq_state = ASR_STATE_QUERY_DB;
+		break;
+
+	case ASR_STATE_NEXT_DB:
+		/* stop here if we already have at least one answer */
+		if (aq->aq_count) {
+			ar->ar_err = 0;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		}
+
+		aq->aq_db_idx += 1;
+		aq->aq_state = ASR_STATE_QUERY_DB;
+		break;
+
+	case ASR_STATE_QUERY_DB:
+		if (aq->aq_db_idx >= aq->aq_ctx->ac_dbcount) {
+			ar->ar_err = EASR_NOTFOUND;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		}
+
+		switch(AQ_DB(aq)->ad_type) {
+		case ASR_DB_DNS:
+			if (aq->aq_fqdn == NULL) {
+				sockaddr_as_fqdn(&aq->aq_sa.sa, buf, sizeof(buf));
+				if ((aq->aq_fqdn = strdup(buf)) == NULL) {
+					ar->ar_err = EASR_MEMORY;
+					aq->aq_state = ASR_STATE_HALT;
+					break;
+				}
+			}
+			aq->aq_query.q_type = T_PTR;
+			aq->aq_query.q_class = C_IN;
+			aq->aq_flags = 0;
+			aq->aq_ns_cycles = 0;
+			aq->aq_ns_idx = 0;
+			aq->aq_state = ASR_STATE_QUERY_NS;
+			break;
+		case ASR_DB_FILE:
+			aq->aq_state = ASR_STATE_QUERY_FILE;
+			break;
+		default:
+			aq->aq_state = ASR_STATE_NEXT_DB;
+		}
+		break;
+
+	case ASR_STATE_NEXT_NS:
+		aq->aq_ns_idx += 1;
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
+			aq->aq_ns_idx = 0;
+			aq->aq_ns_cycles++;
+		}
+		if (aq->aq_ns_cycles >= AQ_DB(aq)->ad_retries) {
+			aq->aq_state = ASR_STATE_NEXT_DB;
+			break;
+		}
+		aq->aq_state = ASR_STATE_QUERY_NS;
+		break;
+
+	case ASR_STATE_QUERY_NS:
+		if (aq->aq_ns_idx >= AQ_DB(aq)->ad_count) {
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		}
+		switch (asr_setup_packet(aq)) {
+		case -2:
+			ar->ar_err = EASR_MEMORY;
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		case -1:
+			ar->ar_err = EASR_NAME; /* XXX impossible */
+			aq->aq_state = ASR_STATE_HALT;
+			break;
+		default:
+			break;
+		}
+		if (aq->aq_ctx->ac_forcetcp)
+			aq->aq_state = ASR_STATE_TCP_WRITE;
+		else
+			aq->aq_state = ASR_STATE_UDP_SEND;
+		break;
+
+	case ASR_STATE_UDP_SEND:
+		if (asr_udp_send(aq) == 0) {
+			aq->aq_state = ASR_STATE_UDP_RECV;
+			ar->ar_cond = ASR_READ;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_COND);
+		}
+		aq->aq_state = ASR_STATE_NEXT_NS;
+		break;
+
+	case ASR_STATE_UDP_RECV:
+		switch (asr_udp_recv(aq)) {
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0: /* done */
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1: /* truncated */
+			aq->aq_state = ASR_STATE_TCP_WRITE;
+			break;
+		}
+		break;
+
+	case ASR_STATE_TCP_WRITE:
+		switch (asr_tcp_write(aq)) {
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0:
+			aq->aq_state = ASR_STATE_TCP_READ;
+			ar->ar_cond = ASR_READ;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_COND);
+		case 1:
+			ar->ar_cond = ASR_WRITE;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_COND);
+		}
+		break;
+
+	case ASR_STATE_TCP_READ:
+		switch (asr_tcp_read(aq)) {
+		case -3:
+			aq->aq_state = ASR_STATE_HALT;
+			ar->ar_err = EASR_MEMORY;
+			break;
+		case -2: /* timeout */
+		case -1: /* fail */
+			aq->aq_state = ASR_STATE_NEXT_NS;
+			break;
+		case 0:
+			aq->aq_state = ASR_STATE_PACKET;
+			break;
+		case 1:
+			ar->ar_cond = ASR_READ;
+			ar->ar_fd = aq->aq_fd;
+			ar->ar_timeout = aq->aq_timeout;
+			return (ASR_COND);
+		}
+		break;
+
+	case ASR_STATE_PACKET:
+		packed_init(&aq->aq_packed, aq->aq_buf, aq->aq_buflen);
+		unpack_header(&aq->aq_packed, &h);
+		aq->aq_nanswer = h.ancount;
+		for(; h.qdcount; h.qdcount--)
+			unpack_query(&aq->aq_packed, &q);
+		aq->aq_state = ASR_STATE_READ_RR;
+		break;
+
+	case ASR_STATE_READ_RR:
+		if (aq->aq_nanswer == 0) {
+			free(aq->aq_buf);
+			aq->aq_buf = NULL;
+			/* done with this NS, try with next family */
+			aq->aq_state = ASR_STATE_NEXT_DB;
+			break;
+		}
+		aq->aq_nanswer -= 1;
+		unpack_rr(&aq->aq_packed, &rr);
+		if (rr.rr_type == aq->aq_query.q_type &&
+		    rr.rr_class == aq->aq_query.q_class) {
+			aq->aq_count += 1;
+			ar->ar_count = aq->aq_count;
+			print_dname(rr.rr.ptr.ptrname, buf, sizeof(buf));
+			ar->ar_cname = strdup(buf);
+			ar->ar_cname[strlen(buf) - 1] = 0;
+			return (ASR_YIELD);
+		}
+		break;
+
+	case ASR_STATE_QUERY_FILE:
+		aq->aq_file = fopen(AQ_DB(aq)->ad_path, "r");
+		if (aq->aq_file == NULL)
+			aq->aq_state = ASR_STATE_NEXT_DB;
+		else
+			aq->aq_state = ASR_STATE_READ_FILE;
+		break;
+
+	case ASR_STATE_READ_FILE:
+		n = asr_parse_namedb_line(aq->aq_file, tok, ntok);
+		if (n == -1) {
+			fclose(aq->aq_file);
+			aq->aq_file = NULL;
+			/* XXX as an optimization, the file could be parsed only once */
+			aq->aq_state = ASR_STATE_NEXT_DB;
+			break;
+		}
+		if (sockaddr_from_str(&ar->ar_sa.sa, aq->aq_sa.sa.sa_family, tok[0]) == -1)
+			break;
+		if (ar->ar_sa.sa.sa_len != aq->aq_sa.sa.sa_len ||
+		    memcmp(&ar->ar_sa.sa, &aq->aq_sa.sa, aq->aq_sa.sa.sa_len))
+			break;
+
+		aq->aq_count += 1;
+		ar->ar_count = aq->aq_count;
+		ar->ar_cname = strdup(tok[1]);
+		return (ASR_YIELD);
+
+	case ASR_STATE_HALT:
+		ar->ar_count = aq->aq_count;
+		ar->ar_errstr = asr_error(ar->ar_err);
+		return (ASR_DONE);
+
+	default:
+		errx(1, "asr_run_cname: unknown state %i", aq->aq_state);
 	}}
 }
