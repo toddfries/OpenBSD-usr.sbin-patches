@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.97 2010/11/29 15:25:55 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.100 2011/03/26 17:43:01 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -76,7 +76,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			s->id = b->id;
 			s->state = MTA_INIT;
 			s->env = env;
-			s->datafd = -1;
 
 			/* establish host name */
 			if (b->rule.r_action == A_RELAYVIA) {
@@ -444,7 +443,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		 */
 		log_debug("mta: entering smtp phase");
 
-		pcb = client_init(s->fd, s->datafd, s->env->sc_hostname, 1);
+		pcb = client_init(s->fd, s->datafp, s->env->sc_hostname, 1);
 
 		/* lookup SSL certificate */
 		if (s->cert) {
@@ -454,6 +453,7 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 			res = SPLAY_FIND(ssltree, s->env->sc_ssl, &key);
 			if (res == NULL) {
 				client_close(pcb);
+				s->pcb = NULL;
 				mta_status(s, "190 certificate not found");
 				mta_enter_state(s, MTA_DONE, NULL);
 				break;
@@ -512,7 +512,10 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 			TAILQ_REMOVE(&s->relays, relay, entry);
 			free(relay);
 		}
-		close(s->datafd);
+
+		if (s->datafp)
+			fclose(s->datafp);
+
 		free(s->secret);
 		free(s->host);
 		free(s->cert);
@@ -567,11 +570,12 @@ mta_pickup(struct mta_session *s, void *p)
 
 	case MTA_DATA:
 		/* QUEUE replied to body fd request. */
-		s->datafd = *(int *)p;
-		if (s->datafd == -1)
+		if (*(int *)p == -1)
 			fatalx("mta cannot obtain msgfd");
-		else
-			mta_enter_state(s, MTA_CONNECT, NULL);
+		s->datafp = fdopen(*(int *)p, "r");
+		if (s->datafp == NULL)
+			fatal("fdopen");
+		mta_enter_state(s, MTA_CONNECT, NULL);
 		break;
 
 	case MTA_CONNECT:
