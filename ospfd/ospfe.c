@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.78 2011/03/08 10:56:02 claudio Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.80 2011/03/25 08:52:21 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -223,6 +223,8 @@ ospfe_shutdown(void)
 		area_del(area);
 	}
 
+	nbr_del(nbr_find_peerid(NBR_IDSELF));
+	kr_shutdown();
 	close(oeconf->ospf_socket);
 
 	/* clean up */
@@ -641,7 +643,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				break;
 
 			/* send a direct acknowledgement */
-			send_ls_ack(nbr->iface, nbr->addr, imsg.data,
+			send_direct_ack(nbr->iface, nbr->addr, imsg.data,
 			    imsg.hdr.len - IMSG_HEADER_SIZE);
 
 			break;

@@ -1,3 +1,4 @@
+/*	$OpenBSD: dnsutil.h,v 1.3 2011/03/27 17:39:17 eric Exp $	*/
 /*
  * Copyright (c) 2009,2010	Eric Faurot	<eric@faurot.net>
  *
@@ -153,6 +154,7 @@ int	pack_rrdynamic(struct packed*, const struct rr_dynamic *rr);
 /* sockaddr.c */
 int	sockaddr_from_rr(struct sockaddr *, struct rr *);
 int	sockaddr_from_str(struct sockaddr *, int, const char *);
+ssize_t	sockaddr_as_fqdn(const struct sockaddr *, char *, size_t);
 void	sockaddr_set_port(struct sockaddr *, int);
 int	sockaddr_connect(const struct sockaddr *, int);
 int	sockaddr_listen(const struct sockaddr *, int);
