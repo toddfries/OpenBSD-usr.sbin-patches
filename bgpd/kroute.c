@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.184 2010/09/02 14:03:21 sobrado Exp $ */
+/*	$OpenBSD: kroute.c,v 1.187 2011/03/07 07:43:02 henning Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -193,6 +193,7 @@ int
 kr_init(void)
 {
 	int		opt = 0, rcvbuf, default_rcvbuf;
+	unsigned int	tid = RTABLE_ANY;
 	socklen_t	optlen;
 
 	if ((kr_state.fd = socket(AF_ROUTE, SOCK_RAW, 0)) == -1) {
@@ -217,6 +218,12 @@ kr_init(void)
 		    &rcvbuf, sizeof(rcvbuf)) == -1 && errno == ENOBUFS;
 		    rcvbuf /= 2)
 			;	/* nothing */
+
+	if (setsockopt(kr_state.fd, AF_ROUTE, ROUTE_TABLEFILTER, &tid,
+	    sizeof(tid)) == -1) {
+		log_warn("kr_init: setsockopt AF_ROUTE ROUTE_TABLEFILTER");
+		return (-1);
+	}
 
 	kr_state.pid = getpid();
 	kr_state.rtseq = 1;
@@ -421,7 +428,7 @@ ktable_exists(u_int rtableid, u_int *rdomid)
 {
 	size_t			 len;
 	struct rt_tableinfo	 info;
-	int			 mib[7];
+	int			 mib[6];
 
 	mib[0] = CTL_NET;
 	mib[1] = AF_ROUTE;
@@ -2372,7 +2379,7 @@ mask2prefixlen6(struct sockaddr_in6 *sa_in6)
 		case 0x00:
 			return (l);
 		default:
-			fatalx("non continguous inet6 netmask");
+			fatalx("non contiguous inet6 netmask");
 		}
 	}
 

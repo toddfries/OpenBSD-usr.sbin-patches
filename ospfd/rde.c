@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.88 2010/09/25 13:28:43 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.92 2011/03/24 08:35:59 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -57,10 +57,11 @@ void		 rde_req_list_del(struct rde_nbr *, struct lsa_hdr *);
 void		 rde_req_list_free(struct rde_nbr *);
 
 struct iface	*rde_asext_lookup(u_int32_t, int);
-struct lsa	*rde_asext_get(struct rroute *);
-struct lsa	*rde_asext_put(struct rroute *);
+void		 rde_asext_get(struct kroute *);
+void		 rde_asext_put(struct kroute *);
+void		 rde_asext_free(void);
+struct lsa	*orig_asext_lsa(struct kroute *, u_int32_t, u_int16_t);
 
-struct lsa	*orig_asext_lsa(struct rroute *, u_int16_t);
 struct lsa	*orig_sum_lsa(struct rt_node *, struct area *, u_int8_t, int);
 
 struct ospfd_conf	*rdeconf = NULL, *nconf = NULL;
@@ -194,6 +195,7 @@ void
 rde_shutdown(void)
 {
 	struct area	*a;
+	struct vertex	*v, *nv;
 
 	stop_spf_timer(rdeconf);
 	cand_list_clr();
@@ -203,7 +205,13 @@ rde_shutdown(void)
 		LIST_REMOVE(a, entry);
 		area_del(a);
 	}
+	for (v = RB_MIN(lsa_tree, &asext_tree); v != NULL; v = nv) {
+		nv = RB_NEXT(lsa_tree, &asext_tree, v);
+		vertex_free(v);
+	}
+	rde_asext_free();
 	rde_nbr_free();
+	kr_shutdown();
 
 	msgbuf_clear(&iev_ospfe->ibuf.w);
 	free(iev_ospfe);
@@ -366,8 +374,11 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				if ((v = lsa_find(nbr->area,
 				    ntohl(req_hdr.type), req_hdr.ls_id,
 				    req_hdr.adv_rtr)) == NULL) {
-					imsg_compose_event(iev_ospfe, IMSG_LS_BADREQ,
-					    imsg.hdr.peerid, 0, -1, NULL, 0);
+					log_debug("rde_dispatch_imsg: "
+					    "requested LSA not found");
+					imsg_compose_event(iev_ospfe,
+					    IMSG_LS_BADREQ, imsg.hdr.peerid,
+					    0, -1, NULL, 0);
 					continue;
 				}
 				imsg_compose_event(iev_ospfe, IMSG_LS_UPD,
@@ -396,7 +407,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			}
 
 			v = lsa_find(nbr->area, lsa->hdr.type, lsa->hdr.ls_id,
-				    lsa->hdr.adv_rtr);
+			    lsa->hdr.adv_rtr);
 			if (v == NULL)
 				db_hdr = NULL;
 			else
@@ -591,11 +602,9 @@ rde_dispatch_parent(int fd, short event, void *bula)
 	static struct area	*narea;
 	struct iface		*niface;
 	struct imsg		 imsg;
-	struct rroute		 rr;
+	struct kroute		 rr;
 	struct imsgev		*iev = bula;
 	struct imsgbuf		*ibuf;
-	struct lsa		*lsa;
-	struct vertex		*v;
 	struct redistribute	*nred;
 	ssize_t			 n;
 	int			 shut = 0;
@@ -627,13 +636,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				break;
 			}
 			memcpy(&rr, imsg.data, sizeof(rr));
-
-			if ((lsa = rde_asext_get(&rr)) != NULL) {
-				v = lsa_find(NULL, lsa->hdr.type,
-				    lsa->hdr.ls_id, lsa->hdr.adv_rtr);
-
-				lsa_merge(nbrself, lsa, v);
-			}
+			rde_asext_get(&rr);
 			break;
 		case IMSG_NETWORK_DEL:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(rr)) {
@@ -642,20 +645,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				break;
 			}
 			memcpy(&rr, imsg.data, sizeof(rr));
-
-			if ((lsa = rde_asext_put(&rr)) != NULL) {
-				v = lsa_find(NULL, lsa->hdr.type,
-				    lsa->hdr.ls_id, lsa->hdr.adv_rtr);
-
-				/*
-				 * if v == NULL no LSA is in the table and
-				 * nothing has to be done.
-				 */
-				if (v)
-					lsa_merge(nbrself, lsa, v);
-				else
-					free(lsa);
-			}
+			rde_asext_put(&rr);
 			break;
 		case IMSG_RECONF_CONF:
 			if ((nconf = malloc(sizeof(struct ospfd_conf))) ==
@@ -1047,6 +1037,44 @@ rde_req_list_free(struct rde_nbr *nbr)
 /*
  * as-external LSA handling
  */
+struct asext_node {
+	RB_ENTRY(asext_node)    entry;
+	struct kroute		r;
+	u_int32_t		ls_id;
+};
+
+static __inline int	asext_compare(struct asext_node *, struct asext_node *);
+struct asext_node	*asext_find(u_int32_t, u_int8_t);
+
+RB_HEAD(asext_tree, asext_node)		ast;
+RB_PROTOTYPE(asext_tree, asext_node, entry, asext_compare)
+RB_GENERATE(asext_tree, asext_node, entry, asext_compare)
+
+static __inline int             
+asext_compare(struct asext_node *a, struct asext_node *b)
+{
+	if (ntohl(a->r.prefix.s_addr) < ntohl(b->r.prefix.s_addr))
+		return (-1);
+	if (ntohl(a->r.prefix.s_addr) > ntohl(b->r.prefix.s_addr))
+		return (1);
+	if (a->r.prefixlen < b->r.prefixlen)
+		return (-1);
+	if (a->r.prefixlen > b->r.prefixlen)
+		return (1);
+	return (0);
+}
+
+struct asext_node *
+asext_find(u_int32_t addr, u_int8_t prefixlen)
+{
+	struct asext_node	a;
+
+	a.r.prefix.s_addr = addr;
+	a.r.prefixlen = prefixlen;
+
+	return (RB_FIND(asext_tree, &ast, &a));
+}
+
 struct iface *
 rde_asext_lookup(u_int32_t prefix, int plen)
 {
@@ -1064,29 +1092,192 @@ rde_asext_lookup(u_int32_t prefix, int plen)
 	return (NULL);
 }
 
-struct lsa *
-rde_asext_get(struct rroute *rr)
+void
+rde_asext_get(struct kroute *rr)
 {
-	if (rde_asext_lookup(rr->kr.prefix.s_addr, rr->kr.prefixlen)) {
+	struct asext_node	*an, *oan;
+	struct vertex		*v;
+	struct lsa		*lsa;
+	u_int32_t		 mask;
+
+	if (rde_asext_lookup(rr->prefix.s_addr, rr->prefixlen)) {
 		/* already announced as (stub) net LSA */
 		log_debug("rde_asext_get: %s/%d is net LSA",
-		    inet_ntoa(rr->kr.prefix), rr->kr.prefixlen);
-		return (NULL);
+		    inet_ntoa(rr->prefix), rr->prefixlen);
+		return;
 	}
-	/* update of seqnum is done by lsa_merge */
-	return (orig_asext_lsa(rr, DEFAULT_AGE));
+
+	an = asext_find(rr->prefix.s_addr, rr->prefixlen);
+	if (an == NULL) {
+		if ((an = calloc(1, sizeof(*an))) == NULL)
+			fatal("rde_asext_get");
+		bcopy(rr, &an->r, sizeof(*rr));
+		an->ls_id = rr->prefix.s_addr;
+		RB_INSERT(asext_tree, &ast, an);
+	} else {
+		/* the bcopy does not change the lookup key so it is save */
+		bcopy(rr, &an->r, sizeof(*rr));
+	}
+
+	/*
+	 * ls_id must be unique, for overlapping routes this may
+	 * not be true. In this case a unique ls_id needs to be found.
+	 * The algorithm will change the ls_id of the less specific
+	 * route. E.g. in the case of 10.0.0.0/16 and 10.0.0.0/24
+	 * 10.0.0.0/24 will get the 10.0.0.0 ls_id and 10.0.0.0/16
+	 * will change the ls_id to 10.0.255.255 and see if that is unique.
+	 */
+	oan = an;
+	mask = prefixlen2mask(oan->r.prefixlen);
+	v = lsa_find(NULL, LSA_TYPE_EXTERNAL, oan->ls_id,
+	    rdeconf->rtr_id.s_addr);
+	while (v && v->lsa->data.asext.mask != mask) {
+		/* conflict needs to be resolved. change less specific lsa */
+		if (ntohl(v->lsa->data.asext.mask) < ntohl(mask)) {
+			/* lsa to insert is more specific, fix other lsa */
+			mask = v->lsa->data.asext.mask;
+			oan = asext_find(v->lsa->hdr.ls_id & mask,
+			   mask2prefixlen(mask));
+			if (oan == NULL)
+				fatalx("as-ext LSA DB corrupted");
+		}
+		/* oan is less specific and needs new ls_id */
+		if (oan->ls_id == oan->r.prefix.s_addr)
+			oan->ls_id |= ~mask;
+		else {
+			u_int32_t	tmp = ntohl(oan->ls_id);
+			oan->ls_id = htonl(tmp - 1);
+			if (oan->ls_id == oan->r.prefix.s_addr) {
+				log_warnx("prefix %s/%d can not be "
+				    "redistributed, no unique ls_id found.",
+				    inet_ntoa(rr->prefix), rr->prefixlen);
+				RB_REMOVE(asext_tree, &ast, an);
+				free(an);
+				return;
+			}
+		}
+		mask = prefixlen2mask(oan->r.prefixlen);
+		v = lsa_find(NULL, LSA_TYPE_EXTERNAL, oan->ls_id,
+		    rdeconf->rtr_id.s_addr);
+	}
+
+	v = lsa_find(NULL, LSA_TYPE_EXTERNAL, an->ls_id,
+	    rdeconf->rtr_id.s_addr);
+	lsa = orig_asext_lsa(rr, an->ls_id, DEFAULT_AGE);
+	lsa_merge(nbrself, lsa, v);
+
+	if (oan != an) {
+		v = lsa_find(NULL, LSA_TYPE_EXTERNAL, oan->ls_id,
+		    rdeconf->rtr_id.s_addr);
+		lsa = orig_asext_lsa(&oan->r, oan->ls_id, DEFAULT_AGE);
+		lsa_merge(nbrself, lsa, v);
+	}
+}
+
+void
+rde_asext_put(struct kroute *rr)
+{
+	struct asext_node	*an;
+	struct vertex		*v;
+	struct lsa		*lsa;
+
+	/*
+	 * just try to remove the LSA. If the prefix is announced as
+	 * stub net LSA asext_find() will fail and nothing will happen.
+	 */
+	an = asext_find(rr->prefix.s_addr, rr->prefixlen);
+	if (an == NULL) {
+		log_debug("rde_asext_put: NO SUCH LSA %s/%d",
+		    inet_ntoa(rr->prefix), rr->prefixlen);
+		return;
+	}
+
+	/* inherit metric and ext_tag from the current LSA,
+	 * some routers don't like to get withdraws that are
+	 * different from what they have in their table.
+	 */
+	v = lsa_find(NULL, LSA_TYPE_EXTERNAL, an->ls_id,
+	    rdeconf->rtr_id.s_addr);
+	if (v != NULL) {
+		rr->metric = ntohl(v->lsa->data.asext.metric);
+		rr->ext_tag = ntohl(v->lsa->data.asext.ext_tag);
+	}
+
+	/* remove by reflooding with MAX_AGE */
+	lsa = orig_asext_lsa(rr, an->ls_id, MAX_AGE);
+	lsa_merge(nbrself, lsa, v);
+
+	RB_REMOVE(asext_tree, &ast, an);
+	free(an);
+}
+
+void
+rde_asext_free(void)
+{
+	struct asext_node	*an, *nan;
+
+	for (an = RB_MIN(asext_tree, &ast); an != NULL; an = nan) {
+		nan = RB_NEXT(asext_tree, &ast, an);
+		RB_REMOVE(asext_tree, &ast, an);
+		free(an);
+	}
 }
 
 struct lsa *
-rde_asext_put(struct rroute *rr)
+orig_asext_lsa(struct kroute *rr, u_int32_t ls_id, u_int16_t age)
 {
-	/*
-	 * just try to remove the LSA. If the prefix is announced as
-	 * stub net LSA lsa_find() will fail later and nothing will happen.
-	 */
+	struct lsa	*lsa;
+	struct iface	*iface;
+	u_int16_t	 len;
 
-	/* remove by reflooding with MAX_AGE */
-	return (orig_asext_lsa(rr, MAX_AGE));
+	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_asext);
+	if ((lsa = calloc(1, len)) == NULL)
+		fatal("orig_asext_lsa");
+
+	log_debug("orig_asext_lsa: %s/%d age %d",
+	    inet_ntoa(rr->prefix), rr->prefixlen, age);
+
+	/* LSA header */
+	lsa->hdr.age = htons(age);
+	lsa->hdr.opts = area_ospf_options(NULL);
+	lsa->hdr.type = LSA_TYPE_EXTERNAL;
+	lsa->hdr.adv_rtr = rdeconf->rtr_id.s_addr;
+	/* update of seqnum is done by lsa_merge */
+	lsa->hdr.seq_num = htonl(INIT_SEQ_NUM);
+	lsa->hdr.len = htons(len);
+
+	/* prefix and mask */
+	lsa->hdr.ls_id = ls_id;
+	lsa->data.asext.mask = prefixlen2mask(rr->prefixlen);
+
+	/*
+	 * nexthop -- on connected routes we are the nexthop,
+	 * in other cases we may announce the true nexthop if the
+	 * nexthop is reachable via an OSPF enabled interface but only
+	 * broadcast & NBMA interfaces are considered in that case.
+	 * It does not make sense to announce the nexthop of a point-to-point
+	 * link since the traffic has to go through this box anyway.
+	 * Some implementations actually check that there are multiple
+	 * neighbors on the particular segment, we skip that check.
+	 */
+	iface = rde_asext_lookup(rr->nexthop.s_addr, -1);
+	if (rr->flags & F_FORCED_NEXTHOP)
+		lsa->data.asext.fw_addr = rr->nexthop.s_addr;
+	else if (rr->flags & F_CONNECTED)
+		lsa->data.asext.fw_addr = 0;
+	else if (iface && (iface->type == IF_TYPE_BROADCAST ||
+	    iface->type == IF_TYPE_NBMA))
+		lsa->data.asext.fw_addr = rr->nexthop.s_addr;
+	else
+		lsa->data.asext.fw_addr = 0;
+
+	lsa->data.asext.metric = htonl(rr->metric);
+	lsa->data.asext.ext_tag = htonl(rr->ext_tag);
+
+	lsa->hdr.ls_chksum = 0;
+	lsa->hdr.ls_chksum = htons(iso_cksum(lsa, len, LS_CKSUM_OFFSET));
+
+	return (lsa);
 }
 
 /*
@@ -1150,84 +1341,6 @@ rde_summary_update(struct rt_node *rte, struct area *area)
 	/* suppressed/deleted routes are not found in the second lsa_find */
 	if (v)
 		v->cost = rte->cost;
-}
-
-
-/*
- * functions for self-originated LSA
- */
-struct lsa *
-orig_asext_lsa(struct rroute *rr, u_int16_t age)
-{
-	struct lsa	*lsa;
-	struct iface	*iface;
-	u_int16_t	 len;
-
-	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_asext);
-	if ((lsa = calloc(1, len)) == NULL)
-		fatal("orig_asext_lsa");
-
-	log_debug("orig_asext_lsa: %s/%d age %d",
-	    inet_ntoa(rr->kr.prefix), rr->kr.prefixlen, age);
-
-	/* LSA header */
-	lsa->hdr.age = htons(age);
-	lsa->hdr.opts = area_ospf_options(NULL);
-	lsa->hdr.type = LSA_TYPE_EXTERNAL;
-	lsa->hdr.adv_rtr = rdeconf->rtr_id.s_addr;
-	lsa->hdr.seq_num = htonl(INIT_SEQ_NUM);
-	lsa->hdr.len = htons(len);
-
-	/* prefix and mask */
-	/*
-	 * TODO ls_id must be unique, for overlapping routes this may
-	 * not be true. In this case a hack needs to be done to
-	 * make the ls_id unique.
-	 */
-	lsa->hdr.ls_id = rr->kr.prefix.s_addr;
-	lsa->data.asext.mask = prefixlen2mask(rr->kr.prefixlen);
-
-	if (age == MAX_AGE) {
-		/* inherit metric and ext_tag from the current LSA,
-		 * some routers don't like to get withdraws that are
-		 * different from what they have in their table.
-		 */
-		struct vertex *v;
-		v = lsa_find(NULL, lsa->hdr.type, lsa->hdr.ls_id,
-		    lsa->hdr.adv_rtr);
-		if (v != NULL) {
-			rr->metric = ntohl(v->lsa->data.asext.metric);
-			rr->kr.ext_tag = ntohl(v->lsa->data.asext.ext_tag);
-		}
-	}
-
-	/*
-	 * nexthop -- on connected routes we are the nexthop,
-	 * in other cases we may announce the true nexthop if the
-	 * nexthop is reachable via an OSPF enabled interface but only
-	 * broadcast & NBMA interfaces are considered in that case.
-	 * It does not make sense to announce the nexthop of a point-to-point
-	 * link since the traffic has to go through this box anyway.
-	 * Some implementations actually check that there are multiple
-	 * neighbors on the particular segment, we skip that check.
-	 */
-	iface = rde_asext_lookup(rr->kr.nexthop.s_addr, -1);
-	if (rr->kr.flags & F_CONNECTED)
-		lsa->data.asext.fw_addr = 0;
-	else if (iface && (iface->type == IF_TYPE_BROADCAST ||
-	    iface->type == IF_TYPE_NBMA))
-		lsa->data.asext.fw_addr = rr->kr.nexthop.s_addr;
-	else
-		lsa->data.asext.fw_addr = 0;
-
-	lsa->data.asext.metric = htonl(rr->metric);
-	lsa->data.asext.ext_tag = htonl(rr->kr.ext_tag);
-
-	lsa->hdr.ls_chksum = 0;
-	lsa->hdr.ls_chksum =
-	    htons(iso_cksum(lsa, len, LS_CKSUM_OFFSET));
-
-	return (lsa);
 }
 
 struct lsa *

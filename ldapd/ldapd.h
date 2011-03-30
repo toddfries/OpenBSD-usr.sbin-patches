@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldapd.h,v 1.18 2010/09/01 17:34:15 martinh Exp $ */
+/*	$OpenBSD: ldapd.h,v 1.21 2010/11/10 08:00:54 martinh Exp $ */
 
 /*
  * Copyright (c) 2009, 2010 Martin Hedenfalk <martin@bzero.se>
@@ -93,8 +93,8 @@ enum index_type {
 	INDEX_NONE,
 	INDEX_EQUAL	= 1,
 	INDEX_APPROX	= 1,
-	INDEX_SUBSTR,
-	INDEX_PRESENCE
+	INDEX_PRESENCE	= 1,
+	INDEX_SUBSTR
 };
 
 struct attr_index {
@@ -149,7 +149,15 @@ struct plan
 	TAILQ_ENTRY(plan)	 next;
 	TAILQ_HEAD(, plan)	 args;
 	TAILQ_HEAD(, index)	 indices;
+	struct attr_type	*at;
+	char			*adesc;
+	union {
+		char			*value;
+		struct ber_element	*substring;
+	} assert;
+	int			 op;
 	int			 indexed;
+	int			 undefined;
 };
 
 /* For OR filters using multiple indices, matches are not unique. Remember
@@ -210,6 +218,7 @@ struct conn
 	int			 disconnect;
 	struct request		*bind_req;	/* ongoing bind request */
 	char			*binddn;
+	char			*pending_binddn;
 	TAILQ_HEAD(, search)	 searches;
 	struct listener		*listener;	/* where it connected from */
 
@@ -426,7 +435,7 @@ void			 control_cleanup(struct control_sock *);
 
 /* filter.c */
 int			 ldap_matches_filter(struct ber_element *root,
-				struct ber_element *filter);
+				struct plan *plan);
 
 /* search.c */
 int			 ldap_search(struct request *req);
@@ -463,6 +472,9 @@ __dead void		 fatal(const char *);
 __dead void		 fatalx(const char *);
 const char		*print_host(struct sockaddr_storage *ss, char *buf,
 				size_t len);
+void			 hexdump(void *data, size_t len, const char *fmt, ...);
+void			 ldap_debug_elements(struct ber_element *root,
+			    int context, const char *fmt, ...);
 
 /* util.c */
 int			 bsnprintf(char *str, size_t size,

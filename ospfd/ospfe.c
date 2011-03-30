@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.76 2010/06/28 23:02:07 bluhm Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.80 2011/03/25 08:52:21 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -183,7 +183,7 @@ ospfe(struct ospfd_conf *xconf, int pipe_parent2ospfe[2], int pipe_ospfe2rde[2],
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
 
-	if ((pkt_ptr = calloc(1, IBUF_READ_SIZE)) == NULL)
+	if ((pkt_ptr = calloc(1, READ_BUF_SIZE)) == NULL)
 		fatal("ospfe");
 
 	/* start interfaces */
@@ -223,6 +223,8 @@ ospfe_shutdown(void)
 		area_del(area);
 	}
 
+	nbr_del(nbr_find_peerid(NBR_IDSELF));
+	kr_shutdown();
 	close(oeconf->ospf_socket);
 
 	/* clean up */
@@ -547,8 +549,8 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				}
 			} else {
 				/*
-				 * flood on all area interfaces on
-				 * area 0.0.0.0 include also virtual links.
+				 * Flood on all area interfaces. For
+				 * area 0.0.0.0 include the virtual links.
 				 */
 				area = nbr->iface->area;
 				LIST_FOREACH(iface, &area->iface_list, entry) {
@@ -641,7 +643,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				break;
 
 			/* send a direct acknowledgement */
-			send_ls_ack(nbr->iface, nbr->addr, imsg.data,
+			send_direct_ack(nbr->iface, nbr->addr, imsg.data,
 			    imsg.hdr.len - IMSG_HEADER_SIZE);
 
 			break;
@@ -756,8 +758,9 @@ orig_rtr_lsa(struct area *area)
 
 	log_debug("orig_rtr_lsa: area %s", inet_ntoa(area->id));
 
-	/* XXX IBUF_READ_SIZE */
-	if ((buf = ibuf_dynamic(sizeof(lsa_hdr), READ_BUF_SIZE)) == NULL)
+	if ((buf = ibuf_dynamic(sizeof(lsa_hdr),
+	    IP_MAXPACKET - sizeof(struct ip) - sizeof(struct ospf_hdr) -
+	    sizeof(u_int32_t) - MD5_DIGEST_LENGTH)) == NULL)
 		fatal("orig_rtr_lsa");
 
 	/* reserve space for LSA header and LSA Router header */
@@ -1024,8 +1027,9 @@ orig_net_lsa(struct iface *iface)
 	int			 num_rtr = 0;
 	u_int16_t		 chksum;
 
-	/* XXX IBUF_READ_SIZE */
-	if ((buf = ibuf_dynamic(sizeof(lsa_hdr), IBUF_READ_SIZE)) == NULL)
+	if ((buf = ibuf_dynamic(sizeof(lsa_hdr),
+	    IP_MAXPACKET - sizeof(struct ip) - sizeof(struct ospf_hdr) -
+	    sizeof(u_int32_t) - MD5_DIGEST_LENGTH)) == NULL)
 		fatal("orig_net_lsa");
 
 	/* reserve space for LSA header and LSA Router header */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.c,v 1.31 2010/06/01 23:06:23 jacekm Exp $	*/
+/*	$OpenBSD: client.c,v 1.35 2011/03/26 10:59:59 gilles Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -37,23 +37,7 @@
 #include <openssl/ssl.h>
 
 #include "client.h"
-
-struct client_cmd *cmd_new(int, char *, ...);
-void		 cmd_free(struct client_cmd *);
-int		 client_read(struct smtp_client *);
-void		 client_get_reply(struct smtp_client *, struct client_cmd *,
-		     int *);
-int		 client_write(struct smtp_client *);
-int		 client_use_extensions(struct smtp_client *);
-void		 client_status(struct smtp_client *, char *, ...);
-int		 client_getln(struct smtp_client *, int);
-void		 client_putln(struct smtp_client *, char *, ...);
-struct ibuf	*client_content_read(FILE *, size_t);
-int		 client_poll(struct smtp_client *);
-void		 client_quit(struct smtp_client *);
-
-int		 client_socket_read(struct smtp_client *);
-int		 client_socket_write(struct smtp_client *);
+#include "log.h"
 
 #ifndef CLIENT_NO_SSL
 int		 client_ssl_connect(struct smtp_client *);
@@ -62,18 +46,11 @@ int		 ssl_buf_read(SSL *, struct ibuf_read *);
 int		 ssl_buf_write(SSL *, struct msgbuf *);
 #endif
 
-char		*buf_getln(struct ibuf_read *);
-int		 buf_read(int, struct ibuf_read *);
-
-void		 log_debug(const char *, ...);	/* XXX */
-void		 fatal(const char *);	/* XXX */
-void		 fatalx(const char *);	/* XXX */
-
 /*
  * Initialize SMTP session.
  */
 struct smtp_client *
-client_init(int fd, int body, char *ehlo, int verbose)
+client_init(int fd, FILE *body, char *ehlo, int verbose)
 {
 	struct smtp_client	*sp = NULL;
 	struct client_cmd	*c;
@@ -99,8 +76,7 @@ client_init(int fd, int body, char *ehlo, int verbose)
 		sp->verbose = stdout;
 	else if ((sp->verbose = fopen("/dev/null", "a")) == NULL)
 		fatal("client_init: fopen");
-	if ((sp->body = fdopen(body, "r")) == NULL)
-		fatal("client_init: fdopen");
+	sp->body = body;
 	sp->timeout.tv_sec = 300;
 	msgbuf_init(&sp->w);
 	sp->w.fd = fd;
@@ -596,6 +572,7 @@ client_close(struct smtp_client *sp)
 		SSL_free(sp->ssl);
 #endif
 	close(sp->w.fd);
+	fclose(sp->body);
 	free(sp);
 }
 
@@ -713,6 +690,8 @@ client_getln(struct smtp_client *sp, int type)
 
 		if (ln[3] == ' ')
 			break;
+
+		free(ln);
 	}
 
 	/* validate reply code */

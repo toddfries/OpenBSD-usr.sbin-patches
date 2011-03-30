@@ -1,4 +1,4 @@
-/*	$OpenBSD: connection.c,v 1.4 2010/09/25 16:20:06 sobrado Exp $ */
+/*	$OpenBSD: connection.c,v 1.7 2011/01/10 12:53:32 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -91,8 +91,6 @@ conn_new(struct session *s, struct connection_config *cc)
 	if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &nodelay,
 	    sizeof(nodelay)) == -1)
 		log_warn("conn_new: setting TCP_NODELAY");
-
-
 
 	event_set(&c->ev, c->fd, EV_READ|EV_PERSIST, conn_dispatch, c);
 	event_set(&c->wev, c->fd, EV_WRITE, conn_write_dispatch, c);
@@ -229,6 +227,11 @@ conn_task_schedule(struct connection *c)
 		TAILQ_REMOVE(&t->sendq, p, entry);
 		conn_pdu_write(c, p);	/* maybe inline ? */
 	}
+	if (t->callback == NULL) {
+		/* no callback, immediate command expecting no answer */
+		task_cleanup(t, c);
+		free(t);
+	}
 }
 
 void
@@ -239,7 +242,14 @@ conn_pdu_write(struct connection *c, struct pdu *p)
 /* XXX I GUESS THIS SHOULD BE MOVED TO PDU SOMEHOW... */
 	ipdu = pdu_getbuf(p, NULL, PDU_HEADER);
 	switch (ISCSI_PDU_OPCODE(ipdu->opcode)) {
+	case ISCSI_OP_I_NOP:
+	case ISCSI_OP_SCSI_REQUEST:
 	case ISCSI_OP_TASK_REQUEST:
+	case ISCSI_OP_LOGIN_REQUEST:
+	case ISCSI_OP_TEXT_REQUEST:
+	case ISCSI_OP_DATA_OUT:
+	case ISCSI_OP_LOGOUT_REQUEST:
+	case ISCSI_OP_SNACK_REQUEST:
 		ipdu->expstatsn = ntohl(c->expstatsn);
 		break;
 	}
@@ -318,7 +328,7 @@ int
 c_do_loggedin(struct connection *c, enum c_event ev)
 {
 	if (ev == CONN_EV_LOGGED_IN)
-		vscsi_event(VSCSI_REQPROBE, c->session->target, 0);
+		vscsi_event(VSCSI_REQPROBE, c->session->target, -1);
 	else
 		initiator_discovery(c->session);
 	return (CONN_LOGGED_IN);
