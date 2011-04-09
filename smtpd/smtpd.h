@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.201 2011/03/09 20:59:22 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.207 2011/04/02 16:40:19 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -526,6 +526,8 @@ struct ssl {
 	off_t			 ssl_cert_len;
 	char			*ssl_key;
 	off_t			 ssl_key_len;
+	char			*ssl_dhparams;
+	off_t			 ssl_dhparams_len;
 	u_int8_t		 flags;
 };
 
@@ -690,6 +692,16 @@ struct s_control {
 	size_t		sessions_maxactive;
 };
 
+struct s_lka {
+	size_t		queries;
+	size_t		queries_active;
+	size_t		queries_maxactive;
+	size_t		queries_mx;
+	size_t		queries_host;
+	size_t		queries_cname;
+	size_t		queries_failure;
+};
+
 struct stats {
 	struct s_parent		 parent;
 	struct s_queue		 queue;
@@ -698,6 +710,7 @@ struct stats {
 	struct s_mda		 mda;
 	struct s_session	 smtp;
 	struct s_control	 control;
+	struct s_lka		 lka;
 };
 
 struct sched {
@@ -798,7 +811,6 @@ struct lkasession {
 struct mx {
         char    host[MAXHOSTNAMELEN];
         int     prio;
-        struct mx *next;
 };
 
 struct dnssession {
@@ -809,7 +821,8 @@ struct dnssession {
         struct asr_query                *aq;
         struct mx                        mxarray[MAX_MX_COUNT];
         size_t                           mxarraysz;
-        struct mx                       *mxcurrent;
+        size_t                           mxcurrent;
+	size_t				 mxfound;
 };
 
 enum mta_state {
@@ -851,7 +864,7 @@ struct mta_session {
 	objid_t			 secmapid;
 	char			*secret;
 	int			 fd;
-	int			 datafd;
+	FILE			*datafp;
 	struct event		 ev;
 	char			*cert;
 	void			*pcb;
@@ -1094,7 +1107,6 @@ int		 recipient_to_path(struct path *, char *);
 int		 valid_localpart(char *);
 int		 valid_domainpart(char *);
 char		*ss_to_text(struct sockaddr_storage *);
-char		*ss_to_ptr(struct sockaddr_storage *);
 int		 valid_message_id(char *);
 int		 valid_message_uid(char *);
 char		*time_to_text(time_t);
