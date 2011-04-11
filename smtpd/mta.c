@@ -58,7 +58,6 @@ void			 mta_request_datafd(struct mta_session *);
 void
 mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
-	struct ramqueue_batch  	*rq_batch;
 	struct mta_session	*s;
 	struct mta_relay	*relay;
 	struct message		*m;
@@ -70,29 +69,29 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
 		case IMSG_BATCH_CREATE:
-			rq_batch = imsg->data;
-
+			b = imsg->data;
 			s = calloc(1, sizeof *s);
 			if (s == NULL)
 				fatal(NULL);
-			s->id = rq_batch->b_id;
+			s->id = b->id;
 			s->state = MTA_INIT;
 			s->env = env;
-			s->batch = rq_batch;
 
 			/* establish host name */
-			if (rq_batch->rule.r_action == A_RELAYVIA) {
-				s->host = strdup(rq_batch->rule.r_value.relayhost.hostname);
+			if (b->rule.r_action == A_RELAYVIA) {
+				s->host = strdup(b->rule.r_value.relayhost.hostname);
 				s->flags |= MTA_FORCE_MX;
 			}
 			else
-				s->host = NULL;
+				s->host = strdup(b->hostname);
+			if (s->host == NULL)
+				fatal(NULL);
 
 			/* establish port */
-			s->port = ntohs(rq_batch->rule.r_value.relayhost.port); /* XXX */
+			s->port = ntohs(b->rule.r_value.relayhost.port); /* XXX */
 
 			/* have cert? */
-			s->cert = strdup(rq_batch->rule.r_value.relayhost.cert);
+			s->cert = strdup(b->rule.r_value.relayhost.cert);
 			if (s->cert == NULL)
 				fatal(NULL);
 			else if (s->cert[0] == '\0') {
@@ -101,14 +100,14 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			}
 
 			/* use auth? */
-			if ((rq_batch->rule.r_value.relayhost.flags & F_SSL) &&
-			    (rq_batch->rule.r_value.relayhost.flags & F_AUTH)) {
+			if ((b->rule.r_value.relayhost.flags & F_SSL) &&
+			    (b->rule.r_value.relayhost.flags & F_AUTH)) {
 				s->flags |= MTA_USE_AUTH;
-				s->secmapid = rq_batch->rule.r_value.relayhost.secmapid;
+				s->secmapid = b->rule.r_value.relayhost.secmapid;
 			}
 
 			/* force a particular SSL mode? */
-			switch (rq_batch->rule.r_value.relayhost.flags & F_SSL) {
+			switch (b->rule.r_value.relayhost.flags & F_SSL) {
 			case F_SSL:
 				s->flags |= MTA_FORCE_ANYSSL;
 				break;
@@ -129,7 +128,6 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			SPLAY_INSERT(mtatree, &env->mta_sessions, s);
 			return;
 
-
 		case IMSG_BATCH_APPEND:
 			m = imsg->data;
 			s = mta_lookup(env, m->batch_id);
@@ -139,18 +137,12 @@ mta_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			*m = *(struct message *)imsg->data;
 			strlcpy(m->session_errorline, "000 init",
 			    sizeof(m->session_errorline));
-
-			if (s->host == NULL) {
-				s->host = strdup(m->recipient.domain);
-				if (s->host == NULL)
-					fatal("strdup");
-			}
  			TAILQ_INSERT_TAIL(&s->recipients, m, entry);
 			return;
 
 		case IMSG_BATCH_CLOSE:
-			rq_batch = imsg->data;
-			mta_pickup(mta_lookup(env, rq_batch->b_id), NULL);
+			b = imsg->data;
+			mta_pickup(mta_lookup(env, b->id), NULL);
 			return;
 
 		case IMSG_QUEUE_MESSAGE_FD:
@@ -315,7 +307,6 @@ mta(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 
-	ramqueue_init(env, &env->sc_rqueue);
 	SPLAY_INIT(&env->mta_sessions);
 
 	if (event_dispatch() < 0)
