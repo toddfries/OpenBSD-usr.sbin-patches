@@ -97,6 +97,10 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			}
 			imsg_compose_event(iev, IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
 			    &ss, sizeof ss);
+
+			if (ss.code != 421)
+				queue_pass_to_runner(env, iev, imsg);
+
 			return;
 
 		case IMSG_QUEUE_MESSAGE_FILE:
@@ -320,16 +324,6 @@ queue(struct smtpd *env)
 
 	return (0);
 }
-
-struct batch *
-batch_by_id(struct smtpd *env, u_int64_t id)
-{
-	struct batch lookup;
-
-	lookup.id = id;
-	return SPLAY_FIND(batchtree, &env->batch_queue, &lookup);
-}
-
 
 void
 queue_purge(char *queuepath)

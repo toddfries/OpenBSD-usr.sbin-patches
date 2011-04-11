@@ -594,6 +594,39 @@ struct session {
 	int				 messagefd;
 };
 
+
+/* ram-queue structures */
+struct ramqueue_host {
+	RB_ENTRY(ramqueue_host)		host_entry;
+	TAILQ_HEAD(,ramqueue_batch)	batch_queue;
+	u_int64_t			h_id;
+	char				hostname[MAXHOSTNAMELEN];
+};
+struct ramqueue_batch {
+	TAILQ_ENTRY(ramqueue_batch)	batch_entry;
+	TAILQ_HEAD(,ramqueue_envelope)	envelope_queue;
+	enum message_type		type;
+	u_int64_t			h_id;
+	u_int64_t			b_id;
+	char				m_id[MAX_ID_SIZE];
+	struct rule			rule;
+};
+struct ramqueue_envelope {
+	TAILQ_ENTRY(ramqueue_envelope)	 queue_entry;
+	TAILQ_ENTRY(ramqueue_envelope)	 batchqueue_entry;
+	struct ramqueue_host		*host;
+	struct ramqueue_batch		*batch;
+	char				 id[MAX_ID_SIZE];
+	time_t				 sched;
+};
+
+struct ramqueue {
+	struct smtpd			       *env;
+	RB_HEAD(hosttree, ramqueue_host)	hosttree;
+	TAILQ_HEAD(,ramqueue_envelope)		queue;
+};
+
+
 struct smtpd {
 	char					 sc_conffile[MAXPATHLEN];
 	size_t					 sc_maxsize;
@@ -619,14 +652,14 @@ struct smtpd {
 	char					*sc_title[PROC_COUNT];
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
+	struct ramqueue				 sc_rqueue;
+
 	TAILQ_HEAD(listenerlist, listener)	*sc_listeners;
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
 	TAILQ_HEAD(rulelist, rule)		*sc_rules, *sc_rules_reload;
 	SPLAY_HEAD(sessiontree, session)	 sc_sessions;
 	SPLAY_HEAD(msgtree, message)		 sc_messages;
 	SPLAY_HEAD(ssltree, ssl)		*sc_ssl;
-
-	SPLAY_HEAD(batchtree, batch)		 batch_queue;
 	SPLAY_HEAD(childtree, child)		 children;
 	SPLAY_HEAD(lkatree, lkasession)		 lka_sessions;
 	SPLAY_HEAD(dnstree, dnssession)		 dns_sessions;
@@ -868,6 +901,7 @@ struct mta_session {
 	struct event		 ev;
 	char			*cert;
 	void			*pcb;
+	struct ramqueue_batch	*batch;
 };
 
 
@@ -1001,8 +1035,6 @@ int		 queue_update_envelope(struct message *);
 int		 queue_remove_envelope(struct message *);
 void		 queue_submit_envelope(struct smtpd *, struct message *);
 void		 queue_commit_envelopes(struct smtpd *, struct message*);
-int		 batch_cmp(struct batch *, struct batch *);
-struct batch    *batch_by_id(struct smtpd *, u_int64_t);
 u_int16_t	 queue_hash(char *);
 
 
@@ -1024,7 +1056,7 @@ void		 bounce_delete_message(char *);
 int		 bounce_record_envelope(struct message *);
 int		 bounce_remove_envelope(struct message *);
 int		 bounce_commit_message(struct message *);
-int		 bounce_record_message(struct message *);
+int		 bounce_record_message(struct message *, struct message *);
 int		 queue_create_incoming_layout(char *);
 void		 queue_delete_incoming_message(char *);
 int		 queue_record_incoming_envelope(struct message *);
@@ -1041,10 +1073,16 @@ void		 show_queue(char *, int);
 u_int16_t	 queue_hash(char *);
 
 
+/* ramqueue.c */
+void		 ramqueue_init(struct smtpd *, struct ramqueue *);
+int		 ramqueue_load(struct ramqueue *, time_t *);
+int		 ramqueue_host_cmp(struct ramqueue_host *, struct ramqueue_host *);
+RB_PROTOTYPE(hosttree, ramqueue_host, host_entry, ramqueue_host_cmp);
+
+
 /* runner.c */
 pid_t		 runner(struct smtpd *);
 void		 message_reset_flags(struct message *);
-SPLAY_PROTOTYPE(batchtree, batch, b_nodes, batch_cmp);
 
 
 /* smtp.c */
