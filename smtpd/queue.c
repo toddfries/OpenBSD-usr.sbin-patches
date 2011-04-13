@@ -54,7 +54,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	struct submit_status	 ss;
 	struct message		*m;
-	struct ramqueue_batch	*rq_batch;
+	struct batch		*b;
 	int			 fd, ret;
 
 	if (iev->proc == PROC_SMTP) {
@@ -97,10 +97,6 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			}
 			imsg_compose_event(iev, IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
 			    &ss, sizeof ss);
-
-			if (ss.code != 421)
-				queue_pass_to_runner(env, iev, imsg);
-
 			return;
 
 		case IMSG_QUEUE_MESSAGE_FILE:
@@ -169,10 +165,10 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_MTA) {
 		switch (imsg->hdr.type) {
 		case IMSG_QUEUE_MESSAGE_FD:
-			rq_batch = imsg->data;
-			fd = queue_open_message_file(rq_batch->m_id);
+			b = imsg->data;
+			fd = queue_open_message_file(b->message_id);
 			imsg_compose_event(iev,  IMSG_QUEUE_MESSAGE_FD, 0, 0,
-			    fd, rq_batch, sizeof *rq_batch);
+			    fd, b, sizeof *b);
 			return;
 
 		case IMSG_QUEUE_MESSAGE_UPDATE:
@@ -324,6 +320,16 @@ queue(struct smtpd *env)
 
 	return (0);
 }
+
+struct batch *
+batch_by_id(struct smtpd *env, u_int64_t id)
+{
+	struct batch lookup;
+
+	lookup.id = id;
+	return SPLAY_FIND(batchtree, &env->batch_queue, &lookup);
+}
+
 
 void
 queue_purge(char *queuepath)
