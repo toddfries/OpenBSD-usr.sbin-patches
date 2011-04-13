@@ -51,6 +51,8 @@ static const struct token t_main[];
 static const struct token t_show[];
 static const struct token t_pause[];
 static const struct token t_resume[];
+static const struct token t_schedule[];
+static const struct token t_remove[];
 static const struct token t_log[];
 
 static const struct token t_main[] = {
@@ -60,6 +62,8 @@ static const struct token t_main[] = {
 /*	{KEYWORD,	"reload",	RELOAD,		NULL},*/
 	{KEYWORD,	"resume",	NONE,      	t_resume},
 	{KEYWORD,	"stop",		SHUTDOWN,      	NULL},
+	{KEYWORD,	"schedule",    	SCHEDULE,      	t_schedule},
+	{KEYWORD,	"remove",    	REMOVE,      	t_remove},
 	{KEYWORD,	"log",    	NONE,      	t_log},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
@@ -82,6 +86,16 @@ static const struct token t_resume[] = {
 	{KEYWORD,	"local",		RESUME_MDA,	NULL},
 	{KEYWORD,	"outgoing",	        RESUME_MTA,	NULL},
 	{KEYWORD,	"incoming",	        RESUME_SMTP,	NULL},
+	{ENDTOKEN,	"",			NONE,      	NULL}
+};
+
+static const struct token t_schedule[] = {
+	{VARIABLE,	"message id/uid",      	SCHEDULE,	NULL},
+	{ENDTOKEN,	"",			NONE,      	NULL}
+};
+
+static const struct token t_remove[] = {
+	{VARIABLE,	"message id/uid",      	REMOVE,		NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 

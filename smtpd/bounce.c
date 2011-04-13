@@ -154,9 +154,7 @@ out:
 		else
 			cc->m.status = S_MESSAGE_TEMPFAILURE;
 		message_set_errormsg(&cc->m, "%s", ep);
-
 		queue_message_update(&cc->m);
-
 	}
 
 	cc->env->stats->runner.active--;

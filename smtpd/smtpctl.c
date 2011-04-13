@@ -92,6 +92,7 @@ main(int argc, char *argv[])
 			show_queue(PATH_QUEUE, 0);
 			break;
 		case SHOW_RUNQUEUE:
+			show_queue(PATH_RUNQUEUE, 0);
 			break;
 		default:
 			goto connected;
@@ -129,6 +130,11 @@ connected:
 	case SHUTDOWN:
 		imsg_compose(ibuf, IMSG_CTL_SHUTDOWN, 0, 0, -1, NULL, 0);
 		break;
+/*
+	case RELOAD:
+		imsg_compose(ibuf, IMSG_CONF_RELOAD, 0, 0, -1, NULL, 0);
+		break;
+ */
 	case PAUSE_MDA:
 		imsg_compose(ibuf, IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
 		break;
@@ -150,6 +156,24 @@ connected:
 	case SHOW_STATS:
 		imsg_compose(ibuf, IMSG_STATS, 0, 0, -1, NULL, 0);
 		break;
+	case SCHEDULE: {
+		struct sched s;
+
+		s.fd = -1;
+		bzero(s.mid, sizeof (s.mid));
+		strlcpy(s.mid, res->data, sizeof (s.mid));
+		imsg_compose(ibuf, IMSG_QUEUE_SCHEDULE, 0, 0, -1, &s, sizeof (s));
+		break;
+	}
+	case REMOVE: {
+		struct remove s;
+
+		s.fd = -1;
+		bzero(s.mid, sizeof (s.mid));
+		strlcpy(s.mid, res->data, sizeof (s.mid));
+		imsg_compose(ibuf, IMSG_QUEUE_REMOVE, 0, 0, -1, &s, sizeof (s));
+		break;
+	}
 	case MONITOR:
 		/* XXX */
 		break;
@@ -182,8 +206,10 @@ connected:
 			if (n == 0)
 				break;
 			switch(res->action) {
-			/* case RELOAD: */
+/*			case RELOAD:*/
 			case SHUTDOWN:
+			case SCHEDULE:
+			case REMOVE:
 			case PAUSE_MDA:
 			case PAUSE_MTA:
 			case PAUSE_SMTP:
@@ -277,17 +303,6 @@ show_stats_output(struct imsg *imsg)
 	printf("runner.bounces.active=%zd\n", stats->runner.bounces_active);
 	printf("runner.bounces.maxactive=%zd\n",
 	    stats->runner.bounces_maxactive);
-
-	printf("ramqueue.hosts=%zd\n", stats->ramqueue.hosts);
-	printf("ramqueue.batches=%zd\n", stats->ramqueue.batches);
-	printf("ramqueue.envelopes=%zd\n", stats->ramqueue.envelopes);
-	printf("ramqueue.hosts.max=%zd\n", stats->ramqueue.hosts_max);
-	printf("ramqueue.batches.max=%zd\n", stats->ramqueue.batches_max);
-	printf("ramqueue.envelopes.max=%zd\n", stats->ramqueue.envelopes_max);
-	printf("ramqueue.size=%zd\n",
-	    stats->ramqueue.hosts * sizeof(struct ramqueue_host) +
-	    stats->ramqueue.batches * sizeof(struct ramqueue_batch) +
-	    stats->ramqueue.envelopes * sizeof(struct ramqueue_envelope));
 
 	printf("smtp.errors.delays=%zd\n", stats->smtp.delays);
 	printf("smtp.errors.linetoolong=%zd\n", stats->smtp.linetoolong);

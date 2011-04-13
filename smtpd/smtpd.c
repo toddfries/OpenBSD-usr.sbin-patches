@@ -638,7 +638,8 @@ setup_spool(uid_t uid, gid_t gid)
 {
 	unsigned int	 n;
 	char		*paths[] = { PATH_INCOMING, PATH_ENQUEUE, PATH_QUEUE,
-				     PATH_PURGE, PATH_OFFLINE, PATH_BOUNCE };
+				     PATH_RUNQUEUE, PATH_PURGE,
+				     PATH_OFFLINE, PATH_BOUNCE };
 	char		 pathname[MAXPATHLEN];
 	struct stat	 sb;
 	int		 ret;
