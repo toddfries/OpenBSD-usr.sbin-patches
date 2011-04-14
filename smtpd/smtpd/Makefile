@@ -7,12 +7,8 @@ SRCS=		aliases.c authenticate.c bounce.c client.c		\
 		mfa.c mta.c parse.y queue.c queue_shared.c ruleset.c	\
 		runner.c smtp.c smtp_session.c smtpd.c ssl.c		\
 		ssl_privsep.c util.c asr.c print.c pack.c dname.c	\
-<<<<<<< HEAD
-		res_random.c sockaddr.c ramqueue.c
-=======
 		res_random.c sockaddr.c ramqueue.c queue_backend.c	\
 		queue_fsqueue.c
->>>>>>> master
 
 MAN=		smtpd.8 smtpd.conf.5
 BINDIR=		/usr/sbin

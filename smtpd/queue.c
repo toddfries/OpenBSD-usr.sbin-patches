@@ -170,11 +170,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		switch (imsg->hdr.type) {
 		case IMSG_QUEUE_MESSAGE_FD:
 			rq_batch = imsg->data;
-<<<<<<< HEAD
-			fd = queue_open_message_file(rq_batch->m_id);
-=======
 			fd = queue_message_fd_r(env, Q_QUEUE, rq_batch->m_id);
->>>>>>> master
 			imsg_compose_event(iev,  IMSG_QUEUE_MESSAGE_FD, 0, 0,
 			    fd, rq_batch, sizeof *rq_batch);
 			return;

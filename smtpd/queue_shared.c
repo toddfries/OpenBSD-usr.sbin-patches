@@ -369,11 +369,7 @@ queue_message_update(struct smtpd *env, struct message *messagep)
 
 			bounce_record_message(messagep, &bounce);
 		}
-<<<<<<< HEAD
-		queue_remove_envelope(messagep);
-=======
 		queue_envelope_delete(env, Q_QUEUE, messagep);
->>>>>>> master
 		return;
 	}
 

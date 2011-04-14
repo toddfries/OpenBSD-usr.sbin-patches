@@ -634,10 +634,7 @@ struct smtpd {
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
 	struct ramqueue				 sc_rqueue;
-<<<<<<< HEAD
-=======
 	struct queue_backend			*sc_queue;
->>>>>>> master
 
 	TAILQ_HEAD(listenerlist, listener)	*sc_listeners;
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
