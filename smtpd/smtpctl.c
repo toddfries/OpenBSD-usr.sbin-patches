@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.57 2011/04/02 16:40:19 eric Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.58 2011/04/13 20:53:18 gilles Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>

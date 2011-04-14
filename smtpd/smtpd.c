@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.116 2011/03/15 19:24:55 gilles Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.119 2011/04/14 20:11:08 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -488,7 +488,11 @@ main(int argc, char *argv[])
 	if ((env.sc_pw =  getpwnam(SMTPD_USER)) == NULL)
 		errx(1, "unknown user %s", SMTPD_USER);
 
-	if (!setup_spool(env.sc_pw->pw_uid, 0))
+	env.sc_queue = queue_backend_lookup(QT_FS);
+	if (env.sc_queue == NULL)
+		errx(1, "could not find queue backend");
+
+	if (!env.sc_queue->setup(&env))
 		errx(1, "invalid directory permissions");
 
 	log_init(debug);
@@ -633,6 +637,7 @@ child_lookup(struct smtpd *env, pid_t pid)
 	return SPLAY_FIND(childtree, &env->children, &key);
 }
 
+<<<<<<< HEAD
 int
 setup_spool(uid_t uid, gid_t gid)
 {
@@ -762,6 +767,8 @@ setup_spool(uid_t uid, gid_t gid)
 	return ret;
 }
 
+=======
+>>>>>>> master
 void
 imsg_event_add(struct imsgev *iev)
 {

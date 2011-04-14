@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.150 2011/04/07 13:22:29 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.152 2011/04/12 12:43:13 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -147,7 +147,7 @@ typedef struct {
 %token	LOADBALANCE LOG LOOKUP MARK MARKED MODE NAT NO DESTINATION
 %token	NODELAY NOTHING ON PARENT PATH PORT PREFORK PROTO
 %token	QUERYSTR REAL REDIRECT RELAY REMOVE REQUEST RESPONSE RETRY
-%token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET
+%token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET SPLICE
 %token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO ROUTER RTLABEL
 %token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH TTL RTABLE MATCH
 %token	<v.string>	STRING
@@ -798,6 +798,13 @@ proto		: relay_proto PROTO STRING	{
 			p->type = $1;
 			p->cache = RELAY_CACHESIZE;
 			p->tcpflags = TCPFLAG_DEFAULT;
+			if (p->type != RELAY_PROTO_TCP) {
+				/*
+				 * Splicing is currently only supported
+				 * for plain TCP relays.
+				 */
+				p->tcpflags |= TCPFLAG_NSPLICE;
+			}
 			p->sslflags = SSLFLAG_DEFAULT;
 			p->tcpbacklog = RELAY_BACKLOG;
 			(void)strlcpy(p->sslciphers, SSLCIPHERS_DEFAULT,
@@ -875,6 +882,8 @@ tcpflags	: SACK			{ proto->tcpflags |= TCPFLAG_SACK; }
 		| NO SACK		{ proto->tcpflags |= TCPFLAG_NSACK; }
 		| NODELAY		{ proto->tcpflags |= TCPFLAG_NODELAY; }
 		| NO NODELAY		{ proto->tcpflags |= TCPFLAG_NNODELAY; }
+		| SPLICE		{ /* default */ }
+		| NO SPLICE		{ proto->tcpflags |= TCPFLAG_NSPLICE; }
 		| BACKLOG NUMBER	{
 			if ($2 < 0 || $2 > RELAY_MAX_SESSIONS) {
 				yyerror("invalid backlog: %d", $2);
@@ -1785,6 +1794,7 @@ lookup(char *s)
 		{ "send",		SEND },
 		{ "session",		SESSION },
 		{ "socket",		SOCKET },
+		{ "splice",		SPLICE },
 		{ "ssl",		SSL },
 		{ "sticky-address",	STICKYADDR },
 		{ "style",		STYLE },

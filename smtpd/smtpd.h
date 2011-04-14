@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.207 2011/04/02 16:40:19 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.210 2011/04/14 20:11:08 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -634,6 +634,10 @@ struct smtpd {
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
 	struct ramqueue				 sc_rqueue;
+<<<<<<< HEAD
+=======
+	struct queue_backend			*sc_queue;
+>>>>>>> master
 
 	TAILQ_HEAD(listenerlist, listener)	*sc_listeners;
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
@@ -901,6 +905,41 @@ struct map_virtual {
 };
 
 
+/* queue structures */
+enum queue_type {
+	QT_INVALID=0,
+	QT_FS
+};
+
+enum queue_kind {
+	Q_INVALID=0,
+	Q_ENQUEUE,
+	Q_INCOMING,
+	Q_QUEUE,
+	Q_PURGE,
+	Q_OFFLINE,
+	Q_BOUNCE
+};
+
+enum queue_op {
+	QOP_INVALID=0,
+	QOP_CREATE,
+	QOP_DELETE,
+	QOP_UPDATE,
+	QOP_COMMIT,
+	QOP_LOAD,
+	QOP_FD_R,
+	QOP_FD_RW
+};
+
+struct queue_backend {
+	enum queue_type	type;
+	int (*setup)(struct smtpd *);
+	int (*message)(struct smtpd *, enum queue_kind, enum queue_op, char *);
+	int (*envelope)(struct smtpd *, enum queue_kind, enum queue_op,
+		struct message *);
+};
+
 extern void (*imsg_callback)(struct smtpd *, struct imsgev *, struct imsg *);
 
 
@@ -1017,6 +1056,25 @@ void		 queue_commit_envelopes(struct smtpd *, struct message*);
 u_int16_t	 queue_hash(char *);
 
 
+/* queue_backend.c */
+struct queue_backend *queue_backend_lookup(enum queue_type);
+int	queue_message_create(struct smtpd *, enum queue_kind, char *);
+int	queue_message_delete(struct smtpd *, enum queue_kind, char *);
+int	queue_message_commit(struct smtpd *, enum queue_kind, char *);
+int	queue_message_fd_r(struct smtpd *, enum queue_kind, char *);
+int	queue_message_fd_rw(struct smtpd *, enum queue_kind, char *);
+int	queue_envelope_create(struct smtpd *, enum queue_kind,
+    struct message *);
+int	queue_envelope_delete(struct smtpd *, enum queue_kind,
+    struct message *);
+int	queue_envelope_load(struct smtpd *, enum queue_kind,
+    char *, struct message *);
+int	queue_envelope_update(struct smtpd *, enum queue_kind,
+    struct message *);
+
+
+
+
 /* queue_shared.c */
 int		 queue_create_layout_message(char *, char *);
 void		 queue_delete_layout_message(char *, char *);
@@ -1043,7 +1101,7 @@ int		 queue_remove_incoming_envelope(struct message *);
 int		 queue_commit_incoming_message(struct message *);
 int		 queue_open_incoming_message_file(struct message *);
 int		 queue_open_message_file(char *msgid);
-void		 queue_message_update(struct message *);
+void		 queue_message_update(struct smtpd *, struct message *);
 void		 queue_delete_message(char *);
 struct qwalk	*qwalk_new(char *);
 int		 qwalk(struct qwalk *, char *);
