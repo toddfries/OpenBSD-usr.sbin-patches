@@ -46,6 +46,7 @@ void		runner_imsg(struct smtpd *, struct imsgev *, struct imsg *);
 __dead void	runner_shutdown(void);
 void		runner_sig_handler(int, short, void *);
 void		runner_setup_events(struct smtpd *);
+void		runner_reset_events(struct smtpd *);
 void		runner_disable_events(struct smtpd *);
 
 void		runner_timeout(int, short, void *);
@@ -71,7 +72,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	case IMSG_QUEUE_COMMIT_MESSAGE:
 		m = imsg->data;
 		runner_force_message_to_ramqueue(&env->sc_rqueue, m->message_id);
-		runner_setup_events(env);
+		runner_reset_events(env);
 		return;
 
 	case IMSG_QUEUE_MESSAGE_UPDATE:
@@ -86,7 +87,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			m->status &= ~S_MESSAGE_TEMPFAILURE;
 			queue_envelope_update(env, Q_QUEUE, m);
 			ramqueue_insert(&env->sc_rqueue, m, time(NULL));
-			runner_setup_events(env);
+			runner_reset_events(env);
 			return;
 		}
 
@@ -100,7 +101,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			    m->sender.user[0] != '\0') {
 				bounce_record_message(m, &bounce);
 				ramqueue_insert(&env->sc_rqueue, &bounce, time(NULL));
-				runner_setup_events(env);
+				runner_reset_events(env);
 			}
 		}
 
@@ -128,7 +129,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 			m->status = 0;
 			queue_envelope_update(env, Q_QUEUE, m);
 			ramqueue_insert(&env->sc_rqueue, m, time(NULL));
-			runner_setup_events(env);
+			runner_reset_events(env);
 			return;
 		}
 		return;
@@ -183,6 +184,16 @@ runner_setup_events(struct smtpd *env)
 	struct timeval	 tv;
 
 	evtimer_set(&env->sc_ev, runner_timeout, env);
+	tv.tv_sec = 0;
+	tv.tv_usec = 10;
+	evtimer_add(&env->sc_ev, &tv);
+}
+
+void
+runner_reset_events(struct smtpd *env)
+{
+	struct timeval	 tv;
+
 	tv.tv_sec = 0;
 	tv.tv_usec = 10;
 	evtimer_add(&env->sc_ev, &tv);
