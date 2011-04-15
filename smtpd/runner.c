@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.98 2011/04/14 21:53:46 gilles Exp $	*/
+/*	$OpenBSD: runner.c,v 1.102 2011/04/15 17:01:05 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -55,13 +55,18 @@ int		runner_process_envelope(struct smtpd *, struct ramqueue_envelope *, time_t)
 void		runner_process_batch(struct smtpd *, struct ramqueue_envelope *, time_t);
 
 void		runner_purge_run(void);
-void		runner_purge_message(char *);
+void		runner_purge_message(u_int32_t);
 
 int		runner_check_loop(struct smtpd *, struct message *);
 
-int		runner_force_message_to_ramqueue(struct ramqueue *, char *);
+int		runner_force_message_to_ramqueue(struct ramqueue *, u_int32_t);
 
 void		ramqueue_insert(struct ramqueue *, struct message *, time_t);
+
+/*temporary*/
+u_int16_t	fsqueue_hash(u_int32_t);
+u_int64_t	filename_to_evpid(char *);
+u_int32_t	filename_to_msgid(char *);
 
 void
 runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
@@ -71,7 +76,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	switch (imsg->hdr.type) {
 	case IMSG_QUEUE_COMMIT_MESSAGE:
 		m = imsg->data;
-		runner_force_message_to_ramqueue(&env->sc_rqueue, m->message_id);
+		runner_force_message_to_ramqueue(&env->sc_rqueue, m->evpid>>32);
 		runner_reset_events(env);
 		return;
 
@@ -99,7 +104,7 @@ runner_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 
 			if (m->type != T_BOUNCE_MESSAGE &&
 			    m->sender.user[0] != '\0') {
-				bounce_record_message(m, &bounce);
+				bounce_record_message(env, m, &bounce);
 				ramqueue_insert(&env->sc_rqueue, &bounce, time(NULL));
 				runner_reset_events(env);
 			}
@@ -350,7 +355,7 @@ runner_process_envelope(struct smtpd *env, struct ramqueue_envelope *rq_evp, tim
 	mda_av = env->sc_maxconn - env->stats->mda.sessions_active;
 	bnc_av = env->sc_maxconn - env->stats->runner.bounces_active;
 	
-	if (! queue_envelope_load(env, Q_QUEUE, rq_evp->id, &envelope))
+	if (! queue_envelope_load(env, Q_QUEUE, rq_evp->evpid, &envelope))
 		return 0;
 
 	if (envelope.type & T_MDA_MESSAGE) {
@@ -378,17 +383,17 @@ runner_process_envelope(struct smtpd *env, struct ramqueue_envelope *rq_evp, tim
 		struct message bounce;
 
 		message_set_errormsg(&envelope, "loop has been detected");
-		bounce_record_message(&envelope, &bounce);
+		bounce_record_message(env, &envelope, &bounce);
 		ramqueue_insert(&env->sc_rqueue, &bounce, time(NULL));
 		runner_setup_events(env);
 		queue_envelope_delete(env, Q_QUEUE, &envelope);
 		return 0;
 	}
 
-	log_debug("dispatching host: %p, batch: %p, envelope: %p, %s",
+	log_debug("dispatching host: %p, batch: %p, envelope: %p, %016llx",
 	    rq_evp->host,
 	    rq_evp->batch,
-	    rq_evp, rq_evp->id);
+	    rq_evp, rq_evp->evpid);
 	runner_process_batch(env, rq_evp, curtm);
 
 	return 1;
@@ -406,7 +411,7 @@ runner_process_batch(struct smtpd *env, struct ramqueue_envelope *rq_evp, time_t
 	switch (batch->type) {
 	case T_BOUNCE_MESSAGE:		
 		while ((rq_evp = ramqueue_batch_first_envelope(batch))) {
-			if (! queue_envelope_load(env, Q_QUEUE, rq_evp->id,
+			if (! queue_envelope_load(env, Q_QUEUE, rq_evp->evpid,
 				&envelope))
 				return;
 			envelope.lasttry = curtm;
@@ -428,11 +433,11 @@ runner_process_batch(struct smtpd *env, struct ramqueue_envelope *rq_evp, time_t
 	case T_MDA_MESSAGE:
 
 		rq_evp = ramqueue_batch_first_envelope(batch);
-		if (! queue_envelope_load(env, Q_QUEUE, rq_evp->id,
+		if (! queue_envelope_load(env, Q_QUEUE, rq_evp->evpid,
 			&envelope))
 			return;
 		envelope.lasttry = curtm;
-		fd = queue_message_fd_r(env, Q_QUEUE, rq_evp->batch->m_id);
+		fd = queue_message_fd_r(env, Q_QUEUE, rq_evp->evpid>>32);
 		imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 		    IMSG_MDA_SESS_NEW, PROC_MDA, 0, fd, &envelope,
 		    sizeof envelope);
@@ -453,7 +458,7 @@ runner_process_batch(struct smtpd *env, struct ramqueue_envelope *rq_evp, time_t
 		    IMSG_BATCH_CREATE, PROC_MTA, 0, -1, batch,
 		    sizeof *batch);
 		while ((rq_evp = ramqueue_batch_first_envelope(batch))) {
-			if (! queue_envelope_load(env, Q_QUEUE, rq_evp->id,
+			if (! queue_envelope_load(env, Q_QUEUE, rq_evp->evpid,
 				&envelope))
 				return;
 			envelope.lasttry = curtm;
@@ -496,7 +501,7 @@ runner_process_batch(struct smtpd *env, struct ramqueue_envelope *rq_evp, time_t
 
 /* XXX - temporary solution */
 int
-runner_force_message_to_ramqueue(struct ramqueue *rqueue, char *mid)
+runner_force_message_to_ramqueue(struct ramqueue *rqueue, u_int32_t msgid)
 {
 	char path[MAXPATHLEN];
 	DIR *dirp;
@@ -504,10 +509,9 @@ runner_force_message_to_ramqueue(struct ramqueue *rqueue, char *mid)
 	struct message envelope;
 	time_t curtm;
 
-	if (! bsnprintf(path, MAXPATHLEN, "%s/%d/%s/envelopes",
-		PATH_QUEUE, queue_hash(mid), mid))
+	if (! bsnprintf(path, MAXPATHLEN, "%s/%04x/%08x/envelopes",
+		PATH_QUEUE, fsqueue_hash(msgid), msgid))
 		return 0;
-
 
 	dirp = opendir(path);
 	if (dirp == NULL)
@@ -515,12 +519,20 @@ runner_force_message_to_ramqueue(struct ramqueue *rqueue, char *mid)
 
 	curtm = time(NULL);
 	while ((dp = readdir(dirp)) != NULL) {
-		if (valid_message_uid(dp->d_name)) {
-			if (! queue_envelope_load(rqueue->env, Q_QUEUE, dp->d_name,
-				&envelope))
-				continue;
-			ramqueue_insert(rqueue, &envelope, curtm);
+		u_int64_t evpid;
+
+		if (dp->d_name[0] == '.')
+			continue;
+
+		if ((evpid = filename_to_evpid(dp->d_name)) == 0) {
+			log_warnx("runner_force_message_to_ramqueue: invalid evpid: %016llx", evpid);
+			continue;
 		}
+
+		if (! queue_envelope_load(rqueue->env, Q_QUEUE, evpid,
+			&envelope))
+			continue;
+		ramqueue_insert(rqueue, &envelope, curtm);
 	}
 	closedir(dirp);
 
@@ -535,14 +547,26 @@ runner_purge_run(void)
 
 	q = qwalk_new(PATH_PURGE);
 
-	while (qwalk(q, path))
-		runner_purge_message(basename(path));
+	while (qwalk(q, path)) {
+		u_int32_t msgid;
+		char *bpath;
+		
+		bpath = basename(path);
+		if (bpath[0] == '.')
+			continue;
+
+		if ((msgid = filename_to_msgid(bpath)) == 0) {
+			log_warnx("runner_purge_run: invalid msgid: %08x", msgid);
+			continue;
+		}
+		runner_purge_message(msgid);
+	}
 
 	qwalk_close(q);
 }
 
 void
-runner_purge_message(char *msgid)
+runner_purge_message(u_int32_t msgid)
 {
 	char rootdir[MAXPATHLEN];
 	char evpdir[MAXPATHLEN];
@@ -551,7 +575,7 @@ runner_purge_message(char *msgid)
 	DIR *dirp;
 	struct dirent *dp;
 	
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", PATH_PURGE, msgid))
+	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%08x", PATH_PURGE, msgid))
 		fatal("runner_purge_message: snprintf");
 
 	if (! bsnprintf(evpdir, sizeof(evpdir), "%s%s", rootdir,
@@ -606,7 +630,7 @@ runner_check_loop(struct smtpd *env, struct message *messagep)
 	int ret = 0;
 	int rcvcount = 0;
 
-	fd = queue_message_fd_r(env, Q_QUEUE, messagep->message_id);
+	fd = queue_message_fd_r(env, Q_QUEUE, messagep->evpid>>32);
 	if ((fp = fdopen(fd, "r")) == NULL)
 		fatal("fdopen");
 
