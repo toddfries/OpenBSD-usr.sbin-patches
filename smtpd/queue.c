@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.99 2011/04/15 17:01:05 gilles Exp $	*/
+/*	$OpenBSD: queue.c,v 1.102 2011/04/17 13:36:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -36,20 +36,17 @@
 #include "smtpd.h"
 #include "log.h"
 
-void		queue_imsg(struct smtpd *, struct imsgev *, struct imsg *);
-void		queue_pass_to_runner(struct smtpd *, struct imsgev *, struct imsg *);
-__dead void	queue_shutdown(void);
-void		queue_sig_handler(int, short, void *);
-void		queue_purge(struct smtpd *, enum queue_kind, char *);
+static void queue_imsg(struct smtpd *, struct imsgev *, struct imsg *);
+static void queue_pass_to_runner(struct smtpd *, struct imsgev *, struct imsg *);
+static void queue_shutdown(void);
+static void queue_sig_handler(int, short, void *);
+static void queue_purge(struct smtpd *, enum queue_kind, char *);
 
-u_int32_t	filename_to_msgid(char *);
-u_int64_t	filename_to_evpid(char *);
-
-void
+static void
 queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	struct submit_status	 ss;
-	struct message		*m;
+	struct envelope		*m;
 	struct ramqueue_batch	*rq_batch;
 	int			 fd, ret;
 
@@ -216,7 +213,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	fatalx("queue_imsg: unexpected imsg");
 }
 
-void
+static void
 queue_pass_to_runner(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	imsg_compose_event(env->sc_ievs[PROC_RUNNER], imsg->hdr.type,
@@ -224,7 +221,7 @@ queue_pass_to_runner(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	    imsg->hdr.len - sizeof imsg->hdr);
 }
 
-void
+static void
 queue_sig_handler(int sig, short event, void *p)
 {
 	switch (sig) {
@@ -237,7 +234,7 @@ queue_sig_handler(int sig, short event, void *p)
 	}
 }
 
-void
+static void
 queue_shutdown(void)
 {
 	log_info("queue handler exiting");
@@ -321,7 +318,7 @@ queue(struct smtpd *env)
 	return (0);
 }
 
-void
+static void
 queue_purge(struct smtpd *env, enum queue_kind qkind, char *queuepath)
 {
 	char		 path[MAXPATHLEN];
@@ -343,17 +340,17 @@ queue_purge(struct smtpd *env, enum queue_kind qkind, char *queuepath)
 }
 
 void
-queue_submit_envelope(struct smtpd *env, struct message *message)
+queue_submit_envelope(struct smtpd *env, struct envelope *m)
 {
 	imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 	    IMSG_QUEUE_SUBMIT_ENVELOPE, 0, 0, -1,
-	    message, sizeof(struct message));
+	    m, sizeof(*m));
 }
 
 void
-queue_commit_envelopes(struct smtpd *env, struct message *message)
+queue_commit_envelopes(struct smtpd *env, struct envelope *m)
 {
 	imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 	    IMSG_QUEUE_COMMIT_ENVELOPES, 0, 0, -1,
-	    message, sizeof(struct message));
+	    m, sizeof(*m));
 }
