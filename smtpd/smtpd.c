@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.116 2011/03/15 19:24:55 gilles Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.121 2011/04/17 13:36:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -44,34 +44,30 @@
 #include "smtpd.h"
 #include "log.h"
 
-void		 parent_imsg(struct smtpd *, struct imsgev *, struct imsg *);
-__dead void	 usage(void);
-void		 parent_shutdown(struct smtpd *);
-void		 parent_send_config(int, short, void *);
-void		 parent_send_config_listeners(struct smtpd *);
-void		 parent_send_config_client_certs(struct smtpd *);
-void		 parent_send_config_ruleset(struct smtpd *, int);
-void		 parent_sig_handler(int, short, void *);
-
-void		 forkmda(struct smtpd *, struct imsgev *, u_int32_t,
-		     struct deliver *);
-int		 parent_enqueue_offline(struct smtpd *, char *);
-int		 parent_forward_open(char *);
-int		 setup_spool(uid_t, gid_t);
-int		 path_starts_with(char *, char *);
-
-void		 fork_peers(struct smtpd *);
-
-struct child	*child_add(struct smtpd *, pid_t, int, int);
-void		 child_del(struct smtpd *, pid_t);
-struct child	*child_lookup(struct smtpd *, pid_t);
+static void parent_imsg(struct smtpd *, struct imsgev *, struct imsg *);
+static void usage(void);
+static void parent_shutdown(struct smtpd *);
+static void parent_send_config(int, short, void *);
+static void parent_send_config_listeners(struct smtpd *);
+static void parent_send_config_client_certs(struct smtpd *);
+static void parent_send_config_ruleset(struct smtpd *, int);
+static void parent_sig_handler(int, short, void *);
+static void forkmda(struct smtpd *, struct imsgev *, u_int32_t,
+    struct deliver *);
+static int parent_enqueue_offline(struct smtpd *, char *);
+static int parent_forward_open(char *);
+static int path_starts_with(char *, char *);
+static void fork_peers(struct smtpd *);
+static struct child *child_lookup(struct smtpd *, pid_t);
+static struct child *child_add(struct smtpd *, pid_t, int, int);
+static void child_del(struct smtpd *, pid_t);
 
 extern char	**environ;
 void		(*imsg_callback)(struct smtpd *, struct imsgev *, struct imsg *);
 
 int __b64_pton(char const *, unsigned char *, size_t);
 
-void
+static void
 parent_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	struct smtpd		 newenv;
@@ -181,7 +177,7 @@ parent_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	fatalx("parent_imsg: unexpected imsg");
 }
 
-__dead void
+static void
 usage(void)
 {
 	extern char	*__progname;
@@ -191,7 +187,7 @@ usage(void)
 	exit(1);
 }
 
-void
+static void
 parent_shutdown(struct smtpd *env)
 {
 	struct child	*child;
@@ -209,7 +205,7 @@ parent_shutdown(struct smtpd *env)
 	exit(0);
 }
 
-void
+static void
 parent_send_config(int fd, short event, void *p)
 {
 	parent_send_config_listeners(p);
@@ -217,7 +213,7 @@ parent_send_config(int fd, short event, void *p)
 	parent_send_config_ruleset(p, PROC_LKA);
 }
 
-void
+static void
 parent_send_config_listeners(struct smtpd *env)
 {
 	struct listener		*l;
@@ -263,7 +259,7 @@ parent_send_config_listeners(struct smtpd *env)
 	    0, 0, -1, NULL, 0);
 }
 
-void
+static void
 parent_send_config_client_certs(struct smtpd *env)
 {
 	struct ssl		*s;
@@ -326,7 +322,7 @@ parent_send_config_ruleset(struct smtpd *env, int proc)
 	    0, 0, -1, NULL, 0);
 }
 
-void
+static void
 parent_sig_handler(int sig, short event, void *p)
 {
 	struct smtpd	*env = p;
@@ -488,7 +484,11 @@ main(int argc, char *argv[])
 	if ((env.sc_pw =  getpwnam(SMTPD_USER)) == NULL)
 		errx(1, "unknown user %s", SMTPD_USER);
 
-	if (!setup_spool(env.sc_pw->pw_uid, 0))
+	env.sc_queue = queue_backend_lookup(QT_FS);
+	if (env.sc_queue == NULL)
+		errx(1, "could not find queue backend");
+
+	if (!env.sc_queue->init(&env))
 		errx(1, "invalid directory permissions");
 
 	log_init(debug);
@@ -539,7 +539,7 @@ main(int argc, char *argv[])
 	return (0);
 }
 
-void
+static void
 fork_peers(struct smtpd *env)
 {
 	SPLAY_INIT(&env->children);
@@ -610,7 +610,7 @@ child_add(struct smtpd *env, pid_t pid, int type, int title)
 	return (child);
 }
 
-void
+static void
 child_del(struct smtpd *env, pid_t pid)
 {
 	struct child	*p;
@@ -624,143 +624,13 @@ child_del(struct smtpd *env, pid_t pid)
 	free(p);
 }
 
-struct child *
+static struct child *
 child_lookup(struct smtpd *env, pid_t pid)
 {
 	struct child	 key;
 
 	key.pid = pid;
 	return SPLAY_FIND(childtree, &env->children, &key);
-}
-
-int
-setup_spool(uid_t uid, gid_t gid)
-{
-	unsigned int	 n;
-	char		*paths[] = { PATH_INCOMING, PATH_ENQUEUE, PATH_QUEUE,
-				     PATH_RUNQUEUE, PATH_PURGE,
-				     PATH_OFFLINE, PATH_BOUNCE };
-	char		 pathname[MAXPATHLEN];
-	struct stat	 sb;
-	int		 ret;
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s", PATH_SPOOL))
-		fatal("snprintf");
-
-	if (stat(pathname, &sb) == -1) {
-		if (errno != ENOENT) {
-			warn("stat: %s", pathname);
-			return 0;
-		}
-
-		if (mkdir(pathname, 0711) == -1) {
-			warn("mkdir: %s", pathname);
-			return 0;
-		}
-
-		if (chown(pathname, 0, 0) == -1) {
-			warn("chown: %s", pathname);
-			return 0;
-		}
-
-		if (stat(pathname, &sb) == -1)
-			err(1, "stat: %s", pathname);
-	}
-
-	/* check if it's a directory */
-	if (!S_ISDIR(sb.st_mode)) {
-		warnx("%s is not a directory", pathname);
-		return 0;
-	}
-
-	/* check that it is owned by uid/gid */
-	if (sb.st_uid != 0 || sb.st_gid != 0) {
-		warnx("%s must be owned by root:wheel", pathname);
-		return 0;
-	}
-
-	/* check permission */
-	if ((sb.st_mode & (S_IRUSR|S_IWUSR|S_IXUSR)) != (S_IRUSR|S_IWUSR|S_IXUSR) ||
-	    (sb.st_mode & (S_IRGRP|S_IWGRP|S_IXGRP)) != S_IXGRP ||
-	    (sb.st_mode & (S_IROTH|S_IWOTH|S_IXOTH)) != S_IXOTH) {
-		warnx("%s must be rwx--x--x (0711)", pathname);
-		return 0;
-	}
-
-	ret = 1;
-	for (n = 0; n < nitems(paths); n++) {
-		mode_t	mode;
-		uid_t	owner;
-		gid_t	group;
-
-		if (!strcmp(paths[n], PATH_OFFLINE)) {
-			mode = 01777;
-			owner = 0;
-			group = 0;
-		} else {
-			mode = 0700;
-			owner = uid;
-			group = gid;
-		}
-
-		if (! bsnprintf(pathname, sizeof(pathname), "%s%s", PATH_SPOOL,
-			paths[n]))
-			fatal("snprintf");
-
-		if (stat(pathname, &sb) == -1) {
-			if (errno != ENOENT) {
-				warn("stat: %s", pathname);
-				ret = 0;
-				continue;
-			}
-
-			/* chmod is deffered to avoid umask effect */
-			if (mkdir(pathname, 0) == -1) {
-				ret = 0;
-				warn("mkdir: %s", pathname);
-			}
-
-			if (chown(pathname, owner, group) == -1) {
-				ret = 0;
-				warn("chown: %s", pathname);
-			}
-
-			if (chmod(pathname, mode) == -1) {
-				ret = 0;
-				warn("chmod: %s", pathname);
-			}
-
-			if (stat(pathname, &sb) == -1)
-				err(1, "stat: %s", pathname);
-		}
-
-		/* check if it's a directory */
-		if (!S_ISDIR(sb.st_mode)) {
-			ret = 0;
-			warnx("%s is not a directory", pathname);
-		}
-
-		/* check that it is owned by owner/group */
-		if (sb.st_uid != owner) {
-			ret = 0;
-			warnx("%s is not owned by uid %d", pathname, owner);
-		}
-		if (sb.st_gid != group) {
-			ret = 0;
-			warnx("%s is not owned by gid %d", pathname, group);
-		}
-
-		/* check permission */
-		if ((sb.st_mode & 07777) != mode) {
-			char mode_str[12];
-
-			ret = 0;
-			strmode(mode, mode_str);
-			mode_str[10] = '\0';
-			warnx("%s must be %s (%o)", pathname, mode_str + 1, mode);
-		}
-	}
-	return ret;
 }
 
 void
@@ -789,7 +659,7 @@ imsg_compose_event(struct imsgev *iev, u_int16_t type, u_int32_t peerid,
 	imsg_event_add(iev);
 }
 
-void
+static void
 forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
     struct deliver *deliver)
 {
@@ -991,7 +861,7 @@ forkmda(struct smtpd *env, struct imsgev *iev, u_int32_t id,
 #undef error
 #undef error2
 
-int
+static int
 parent_enqueue_offline(struct smtpd *env, char *runner_path)
 {
 	char		 path[MAXPATHLEN];
@@ -1101,7 +971,7 @@ parent_enqueue_offline(struct smtpd *env, char *runner_path)
 	return (1);
 }
 
-int
+static int
 parent_forward_open(char *username)
 {
 	struct passwd *pw;
