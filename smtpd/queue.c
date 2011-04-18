@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.94 2010/11/28 15:32:00 gilles Exp $	*/
+/*	$OpenBSD: queue.c,v 1.102 2011/04/17 13:36:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -36,25 +36,18 @@
 #include "smtpd.h"
 #include "log.h"
 
-void		queue_imsg(struct smtpd *, struct imsgev *, struct imsg *);
-void		queue_pass_to_runner(struct smtpd *, struct imsgev *, struct imsg *);
-__dead void	queue_shutdown(void);
-void		queue_sig_handler(int, short, void *);
-void		queue_purge(char *);
+static void queue_imsg(struct smtpd *, struct imsgev *, struct imsg *);
+static void queue_pass_to_runner(struct smtpd *, struct imsgev *, struct imsg *);
+static void queue_shutdown(void);
+static void queue_sig_handler(int, short, void *);
+static void queue_purge(struct smtpd *, enum queue_kind, char *);
 
-int		queue_create_layout_message(char *, char *);
-void		queue_delete_layout_message(char *, char *);
-int		queue_record_layout_envelope(char *, struct message *);
-int		queue_remove_layout_envelope(char *, struct message *);
-int		queue_commit_layout_message(char *, struct message *);
-int		queue_open_layout_messagefile(char *, struct message *);
-
-void
+static void
 queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	struct submit_status	 ss;
-	struct message		*m;
-	struct batch		*b;
+	struct envelope		*m;
+	struct ramqueue_batch	*rq_batch;
 	int			 fd, ret;
 
 	if (iev->proc == PROC_SMTP) {
@@ -64,11 +57,11 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 		case IMSG_QUEUE_CREATE_MESSAGE:
 			ss.id = m->session_id;
 			ss.code = 250;
-			bzero(ss.u.msgid, sizeof ss.u.msgid);
+			ss.u.msgid = 0;
 			if (m->flags & F_MESSAGE_ENQUEUED)
-				ret = enqueue_create_layout(ss.u.msgid);
+				ret = queue_message_create(env, Q_ENQUEUE, &ss.u.msgid);
 			else
-				ret = queue_create_incoming_layout(ss.u.msgid);
+				ret = queue_message_create(env, Q_INCOMING, &ss.u.msgid);
 			if (ret == 0)
 				ss.code = 421;
 			imsg_compose_event(iev, IMSG_QUEUE_CREATE_MESSAGE, 0, 0, -1,
@@ -77,34 +70,38 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_QUEUE_REMOVE_MESSAGE:
 			if (m->flags & F_MESSAGE_ENQUEUED)
-				enqueue_delete_message(m->message_id);
+				queue_message_purge(env, Q_ENQUEUE, evpid_to_msgid(m->evpid));
 			else
-				queue_delete_incoming_message(m->message_id);
+				queue_message_purge(env, Q_INCOMING, evpid_to_msgid(m->evpid));
 			return;
 
 		case IMSG_QUEUE_COMMIT_MESSAGE:
 			ss.id = m->session_id;
 			if (m->flags & F_MESSAGE_ENQUEUED) {
-				if (enqueue_commit_message(m))
+				if (queue_message_commit(env, Q_ENQUEUE, evpid_to_msgid(m->evpid)))
 					env->stats->queue.inserts_local++;
 				else
 					ss.code = 421;
 			} else {
-				if (queue_commit_incoming_message(m))
+				if (queue_message_commit(env, Q_INCOMING, evpid_to_msgid(m->evpid)))
 					env->stats->queue.inserts_remote++;
 				else
 					ss.code = 421;
 			}
 			imsg_compose_event(iev, IMSG_QUEUE_COMMIT_MESSAGE, 0, 0, -1,
 			    &ss, sizeof ss);
+
+			if (ss.code != 421)
+				queue_pass_to_runner(env, iev, imsg);
+
 			return;
 
 		case IMSG_QUEUE_MESSAGE_FILE:
 			ss.id = m->session_id;
 			if (m->flags & F_MESSAGE_ENQUEUED)
-				fd = enqueue_open_messagefile(m);
+				fd = queue_message_fd_rw(env, Q_ENQUEUE, evpid_to_msgid(m->evpid));
 			else
-				fd = queue_open_incoming_message_file(m);
+				fd = queue_message_fd_rw(env, Q_INCOMING, evpid_to_msgid(m->evpid));
 			if (fd == -1)
 				ss.code = 421;
 			imsg_compose_event(iev, IMSG_QUEUE_MESSAGE_FILE, 0, 0, fd,
@@ -132,9 +129,9 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 
 			/* Write to disk */
 			if (m->flags & F_MESSAGE_ENQUEUED)
-				ret = enqueue_record_envelope(m);
+				ret = queue_envelope_create(env, Q_ENQUEUE, m);
 			else
-				ret = queue_record_incoming_envelope(m);
+				ret = queue_envelope_create(env, Q_INCOMING, m);
 
 			if (ret == 0) {
 				ss.code = 421;
@@ -165,10 +162,10 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_MTA) {
 		switch (imsg->hdr.type) {
 		case IMSG_QUEUE_MESSAGE_FD:
-			b = imsg->data;
-			fd = queue_open_message_file(b->message_id);
+			rq_batch = imsg->data;
+			fd = queue_message_fd_r(env, Q_QUEUE, rq_batch->msgid);
 			imsg_compose_event(iev,  IMSG_QUEUE_MESSAGE_FD, 0, 0,
-			    fd, b, sizeof *b);
+			    fd, rq_batch, sizeof *rq_batch);
 			return;
 
 		case IMSG_QUEUE_MESSAGE_UPDATE:
@@ -216,7 +213,7 @@ queue_imsg(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	fatalx("queue_imsg: unexpected imsg");
 }
 
-void
+static void
 queue_pass_to_runner(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 {
 	imsg_compose_event(env->sc_ievs[PROC_RUNNER], imsg->hdr.type,
@@ -224,7 +221,7 @@ queue_pass_to_runner(struct smtpd *env, struct imsgev *iev, struct imsg *imsg)
 	    imsg->hdr.len - sizeof imsg->hdr);
 }
 
-void
+static void
 queue_sig_handler(int sig, short event, void *p)
 {
 	switch (sig) {
@@ -237,7 +234,7 @@ queue_sig_handler(int sig, short event, void *p)
 	}
 }
 
-void
+static void
 queue_shutdown(void)
 {
 	log_info("queue handler exiting");
@@ -311,8 +308,8 @@ queue(struct smtpd *env)
 	config_pipes(env, peers, nitems(peers));
 	config_peers(env, peers, nitems(peers));
 
-	queue_purge(PATH_INCOMING);
-	queue_purge(PATH_ENQUEUE);
+	queue_purge(env, Q_INCOMING, PATH_INCOMING);
+	queue_purge(env, Q_ENQUEUE, PATH_ENQUEUE);
 
 	if (event_dispatch() <  0)
 		fatal("event_dispatch");
@@ -321,42 +318,39 @@ queue(struct smtpd *env)
 	return (0);
 }
 
-struct batch *
-batch_by_id(struct smtpd *env, u_int64_t id)
-{
-	struct batch lookup;
-
-	lookup.id = id;
-	return SPLAY_FIND(batchtree, &env->batch_queue, &lookup);
-}
-
-
-void
-queue_purge(char *queuepath)
+static void
+queue_purge(struct smtpd *env, enum queue_kind qkind, char *queuepath)
 {
 	char		 path[MAXPATHLEN];
 	struct qwalk	*q;
 
 	q = qwalk_new(queuepath);
 
-	while (qwalk(q, path))
-		queue_delete_layout_message(queuepath, basename(path));
+	while (qwalk(q, path)) {
+		u_int32_t msgid;
+
+		if ((msgid = filename_to_msgid(basename(path))) == 0) {
+			log_warnx("queue_purge: invalid evpid");
+			continue;
+		}
+		queue_message_purge(env, qkind, msgid);
+	}
 
 	qwalk_close(q);
 }
 
 void
-queue_submit_envelope(struct smtpd *env, struct message *message)
+queue_submit_envelope(struct smtpd *env, struct envelope *m)
 {
 	imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 	    IMSG_QUEUE_SUBMIT_ENVELOPE, 0, 0, -1,
-	    message, sizeof(struct message));
+	    m, sizeof(*m));
 }
 
 void
-queue_commit_envelopes(struct smtpd *env, struct message *message)
+queue_commit_envelopes(struct smtpd *env, struct envelope *m)
 {
 	imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 	    IMSG_QUEUE_COMMIT_ENVELOPES, 0, 0, -1,
-	    message, sizeof(struct message));
+	    m, sizeof(*m));
 }

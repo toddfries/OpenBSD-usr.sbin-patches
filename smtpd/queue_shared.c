@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_shared.c,v 1.36 2011/03/21 09:21:57 gilles Exp $	*/
+/*	$OpenBSD: queue_shared.c,v 1.46 2011/04/17 11:39:22 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -55,539 +55,61 @@ struct qwalk {
 int		walk_simple(struct qwalk *, char *);
 int		walk_queue(struct qwalk *, char *);
 
-void		display_envelope(struct message *, int);
+void		display_envelope(struct envelope *, int);
 void		getflag(u_int *, int, char *, char *, size_t);
 
 int
-queue_create_layout_message(char *queuepath, char *message_id)
+bounce_record_message(struct smtpd *env, struct envelope *m, struct envelope *bounce)
 {
-	char rootdir[MAXPATHLEN];
-	char evpdir[MAXPATHLEN];
+	u_int32_t msgid;
 
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%d.XXXXXXXXXXXXXXXX",
-		queuepath, time(NULL)))
-		fatalx("queue_create_layout_message: snprintf");
-
-	if (mkdtemp(rootdir) == NULL) {
-		if (errno == ENOSPC) {
-			log_debug("FAILED WITH ENOSPC");
-			bzero(message_id, MAX_ID_SIZE);
-			return 0;
-		}
-		fatal("queue_create_layout_message: mkdtemp");
-	}
-
-	if (strlcpy(message_id, rootdir + strlen(queuepath) + 1, MAX_ID_SIZE)
-	    >= MAX_ID_SIZE)
-		fatalx("queue_create_layout_message: truncation");
-
-	if (! bsnprintf(evpdir, sizeof(evpdir), "%s%s", rootdir,
-		PATH_ENVELOPES))
-		fatalx("queue_create_layout_message: snprintf");
-
-	if (mkdir(evpdir, 0700) == -1) {
-		if (errno == ENOSPC) {
-			log_debug("FAILED WITH ENOSPC");
-			rmdir(rootdir);
-			bzero(message_id, MAX_ID_SIZE);
-			return 0;
-		}
-		fatal("queue_create_layout_message: mkdir");
-	}
-	return 1;
-}
-
-void
-queue_delete_layout_message(char *queuepath, char *msgid)
-{
-	char rootdir[MAXPATHLEN];
-	char purgedir[MAXPATHLEN];
-
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", queuepath, msgid))
-		fatalx("snprintf");
-
-	if (! bsnprintf(purgedir, sizeof(purgedir), "%s/%s", PATH_PURGE, msgid))
-		fatalx("snprintf");
-
-	if (rename(rootdir, purgedir) == -1) {
-		log_debug("ID: %s", msgid);
-		log_debug("PATH: %s", rootdir);
-		log_debug("PURGE: %s", purgedir);
-		fatal("queue_delete_layout_message: rename");
-	}
-}
-
-int
-queue_record_layout_envelope(char *queuepath, struct message *message)
-{
-	char evpname[MAXPATHLEN];
-	FILE *fp;
-	int fd;
-
-	fp = NULL;
-
-again:
-	if (! bsnprintf(evpname, sizeof(evpname), "%s/%s%s/%s.%qu", queuepath,
-		message->message_id, PATH_ENVELOPES, message->message_id,
-		(u_int64_t)arc4random()))
-		fatalx("queue_record_incoming_envelope: snprintf");
-
-	fd = open(evpname, O_WRONLY|O_CREAT|O_EXCL, 0600);
-	if (fd == -1) {
-		if (errno == EEXIST)
-			goto again;
-		if (errno == ENOSPC || errno == ENFILE)
-			goto tempfail;
-		fatal("queue_record_incoming_envelope: open");
-	}
-
-	fp = fdopen(fd, "w");
-	if (fp == NULL)
-		fatal("queue_record_incoming_envelope: fdopen");
-
-	message->creation = time(NULL);
-	if (strlcpy(message->message_uid, strrchr(evpname, '/') + 1,
-	    sizeof(message->message_uid)) >= sizeof(message->message_uid))
-		fatalx("queue_record_incoming_envelope: truncation");
-
-	if (fwrite(message, sizeof (struct message), 1, fp) != 1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_record_incoming_envelope: write");
-	}
-
-	if (! safe_fclose(fp)) {
-		fp = NULL;
-		fd = -1;
-		goto tempfail;
-	}
-
-	return 1;
-
-tempfail:
-	unlink(evpname);
-	if (fp)
-		fclose(fp);
-	else if (fd != -1)
-		close(fd);
-	message->creation = 0;
-	message->message_uid[0] = '\0';
-
-	return 0;
-}
-
-int
-queue_remove_layout_envelope(char *queuepath, struct message *message)
-{
-	char pathname[MAXPATHLEN];
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%s%s/%s", queuepath,
-		message->message_id, PATH_ENVELOPES, message->message_uid))
-		fatal("queue_remove_incoming_envelope: snprintf");
-
-	if (unlink(pathname) == -1)
-		fatal("queue_remove_incoming_envelope: unlink");
-
-	return 1;
-}
-
-int
-queue_commit_layout_message(char *queuepath, struct message *messagep)
-{
-	char rootdir[MAXPATHLEN];
-	char queuedir[MAXPATHLEN];
-	
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%s", queuepath,
-		messagep->message_id))
-		fatal("queue_commit_message_incoming: snprintf");
-
-	if (! bsnprintf(queuedir, sizeof(queuedir), "%s/%d", PATH_QUEUE,
-		queue_hash(messagep->message_id)))
-		fatal("queue_commit_message_incoming: snprintf");
-
-	if (mkdir(queuedir, 0700) == -1) {
-		if (errno == ENOSPC)
-			return 0;
-		if (errno != EEXIST)
-			fatal("queue_commit_message_incoming: mkdir");
-	}
-
-	if (strlcat(queuedir, "/", sizeof(queuedir)) >= sizeof(queuedir) ||
-	    strlcat(queuedir, messagep->message_id, sizeof(queuedir)) >=
-	    sizeof(queuedir))
-		fatalx("queue_commit_incoming_message: truncation");
-
-	if (rename(rootdir, queuedir) == -1) {
-		if (errno == ENOSPC)
-			return 0;
-		fatal("queue_commit_message_incoming: rename");
-	}
-
-	return 1;
-}
-
-int
-queue_open_layout_messagefile(char *queuepath, struct message *messagep)
-{
-	char pathname[MAXPATHLEN];
-	
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%s/message", queuepath,
-		messagep->message_id))
-		fatal("queue_open_incoming_message_file: snprintf");
-
-	return open(pathname, O_CREAT|O_EXCL|O_RDWR, 0600);
-}
-
-int
-enqueue_create_layout(char *msgid)
-{
-	return queue_create_layout_message(PATH_ENQUEUE, msgid);
-}
-
-void
-enqueue_delete_message(char *msgid)
-{
-	queue_delete_layout_message(PATH_ENQUEUE, msgid);
-}
-
-int
-enqueue_record_envelope(struct message *message)
-{
-	return queue_record_layout_envelope(PATH_ENQUEUE, message);
-}
-
-int
-enqueue_remove_envelope(struct message *message)
-{
-	return queue_remove_layout_envelope(PATH_ENQUEUE, message);
-}
-
-int
-enqueue_commit_message(struct message *message)
-{
-	return queue_commit_layout_message(PATH_ENQUEUE, message);
-}
-
-int
-enqueue_open_messagefile(struct message *message)
-{
-	return queue_open_layout_messagefile(PATH_ENQUEUE, message);
-}
-
-int
-bounce_create_layout(char *msgid, struct message *message)
-{
-	char	msgpath[MAXPATHLEN];
-	char	lnkpath[MAXPATHLEN];
-
-	if (! queue_create_layout_message(PATH_BOUNCE, msgid))
-		return 0;
-
-	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/%d/%s/message",
-		PATH_QUEUE, queue_hash(message->message_id),
-		message->message_id))
-		return 0;
-
-	if (! bsnprintf(lnkpath, sizeof(lnkpath), "%s/%s/message",
-		PATH_BOUNCE, msgid))
-		return 0;
-
-	if (link(msgpath, lnkpath) == -1)
-		fatal("link");
-
-	return 1;
-}
-
-void
-bounce_delete_message(char *msgid)
-{
-	queue_delete_layout_message(PATH_BOUNCE, msgid);
-}
-
-int
-bounce_record_envelope(struct message *message)
-{
-	message->lasttry = 0;
-	message->retry = 0;
-	return queue_record_layout_envelope(PATH_BOUNCE, message);
-}
-
-int
-bounce_remove_envelope(struct message *message)
-{
-	return queue_remove_layout_envelope(PATH_BOUNCE, message);
-}
-
-int
-bounce_commit_message(struct message *message)
-{
-	return queue_commit_layout_message(PATH_BOUNCE, message);
-}
-
-int
-bounce_record_message(struct message *messagep)
-{
-	char	msgid[MAX_ID_SIZE];
-	struct message mbounce;
-
-	if (messagep->type == T_BOUNCE_MESSAGE) {
+	if (m->type == T_BOUNCE_MESSAGE) {
 		log_debug("mailer daemons loop detected !");
 		return 0;
 	}
 
-	mbounce = *messagep;
-	mbounce.type = T_BOUNCE_MESSAGE;
-	mbounce.status &= ~S_MESSAGE_PERMFAILURE;
+	*bounce = *m;
+	 bounce->type = T_BOUNCE_MESSAGE;
+	 bounce->status &= ~S_MESSAGE_PERMFAILURE;
 
-	if (! bounce_create_layout(msgid, messagep))
+	msgid = evpid_to_msgid(m->evpid);
+	if (! queue_message_create(env, Q_BOUNCE, &msgid))
 		return 0;
 
-	strlcpy(mbounce.message_id, msgid, sizeof(mbounce.message_id));
-	if (! bounce_record_envelope(&mbounce))
+	bounce->evpid = msgid_to_evpid(msgid);
+	if (! queue_envelope_create(env, Q_BOUNCE, bounce))
 		return 0;
 
-	return bounce_commit_message(&mbounce);
-}
-
-int
-queue_create_incoming_layout(char *msgid)
-{
-	return queue_create_layout_message(PATH_INCOMING, msgid);
+	return queue_message_commit(env, Q_BOUNCE, msgid);
 }
 
 void
-queue_delete_incoming_message(char *msgid)
+queue_message_update(struct smtpd *env, struct envelope *m)
 {
-	queue_delete_layout_message(PATH_INCOMING, msgid);
-}
+	m->flags &= ~F_MESSAGE_PROCESSING;
+	m->status &= ~(S_MESSAGE_ACCEPTED|S_MESSAGE_REJECTED);
+	m->batch_id = 0;
+	m->retry++;
 
-int
-queue_record_incoming_envelope(struct message *message)
-{
-	return queue_record_layout_envelope(PATH_INCOMING, message);
-}
+	if (m->status & S_MESSAGE_PERMFAILURE) {
+		if (m->type != T_BOUNCE_MESSAGE &&
+		    m->sender.user[0] != '\0') {
+			struct envelope bounce;
 
-int
-queue_remove_incoming_envelope(struct message *message)
-{
-	return queue_remove_layout_envelope(PATH_INCOMING, message);
-}
-
-int
-queue_commit_incoming_message(struct message *message)
-{
-	return queue_commit_layout_message(PATH_INCOMING, message);
-}
-
-int
-queue_open_incoming_message_file(struct message *message)
-{
-	return queue_open_layout_messagefile(PATH_INCOMING, message);
-}
-
-int
-queue_open_message_file(char *msgid)
-{
-	int fd;
-	char pathname[MAXPATHLEN];
-	u_int16_t hval;
-
-	hval = queue_hash(msgid);
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s/message",
-		PATH_QUEUE, hval, msgid))
-		fatal("queue_open_message_file: snprintf");
-
-	if ((fd = open(pathname, O_RDONLY)) == -1)
-		fatal("queue_open_message_file: open");
-
-	return fd;
-}
-
-void
-queue_delete_message(char *msgid)
-{
-	char rootdir[MAXPATHLEN];
-	char evpdir[MAXPATHLEN];
-	char msgpath[MAXPATHLEN];
-	u_int16_t hval;
-
-	hval = queue_hash(msgid);
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%d/%s", PATH_QUEUE,
-		hval, msgid))
-		fatal("queue_delete_message: snprintf");
-
-	if (! bsnprintf(evpdir, sizeof(evpdir), "%s%s", rootdir,
-		PATH_ENVELOPES))
-		fatal("queue_delete_message: snprintf");
-	
-	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/message", rootdir))
-		fatal("queue_delete_message: snprintf");
-
-	if (unlink(msgpath) == -1)
-		fatal("queue_delete_message: unlink");
-
-	if (rmdir(evpdir) == -1) {
-		/* It is ok to fail rmdir with ENOENT here
-		 * because upon successful delivery of the
-		 * last envelope, we remove the directory.
-		 */
-		if (errno != ENOENT)
-			fatal("queue_delete_message: rmdir");
-	}
-
-	if (rmdir(rootdir) == -1)
-		fatal("#2 queue_delete_message: rmdir");
-
-	if (! bsnprintf(rootdir, sizeof(rootdir), "%s/%d", PATH_QUEUE, hval))
-		fatal("queue_delete_message: snprintf");
-
-	rmdir(rootdir);
-
-	return;
-}
-
-void
-queue_message_update(struct message *messagep)
-{
-	messagep->flags &= ~F_MESSAGE_PROCESSING;
-	messagep->status &= ~(S_MESSAGE_ACCEPTED|S_MESSAGE_REJECTED);
-	messagep->batch_id = 0;
-	messagep->retry++;
-
-	if (messagep->status & S_MESSAGE_PERMFAILURE) {
-		if (messagep->type != T_BOUNCE_MESSAGE &&
-		    messagep->sender.user[0] != '\0')
-			bounce_record_message(messagep);
-		queue_remove_envelope(messagep);
+			bounce_record_message(env, m, &bounce);
+		}
+		queue_envelope_delete(env, Q_QUEUE, m);
 		return;
 	}
 
-	if (messagep->status & S_MESSAGE_TEMPFAILURE) {
-		messagep->status &= ~S_MESSAGE_TEMPFAILURE;
-		queue_update_envelope(messagep);
+	if (m->status & S_MESSAGE_TEMPFAILURE) {
+		m->status &= ~S_MESSAGE_TEMPFAILURE;
+		queue_envelope_update(env, Q_QUEUE, m);
 		return;
 	}
 
 	/* no error, remove envelope */
-	queue_remove_envelope(messagep);
-}
-
-int
-queue_remove_envelope(struct message *messagep)
-{
-	char pathname[MAXPATHLEN];
-	u_int16_t hval;
-
-	hval = queue_hash(messagep->message_id);
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s%s/%s",
-		PATH_QUEUE, hval, messagep->message_id, PATH_ENVELOPES,
-		messagep->message_uid))
-		fatal("queue_remove_envelope: snprintf");
-
-	if (unlink(pathname) == -1)
-		fatal("queue_remove_envelope: unlink");
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s%s", PATH_QUEUE,
-		hval, messagep->message_id, PATH_ENVELOPES))
-		fatal("queue_remove_envelope: snprintf");
-
-	if (rmdir(pathname) != -1)
-		queue_delete_message(messagep->message_id);
-
-	return 1;
-}
-
-int
-queue_update_envelope(struct message *messagep)
-{
-	char temp[MAXPATHLEN];
-	char dest[MAXPATHLEN];
-	FILE *fp;
-	u_int64_t batch_id;
-
-	batch_id = messagep->batch_id;
-	messagep->batch_id = 0;
-
-	if (! bsnprintf(temp, sizeof(temp), "%s/envelope.tmp", PATH_QUEUE))
-		fatalx("queue_update_envelope");
-
-	if (! bsnprintf(dest, sizeof(dest), "%s/%d/%s%s/%s", PATH_QUEUE,
-		queue_hash(messagep->message_id), messagep->message_id,
-		PATH_ENVELOPES, messagep->message_uid))
-		fatal("queue_update_envelope: snprintf");
-
-	fp = fopen(temp, "w");
-	if (fp == NULL) {
-		if (errno == ENOSPC || errno == ENFILE)
-			goto tempfail;
-		fatal("queue_update_envelope: open");
-	}
-	if (fwrite(messagep, sizeof(struct message), 1, fp) != 1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_update_envelope: fwrite");
-	}
-	if (! safe_fclose(fp))
-		goto tempfail;
-
-	if (rename(temp, dest) == -1) {
-		if (errno == ENOSPC)
-			goto tempfail;
-		fatal("queue_update_envelope: rename");
-	}
-
-	messagep->batch_id = batch_id;
-	return 1;
-
-tempfail:
-	if (unlink(temp) == -1)
-		fatal("queue_update_envelope: unlink");
-	if (fp)
-		fclose(fp);
-
-	messagep->batch_id = batch_id;
-	return 0;
-}
-
-int
-queue_load_envelope(struct message *messagep, char *evpid)
-{
-	char pathname[MAXPATHLEN];
-	char msgid[MAX_ID_SIZE];
-	FILE *fp;
-
-	if (strlcpy(msgid, evpid, sizeof(msgid)) >= sizeof(msgid))
-		fatalx("queue_load_envelope: truncation");
-	*strrchr(msgid, '.') = '\0';
-
-	if (! bsnprintf(pathname, sizeof(pathname), "%s/%d/%s%s/%s", PATH_QUEUE,
-		queue_hash(msgid), msgid, PATH_ENVELOPES, evpid))
-		fatalx("queue_load_envelope: snprintf");
-
-	fp = fopen(pathname, "r");
-	if (fp == NULL) {
-		if (errno == ENOENT || errno == ENFILE)
-			return 0;
-		fatal("queue_load_envelope: fopen");
-	}
-	if (fread(messagep, sizeof(struct message), 1, fp) != 1)
-		fatal("queue_load_envelope: fread");
-	fclose(fp);
-
-	return 1;
-}
-
-u_int16_t
-queue_hash(char *msgid)
-{
-	u_int16_t	h;
-
-	for (h = 5381; *msgid; msgid++)
-		h = ((h << 5) + h) + *msgid;
-
-	return (h % DIRHASH_BUCKETS);
+	queue_envelope_delete(env, Q_QUEUE, m);
 }
 
 struct qwalk *
@@ -689,23 +211,28 @@ walk_simple(struct qwalk *q, char *fname)
 int
 walk_queue(struct qwalk *q, char *fname)
 {
-	const char	*errstr;
+	char	*ep;
 
 	switch (q->level) {
 	case 0:
 		if (strcmp(fname, "envelope.tmp") == 0)
 			return (QWALK_AGAIN);
-		q->bucket = strtonum(fname, 0, DIRHASH_BUCKETS - 1, &errstr);
-		if (errstr) {
+
+		q->bucket = strtoul(fname, &ep, 16);
+		if (fname[0] == '\0' || *ep != '\0') {
 			log_warnx("walk_queue: invalid bucket: %s", fname);
 			return (QWALK_AGAIN);
 		}
-		if (! bsnprintf(q->path, sizeof(q->path), "%s/%d", PATH_QUEUE,
+		if (errno == ERANGE || q->bucket >= DIRHASH_BUCKETS - 1) {
+			log_warnx("walk_queue: invalid bucket: %s", fname);
+			return (QWALK_AGAIN);
+		}
+		if (! bsnprintf(q->path, sizeof(q->path), "%s/%04x", PATH_QUEUE,
 			q->bucket))
 			fatalx("walk_queue: snprintf");
 		return (QWALK_RECURSE);
 	case 1:
-		if (! bsnprintf(q->path, sizeof(q->path), "%s/%d/%s%s",
+		if (! bsnprintf(q->path, sizeof(q->path), "%s/%04x/%s%s",
 			PATH_QUEUE, q->bucket, fname, PATH_ENVELOPES))
 			fatalx("walk_queue: snprintf");
 		return (QWALK_RECURSE);
@@ -720,7 +247,7 @@ void
 show_queue(char *queuepath, int flags)
 {
 	char		 path[MAXPATHLEN];
-	struct message	 message;
+	struct envelope	 message;
 	struct qwalk	*q;
 	FILE		*fp;
 
@@ -740,7 +267,7 @@ show_queue(char *queuepath, int flags)
 		}
 
 		errno = 0;
-		if (fread(&message, sizeof(struct message), 1, fp) != 1)
+		if (fread(&message, sizeof(message), 1, fp) != 1)
 			err(1, "%s", path);
 		fclose(fp);
 
@@ -751,42 +278,42 @@ show_queue(char *queuepath, int flags)
 }
 
 void
-display_envelope(struct message *envelope, int flags)
+display_envelope(struct envelope *m, int flags)
 {
 	char	 status[128];
 
 	status[0] = '\0';
 
-	getflag(&envelope->status, S_MESSAGE_TEMPFAILURE, "TEMPFAIL",
+	getflag(&m->status, S_MESSAGE_TEMPFAILURE, "TEMPFAIL",
 	    status, sizeof(status));
 
-	if (envelope->status)
-		errx(1, "%s: unexpected status 0x%04x", envelope->message_uid,
-		    envelope->status);
+	if (m->status)
+		errx(1, "%016llx: unexpected status 0x%04x", m->evpid,
+		    m->status);
 
-	getflag(&envelope->flags, F_MESSAGE_BOUNCE, "BOUNCE",
+	getflag(&m->flags, F_MESSAGE_BOUNCE, "BOUNCE",
 	    status, sizeof(status));
-	getflag(&envelope->flags, F_MESSAGE_AUTHENTICATED, "AUTH",
+	getflag(&m->flags, F_MESSAGE_AUTHENTICATED, "AUTH",
 	    status, sizeof(status));
-	getflag(&envelope->flags, F_MESSAGE_PROCESSING, "PROCESSING",
+	getflag(&m->flags, F_MESSAGE_PROCESSING, "PROCESSING",
 	    status, sizeof(status));
-	getflag(&envelope->flags, F_MESSAGE_SCHEDULED, "SCHEDULED",
+	getflag(&m->flags, F_MESSAGE_SCHEDULED, "SCHEDULED",
 	    status, sizeof(status));
-	getflag(&envelope->flags, F_MESSAGE_ENQUEUED, "ENQUEUED",
+	getflag(&m->flags, F_MESSAGE_ENQUEUED, "ENQUEUED",
 	    status, sizeof(status));
-	getflag(&envelope->flags, F_MESSAGE_FORCESCHEDULE, "SCHEDULED_MANUAL",
+	getflag(&m->flags, F_MESSAGE_FORCESCHEDULE, "SCHEDULED_MANUAL",
 	    status, sizeof(status));
 
-	if (envelope->flags)
-		errx(1, "%s: unexpected flags 0x%04x", envelope->message_uid,
-		    envelope->flags);
+	if (m->flags)
+		errx(1, "%016llx: unexpected flags 0x%04x", m->evpid,
+		    m->flags);
 	
 	if (status[0])
 		status[strlen(status) - 1] = '\0';
 	else
 		strlcpy(status, "-", sizeof(status));
 
-	switch (envelope->type) {
+	switch (m->type) {
 	case T_MDA_MESSAGE:
 		printf("MDA");
 		break;
@@ -800,17 +327,17 @@ display_envelope(struct message *envelope, int flags)
 		printf("UNKNOWN");
 	}
 	
-	printf("|%s|%s|%s@%s|%s@%s|%d|%d|%u",
-	    envelope->message_uid,
+	printf("|%016llx|%s|%s@%s|%s@%s|%d|%d|%u",
+	    m->evpid,
 	    status,
-	    envelope->sender.user, envelope->sender.domain,
-	    envelope->recipient.user, envelope->recipient.domain,
-	    envelope->lasttry,
-	    envelope->expire,
-	    envelope->retry);
+	    m->sender.user, m->sender.domain,
+	    m->recipient.user, m->recipient.domain,
+	    m->lasttry,
+	    m->expire,
+	    m->retry);
 	
-	if (envelope->session_errorline[0] != '\0')
-		printf("|%s", envelope->session_errorline);
+	if (m->session_errorline[0] != '\0')
+		printf("|%s", m->session_errorline);
 
 	printf("\n");
 }

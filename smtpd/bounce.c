@@ -1,4 +1,4 @@
-/*	$OpenBSD: bounce.c,v 1.26 2011/03/26 10:59:59 gilles Exp $	*/
+/*	$OpenBSD: bounce.c,v 1.30 2011/04/17 11:39:22 gilles Exp $	*/
 
 /*
  * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
@@ -40,22 +40,25 @@
 
 struct client_ctx {
 	struct event		 ev;
-	struct message		 m;
+	struct envelope		 m;
 	struct smtp_client	*pcb;
 	struct smtpd		*env;
 	FILE			*msgfp;
 };
 
 int
-bounce_session(struct smtpd *env, int fd, struct message *messagep)
+bounce_session(struct smtpd *env, int fd, struct envelope *m)
 {
 	struct client_ctx	*cc = NULL;
 	int			 msgfd = -1;
 	char			*reason;
 	FILE			*msgfp = NULL;
+	u_int32_t		 msgid;
+
+	msgid = evpid_to_msgid(m->evpid);
 
 	/* get message content */
-	if ((msgfd = queue_open_message_file(messagep->message_id)) == -1)
+	if ((msgfd = queue_message_fd_r(env, Q_QUEUE, msgid)) == -1)
 		goto fail;
 	msgfp = fdopen(msgfd, "r");
 	if (msgfp == NULL)
@@ -66,16 +69,16 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 		goto fail;
 	cc->pcb = client_init(fd, msgfp, env->sc_hostname, 1);
 	cc->env = env;
-	cc->m = *messagep;
+	cc->m = *m;
 	cc->msgfp = msgfp;
 
 	client_ssl_optional(cc->pcb);
 	client_sender(cc->pcb, "");
-	client_rcpt(cc->pcb, NULL, "%s@%s", messagep->sender.user,
-	    messagep->sender.domain);
+	client_rcpt(cc->pcb, NULL, "%s@%s", m->sender.user,
+	    m->sender.domain);
 
 	/* Construct an appropriate reason line. */
-	reason = messagep->session_errorline;
+	reason = m->session_errorline;
 	if (strlen(reason) > 4 && (*reason == '1' || *reason == '6'))
 		reason += 4;
 	
@@ -99,9 +102,9 @@ bounce_session(struct smtpd *env, int fd, struct message *messagep)
 	    "Below is a copy of the original message:\n"
 	    "\n",
 	    env->sc_hostname,
-	    messagep->sender.user, messagep->sender.domain,
+	    m->sender.user, m->sender.domain,
 	    time_to_text(time(NULL)),
-	    messagep->recipient.user, messagep->recipient.domain,
+	    m->recipient.user, m->recipient.domain,
 	    reason);
 
 	/* setup event */
@@ -147,14 +150,14 @@ bounce_event(int fd, short event, void *p)
 
 out:
 	if (*ep == '2')
-		queue_remove_envelope(&cc->m);
+		queue_envelope_delete(cc->env, Q_QUEUE, &cc->m);
 	else {
 		if (*ep == '5' || *ep == '6')
 			cc->m.status = S_MESSAGE_PERMFAILURE;
 		else
 			cc->m.status = S_MESSAGE_TEMPFAILURE;
 		message_set_errormsg(&cc->m, "%s", ep);
-		queue_message_update(&cc->m);
+		queue_message_update(cc->env, &cc->m);
 	}
 
 	cc->env->stats->runner.active--;

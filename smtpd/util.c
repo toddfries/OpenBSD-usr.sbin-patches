@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.40 2011/03/29 20:43:51 eric Exp $	*/
+/*	$OpenBSD: util.c,v 1.44 2011/04/17 13:36:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -221,53 +221,6 @@ ss_to_text(struct sockaddr_storage *ss)
 	return (buf);
 }
 
-int
-valid_message_id(char *mid)
-{
-	u_int8_t cnt;
-
-	/* [0-9]{10}\.[a-zA-Z0-9]{16} */
-	for (cnt = 0; cnt < 10; ++cnt, ++mid)
-		if (! isdigit((int)*mid))
-			return 0;
-
-	if (*mid++ != '.')
-		return 0;
-
-	for (cnt = 0; cnt < 16; ++cnt, ++mid)
-		if (! isalnum((int)*mid))
-			return 0;
-
-	return (*mid == '\0');
-}
-
-int
-valid_message_uid(char *muid)
-{
-	u_int8_t cnt;
-
-	/* [0-9]{10}\.[a-zA-Z0-9]{16}\.[0-9]{0,} */
-	for (cnt = 0; cnt < 10; ++cnt, ++muid)
-		if (! isdigit((int)*muid))
-			return 0;
-
-	if (*muid++ != '.')
-		return 0;
-
-	for (cnt = 0; cnt < 16; ++cnt, ++muid)
-		if (! isalnum((int)*muid))
-			return 0;
-
-	if (*muid++ != '.')
-		return 0;
-
-	for (cnt = 0; *muid != '\0'; ++cnt, ++muid)
-		if (! isdigit((int)*muid))
-			return 0;
-
-	return (cnt != 0);
-}
-
 char *
 time_to_text(time_t when)
 {
@@ -392,16 +345,16 @@ lowercase(char *buf, char *s, size_t len)
 }
 
 void
-message_set_errormsg(struct message *messagep, char *fmt, ...)
+message_set_errormsg(struct envelope *m, char *fmt, ...)
 {
 	int ret;
 	va_list ap;
 
 	va_start(ap, fmt);
 
-	ret = vsnprintf(messagep->session_errorline, MAX_LINE_SIZE, fmt, ap);
+	ret = vsnprintf(m->session_errorline, MAX_LINE_SIZE, fmt, ap);
 	if (ret >= MAX_LINE_SIZE)
-		strlcpy(messagep->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
+		strlcpy(m->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
 
 	/* this should not happen */
 	if (ret == -1)
@@ -411,9 +364,9 @@ message_set_errormsg(struct message *messagep, char *fmt, ...)
 }
 
 char *
-message_get_errormsg(struct message *messagep)
+message_get_errormsg(struct envelope *m)
 {
-	return messagep->session_errorline;
+	return m->session_errorline;
 }
 
 void
@@ -572,4 +525,48 @@ log_sockaddr(struct sockaddr *sa)
 		return ("(unknown)");
 	else
 		return (buf);
+}
+
+u_int32_t
+filename_to_msgid(char *filename)
+{
+	u_int32_t ulval;
+	char *ep;
+
+	errno = 0;
+	ulval = strtoul(filename, &ep, 16);
+	if (filename[0] == '\0' || *ep != '\0')
+		return 0;
+	if (errno == ERANGE && ulval == 0xffffffff)
+		return 0;
+
+	return ulval;
+}
+
+u_int64_t
+filename_to_evpid(char *filename)
+{
+	u_int64_t ullval;
+	char *ep;
+
+	errno = 0;
+	ullval = strtoull(filename, &ep, 16);
+	if (filename[0] == '\0' || *ep != '\0')
+		return 0;
+	if (errno == ERANGE && ullval == ULLONG_MAX)
+		return 0;
+
+	return ullval;
+}
+
+u_int32_t
+evpid_to_msgid(u_int64_t evpid)
+{
+	return (evpid >> 32);
+}
+
+u_int64_t
+msgid_to_evpid(u_int32_t msgid)
+{
+	return ((u_int64_t)msgid << 32);
 }
