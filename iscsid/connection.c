@@ -295,6 +295,7 @@ struct {
 	{ CONN_IN_LOGOUT, CONN_EV_LOGGED_OUT, c_do_loggedout },	/* T13 */
 	{ CONN_ANYSTATE, CONN_EV_CLOSED, c_do_fail },
 	{ CONN_ANYSTATE, CONN_EV_FAIL, c_do_fail },
+	{ CONN_XPT_WAIT, CONN_EV_FAIL, c_do_fail },
 	{ 0, 0, NULL }
 };
 
