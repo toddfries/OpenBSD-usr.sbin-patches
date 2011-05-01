@@ -592,6 +592,17 @@ fork_peers(struct smtpd *env)
 	setproctitle("[priv]");
 }
 
+int
+child_count(void)
+{
+	struct child *c;
+	int count = 0;
+	SPLAY_FOREACH(c, childtree, &env->children) {
+		count++;
+	}
+	return count;
+}
+
 struct child *
 child_add(struct smtpd *env, pid_t pid, int type, int title)
 {
@@ -910,6 +921,7 @@ parent_enqueue_offline(struct smtpd *env, char *runner_path)
 		return (0);
 	}
 
+	log_warn("parent_enqueue_offline: %d children", child_count());
 	if ((pid = fork()) == -1)
 		fatal("parent_enqueue_offline: fork");
 
