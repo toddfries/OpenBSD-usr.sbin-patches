@@ -1,4 +1,4 @@
-/*	$OpenBSD: iscsid.h,v 1.7 2011/04/27 19:02:07 claudio Exp $ */
+/*	$OpenBSD: iscsid.h,v 1.8 2011/05/02 06:32:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -22,6 +22,7 @@
 #define ISCSID_USER	"_iscsid"
 
 #define ISCSID_BASE_NAME	"iqn.1995-11.org.openbsd.iscsid"
+#define ISCSID_DEF_CONNS	8
 
 #define PDU_READ_SIZE		(256 * 1024)
 #define CONTROL_READ_SIZE	8192
@@ -67,29 +68,33 @@ TAILQ_HEAD(taskq, task);
 
 #define SESS_INIT		0x0001
 #define SESS_FREE		0x0002
-#define SESS_LOGGED_IN		0x0003
-#define SESS_FAILED		0x0004
+#define SESS_LOGGED_IN		0x0004
+#define SESS_FAILED		0x0008
+#define SESS_DOWN		0x0010
 #define SESS_ANYSTATE		0xffff
+#define SESS_RUNNING		(SESS_FREE | SESS_LOGGED_IN | SESS_FAILED)
 
-#define CONN_DONE		0x0000	/* no real state just return value */
-#define	CONN_FREE		0x0001
-#define	CONN_XPT_WAIT		0x0002
-#define	CONN_XPT_UP		0x0004
-#define	CONN_IN_LOGIN		0x0008
-#define	CONN_LOGGED_IN		0x0010
-#define	CONN_IN_LOGOUT		0x0020
-#define	CONN_LOGOUT_REQ		0x0040
-#define	CONN_CLEANUP_WAIT	0x0080
-#define	CONN_IN_CLEANUP		0x0100
+#define CONN_FREE		0x0001
+#define CONN_XPT_WAIT		0x0002
+#define CONN_XPT_UP		0x0004
+#define CONN_IN_LOGIN		0x0008
+#define CONN_LOGGED_IN		0x0010
+#define CONN_IN_LOGOUT		0x0020
+#define CONN_LOGOUT_REQ		0x0040
+#define CONN_CLEANUP_WAIT	0x0080
+#define CONN_IN_CLEANUP		0x0100
 #define CONN_ANYSTATE		0xffff
-#define CONN_NOT_LOGGED_IN	(CONN_FREE | CONN_XPT_WAIT | CONN_XPT_UP)
+#define CONN_RUNNING		(CONN_LOGGED_IN | CONN_LOGOUT_REQ)
+#define CONN_FAILED		(CONN_CLEANUP_WAIT | CONN_IN_CLEANUP)
+#define CONN_NEVER_LOGGED_IN	(CONN_FREE | CONN_XPT_WAIT | CONN_XPT_UP | \
+				    CONN_IN_LOGIN)
 
 enum c_event {
 	CONN_EV_FAIL,
+	CONN_EV_FREE,
 	CONN_EV_CONNECT,
 	CONN_EV_CONNECTED,
 	CONN_EV_LOGGED_IN,
-	CONN_EV_DISCOVERY,
 	CONN_EV_LOGOUT,
 	CONN_EV_LOGGED_OUT,
 	CONN_EV_CLOSED
@@ -97,10 +102,15 @@ enum c_event {
 
 enum s_event {
 	SESS_EV_START,
+	SESS_EV_CONN_LOGGED_IN,
 	SESS_EV_CONN_FAIL,
 	SESS_EV_CONN_CLOSED,
+	SESS_EV_CLOSED,
 	SESS_EV_FAIL
 };
+
+#define SESS_ACT_UP		0
+#define SESS_ACT_DOWN		1
 
 struct pdu {
 	TAILQ_ENTRY(pdu)	 entry;
@@ -169,7 +179,7 @@ struct session_params {
 	u_int16_t		 TargetPortalGroupTag;
 				 /* 1- 65535: IS */
 	u_int16_t		 MaxConnections;
-				 /* 1, 1-65535 (min()): LO */
+				 /* 1, 1-65535 (min()): LS */
 	u_int8_t		 InitialR2T;
 				 /* yes, bool (||): LS  */
 	u_int8_t		 ImmediateData;
@@ -220,6 +230,7 @@ struct session {
 	u_int16_t		 tsih;		/* target session id handle */
 	u_int			 target;
 	int			 state;
+	int			 action;
 };
 
 struct connection {
@@ -260,14 +271,25 @@ struct kvp {
 #define KVP_KEY_ALLOCED		0x01
 #define KVP_VALUE_ALLOCED	0x02
 
+extern const struct session_params iscsi_sess_defaults;
+extern const struct connection_params iscsi_conn_defaults;
+extern struct session_params initiator_sess_defaults;
+extern struct connection_params initiator_conn_defaults;
+
 void	iscsid_ctrl_dispatch(void *, struct pdu *);
+void	iscsi_merge_sess_params(struct session_params *,
+	    struct session_params *, struct session_params *);
+void	iscsi_merge_conn_params(struct connection_params *,
+	    struct connection_params *, struct connection_params *);
 
 struct initiator *initiator_init(void);
 void	initiator_cleanup(struct initiator *);
+void	initiator_shutdown(struct initiator *);
+int	initiator_isdown(struct initiator *);
 struct session *initiator_t2s(u_int);
 void	initiator_login(struct connection *);
 void	initiator_discovery(struct session *);
-void	initiator_logout(struct connection *, u_int8_t, int);
+void	initiator_logout(struct session *, struct connection *, u_int8_t);
 void	initiator_nop_in_imm(struct connection *, struct pdu *);
 char	*default_initiator_name(void);
 
@@ -280,8 +302,10 @@ int	control_compose(void *, u_int16_t, void *, size_t);
 struct session	*session_find(struct initiator *, char *);
 struct session	*session_new(struct initiator *, u_int8_t);
 void	session_cleanup(struct session *);
+int	session_shutdown(struct session *);
 void	session_config(struct session *, struct session_config *);
 void	session_task_issue(struct session *, struct task *);
+void	session_logout_issue(struct session *, struct task *);
 void	session_schedule(struct session *);
 void	session_task_login(struct connection *);
 void	session_fsm(struct session *, enum s_event, struct connection *);
@@ -291,16 +315,18 @@ void	conn_free(struct connection *);
 int	conn_task_ready(struct connection *);
 void	conn_task_issue(struct connection *, struct task *);
 void	conn_task_schedule(struct connection *);
-void	conn_task_cleanup(struct connection *c, struct task *);
+void	conn_task_cleanup(struct connection *, struct task *);
+int	conn_parse_kvp(struct connection *, struct kvp *);
+int	conn_gen_kvp(struct connection *, struct kvp *, size_t *);
 void	conn_pdu_write(struct connection *, struct pdu *);
-void	conn_logout(struct connection *);
 void	conn_fail(struct connection *);
-void	conn_loggedin(struct connection *);
 void	conn_fsm(struct connection *, enum c_event);
 
 void	*pdu_gethdr(struct pdu *);
 int	text_to_pdu(struct kvp *, struct pdu *);
 struct kvp *pdu_to_text(char *, size_t);
+u_int64_t	text_to_num(const char *, u_int64_t, u_int64_t, const char **);
+int		text_to_bool(const char *, const char **);
 void	pdu_free_queue(struct pduq *);
 ssize_t	pdu_read(struct connection *);
 ssize_t	pdu_write(struct connection *);
