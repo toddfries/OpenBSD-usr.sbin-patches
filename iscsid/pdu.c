@@ -203,7 +203,7 @@ text_to_bool(const char *buf, const char **errstrp)
 
 	if (errstrp != NULL) {
 		if (errno == 0)
-			errstrp = NULL;
+			*errstrp = NULL;
 		else
 			*errstrp = "invalid";
 	}
