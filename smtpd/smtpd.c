@@ -922,6 +922,9 @@ parent_enqueue_offline(struct smtpd *env, char *runner_path)
 	}
 
 	log_warn("parent_enqueue_offline: %d children", child_count());
+	if (child_count() > 10) {
+		return (0);
+	}
 	if ((pid = fork()) == -1)
 		fatal("parent_enqueue_offline: fork");
 
