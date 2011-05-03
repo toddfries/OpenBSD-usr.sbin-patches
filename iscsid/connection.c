@@ -262,9 +262,9 @@ log_debug("SET_NUM: %s = %llu", #v, (u_int64_t)(x)->his.v);	\
 do {								\
 	if (!strcmp((p)->key, #v)) {				\
 		(x)->his.v = text_to_bool((p)->value, &err);	\
-		if (err) {					\
+		if (errno) {					\
 			log_warnx("bad param %s=%s: %s",	\
-			    (p)->key, (p)->value, err);		\
+			    (p)->key, (p)->value, "XXX");	\
 			errors++;				\
 		}						\
 log_debug("SET_BOOL: %s = %u", #v, (int)(x)->his.v);		\
