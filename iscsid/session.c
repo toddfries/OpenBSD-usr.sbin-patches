@@ -72,6 +72,10 @@ session_new(struct initiator *i, u_int8_t st)
 	s->itt = arc4random();
 	s->initiator = i;
 	s->state = SESS_INIT;
+	s->mine = initiator_sess_defaults;
+	s->mine.MaxConnections = s->config.MaxConnections;
+	s->his = iscsi_sess_defaults;
+	s->active = iscsi_sess_defaults;
 
 	if (st == SESSION_TYPE_DISCOVERY)
 		s->target = 0;
