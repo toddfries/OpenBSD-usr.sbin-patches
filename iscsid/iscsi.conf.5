@@ -1,0 +1,99 @@
+.\"	$OpenBSD: iscsi.conf.5,v 1.120 2011/04/30 07:52:33 sthen Exp $
+.\"
+.\" Copyright (c) 2011 Todd T. Fries <todd@openbsd.org>
+.\"
+.\" Permission to use, copy, modify, and distribute this software for any
+.\" purpose with or without fee is hereby granted, provided that the above
+.\" copyright notice and this permission notice appear in all copies.
+.\"
+.\" THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+.\" WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+.\" MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+.\" ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+.\" WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+.\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+.\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+.\"
+.Dd $Mdocdate: April 30 2011 $
+.Dt ISCSI.CONF 5
+.Os
+.Sh NAME
+.Nm iscsi.conf
+.Nd iscsi daemon configuration file
+.Sh DESCRIPTION
+.Nm
+is the configuration file for the iscsi daemon,
+.Xr iscsid 8 .
+.Pp
+The server that serves disks is called a target.
+The client that connects to disks is called an initiator.
+.El
+.Sh SECTIONS
+.Nm
+is divided into three main sections:
+.Bl -tag -width xxxx
+.It Sy Global Configuration
+Global settings for
+.Xr iscsid 8 .
+.It Sy Macros
+User-defined variables may be defined and used later, simplifying the
+configuration file.
+.It Sy Targets
+Target definitions describe a remote disk volume and target to connect to.
+.El
+.Sh GLOBAL CONFIGURATION
+Here are the settings that can be set globally:
+.Bl -tag -width Ds
+.It Ic initiator Ar type Ar base Ar qualifier
+Set the initiator string sent when connecting to targets.
+.El
+.Sh TARGETS
+Targets describe a remote disk volume and target to connect to.
+.Pp
+For example:
+.Bd -literal -offset indent
+target tgt0 {
+	targetaddr itarget0.example.com
+	targetname iqn.1994-04.com.example.iscsi-target:example-target0
+}
+target tgt1 {
+	targetaddr itarget0.example.com
+	targetname iqn.1994-04.com.example.iscsi-target:example-target1
+}
+.El
+.Sh MACROS
+Macros can be defined that will later be expanded in context.
+Macro names must start with a letter, and may contain letters, digits,
+and underscores.
+.Pp
+For example:
+.Bd -literal -offset indent
+t0san="itarget0.example.com"
+t0iqn="iqn.1994-04.com.example.iscsi-target"
+target tgt0 {
+	targetaddr $t0san
+	targetname $t0iqn:example-target0
+}
+target tgt1 {
+	targetaddr $t0san
+	targetname $t0iqn:example-target1
+}
+
+.El
+.Sh SEE ALSO
+.Xr iscsictl 8 ,
+.Xr iscsid 8
+.Sh HISTORY
+The
+.Nm
+file format, first appeared in
+.Ox 5.0 .
+.Sh AUTHORS
+.An -nosplit
+The
+.Xr iscsid 8
+program was written by
+.An Claudio Jerker Aq claudio@openbsd.org .
+.Sh CAVEATS
+.Xr iscsid 8
+Not yet ready for production.
