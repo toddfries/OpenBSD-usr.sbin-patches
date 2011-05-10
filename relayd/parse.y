@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.152 2011/04/12 12:43:13 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.155 2011/05/09 12:08:47 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -34,6 +34,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <net/route.h>
 
 #include <ctype.h>
 #include <unistd.h>
@@ -145,7 +146,7 @@ typedef struct {
 %token	EXTERNAL FILENAME FILTER FORWARD FROM HASH HEADER HOST ICMP
 %token	INCLUDE INET INET6 INTERFACE INTERVAL IP LABEL LISTEN
 %token	LOADBALANCE LOG LOOKUP MARK MARKED MODE NAT NO DESTINATION
-%token	NODELAY NOTHING ON PARENT PATH PORT PREFORK PROTO
+%token	NODELAY NOTHING ON PARENT PATH PORT PREFORK PRIORITY PROTO
 %token	QUERYSTR REAL REDIRECT RELAY REMOVE REQUEST RESPONSE RETRY
 %token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET SPLICE
 %token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO ROUTER RTLABEL
@@ -1252,6 +1253,7 @@ relay		: RELAY STRING	{
 			conf->sc_relaycount++;
 			SPLAY_INIT(&rlay->rl_sessions);
 			TAILQ_INSERT_TAIL(conf->sc_relays, rlay, rl_entry);
+
 			tableport = 0;
 
 			while ((r = TAILQ_FIRST(&relays)) != NULL) {
@@ -1622,6 +1624,17 @@ hostflags	: RETRY NUMBER		{
 			}
 			hst->conf.parentid = $2;
 		}
+		| PRIORITY NUMBER		{
+			if (hst->conf.priority) {
+				yyerror("priority already set");
+				YYERROR;
+			}
+			if ($2 < 0 || $2 > RTP_MAX) {
+				yyerror("invalid priority value: %d\n", $2);
+				YYERROR;
+			}
+			hst->conf.priority = $2;
+		}
 		| IP TTL NUMBER		{
 			if (hst->conf.ttl) {
 				yyerror("ttl value already set");
@@ -1774,6 +1787,7 @@ lookup(char *s)
 		{ "path",		PATH },
 		{ "port",		PORT },
 		{ "prefork",		PREFORK },
+		{ "priority",		PRIORITY },
 		{ "protocol",		PROTO },
 		{ "query",		QUERYSTR },
 		{ "real",		REAL },
@@ -2088,16 +2102,16 @@ pushfile(const char *name, int secret)
 	struct file	*nfile;
 
 	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
-		log_warn("malloc");
+		log_warn("%s: malloc", __func__);
 		return (NULL);
 	}
 	if ((nfile->name = strdup(name)) == NULL) {
-		log_warn("malloc");
+		log_warn("%s: malloc", __func__);
 		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
-		log_warn("%s", nfile->name);
+		log_warn("%s: %s", __func__, nfile->name);
 		free(nfile->name);
 		free(nfile);
 		return (NULL);
@@ -2156,7 +2170,7 @@ parse_config(const char *filename, int opts)
 				free(conf->sc_rts);
 			free(conf);
 		}
-		log_warn("cannot allocate memory");
+		log_warn("%s: cannot allocate memory", __func__);
 		return (NULL);
 	}
 
@@ -2460,7 +2474,7 @@ host_dns(const char *s, struct addresslist *al, int max,
 	if (error == EAI_AGAIN || error == EAI_NODATA || error == EAI_NONAME)
 		return (0);
 	if (error) {
-		log_warnx("host_dns: could not parse \"%s\": %s", s,
+		log_warnx("%s: could not parse \"%s\": %s", __func__, s,
 		    gai_strerror(error));
 		return (-1);
 	}
@@ -2477,7 +2491,8 @@ host_dns(const char *s, struct addresslist *al, int max,
 		if (ifname != NULL) {
 			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
 			    sizeof(h->ifname))
-				log_warnx("host_dns: interface name truncated");
+				log_warnx("%s: interface name truncated",
+				    __func__);
 			freeaddrinfo(res0);
 			return (-1);
 		}
@@ -2501,7 +2516,7 @@ host_dns(const char *s, struct addresslist *al, int max,
 		cnt++;
 	}
 	if (cnt == max && res) {
-		log_warnx("host_dns: %s resolves to more than %d hosts",
+		log_warnx("%s: %s resolves to more than %d hosts", __func__,
 		    s, max);
 	}
 	freeaddrinfo(res0);
@@ -2540,7 +2555,8 @@ host_if(const char *s, struct addresslist *al, int max,
 		if (ifname != NULL) {
 			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
 			    sizeof(h->ifname))
-				log_warnx("host_if: interface name truncated");
+				log_warnx("%s: interface name truncated",
+				    __func__);
 			freeifaddrs(ifap);
 			return (-1);
 		}
@@ -2572,7 +2588,7 @@ host_if(const char *s, struct addresslist *al, int max,
 	}
 
 	if (cnt > max) {
-		log_warnx("host_if: %s resolves to more than %d hosts",
+		log_warnx("%s: %s resolves to more than %d hosts", __func__,
 		    s, max);
 	}
 	freeifaddrs(ifap);
@@ -2597,7 +2613,8 @@ host(const char *s, struct addresslist *al, int max,
 		if (ifname != NULL) {
 			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
 			    sizeof(h->ifname)) {
-				log_warnx("host: interface name truncated");
+				log_warnx("%s: interface name truncated",
+				    __func__);
 				return (-1);
 			}
 		}

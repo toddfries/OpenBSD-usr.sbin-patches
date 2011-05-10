@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfe_route.c,v 1.1 2009/08/13 13:51:21 reyk Exp $	*/
+/*	$OpenBSD: pfe_route.c,v 1.4 2011/05/09 12:08:47 reyk Exp $	*/
 
 /*
  * Copyright (c) 2009 Reyk Floeter <reyk@openbsd.org>
@@ -35,8 +35,6 @@
 #include <openssl/ssl.h>
 
 #include "relayd.h"
-
-extern struct imsgev	*iev_main;
 
 struct relay_rtmsg {
 	struct rt_msghdr	rm_hdr;
@@ -90,18 +88,20 @@ sync_routes(struct relayd *env, struct router *rt)
 			if (host->up == HOST_UNKNOWN)
 				continue;
 
-			log_debug("sync_routes: "
-			    "router %s route %s/%d gateway %s %s",
+			log_debug("%s: "
+			    "router %s route %s/%d gateway %s %s priority %d",
+			    __func__,
 			    rt->rt_conf.name, buf, nr->nr_conf.prefixlen,
 			    host->conf.name,
-			    HOST_ISUP(host->up) ? "up" : "down");
+			    HOST_ISUP(host->up) ? "up" : "down",
+			    host->conf.priority);
 
 			crt.id = nr->nr_conf.id;
 			crt.hostid = host->conf.id;
 			crt.up = host->up;
 
-			imsg_compose_event(iev_main, IMSG_RTMSG,
-			    0, 0, -1, &crt, sizeof(crt));
+			proc_compose_imsg(env->sc_ps, PROC_PARENT, -1,
+			    IMSG_RTMSG, -1, &crt, sizeof(crt));
 		}
 	}
 }
@@ -122,7 +122,7 @@ pfe_route(struct relayd *env, struct ctl_netroute *crt)
 
 	if ((nr = route_find(env, crt->id)) == NULL ||
 	    (host = host_find(env, crt->hostid)) == NULL) {
-		log_debug("pfe_route: invalid host or route id");
+		log_debug("%s: invalid host or route id", __func__);
 		return (-1);
 	}
 
@@ -139,6 +139,7 @@ pfe_route(struct relayd *env, struct ctl_netroute *crt)
 	rm.rm_hdr.rtm_seq = env->sc_rtseq++;
 	rm.rm_hdr.rtm_addrs = RTA_DST | RTA_GATEWAY;
 	rm.rm_hdr.rtm_tableid = nr->nr_router->rt_conf.rtable;
+	rm.rm_hdr.rtm_priority = host->conf.priority;
 
 	if (strlen(nr->nr_router->rt_conf.label)) {
 		rm.rm_hdr.rtm_addrs |= RTA_LABEL;
@@ -226,13 +227,13 @@ pfe_route(struct relayd *env, struct ctl_netroute *crt)
 		}
 	}
 
-	log_debug("pfe_route: gateway %s %s", gwname,
+	log_debug("%s: gateway %s %s", __func__, gwname,
 	    HOST_ISUP(crt->up) ? "added" : "deleted");
 
 	return (0);
 
  bad:
-	log_debug("pfe_route: failed to %s gateway %s: %d %s",
+	log_debug("%s: failed to %s gateway %s: %d %s", __func__,
 	    HOST_ISUP(crt->up) ? "add" : "delete", gwname,
 	    errno, strerror(errno));
 
