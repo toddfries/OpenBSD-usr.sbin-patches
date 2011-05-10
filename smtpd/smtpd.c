@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.122 2011/05/01 12:57:11 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.123 2011/05/04 20:45:30 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
