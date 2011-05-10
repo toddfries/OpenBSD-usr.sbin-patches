@@ -1,4 +1,4 @@
-/*	$OpenBSD: connection.c,v 1.12 2011/05/02 06:32:56 claudio Exp $ */
+/*	$OpenBSD: connection.c,v 1.13 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>

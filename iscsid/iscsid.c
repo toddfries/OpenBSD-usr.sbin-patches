@@ -1,4 +1,4 @@
-/*	$OpenBSD: iscsid.c,v 1.6 2011/05/02 06:32:56 claudio Exp $ */
+/*	$OpenBSD: iscsid.c,v 1.7 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
