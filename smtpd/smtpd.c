@@ -109,7 +109,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 		switch (imsg->hdr.type) {
 		case IMSG_PARENT_FORWARD_OPEN:
 			fwreq = imsg->data;
-			fd = parent_forward_open(fwreq->pw_name);
+			fd = parent_forward_open(fwreq->as_user);
 			fwreq->status = 0;
 			if (fd == -2) {
 				/* no ~/.forward, however it's optional. */

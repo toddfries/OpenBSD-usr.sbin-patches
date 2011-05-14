@@ -34,7 +34,7 @@
 #include "log.h"
 
 int
-forwards_get(int fd, struct expandtree *expandtree)
+forwards_get(int fd, struct expandtree *expandtree, char *as_user)
 {
 	FILE *fp;
 	char *buf, *lbuf, *p, *cp;
@@ -93,6 +93,8 @@ forwards_get(int fd, struct expandtree *expandtree)
 				    "includes are forbidden in ~/.forward");
 				continue;
 			}
+
+			(void)strlcpy(expnode.as_user, as_user, sizeof(expnode.as_user));
 
 			expandtree_increment_node(expandtree, &expnode);
 			nbaliases++;
