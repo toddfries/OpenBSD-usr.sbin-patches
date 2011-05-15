@@ -376,7 +376,7 @@ enum delivery_flags {
 	DF_ENQUEUED		= 0x10,
 	DF_FORCESCHEDULE	= 0x20,
 	DF_BOUNCE		= 0x40,
-	DF_FORWARDED		= 0x80, /* internal expansion forward */
+	DF_INTERNAL		= 0x80 /* internal expansion forward */
 };
 
 union delivery_data {
