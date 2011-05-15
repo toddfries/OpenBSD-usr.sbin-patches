@@ -50,6 +50,10 @@ ruleset_match(struct envelope *evp)
 	struct mailaddr *maddr = &evp->delivery.rcpt;
 	struct sockaddr_storage *ss = &evp->delivery.ss;
 
+	log_debug("flags: %d", evp->delivery.flags);
+	if (evp->delivery.flags & DF_INTERNAL)
+		ss = NULL;
+
 	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
 
 		if (r->r_tag[0] != '\0' && strcmp(r->r_tag, evp->tag) != 0)

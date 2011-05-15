@@ -350,7 +350,6 @@ mta_enter_state(struct mta_session *s, int newstate, void *p)
 		/*
 		 * Lookup AUTH secret.
 		 */
-		log_debug("MTA SECRET, WTF");
 		bzero(&secret, sizeof(secret));
 		secret.id = s->id;
 		secret.secmapid = s->secmapid;
