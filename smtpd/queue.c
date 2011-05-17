@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.103 2011/05/01 12:57:11 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.104 2011/05/16 21:05:52 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
