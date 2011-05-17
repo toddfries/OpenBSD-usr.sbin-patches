@@ -87,6 +87,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 	struct forward_req	*fwreq;
 	struct reload		*reload;
 	struct auth		*auth;
+	struct auth_backend	*auth_backend;
 	int			 fd, r;
 
 	if (iev->proc == PROC_SMTP) {
@@ -96,8 +97,9 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 			return;
 
 		case IMSG_PARENT_AUTHENTICATE:
+			auth_backend = auth_backend_lookup(AUTH_BSD);
 			auth = imsg->data;
-			auth->success = authenticate_user(auth->user,
+			auth->success = auth_backend->authenticate(auth->user,
 			    auth->pass);
 			imsg_compose_event(iev, IMSG_PARENT_AUTHENTICATE, 0, 0,
 			    -1, auth, sizeof *auth);

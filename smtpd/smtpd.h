@@ -914,6 +914,19 @@ struct queue_backend {
 };
 
 
+/* queue structures */
+enum auth_type {
+	AUTH_INVALID=0,
+	AUTH_BSD,
+	AUTH_GETPWNAM,
+};
+
+struct auth_backend {
+	enum auth_type	type;
+	int (*authenticate)(char *, char *);
+};
+
+
 extern struct smtpd	*env;
 extern void (*imsg_callback)(struct imsgev *, struct imsg *);
 
@@ -927,8 +940,8 @@ int aliases_virtual_get(objid_t, struct expandtree *, struct mailaddr *);
 int alias_parse(struct expandnode *, char *);
 
 
-/* authenticate.c */
-int authenticate_user(char *, char *);
+/* auth_backend.c */
+struct auth_backend *auth_backend_lookup(enum auth_type);
 
 
 /* bounce.c */
