@@ -1,4 +1,4 @@
-/*	$OpenBSD: vscsi.c,v 1.7 2011/04/28 18:25:42 claudio Exp $ */
+/*	$OpenBSD: vscsi.c,v 1.8 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>

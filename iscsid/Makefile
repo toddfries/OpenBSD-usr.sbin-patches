@@ -4,7 +4,7 @@ PROG=	iscsid
 SRCS=	connection.c control.c initiator.c iscsid.c log.c pdu.c session.c \
 	task.c util.c vscsi.c
 
-MAN=	iscsid.8
+MAN=	iscsid.8 iscsi.conf.5
 
 DEBUG=-g
 CFLAGS+= -Wall

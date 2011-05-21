@@ -1,4 +1,4 @@
-/*	$OpenBSD: connection.c,v 1.12 2011/05/02 06:32:56 claudio Exp $ */
+/*	$OpenBSD: connection.c,v 1.13 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -262,9 +262,9 @@ log_debug("SET_NUM: %s = %llu", #v, (u_int64_t)(x)->his.v);	\
 do {								\
 	if (!strcmp((p)->key, #v)) {				\
 		(x)->his.v = text_to_bool((p)->value, &err);	\
-		if (errno) {					\
+		if (err) {					\
 			log_warnx("bad param %s=%s: %s",	\
-			    (p)->key, (p)->value, "XXX");	\
+			    (p)->key, (p)->value, err);		\
 			errors++;				\
 		}						\
 log_debug("SET_BOOL: %s = %u", #v, (int)(x)->his.v);		\

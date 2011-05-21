@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.122 2011/05/01 12:57:11 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.126 2011/05/17 18:54:32 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -61,6 +61,18 @@ static struct child *child_lookup(pid_t);
 static struct child *child_add(pid_t, int, int);
 static void child_del(pid_t);
 
+static int	queueing_add(char *);
+static void	queueing_done(void);
+
+struct queueing {
+	TAILQ_ENTRY(queueing)	 entry;
+	char			*path;
+};
+
+#define QUEUEING_MAX 5
+static size_t			queueing_running = 0;
+TAILQ_HEAD(, queueing)		queueing_q;
+
 extern char	**environ;
 void		(*imsg_callback)(struct imsgev *, struct imsg *);
 
@@ -75,6 +87,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 	struct forward_req	*fwreq;
 	struct reload		*reload;
 	struct auth		*auth;
+	struct auth_backend	*auth_backend;
 	int			 fd, r;
 
 	if (iev->proc == PROC_SMTP) {
@@ -84,8 +97,9 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 			return;
 
 		case IMSG_PARENT_AUTHENTICATE:
+			auth_backend = auth_backend_lookup(AUTH_BSD);
 			auth = imsg->data;
-			auth->success = authenticate_user(auth->user,
+			auth->success = auth_backend->authenticate(auth->user,
 			    auth->pass);
 			imsg_compose_event(iev, IMSG_PARENT_AUTHENTICATE, 0, 0,
 			    -1, auth, sizeof *auth);
@@ -97,7 +111,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 		switch (imsg->hdr.type) {
 		case IMSG_PARENT_FORWARD_OPEN:
 			fwreq = imsg->data;
-			fd = parent_forward_open(fwreq->pw_name);
+			fd = parent_forward_open(fwreq->as_user);
 			fwreq->status = 0;
 			if (fd == -2) {
 				/* no ~/.forward, however it's optional. */
@@ -114,7 +128,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
 		case IMSG_PARENT_ENQUEUE_OFFLINE:
-			if (! parent_enqueue_offline(imsg->data))
+			if (! queueing_add(imsg->data))
 				imsg_compose_event(iev,
 				    IMSG_PARENT_ENQUEUE_OFFLINE, 0, 0, -1,
 				    NULL, 0);
@@ -392,10 +406,12 @@ parent_sig_handler(int sig, short event, void *p)
 				imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 				    IMSG_PARENT_ENQUEUE_OFFLINE, 0, 0, -1,
 				    NULL, 0);
+				queueing_done();
 				break;
 
 			default:
-				fatalx("unexpected child type");
+				log_warnx("unexpected child type");
+				break;
 			}
 
 			child_del(child->pid);
@@ -406,7 +422,7 @@ parent_sig_handler(int sig, short event, void *p)
 			parent_shutdown();
 		break;
 	default:
-		fatalx("unexpected signal");
+		log_warnx("unexpected signal: %d", sig);
 	}
 }
 
@@ -440,6 +456,8 @@ main(int argc, char *argv[])
 	verbose = 0;
 
 	log_init(1);
+
+	TAILQ_INIT(&queueing_q);
 
 	while ((c = getopt(argc, argv, "dD:nf:v")) != -1) {
 		switch (c) {
@@ -670,16 +688,18 @@ forkmda(struct imsgev *iev, u_int32_t id,
     struct deliver *deliver)
 {
 	char		 ebuf[128], sfn[32];
-	struct passwd	*pw;
+	struct user_backend *ub;
+	struct user u;
 	struct child	*child;
 	pid_t		 pid;
 	int		 n, allout, pipefd[2];
 
 	log_debug("forkmda: to %s as %s", deliver->to, deliver->user);
 
+	bzero(&u, sizeof (u));
+	ub = user_backend_lookup(USER_GETPWNAM);
 	errno = 0;
-	pw = getpwnam(deliver->user);
-	if (pw == NULL) {
+	if (! ub->getbyname(&u, deliver->user)) {
 		n = snprintf(ebuf, sizeof ebuf, "getpwnam: %s",
 		    errno ? strerror(errno) : "no such user");
 		imsg_compose_event(iev, IMSG_MDA_DONE, id, 0, -1, ebuf, n + 1);
@@ -687,7 +707,7 @@ forkmda(struct imsgev *iev, u_int32_t id,
 	}
 
 	/* lower privs early to allow fork fail due to ulimit */
-	if (seteuid(pw->pw_uid) < 0)
+	if (seteuid(u.uid) < 0)
 		fatal("cannot lower privileges");
 
 	if (pipe(pipefd) < 0) {
@@ -740,7 +760,7 @@ forkmda(struct imsgev *iev, u_int32_t id,
 #define error(m) { perror(m); _exit(1); }
 	if (seteuid(0) < 0)
 		error("forkmda: cannot restore privileges");
-	if (chdir(pw->pw_dir) < 0 && chdir("/") < 0)
+	if (chdir(u.directory) < 0 && chdir("/") < 0)
 		error("chdir");
 	if (dup2(pipefd[0], STDIN_FILENO) < 0 ||
 	    dup2(allout, STDOUT_FILENO) < 0 ||
@@ -748,9 +768,9 @@ forkmda(struct imsgev *iev, u_int32_t id,
 		error("forkmda: dup2");
 	if (closefrom(STDERR_FILENO + 1) < 0)
 		error("closefrom");
-	if (setgroups(1, &pw->pw_gid) ||
-	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
+	if (setgroups(1, &u.gid) ||
+	    setresgid(u.gid, u.gid, u.gid) ||
+	    setresuid(u.uid, u.uid, u.uid))
 		error("forkmda: cannot drop privileges");
 	if (setsid() < 0)
 		error("setsid");
@@ -871,7 +891,8 @@ static int
 parent_enqueue_offline(char *runner_path)
 {
 	char		 path[MAXPATHLEN];
-	struct passwd	*pw;
+	struct user_backend *ub;
+	struct user	 u;
 	struct stat	 sb;
 	pid_t		 pid;
 
@@ -899,8 +920,10 @@ parent_enqueue_offline(char *runner_path)
 		fatal("parent_enqueue_offline: chflags");
 	}
 
+	ub = user_backend_lookup(USER_GETPWNAM);
+	bzero(&u, sizeof (u));
 	errno = 0;
-	if ((pw = getpwuid(sb.st_uid)) == NULL) {
+	if (! ub->getbyuid(&u, sb.st_uid)) {
 		log_warn("parent_enqueue_offline: getpwuid for uid %d failed",
 		    sb.st_uid);
 		unlink(path);
@@ -927,9 +950,9 @@ parent_enqueue_offline(char *runner_path)
 
 		bzero(&args, sizeof(args));
 
-		if (setgroups(1, &pw->pw_gid) ||
-		    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-		    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) ||
+		if (setgroups(1, &u.gid) ||
+		    setresgid(u.gid, u.gid, u.gid) ||
+		    setresuid(u.uid, u.uid, u.uid) ||
 		    closefrom(STDERR_FILENO + 1) == -1) {
 			unlink(path);
 			_exit(1);
@@ -941,7 +964,7 @@ parent_enqueue_offline(char *runner_path)
 		}
 		unlink(path);
 
-		if (chdir(pw->pw_dir) == -1 && chdir("/") == -1)
+		if (chdir(u.directory) == -1 && chdir("/") == -1)
 			_exit(1);
 
 		if (setsid() == -1 ||
@@ -972,23 +995,61 @@ parent_enqueue_offline(char *runner_path)
 		_exit(1);
 	}
 
+	queueing_running++;
 	child_add(pid, CHILD_ENQUEUE_OFFLINE, -1);
 
 	return (1);
 }
 
 static int
+queueing_add(char *path)
+{
+	struct queueing	*q;
+
+	if (queueing_running < QUEUEING_MAX)
+		/* skip queue */
+		return parent_enqueue_offline(path);
+
+	q = malloc(sizeof(*q) + strlen(path) + 1);
+	if (q == NULL)
+		return (-1);
+	q->path = (char *)q + sizeof(*q);
+	memmove(q->path, path, strlen(path) + 1);
+	TAILQ_INSERT_TAIL(&queueing_q, q, entry);
+
+	return (1);
+}
+
+static void
+queueing_done(void)
+{
+	struct queueing	*q;
+
+	queueing_running--;
+
+	while(queueing_running < QUEUEING_MAX) {
+		if ((q = TAILQ_FIRST(&queueing_q)) == NULL)
+			break; /* all done */
+		TAILQ_REMOVE(&queueing_q, q, entry);
+		parent_enqueue_offline(q->path);
+		free(q);
+	}
+}
+
+static int
 parent_forward_open(char *username)
 {
-	struct passwd *pw;
+	struct user_backend *ub;
+	struct user u;
 	char pathname[MAXPATHLEN];
 	int fd;
 
-	pw = getpwnam(username);
-	if (pw == NULL)
+	bzero(&u, sizeof (u));
+	ub = user_backend_lookup(USER_GETPWNAM);
+	if (! ub->getbyname(&u, username))
 		return -1;
 
-	if (! bsnprintf(pathname, sizeof (pathname), "%s/.forward", pw->pw_dir))
+	if (! bsnprintf(pathname, sizeof (pathname), "%s/.forward", u.directory))
 		fatal("snprintf");
 
 	fd = open(pathname, O_RDONLY);
@@ -999,7 +1060,7 @@ parent_forward_open(char *username)
 		return -1;
 	}
 
-	if (! secure_file(fd, pathname, pw, 1)) {
+	if (! secure_file(fd, pathname, u.directory, u.uid, 1)) {
 		log_warnx("%s: unsecure file", pathname);
 		close(fd);
 		return -1;

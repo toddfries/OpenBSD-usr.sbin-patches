@@ -1,4 +1,4 @@
-/*	$OpenBSD: pdu.c,v 1.5 2011/04/27 07:25:26 claudio Exp $ */
+/*	$OpenBSD: pdu.c,v 1.6 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -203,7 +203,7 @@ text_to_bool(const char *buf, const char **errstrp)
 
 	if (errstrp != NULL) {
 		if (errno == 0)
-			errstrp = NULL;
+			*errstrp = NULL;
 		else
 			*errstrp = "invalid";
 	}
