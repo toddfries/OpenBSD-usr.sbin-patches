@@ -1,4 +1,4 @@
-/*	$OpenBSD: auth_backend.c,v 1.1 2011/05/17 16:42:06 gilles Exp $	*/
+/*	$OpenBSD: user_backend.c,v 1.1 2011/05/17 18:54:32 gilles Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -23,7 +23,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
-#include <bsd_auth.h>
 #include <event.h>
 #include <imsg.h>
 #include <libgen.h>
@@ -36,40 +35,55 @@
 #include "smtpd.h"
 #include "log.h"
 
-int auth_bsd(char *, char *);
-int auth_getpwnam(char *, char *);
-struct auth_backend *auth_backend_lookup(enum auth_type);
+int user_getpw_ret(struct user *, struct passwd *); /* helper */
+int user_getpwnam(struct user *, char *);
+int user_getpwuid(struct user *, uid_t);
+struct user_backend *user_backend_lookup(enum user_type);
 
-struct auth_backend auth_backends[] = {
-	{ AUTH_BSD,		auth_bsd	},
-	{ AUTH_GETPWNAM,	auth_getpwnam	}
+struct user_backend user_backends[] = {
+	{ USER_GETPWNAM, user_getpwnam, user_getpwuid }
 };
 
-struct auth_backend *
-auth_backend_lookup(enum auth_type type)
+struct user_backend *
+user_backend_lookup(enum user_type type)
 {
 	u_int8_t i;
 
-	for (i = 0; i < nitems(auth_backends); ++i)
-		if (auth_backends[i].type == type)
+	for (i = 0; i < nitems(user_backends); ++i)
+		if (user_backends[i].type == type)
 			break;
 
-	if (i == nitems(auth_backends))
-		fatalx("invalid auth type");
+	if (i == nitems(user_backends))
+		fatalx("invalid user type");
 
-	return &auth_backends[i];
+	return &user_backends[i];
 }
 
 
+
 int
-auth_bsd(char *username, char *password)
+user_getpw_ret(struct user *u, struct passwd *pw)
 {
-	return auth_userokay(username, NULL, "auth-smtp", password);
+	if (strlcpy(u->username, pw->pw_name, sizeof (u->username))
+	    >= sizeof (u->username))
+		return 0;
+
+	if (strlcpy(u->password, pw->pw_passwd, sizeof (u->password))
+	    >= sizeof (u->password))
+		return 0;
+
+	if (strlcpy(u->directory, pw->pw_dir, sizeof (u->directory))
+	    >= sizeof (u->directory))
+		return 0;
+
+	u->uid = pw->pw_uid;
+	u->gid = pw->pw_gid;
+
+	return 1;
 }
 
-
 int
-auth_getpwnam(char *username, char *password)
+user_getpwnam(struct user *u, char *username)
 {
 	struct passwd *pw;
 
@@ -77,8 +91,17 @@ auth_getpwnam(char *username, char *password)
 	if (pw == NULL)
 		return 0;
 
-	if (strcmp(pw->pw_passwd, crypt(password, pw->pw_passwd)) == 0)
-		return 1;
+	return user_getpw_ret(u, pw);
+}
 
-	return 0;
+int
+user_getpwuid(struct user *u, uid_t uid)
+{
+	struct passwd *pw;
+
+	pw = getpwuid(uid);
+	if (pw == NULL)
+		return 0;
+
+	return user_getpw_ret(u, pw);
 }
