@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.195 2011/03/19 16:56:05 schwarze Exp $
+# $OpenBSD: PackingElement.pm,v 1.197 2011/05/30 10:07:19 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -893,7 +893,15 @@ sub new
 	$cdrom =~ s/^\'(.*)\'$/$1/;
 	$ftp =~ s/^\"(.*)\"$/$1/;
 	$ftp =~ s/^\'(.*)\'$/$1/;
-	bless { subdir => $subdir, cdrom => $cdrom, ftp => $ftp}, $class;
+	bless { subdir => $subdir,
+		path => OpenBSD::PkgPath->new($subdir), 
+	    cdrom => $cdrom, 
+	    ftp => $ftp}, $class;
+}
+
+sub subdir
+{
+	return shift->{subdir};
 }
 
 sub may_quote
@@ -909,8 +917,10 @@ sub may_quote
 sub stringize
 {
 	my $self = shift;
-	return "subdir=".$self->{subdir}." cdrom=".may_quote($self->{cdrom}).
-	    " ftp=".may_quote($self->{ftp});
+	return join(' ',
+	    "subdir=".$self->{subdir},
+	    "cdrom=".may_quote($self->{cdrom}),
+	    "ftp=".may_quote($self->{ftp}));
 }
 
 package OpenBSD::PackingElement::Name;
@@ -1027,6 +1037,18 @@ our @ISA=qw(OpenBSD::PackingElement::Meta);
 sub keyword() { "pkgpath" }
 __PACKAGE__->register_with_factory;
 sub category() { "pkgpath" }
+
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	bless {name => $fullpkgpath, 
+	    path => OpenBSD::PkgPath::WithOpts->new($fullpkgpath)}, $class;
+}
+
+sub subdir
+{
+	return shift->{name};
+}
 
 package OpenBSD::PackingElement::Incompatibility;
 our @ISA=qw(OpenBSD::PackingElement::Meta);
@@ -1844,6 +1866,100 @@ sub register_old_keyword
 for my $k (qw(src display mtree ignore_inst dirrm pkgcfl pkgdep newdepend
     libdepend ignore)) {
 	__PACKAGE__->register_old_keyword($k);
+}
+
+# Real pkgpath objects, with matching properties
+package OpenBSD::PkgPath;
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	my ($dir, @mandatory) = split(/\,/, $fullpkgpath);
+	return bless {dir => $dir,
+		mandatory => {map {($_, 1)} @mandatory},
+	}, $class;
+}
+
+# a pkgpath has a dir, and some flavors/multi parts. To match, we must
+# remove them all. So, keep a full hash of everything we have (has), and
+# when stuff $to_rm matches, remove them from $from.
+# We match when we're left with nothing.
+sub trim
+{
+	my ($self, $has, $from, $to_rm) = @_;
+	for my $f (keys %$to_rm) {
+		if ($has->{$f}) {
+			delete $from->{$f};
+		} else {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+# basic match: after mandatory, nothing left
+sub match2
+{
+	my ($self, $has, $h) = @_;
+	if (keys %$h) {
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
+# zap mandatory, check that what's left is okay.
+sub match
+{
+	my ($self, $other) = @_;
+	# make a copy of options
+	my %h = %{$other->{mandatory}};
+	if (!$self->trim($other->{mandatory}, \%h, $self->{mandatory})) {
+		return 0;
+	}
+	if ($self->match2($other->{mandatory}, \%h)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+package OpenBSD::PkgPath::WithOpts;
+our @ISA = qw(OpenBSD::PkgPath);
+
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	my @opts = ();
+	while ($fullpkgpath =~ s/\[\,(.*?)\]//) {
+		push(@opts, {map {($_, 1)} split(/\,/, $1) });
+	};
+	my $o = $class->SUPER::new($fullpkgpath);
+	if (@opts == 0) {
+		bless $o, "OpenBSD::PkgPath";
+	} else {
+		$o->{opts} = \@opts;
+	}
+	return $o;
+}
+
+# match with options: systematically trim any optional part that  fully
+# matches, until we're left with nothing, or some options keep happening.
+sub match2
+{
+	my ($self, $has, $h) = @_;
+	if (!keys %$h) {
+		return 1;
+	}
+	for my $opts (@{$self->{opts}}) {
+		my %h2 = %$h;
+		if ($self->trim($has, \%h2, $opts)) {
+			$h = \%h2;
+			if (!keys %$h) {
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
 1;
