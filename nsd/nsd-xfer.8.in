@@ -1,5 +1,5 @@
-.TH "nsd\-xfer" "8" "@date@" "NLnet Labs" "nsd @version@"
-.\" Copyright (c) 2001\-2008, NLnet Labs. All rights reserved.
+.TH "nsd\-xfer" "8" "Mar 22, 2011" "NLnet Labs" "nsd 3.2.8"
+.\" Copyright (c) 2001\-2011, NLnet Labs. All rights reserved.
 .\" See LICENSE for the license.
 .SH "NAME"
 .LP
@@ -75,7 +75,7 @@ To run this program the standard way type:
 .SH "SEE ALSO"
 .LP
 nsd(8), nsdc(8), nsd.conf(5), nsd-checkconf(8),
-nsd-notify(8), nsd-patch(8), nsd-zonec(8)
+nsd-notify(8), nsd-patch(8), nsd\-zonec(8)
 .SH "AUTHORS"
 .LP
 .B NSD
