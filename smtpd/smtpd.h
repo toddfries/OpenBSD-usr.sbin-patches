@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.224 2011/05/17 18:54:32 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.226 2011/05/21 19:57:34 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -276,18 +276,13 @@ struct map {
 	TAILQ_HEAD(mapel_list, mapel)	 m_contents;
 };
 
+
 struct map_backend {
-	enum map_src source;
 	void *(*open)(char *);
 	void (*close)(void *);
-	char *(*get)(void *, char *, size_t *);
-	int (*put)(void *, char *, char *);
+	void *(*lookup)(void *, char *, enum map_kind);
 };
 
-struct map_parser {
-	enum map_kind kind;
-	void *(*extract)(char *, char *, size_t);
-};
 
 enum cond_type {
 	C_ALL,
@@ -345,18 +340,6 @@ enum delivery_type {
 	D_MTA,
 	D_BOUNCE
 };
-
-/*
-enum delivery_method {
-	DM_INVALID = 0,
-	DM_RELAY,
-	DM_RELAYVIA,
-	DM_MAILDIR,
-	DM_MBOX,
-	DM_FILENAME,
-	DM_EXT
-};
-*/
 
 enum delivery_status {
 	DS_PERMFAILURE	= 0x2,
