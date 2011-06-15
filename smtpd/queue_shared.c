@@ -188,7 +188,8 @@ recurse:
 			q->level--;
 			goto again;
 		}
-		fatal("qwalk: opendir");
+		warn("qwalk: opendir: %s", q->path);
+		return 1;
 	}
 	goto again;
 }
