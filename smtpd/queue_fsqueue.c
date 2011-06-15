@@ -181,7 +181,7 @@ fsqueue_envelope_load(enum queue_kind qkind, struct envelope *ep)
 		fatal("fsqueue_envelope_load: fopen");
 	}
 	if (fread(ep, sizeof (*ep), 1, fp) != 1)
-		warn("fsqueue_envelope_load: fread");
+		fatal("fsqueue_envelope_load: fread");
 	fclose(fp);
 	return 1;
 }
@@ -231,10 +231,8 @@ fsqueue_envelope_update(enum queue_kind qkind, struct envelope *ep)
 	return 1;
 
 tempfail:
-	if (unlink(temp) == -1) {
-		warn("fsqueue_envelope_update: unlink");
-		return 1;
-	}
+	if (unlink(temp) == -1)
+		fatal("fsqueue_envelope_update: unlink");
 	if (fp)
 		fclose(fp);
 
@@ -255,21 +253,15 @@ fsqueue_envelope_delete(enum queue_kind qkind, struct envelope *ep)
 		hval,
 		evpid_to_msgid(ep->delivery.id),
 		PATH_ENVELOPES,
-		ep->delivery.id)) {
-		warn("fsqueue_envelope_delete: snprintf");
-		return 1;
-	}
+		ep->delivery.id))
+		fatal("fsqueue_envelope_delete: snprintf");
 
-	if (unlink(pathname) == -1) {
-		warn("fsqueue_envelope_delete: unlink");
-		return 1;
-	}
+	if (unlink(pathname) == -1)
+		fatal("fsqueue_envelope_delete: unlink");
 
 	if (! bsnprintf(pathname, sizeof(pathname), "%s/%04x/%08x%s", PATH_QUEUE,
-		hval, evpid_to_msgid(ep->delivery.id), PATH_ENVELOPES)) {
-		warn("fsqueue_envelope_delete: snprintf");
-		return 1;
-	}
+		hval, evpid_to_msgid(ep->delivery.id), PATH_ENVELOPES))
+		fatal("fsqueue_envelope_delete: snprintf");
 
 	if (rmdir(pathname) != -1)
 		fsqueue_message_delete(qkind, evpid_to_msgid(ep->delivery.id));
@@ -330,10 +322,8 @@ again:
 			fsqueue_getpath(Q_BOUNCE), *msgid))
 			return 0;
 		
-		if (link(msgpath, lnkpath) == -1) {
-			warn("link");
-			return 1;
-		}
+		if (link(msgpath, lnkpath) == -1)
+			fatal("link");
 	}
 
 	return 1;
@@ -383,24 +373,18 @@ fsqueue_message_fd_r(enum queue_kind qkind, u_int32_t msgid)
 
 	if (qkind == Q_ENQUEUE || qkind == Q_INCOMING) {
 		if (! bsnprintf(pathname, sizeof(pathname), "%s/%08x/message",
-			fsqueue_getpath(qkind), msgid)) {
-			warn("fsqueue_message_fd_r: snprintf");
-			return 1;
-		}
+			fsqueue_getpath(qkind), msgid))
+			fatal("fsqueue_message_fd_r: snprintf");
 	}
 	else {
 		hval = fsqueue_hash(msgid);
 		if (! bsnprintf(pathname, sizeof(pathname), "%s/%04x/%08x/message",
-			fsqueue_getpath(qkind), hval, msgid)) {
-			warn("fsqueue_message_fd_r: snprintf");
-			return 1;
-		}
+			fsqueue_getpath(qkind), hval, msgid))
+			fatal("fsqueue_message_fd_r: snprintf");
 	}
 
-	if ((fd = open(pathname, O_RDONLY)) == -1) {
-		warn("fsqueue_message_fd_r: open");
-		return 1;
-	}
+	if ((fd = open(pathname, O_RDONLY)) == -1)
+		fatal("fsqueue_message_fd_r: open");
 
 	return fd;
 }
@@ -438,10 +422,8 @@ fsqueue_message_delete(enum queue_kind qkind, u_int32_t msgid)
 	if (! bsnprintf(msgpath, sizeof(msgpath), "%s/message", rootdir))
 		fatal("queue_delete_message: snprintf");
 
-	if (unlink(msgpath) == -1) {
-		warn("queue_delete_message: unlink");
-		return 1;
-	}
+	if (unlink(msgpath) == -1)
+		fatal("queue_delete_message: unlink");
 
 	if (rmdir(evpdir) == -1) {
 		/* It is ok to fail rmdir with ENOENT here
