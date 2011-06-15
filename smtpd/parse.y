@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.73 2011/05/01 12:57:11 eric Exp $	*/
+/*	$OpenBSD: parse.y,v 1.76 2011/06/09 17:41:52 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -28,7 +28,9 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 
+#include <net/if.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -99,6 +101,7 @@ int		 interface(const char *, const char *, const char *,
 		    struct listenerlist *, int, in_port_t, u_int8_t);
 void		 set_localaddrs(void);
 int		 delaytonum(char *);
+int		 is_if_in_group(const char *, const char *);
 
 typedef struct {
 	union {
@@ -108,18 +111,19 @@ typedef struct {
 		struct cond	*cond;
 		char		*string;
 		struct host	*host;
+		struct mailaddr	*maddr;
 	} v;
 	int lineno;
 } YYSTYPE;
 
 %}
 
-%token	QUEUE INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
+%token	AS QUEUE INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
 %token	MAP TYPE HASH LIST SINGLE SSL SMTPS CERTIFICATE
 %token	DNS DB PLAIN EXTERNAL DOMAIN CONFIG SOURCE
 %token  RELAY VIA DELIVER TO MAILDIR MBOX HOSTNAME
 %token	ACCEPT REJECT INCLUDE NETWORK ERROR MDA FROM FOR
-%token	ARROW ENABLE AUTH TLS LOCAL VIRTUAL USER TAG ALIAS
+%token	ARROW ENABLE AUTH TLS LOCAL VIRTUAL TAG ALIAS
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.map>		map
@@ -127,6 +131,7 @@ typedef struct {
 %type	<v.cond>	condition
 %type	<v.tv>		interval
 %type	<v.object>	mapref
+%type	<v.maddr>	relay_as
 %type	<v.string>	certname user tag on alias
 
 %%
@@ -808,12 +813,22 @@ condition	: NETWORK mapref		{
 
 			$$ = c;
 		}
-		| ALL				{
+		| ALL alias			{
 			struct cond	*c;
+			struct map	*m;
 
 			if ((c = calloc(1, sizeof *c)) == NULL)
 				fatal("out of memory");
 			c->c_type = C_ALL;
+
+			if ($2) {
+				if ((m = map_findbyname($2)) == NULL) {
+					yyerror("no such map: %s", $2);
+					free($2);
+					YYERROR;
+				}
+				rule->r_amap = m->m_id;
+			}
 			$$ = c;
 		}
 		;
@@ -832,7 +847,7 @@ conditions	: condition				{
 		| '{' condition_list '}'
 		;
 
-user		: USER STRING		{
+user		: AS STRING		{
 			struct passwd *pw;
 
 			pw = getpwnam($2);
@@ -842,6 +857,76 @@ user		: USER STRING		{
 				YYERROR;
 			}
 			$$ = $2;
+		}
+		| /* empty */		{ $$ = NULL; }
+		;
+
+relay_as     	: AS STRING		{
+			struct mailaddr maddr, *maddrp;
+			char *p;
+
+			bzero(&maddr, sizeof (maddr));
+
+			p = strrchr($2, '@');
+			if (p == NULL) {
+				if (strlcpy(maddr.user, $2, sizeof (maddr.user))
+				    >= sizeof (maddr.user))
+					yyerror("user-part too long");
+					free($2);
+					YYERROR;
+			}
+			else {
+				if (p == $2) {
+					/* domain only */
+					p++;
+					if (strlcpy(maddr.domain, p, sizeof (maddr.domain))
+					    >= sizeof (maddr.domain)) {
+						yyerror("user-part too long");
+						free($2);
+						YYERROR;
+					}
+				}
+				else {
+					*p++ = '\0';
+					if (strlcpy(maddr.user, $2, sizeof (maddr.user))
+					    >= sizeof (maddr.user)) {
+						yyerror("user-part too long");
+						free($2);
+						YYERROR;
+					}
+					if (strlcpy(maddr.domain, p, sizeof (maddr.domain))
+					    >= sizeof (maddr.domain)) {
+						yyerror("domain-part too long");
+						free($2);
+						YYERROR;
+					}
+				}
+			}
+
+			if (maddr.user[0] == '\0' && maddr.domain[0] == '\0') {
+				yyerror("invalid 'relay as' value");
+				free($2);
+				YYERROR;
+			}
+
+			if (maddr.domain[0] == '\0') {
+				if (strlcpy(maddr.domain, conf->sc_hostname,
+					sizeof (maddr.domain))
+				    >= sizeof (maddr.domain)) {
+					fatalx("domain too long");
+					yyerror("domain-part too long");
+					free($2);
+					YYERROR;
+				}
+			}
+			
+			maddrp = calloc(1, sizeof (*maddrp));
+			if (maddrp == NULL)
+				fatal("calloc");
+			*maddrp = maddr;
+			free($2);
+
+			$$ = maddrp;
 		}
 		| /* empty */		{ $$ = NULL; }
 		;
@@ -879,11 +964,13 @@ action		: DELIVER TO MAILDIR user		{
 				fatal("command too long");
 			free($4);
 		}
-		| RELAY				{
+		| RELAY relay_as     			{
 			rule->r_action = A_RELAY;
+			rule->r_as = $2;
 		}
-		| RELAY VIA STRING port ssl certname credentials {
+		| RELAY VIA STRING port ssl certname credentials relay_as {
 			rule->r_action = A_RELAYVIA;
+			rule->r_as = $8;
 
 			if ($5 == 0 && ($6 != NULL || $7)) {
 				yyerror("error: must specify tls, smtps, or ssl");
@@ -1046,6 +1133,16 @@ rule		: decision on from			{
 				free(cond);
 			}
 
+			if (rule->r_amap) {
+				if (rule->r_action == A_RELAY ||
+				    rule->r_action == A_RELAYVIA) {
+					yyerror("aliases set on a relay rule");
+					free(conditions);
+					free(rule);
+					YYERROR;
+				}
+			}
+
 			free(conditions);
 			free(rule);
 			conditions = NULL;
@@ -1087,6 +1184,7 @@ lookup(char *s)
 		{ "accept",		ACCEPT },
 		{ "alias",		ALIAS },
 		{ "all",		ALL },
+		{ "as",			AS },
 		{ "auth",		AUTH },
 		{ "certificate",	CERTIFICATE },
 		{ "config",		CONFIG },
@@ -1126,7 +1224,6 @@ lookup(char *s)
 		{ "tls",		TLS },
 		{ "to",			TO },
 		{ "type",		TYPE },
-		{ "user",		USER },
 		{ "via",		VIA },
 		{ "virtual",		VIRTUAL },
 	};
@@ -1800,7 +1897,8 @@ interface(const char *s, const char *tag, const char *cert,
 		fatal("getifaddrs");
 
 	for (p = ifap; p != NULL; p = p->ifa_next) {
-		if (strcmp(s, p->ifa_name) != 0)
+		if (strcmp(p->ifa_name, s) != 0 &&
+		    ! is_if_in_group(p->ifa_name, s))
 			continue;
 
 		if ((h = calloc(1, sizeof(*h))) == NULL)
@@ -1937,4 +2035,48 @@ delaytonum(char *str)
   	
 bad:
 	return (-1);
+}
+
+int
+is_if_in_group(const char *ifname, const char *groupname)
+{
+        unsigned int		 len;
+        struct ifgroupreq        ifgr;
+        struct ifg_req          *ifg;
+	int			 s;
+	int			 ret = 0;
+
+	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+		err(1, "socket");
+
+        memset(&ifgr, 0, sizeof(ifgr));
+        strlcpy(ifgr.ifgr_name, ifname, IFNAMSIZ);
+        if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1) {
+                if (errno == EINVAL || errno == ENOTTY)
+			goto end;
+		err(1, "SIOCGIFGROUP");
+        }
+
+        len = ifgr.ifgr_len;
+        ifgr.ifgr_groups =
+            (struct ifg_req *)calloc(len/sizeof(struct ifg_req),
+		sizeof(struct ifg_req));
+        if (ifgr.ifgr_groups == NULL)
+                err(1, "getifgroups");
+        if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1)
+                err(1, "SIOCGIFGROUP");
+	
+        ifg = ifgr.ifgr_groups;
+        for (; ifg && len >= sizeof(struct ifg_req); ifg++) {
+                len -= sizeof(struct ifg_req);
+		if (strcmp(ifg->ifgrq_group, groupname) == 0) {
+			ret = 1;
+			break;
+		}
+        }
+        free(ifgr.ifgr_groups);
+
+end:
+	close(s);
+	return ret;
 }
