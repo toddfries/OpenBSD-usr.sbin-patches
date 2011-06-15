@@ -1,9 +1,9 @@
 #!/bin/ksh -
 #
-# $OpenBSD: sysmerge.sh,v 1.71 2011/04/27 08:44:48 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.74 2011/05/09 14:18:34 ajacoutot Exp $
 #
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
-# Copyright (c) 2008, 2009, 2010 Antoine Jacoutot <ajacoutot@openbsd.org>
+# Copyright (c) 2008, 2009, 2010, 2011 Antoine Jacoutot <ajacoutot@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -237,6 +237,11 @@ mm_install() {
 mm_install_link() {
 	_LINKT=`readlink ${COMPFILE}`
 	_LINKF=`dirname ${DESTDIR}${COMPFILE#.}`
+
+	DIR_MODE=`stat -f "%OMp%OLp" "${TEMPROOT}/${_LINKF}"`
+	[ ! -d "${_LINKF}" ] && \
+		install -d -o root -g wheel -m "${DIR_MODE}" "${_LINKF}"
+
 	rm -f ${COMPFILE}
 	(cd ${_LINKF} && ln -sf ${_LINKT} .)
 	return
@@ -481,9 +486,9 @@ diff_loop() {
 						echo "\t*** WARNING: problem creating ${COMPFILE#.} link"
 					fi
 				else
-					echo "===> Installing ${COMPFILE#.}${RUNNING}"
+					echo "===> Updating ${COMPFILE#.}${RUNNING}"
 					if ! mm_install "${COMPFILE}"; then
-						echo "\t*** WARNING: problem installing ${COMPFILE#.}"
+						echo "\t*** WARNING: problem updating ${COMPFILE#.}"
 					fi
 				fi
 			else
@@ -526,8 +531,11 @@ do_compare() {
 	cd ${TEMPROOT} || error_rm_wrkdir
 
 	# use -size +0 to avoid comparing empty log files and device nodes;
-	# however, we want to keep the symlinks
-	for COMPFILE in `find . -type f -size +0 -or -type l`; do
+	# however, we want to keep the symlinks; group and master.passwd
+	# need to be handled first in case mm_install needs a new user/group
+	local _c1="./etc/group ./etc/master.passwd"
+	local _c2=`find . -type f -size +0 -or -type l | grep -vE '(./etc/group|./etc/master.passwd)'`
+	for COMPFILE in ${_c1} ${_c2}; do
 		unset IS_BINFILE
 		unset IS_LINK
 		# links need to be treated in a different way

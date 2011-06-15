@@ -1,10 +1,10 @@
-.TH "NSD" "8" "@date@" "NLnet Labs" "NSD @version@"
-.\" Copyright (c) 2001\-2008, NLnet Labs. All rights reserved.
+.TH "NSD" "8" "Mar 22, 2011" "NLnet Labs" "NSD 3.2.8"
+.\" Copyright (c) 2001\-2011, NLnet Labs. All rights reserved.
 .\" See LICENSE for the license.
 .SH "NAME"
 .LP
 .B nsd
-\- Name Server Daemon (NSD) version @version@.
+\- Name Server Daemon (NSD) version 3.2.8.
 .SH "SYNOPSIS"
 .LP
 .B nsd
@@ -56,7 +56,7 @@ argument and put itself into background and answers queries on port
 .I port
 option. The
 .I database
-must be generated beforehand with nsd-zonec(8). By default, 
+must be generated beforehand with nsd\-zonec(8). By default, 
 .B NSD 
 will bind to all local interfaces available. Use the 
 .B \-a
@@ -108,7 +108,7 @@ listens to the wildcard interface.
 .B \-c\fI configfile
 Read specified 
 .I configfile instead of the default
-.IR /etc/nsd/nsd.conf .
+.IR @nsdconfigfile@ .
 For format description see nsd.conf(5).
 .TP
 .B \-d
@@ -118,7 +118,7 @@ Turn on debugging mode, do not fork, stay in the foreground.
 Use the specified
 .I database
 instead of the default of
-.IR /var/nsd/db/nsd.db .
+.IR @dbfile@ .
 If a 
 .B zonesdir: 
 is specified in the config file this path can be relative to that 
@@ -167,7 +167,7 @@ default is 10.
 Use the specified
 .I pidfile
 instead of the platform specific default, which is mostly
-.IR /var/nsd/run/nsd.pid .
+.IR @pidfile@ .
 If a 
 .B zonesdir: 
 is specified in the config file, this path can be relative to that 
@@ -179,7 +179,6 @@ Answer the queries on the specified
 Normally this is port 53.
 .TP
 .B \-s\fI seconds
-.It Fl s Ar seconds
 Produce statistics dump every 
 .I seconds
 seconds. This is equal to sending
@@ -227,15 +226,15 @@ SIGUSR1
 Dump BIND8\-style statistics into the log. Ignored otherwise.
 .SH "FILES"
 .TP
-/var/nsd/db/nsd.db
+@dbfile@
 default
 .B NSD
 database
 .TP
-/var/nsd/run/nsd.pid
+@pidfile@
 the process id of the name server.
 .TP
-/etc/nsd.conf
+@nsdconfigfile@
 default
 .B NSD
 configuration file
@@ -249,7 +248,7 @@ option is specified.
 .SH "SEE ALSO"
 .LP
 nsdc(8), nsd.conf(5), nsd\-checkconf(8), nsd\-notify(8), 
-nsd\-patch(8), nsd\-xfer(8), nsd-zonec(8)
+nsd\-patch(8), nsd\-xfer(8), nsd\-zonec(8)
 .SH "AUTHORS"
 .LP
 .B NSD
@@ -260,7 +259,7 @@ CREDITS file in the distribution for further details.
 .B NSD
 will answer the queries erroneously if the
 .I database
-was not properly compiled with nsd-zonec(8). Therefore problems with 
-misconfigured master zone files or nsd-zonec(8) bugs may not be visible 
+was not properly compiled with nsd\-zonec(8). Therefore problems with 
+misconfigured master zone files or nsd\-zonec(8) bugs may not be visible 
 until the queries are actually answered with
 .BR NSD .

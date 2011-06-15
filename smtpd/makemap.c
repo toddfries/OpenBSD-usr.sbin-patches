@@ -1,4 +1,4 @@
-/*	$OpenBSD: makemap.c,v 1.30 2011/05/01 12:57:11 eric Exp $	*/
+/*	$OpenBSD: makemap.c,v 1.32 2011/05/16 21:27:38 jasper Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -380,7 +380,7 @@ make_aliases(DBT *val, char *text)
 	return (val->size);
 
 error:
-	free(val->data);
+	free(origtext);
 
 	return 0;
 }
@@ -388,12 +388,11 @@ error:
 char *
 conf_aliases(char *cfgpath)
 {
-	struct smtpd	 smtpd;
 	struct map	*map;
 	char		*path;
 	char		*p;
 
-	if (parse_config(&smtpd, cfgpath, 0))
+	if (parse_config(env, cfgpath, 0))
 		exit(1);
 
 	map = map_findbyname("aliases");
