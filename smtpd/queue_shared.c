@@ -145,15 +145,12 @@ int
 qwalk(struct qwalk *q, char *filepath)
 {
 	struct dirent	*dp;
-	int count = 0;
 
 again:
 	errno = 0;
 	dp = readdir(q->dirs[q->level]);
-	if (errno) {
-		log_warn("qwalk: readdir");
-		return (1);
-	}
+	if (errno)
+		fatal("qwalk: readdir");
 	if (dp == NULL) {
 		closedir(q->dirs[q->level]);
 		q->dirs[q->level] = NULL;
