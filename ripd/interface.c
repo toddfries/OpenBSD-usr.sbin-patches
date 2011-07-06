@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.9 2010/07/03 04:44:52 guenther Exp $ */
+/*	$OpenBSD: interface.c,v 1.11 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2006 Michele Marchetto <mydecay@openbeer.it>
@@ -83,7 +83,7 @@ if_init(struct ripd_conf *xconf, struct iface *iface)
 		rdomain = 0;
 	else {
 		rdomain = ifr.ifr_rdomainid;
-		if (setsockopt(iface->fd, IPPROTO_IP, SO_RTABLE, &rdomain,
+		if (setsockopt(iface->fd, SOL_SOCKET, SO_RTABLE, &rdomain,
 		    sizeof(rdomain)) == -1)
 			fatal("failed to set rdomain");
 	}
@@ -180,9 +180,7 @@ if_act_start(struct iface *iface)
 	}
 
 	if (!((iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP)))) {
+	    LINK_STATE_IS_UP(iface->linkstate))) {
 		log_debug("if_act_start: interface %s link down",
 		    iface->name);
 		return (0);
