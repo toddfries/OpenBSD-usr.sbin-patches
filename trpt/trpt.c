@@ -1,4 +1,4 @@
-/*	$OpenBSD: trpt.c,v 1.26 2010/05/26 17:49:57 deraadt Exp $	*/
+/*	$OpenBSD: trpt.c,v 1.28 2011/07/04 07:06:49 guenther Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -62,7 +62,6 @@
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
-#include <sys/socketvar.h>
 #define PRUREQUESTS
 #include <sys/protosw.h>
 #define _KERNEL
