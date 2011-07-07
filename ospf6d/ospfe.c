@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.34 2011/05/02 09:24:00 claudio Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.36 2011/07/07 04:13:23 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -288,9 +288,9 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 				fatalx("interface lost in ospfe");
 			iface->flags = ifp->flags;
 			iface->linkstate = ifp->linkstate;
-			iface->nh_reachable = ifp->nh_reachable;
 
-			if (iface->nh_reachable) {
+			if ((iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate)) {
 				if_fsm(iface, IF_EVT_UP);
 				log_warnx("interface %s up", iface->name);
 			} else {
@@ -516,13 +516,13 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				 * virtual links
 				 */
 				LIST_FOREACH(area, &oeconf->area_list, entry) {
-				    if (area->stub)
-					    continue;
-				    LIST_FOREACH(iface, &area->iface_list,
-					entry) {
-					    noack += lsa_flood(iface, nbr,
-						&lsa_hdr, imsg.data);
-				    }
+					if (area->stub)
+						continue;
+					LIST_FOREACH(iface, &area->iface_list,
+					    entry) {
+						noack += lsa_flood(iface, nbr,
+						    &lsa_hdr, imsg.data);
+					}
 				}
 			} else if (lsa_hdr.type == htons(LSA_TYPE_LINK)) {
 				/*

@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.54 2011/07/04 04:34:14 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.57 2011/07/07 04:37:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -586,7 +586,6 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			iface = if_find(ifp->ifindex);
 			if (iface == NULL)
 				fatalx("interface lost in rde");
-			iface->nh_reachable = ifp->nh_reachable;
 
 			/* 
 			 * Resend LSAs if interface flags change -
@@ -739,7 +738,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 			memcpy(&ifindex, imsg.data, sizeof(ifindex));
 			iface = if_find(ifindex);
 			if (iface == NULL)
-				fatalx("interface lost in ospfe");
+				fatalx("interface lost in rde");
 
 			LIST_REMOVE(iface, entry);
 			if_del(iface);
@@ -1030,11 +1029,7 @@ rde_nbr_new(u_int32_t peerid, struct rde_nbr *new)
 	if ((area = area_find(rdeconf, new->area_id)) == NULL)
 		fatalx("rde_nbr_new: unknown area");
 
-	LIST_FOREACH(iface, &area->iface_list, entry) {
-		if (iface->ifindex == new->ifindex)
-			break;
-	}
-	if (iface == NULL)
+	if ((iface = if_find(new->ifindex)) == NULL)
 		fatalx("rde_nbr_new: unknown interface");
 
 	if ((nbr = calloc(1, sizeof(*nbr))) == NULL)
@@ -1463,8 +1458,6 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 	lsa->data.pref_intra.ref_ls_id = 0;
 	lsa->data.pref_intra.ref_adv_rtr = rde_router_id();
 
-	log_debug("orig_intra_lsa_rtr: area %s", inet_ntoa(area->id));
-
 	numprefix = 0;
 	LIST_FOREACH(iface, &area->iface_list, entry) {
 		if (!((iface->flags & IFF_UP) &&
@@ -1475,10 +1468,6 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 		    !(iface->cflags & F_IFACE_PASSIVE)) 
 			/* passive interfaces stay in state DOWN */
 			continue;
-
-		log_debug("orig_intra_lsa_rtr: area %s, interface %s: "
-		    "including in intra-area-prefix LSA",
-		    inet_ntoa(area->id), iface->name);
 
 		/* Broadcast links with adjacencies are handled
 		 * by orig_intra_lsa_net(), ignore. */
@@ -1516,6 +1505,11 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 
 			if (lsa_prefix->prefixlen == 128)
 				lsa_prefix->options |= OSPF_PREFIX_LA;
+
+			log_debug("orig_intra_lsa_rtr: area %s, interface %s: "
+			    "%s/%d", inet_ntoa(area->id),
+			    iface->name, log_in6addr(&ia->addr),
+			    lsa_prefix->prefixlen);
 
 			prefix = (struct in6_addr *)(lsa_prefix + 1);
 			inet6applymask(prefix, &ia->addr,
