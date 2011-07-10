@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.33 2011/07/07 03:56:59 claudio Exp $ */
+/*	$OpenBSD: kroute.c,v 1.36 2011/07/07 18:39:11 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -812,10 +812,13 @@ if_change(u_short ifindex, int flags, struct if_data *ifd)
 	if (wasvalid == isvalid)
 		return;		/* nothing changed wrt validity */
 
-	/* notify ospfe about interface link state */
-	if (iface->cflags & F_IFACE_CONFIGURED)
+	/* inform engine and rde about state change if interface is used */
+	if (iface->cflags & F_IFACE_CONFIGURED) {
 		main_imsg_compose_ospfe(IMSG_IFINFO, 0, iface,
 		    sizeof(struct iface));
+		main_imsg_compose_rde(IMSG_IFINFO, 0, iface,
+		    sizeof(struct iface));
+	}
 
 	/* update redistribute list */
 	RB_FOREACH(kr, kroute_tree, &krt) {
@@ -899,12 +902,15 @@ if_newaddr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 	}
 
 	TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
-	ifc.addr = ia->addr;
-	ifc.dstbrd = ia->dstbrd;
-	ifc.prefixlen = ia->prefixlen;
-	ifc.ifindex = ifindex;
-	main_imsg_compose_ospfe(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
-	main_imsg_compose_rde(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+	/* inform engine and rde if interface is used */
+	if (iface->cflags & F_IFACE_CONFIGURED) {
+		ifc.addr = ia->addr;
+		ifc.dstbrd = ia->dstbrd;
+		ifc.prefixlen = ia->prefixlen;
+		ifc.ifindex = ifindex;
+		main_imsg_compose_ospfe(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+		main_imsg_compose_rde(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+	}
 }
 
 void
@@ -944,14 +950,17 @@ if_deladdr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 			log_debug("if_deladdr: ifindex %u, addr %s/%d",
 			    ifindex, log_in6addr(&ia->addr), ia->prefixlen);
 			TAILQ_REMOVE(&iface->ifa_list, ia, entry);
-			ifc.addr = ia->addr;
-			ifc.dstbrd = ia->dstbrd;
-			ifc.prefixlen = ia->prefixlen;
-			ifc.ifindex = ifindex;
-			main_imsg_compose_ospfe(IMSG_IFADDRDEL, 0, &ifc,
-			    sizeof(ifc));
-			main_imsg_compose_rde(IMSG_IFADDRDEL, 0, &ifc,
-			    sizeof(ifc));
+			/* inform engine and rde if interface is used */
+			if (iface->cflags & F_IFACE_CONFIGURED) {
+				ifc.addr = ia->addr;
+				ifc.dstbrd = ia->dstbrd;
+				ifc.prefixlen = ia->prefixlen;
+				ifc.ifindex = ifindex;
+				main_imsg_compose_ospfe(IMSG_IFADDRDEL, 0, &ifc,
+				    sizeof(ifc));
+				main_imsg_compose_rde(IMSG_IFADDRDEL, 0, &ifc,
+				    sizeof(ifc));
+			}
 			free(ia);
 			return;
 		}
@@ -1065,6 +1074,7 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 		 */
 		bzero(&ifp, sizeof(ifp));
 		ifp.addr.sdl_len = sizeof(struct sockaddr_dl);
+		ifp.addr.sdl_family = AF_LINK;
 		
 		ifp.addr.sdl_index  = kroute->ifindex;
 		/* adjust header */
