@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.23 2011/06/27 12:17:38 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.28 2011/07/14 11:31:20 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -103,7 +103,7 @@ our @ISA = qw(OpenBSD::AddDelete::State);
 sub handle_options
 {
 	my $state = shift;
-	$state->SUPER::handle_options('aruUzl:A:P:Q:',
+	$state->SUPER::handle_options('ruUzl:A:P:Q:',
 	    '[-acIinqrsUuvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
 	    '[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
 
@@ -144,7 +144,6 @@ sub handle_options
 	}
 
 
-	$state->{automatic} = $state->opt('a');
 	$state->{hard_replace} = $state->opt('r');
 	$state->{newupdates} = $state->opt('u') || $state->opt('U');
 	$state->{allow_replacing} = $state->{hard_replace} ||
@@ -158,45 +157,35 @@ sub handle_options
 	}
 }
 
-# one-level dependencies tree, for nicer printouts
-sub build_deptree
-{
-	my ($state, $set, @deps) = @_;
-
-	if (defined $state->{deptree}->{$set}) {
-		$set = $state->{deptree}->{$set};
-	}
-	for my $dep (@deps) {
-		$state->{deptree}->{$dep} = $set unless
-		    defined $state->{deptree}->{$dep};
-	}
-}
-
-sub todo
-{
-	my ($state, $offset) = @_;
-	return $state->tracker->sets_todo($offset);
-}
-
-sub deptree_header
-{
-	my ($state, $pkg) = @_;
-	if (defined $state->{deptree}->{$pkg}) {
-		my $s = $state->{deptree}->{$pkg}->real_set;
-		if ($s eq $pkg) {
-			delete $state->{deptree}->{$pkg};
-		} else {
-			return $s->short_print.':';
-		}
-	}
-	return '';
-}
-
 sub set_name_from_handle
 {
 	my ($state, $h, $extra) = @_;
 	$extra //= '';
 	$state->log->set_context($extra.$h->pkgname);
+}
+
+sub updateset
+{
+	my $self = shift;
+	require OpenBSD::UpdateSet;
+
+	return OpenBSD::UpdateSet->new($self);
+}
+
+sub updateset_with_new
+{
+	my ($self, $pkgname) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->create_new($pkgname));
+}
+
+sub updateset_from_location
+{
+	my ($self, $location) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->from_location($location));
 }
 
 OpenBSD::Auto::cache(updater,
@@ -900,6 +889,7 @@ sub install_set
 	for my $handle ($set->newer) {
 		if ($state->tracker->is_installed($handle->pkgname)) {
 			$set->move_kept($handle);
+			$handle->{tweaked} = OpenBSD::Add::tweak_package_status($handle->pkgname, $state);
 		}
 	}
 
