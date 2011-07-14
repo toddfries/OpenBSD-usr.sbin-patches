@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.65 2011/06/20 09:46:23 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.68 2011/07/13 12:57:27 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -260,7 +260,7 @@ sub print
 		$result = "[".join('+', sort $self->kept_names)."]";
 	}
 	if ($self->older > 0) {
-		$result .= join('+',sort $self->older_names)."->";
+		$result .= $self->old_print."->";
 	}
 	if ($self->newer > 0) {
 		$result .= join('+', sort $self->newer_names);
@@ -270,10 +270,21 @@ sub print
 	return $result;
 }
 
+sub old_print
+{
+	my $self = shift;
+	return join('+', sort $self->older_names);
+}
+
+sub todo_names
+{
+	&OpenBSD::UpdateSet::newer_names;
+}
+
 sub short_print
 {
 	my $self = shift;
-	my $result = join('+', sort $self->newer_names);
+	my $result = join('+', sort $self->todo_names);
 	if (length $result > 30) {
 		return substr($result, 0, 27)."...";
 	} else {
@@ -401,6 +412,18 @@ sub real_set
 		$set = $set->{merged};
 	}
 	return $set;
+}
+
+package OpenBSD::DeleteSet;
+our @ISA = qw(OpenBSD::UpdateSet);
+sub print
+{
+	&OpenBSD::UpdateSet::old_print;
+}
+
+sub todo_names
+{
+	&OpenBSD::UpdateSet::older_names;
 }
 
 1;

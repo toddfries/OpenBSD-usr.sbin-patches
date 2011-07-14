@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.46 2011/03/07 09:26:47 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.50 2011/07/14 11:31:20 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -144,7 +144,7 @@ sub handle_options
 		}
 	};
 	$state->{no_exports} = 1;
-	$state->SUPER::handle_options($opt_string.'ciInqsB:F:', @usage);
+	$state->SUPER::handle_options($opt_string.'aciInqsB:F:', @usage);
 
 	if ($state->opt('s')) {
 		$state->{not} = 1;
@@ -157,6 +157,7 @@ sub handle_options
 	$state->{quick} = $state->opt('q') || $state->config->istrue("nochecksum");
 	$state->{extra} = $state->opt('c');
 	$state->{dont_run_scripts} = $state->opt('I');
+	$state->{automatic} = $state->opt('a') // 0;
 	$ENV{'PKG_DELETE_EXTRA'} = $state->{extra} ? "Yes" : "No";
 }
 
@@ -182,11 +183,45 @@ sub ntogo
 	    $self->f("ok");
 }
 
+sub todo
+{
+	my ($state, $offset) = @_;
+	return $state->tracker->sets_todo($offset);
+}
+
 sub ntogo_string
 {
 	my ($self, $offset) = @_;
 
 	return $self->todo($offset // 0);
+}
+
+# one-level dependencies tree, for nicer printouts
+sub build_deptree
+{
+	my ($state, $set, @deps) = @_;
+
+	if (defined $state->{deptree}->{$set}) {
+		$set = $state->{deptree}->{$set};
+	}
+	for my $dep (@deps) {
+		$state->{deptree}->{$dep} = $set unless
+		    defined $state->{deptree}->{$dep};
+	}
+}
+
+sub deptree_header
+{
+	my ($state, $pkg) = @_;
+	if (defined $state->{deptree}->{$pkg}) {
+		my $s = $state->{deptree}->{$pkg}->real_set;
+		if ($s eq $pkg) {
+			delete $state->{deptree}->{$pkg};
+		} else {
+			return $s->short_print.':';
+		}
+	}
+	return '';
 }
 
 sub vstat
@@ -283,30 +318,6 @@ sub status
 	my $self = shift;
 
 	return $self->{status};
-}
-
-sub updateset
-{
-	my $self = shift;
-	require OpenBSD::UpdateSet;
-
-	return OpenBSD::UpdateSet->new($self);
-}
-
-sub updateset_with_new
-{
-	my ($self, $pkgname) = @_;
-
-	return $self->updateset->add_newer(
-	    OpenBSD::Handle->create_new($pkgname));
-}
-
-sub updateset_from_location
-{
-	my ($self, $location) = @_;
-
-	return $self->updateset->add_newer(
-	    OpenBSD::Handle->from_location($location));
 }
 
 OpenBSD::Auto::cache(ldconfig,
