@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgDelete.pm,v 1.17 2011/07/14 11:31:20 espie Exp $
+# $OpenBSD: PkgDelete.pm,v 1.20 2011/07/19 05:58:33 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -47,8 +47,8 @@ sub handle_set
 
 sub todo
 {
-	my ($self, $list) = @_;
-	for my $set (@$list) {
+	my ($self, @list) = @_;
+	for my $set (@list) {
 		for my $pkgname ($set->older_names) {
 			$self->{todo}{$pkgname} = $set;
 		}
@@ -67,6 +67,10 @@ sub done
 	$self->handle_set($set);
 }
 
+sub cant
+{
+	&done;
+}
 sub find
 {
 	my ($self, $pkgname) = @_;
@@ -206,16 +210,17 @@ sub process_parameters
 
 	my $inst = $state->repo->installed;
 
-	if (@ARGV == 0 && $state->{automatic}) {
-		for my $l (@{$inst->locations_list}) {
-			$self->add_location($state, $l);
+	if (@ARGV == 0) {
+		if (!$state->{automatic}) {
+			$state->fatal("No packages to delete");
 		}
 	} else {
 		for my $pkgname (@ARGV) {
 			my $l;
 
 			if (OpenBSD::PackageName::is_stem($pkgname)) {
-				$l = $state->stem2location($inst, $pkgname, $state);
+				$l = $state->stem2location($inst, $pkgname, 
+				    $state);
 			} else {
 				$l = $inst->find($pkgname, $state->{arch});
 			}
@@ -247,8 +252,6 @@ sub really_remove
 		$state->log->set_context('-'.$pkgname);
 		OpenBSD::Delete::delete_package($pkgname, $state);
 	}
-	$set->cleanup;
-	$state->tracker->done($set);
 	$state->progress->next($state->ntogo);
 }
 
@@ -278,16 +281,12 @@ sub fix_bad_dependencies
 	return 0;
 }
 
-sub remove_set
+sub process_set
 {
-	my ($set, $state) = @_;
+	my ($self, $set, $state) = @_;
 
 	my $todo = {};
 	my $bad = {};
-	$set = $set->real_set;
-	if ($set->{finished}) {
-		return ();
-	}
     	for my $pkgname ($set->older_names) {
 		unless (is_installed($pkgname)) {
 			$state->errsay("#1 was not installed", $pkgname);
@@ -325,20 +324,20 @@ sub remove_set
 		}
 	}
 	if (keys %$bad > 0) {
-		if (!$state->{automatic} || $state->verbose) {
+		if (!$state->{do_automatic} || $state->verbose) {
 			$state->errsay("can't delete #1 without deleting #2",
 			    $set->print, join(' ', sort keys %$bad));
 		}
-		if (!$state->{automatic}) {
+		if (!$state->{do_automatic}) {
 			if (delete_dependencies($state)) {
 			    	my $l = create_locations($state, keys %$bad);
-				$state->tracker->todo($l);
+				$state->tracker->todo(@$l);
 				return (@$l, $set);
 			}
 			$state->{bad}++;
 	    	}
 		$set->cleanup(OpenBSD::Handle::CANT_DELETE);
-		$state->tracker->done($set);
+		$state->tracker->cant($set);
 		return ();
 	}
 	# XXX this si where we should detect loops
@@ -357,19 +356,21 @@ sub remove_set
 		$state->build_deptree($set, values %$todo);
 		return (values %$todo, $set);
 	}
-	if ($state->{automatic}) {
+	if ($state->{do_automatic}) {
 		for my $pkg  ($set->older) {
 			$pkg->complete_old;
 			if ($pkg->plist->has('manual-installation')) {
 				$state->say("Won't delete manually installed #1",
 				    $set->print) if $state->verbose;
 				$set->cleanup(OpenBSD::Handle::CANT_DELETE);
-				$state->tracker->done($set);
+				$state->tracker->cant($set);
 				return ();
 			}
 		}
 	}
 	really_remove($set, $state);
+	$set->cleanup;
+	$state->tracker->done($set);
 	return ();
 }
 
@@ -377,14 +378,15 @@ sub main
 {
 	my ($self, $state) = @_;
 
-	my %done;
-	my $removed;
-
-	$state->tracker->todo($state->{setlist});
-	# and finally, handle the removal
-	while (my $set = shift @{$state->{setlist}}) {
-		$state->status->what->set($set);
-		unshift(@{$state->{setlist}}, remove_set($set, $state));
+	$self->process_setlist($state);
+	if ($state->{automatic}) {
+		my $inst = $state->repo->installed;
+		delete $state->{setlist};
+		for my $l (@{$inst->locations_list}) {
+			$self->add_location($state, $l);
+		}
+		$state->{do_automatic} = 1;
+		$self->process_setlist($state);
 	}
 }
 
