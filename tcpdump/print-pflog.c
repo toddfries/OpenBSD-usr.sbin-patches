@@ -172,7 +172,7 @@ pflog_if_print(u_char *user, const struct pcap_pkthdr *h,
 				    ntohs(hdr->dport));
 		}
 	}
-	af = hdr->af;
+	af = hdr->naf;
 	length -= hdrlen;
 	if (af == AF_INET) {
 		ip = (struct ip *)(p + hdrlen);
