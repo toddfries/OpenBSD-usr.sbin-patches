@@ -1,4 +1,4 @@
-.\" $OpenBSD: fw_update.1,v 1.4 2011/07/09 16:12:29 schwarze Exp $
+.\" $OpenBSD: fw_update.1,v 1.8 2011/08/02 23:46:39 deraadt Exp $
 .\"
 .\" Copyright (c) 2011 Alexander Hall <alexander@beard.se>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: July 9 2011 $
+.Dd $Mdocdate: August 2 2011 $
 .Dt FW_UPDATE 1
 .Os
 .Sh NAME
@@ -22,23 +22,36 @@
 .Nd install and update non-free firmware packages
 .Sh SYNOPSIS
 .Nm
-.Op Fl v
+.Op Fl nv
 .Sh DESCRIPTION
 The
 .Nm
-utility installs and updates device firmwares with non-free licenses
-that may not be shipped with
+utility checks which firmware are needed on the system and then
+installs or updates the relevant packages from the Internet.
+Since firmware with acceptable licenses are already present in
+.Ox ,
+.Nm
+exists purely to install and update firmware that may not be freely
+distributed with
 .Ox .
-It automatically detects such devices and downloads and installs the proper
-firmware packages for the currently running kernel.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl n
+Pass the
+.Fl n
+flag to
+.Xr pkg_add 1 ,
+causing it to not actually install any firmware packages,
+just report the steps that would be taken if it was.
 .It Fl v
-Turn on verbose output by passing the
+Turn on verbose output and pass the
 .Fl v
 flag to
 .Xr pkg_add 1 .
+This flag can be specified multiple times for increased
+.Xr pkg_add 1
+verbosity.
 .El
 .Sh SEE ALSO
 .Xr pkg_add 1 ,
