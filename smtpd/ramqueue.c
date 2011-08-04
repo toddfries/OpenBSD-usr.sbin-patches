@@ -1,4 +1,4 @@
-/*	$OpenBSD: ramqueue.c,v 1.8 2011/05/16 21:05:52 gilles Exp $	*/
+/*	$OpenBSD: ramqueue.c,v 1.10 2011/07/21 23:29:24 gilles Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -246,7 +246,7 @@ ramqueue_next_schedule(struct envelope *envelope, time_t curtm)
 			delay = (envelope->delivery.retry * 60) + arc4random_uniform(60);
 	}
 
-	if (envelope->delivery.type == D_MDA) {
+	if (envelope->delivery.type == D_MTA) {
 		if (envelope->delivery.retry < 3)
 			delay = SMTPD_QUEUE_INTERVAL;
 		else if (envelope->delivery.retry <= 7) {
@@ -353,4 +353,43 @@ ramqueue_host_cmp(struct ramqueue_host *h1, struct ramqueue_host *h2)
 	return strcmp(h1->hostname, h2->hostname);
 }
 
+void
+ramqueue_reschedule(struct ramqueue *rqueue, u_int64_t id)
+{
+	struct ramqueue_envelope *rq_evp;
+	time_t tm;
+
+	tm = time(NULL);
+	TAILQ_FOREACH(rq_evp, &rqueue->queue, queue_entry) {
+		if (id != rq_evp->evpid &&
+		    (id <= 0xffffffffLL &&
+			evpid_to_msgid(rq_evp->evpid) != id))
+			continue;
+
+		TAILQ_REMOVE(&rqueue->queue, rq_evp, queue_entry);
+		rq_evp->sched = 0;
+		TAILQ_INSERT_HEAD(&rqueue->queue, rq_evp, queue_entry);
+
+		/* we were scheduling one envelope and found it,
+		 * no need to go through the entire queue
+		 */
+		if (id > 0xffffffffLL)
+			break;
+	}
+}
+
+struct ramqueue_envelope *
+ramqueue_envelope_by_id(struct ramqueue *rqueue, u_int64_t id)
+{
+	struct ramqueue_envelope *rq_evp;
+
+	TAILQ_FOREACH(rq_evp, &rqueue->queue, queue_entry) {
+		if (rq_evp->evpid == id)
+			return rq_evp;
+	}
+
+	return NULL;
+}
+
 RB_GENERATE(hosttree, ramqueue_host, host_entry, ramqueue_host_cmp);
+
