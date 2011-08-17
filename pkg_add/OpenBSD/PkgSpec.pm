@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgSpec.pm,v 1.34 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: PkgSpec.pm,v 1.37 2011/07/12 10:22:29 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -22,8 +22,6 @@ package OpenBSD::PkgSpec::flavorspec;
 sub new
 {
 	my ($class, $spec) = @_;
-
-	$spec =~ s/^-//o;
 
 	bless \$spec, $class;
 }
@@ -59,10 +57,22 @@ sub match
 
 package OpenBSD::PkgSpec::exactflavor;
 our @ISA = qw(OpenBSD::PkgSpec::flavorspec);
+sub new
+{
+	my ($class, $value) = @_;
+	bless {map{($_, 1)} split(/\-/, $value)}, $class;
+}
+
+sub flavor_string
+{
+	my $self = shift;
+	return join('-', sort keys %$self);
+}
+
 sub match
 {
 	my ($self, $h) = @_;
-	if ($$self eq $h->flavor_string) {
+	if ($self->flavor_string eq $h->flavor_string) {
 		return 1;
 	} else {
 		return 0;
@@ -92,6 +102,11 @@ sub new
 }
 
 sub match_ref
+{
+	return ();
+}
+
+sub match_libs_ref
 {
 	return ();
 }
@@ -176,6 +191,7 @@ sub parse
 		return undef;
 	}
 	($r->{stemspec}, $r->{vspec}, $r->{flavorspec}) = ($1, $2, $3);
+	$r->{flavorspec} =~ s/^\-//;
 
 	$r->{stemspec} =~ s/\./\\\./go;
 	$r->{stemspec} =~ s/\+/\\\+/go;
@@ -226,6 +242,7 @@ sub new
 		my $o = bless {
 			exactstem => qr{^$stemspec$},
 			fuzzystem => qr{^$stemspec\-\d.*$},
+			libstem => qr{^\.libs\d*\-$stemspec\-\d.*$},
 			constraints => $constraints,
 		    }, $class;
 		if (defined $r->{e}) {
@@ -258,6 +275,13 @@ LOOP1:
 
 	return @result;
 }
+
+sub match_libs_ref
+{
+	my ($o, $list) = @_;
+	return grep(/$o->{libstem}/, @$list);
+}
+
 
 sub match_locations
 {
@@ -309,6 +333,25 @@ sub match_ref
 	} else {
 		for my $subpattern (@$self) {
 			if ($subpattern->match_ref($r)) {
+				return 1;
+			}
+		}
+		return 0;
+	}
+}
+
+sub match_libs_ref
+{
+	my ($self, $r) = @_;
+	if (wantarray) {
+		my @l = ();
+		for my $subpattern (@$self) {
+			push(@l, $subpattern->match_libs_ref($r));
+		}
+		return @l;
+	} else {
+		for my $subpattern (@$self) {
+			if ($subpattern->match_libs_ref($r)) {
 				return 1;
 			}
 		}

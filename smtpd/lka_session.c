@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka_session.c,v 1.4 2011/05/17 18:54:32 gilles Exp $	*/
+/*	$OpenBSD: lka_session.c,v 1.8 2011/07/04 19:44:31 gilles Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -136,6 +136,7 @@ lka_session_envelope_expand(struct lka_session *lks, struct envelope *ep)
 			fatalx("lka_session_envelope_expand: unexpected rule action");
 			return 0;
 		}
+
 		lka_session_request_forwardfile(lks, ep, u.username);
 		return 1;
 	}
@@ -168,6 +169,7 @@ lka_session_forward_reply(struct forward_req *fwreq, int fd)
 	lks->pending--;
 	
 	ep = &fwreq->envelope;
+
 	if (fd != -1) {
 		/* opened .forward okay */
 		if (! forwards_get(fd, &lks->expandtree, fwreq->as_user)) {
@@ -390,6 +392,10 @@ lka_session_deliver(struct lka_session *lks, struct envelope *ep)
 			break;
 		}
 	}
+	else if (new_ep->delivery.type == D_MTA) {
+		if (ep->rule.r_as)
+			new_ep->delivery.from = *ep->rule.r_as;
+	}
 	TAILQ_INSERT_TAIL(&lks->deliverylist, new_ep, entry);
 }
 
@@ -397,8 +403,10 @@ int
 lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
 {
 	struct delivery *dlv;
+	struct delivery olddlv;
 
 	dlv = &ep->delivery;
+	memcpy(&olddlv, dlv, sizeof (*dlv));
         bzero(&dlv->agent, sizeof (dlv->agent));
 
 	switch (xn->type) {
@@ -438,8 +446,10 @@ lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
 		ep->rule.r_condition.c_type = C_DOM;
 
 		/* if expansion of a user results in same user ... deliver */
-		if (strcmp(xn->u.user, xn->as_user) == 0)
+		if (strcmp(xn->u.user, xn->as_user) == 0) {
+			ep->delivery.agent.mda.method = olddlv.agent.mda.method;
 			break;
+		}
 
 		/* otherwise rewrite delivery user with expansion result */
 		(void)strlcpy(dlv->agent.mda.to.user, xn->u.user,
@@ -547,7 +557,7 @@ lka_session_expand_format(char *buf, size_t len, struct envelope *ep)
 				string = dlv->agent.mda.as_user;
 				break;
 			case 'u':
-				string = dlv->rcpt.domain;
+				string = dlv->rcpt.user;
 				break;
 			case 'd':
 				string = dlv->rcpt.domain;

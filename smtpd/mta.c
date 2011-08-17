@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.106 2011/05/16 21:05:52 gilles Exp $	*/
+/*	$OpenBSD: mta.c,v 1.110 2011/07/20 10:22:54 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -96,8 +96,6 @@ mta_imsg(struct imsgev *iev, struct imsg *imsg)
 			}
 
 			/* use auth? */
-			log_debug("host: %s", rq_batch->rule.r_value.relayhost.hostname);
-			log_debug("flags: %d", rq_batch->rule.r_value.relayhost.flags);
 			if ((rq_batch->rule.r_value.relayhost.flags & F_SSL) &&
 			    (rq_batch->rule.r_value.relayhost.flags & F_AUTH)) {
 				s->flags |= MTA_USE_AUTH;
@@ -554,15 +552,15 @@ mta_pickup(struct mta_session *s, void *p)
 
 	case MTA_MX:
 		/* LKA responded to DNS lookup. */
-		error = *(int *)p;
-		if (error == EAI_AGAIN) {
-			mta_status(s, "100 MX lookup failed temporarily");
-			mta_enter_state(s, MTA_DONE, NULL);
-		} else if (error == EAI_NONAME) {
-			mta_status(s, "600 Domain does not exist");
-			mta_enter_state(s, MTA_DONE, NULL);
-		} else if (error) {
-			mta_status(s, "600 Unable to resolve DNS for domain");
+		if ((error = *(int *)p)) {
+			if (error == DNS_RETRY)
+				mta_status(s, "100 MX lookup failed temporarily");
+			else if (error == DNS_EINVAL)
+				mta_status(s, "600 Invalid domain name");
+			else if (error == DNS_ENONAME)
+				mta_status(s, "600 Domain does not exist");
+			else if (error == DNS_ENOTFOUND)
+				mta_status(s, "600 No MX address found for domain");
 			mta_enter_state(s, MTA_DONE, NULL);
 		} else
 			mta_enter_state(s, MTA_DATA, NULL);

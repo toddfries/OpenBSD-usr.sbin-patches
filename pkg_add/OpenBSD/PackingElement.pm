@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.195 2011/03/19 16:56:05 schwarze Exp $
+# $OpenBSD: PackingElement.pm,v 1.199 2011/06/24 22:43:58 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -192,14 +192,15 @@ sub cwd
 	return ${$_[0]->{cwd}};
 }
 
+sub absolute_okay() { 0 }
 sub compute_fullname
 {
-	my ($self, $state, $absolute_okay) = @_;
+	my ($self, $state) = @_;
 
 	$self->{cwd} = $state->{cwd};
 	$self->set_name(File::Spec->canonpath($self->name));
 	if ($self->name =~ m|^/|) {
-		unless ($absolute_okay) {
+		unless ($self->absolute_okay) {
 			die "Absolute name forbidden: ", $self->name;
 		}
 	}
@@ -454,12 +455,13 @@ package OpenBSD::PackingElement::Sample;
 our @ISA=qw(OpenBSD::PackingElement::FileObject);
 
 sub keyword() { "sample" }
+sub absolute_okay() { 1 }
 __PACKAGE__->register_with_factory;
 sub destate
 {
 	my ($self, $state) = @_;
 	$self->{copyfrom} = $state->{lastfile};
-	$self->compute_fullname($state, 1);
+	$self->compute_fullname($state);
 	$self->compute_modes($state);
 }
 
@@ -468,10 +470,12 @@ sub dirclass() { "OpenBSD::PackingElement::Sampledir" }
 package OpenBSD::PackingElement::Sampledir;
 our @ISA=qw(OpenBSD::PackingElement::DirBase OpenBSD::PackingElement::Sample);
 
+sub absolute_okay() { 1 }
+
 sub destate
 {
 	my ($self, $state) = @_;
-	$self->compute_fullname($state, 1);
+	$self->compute_fullname($state);
 	$self->compute_modes($state);
 }
 
@@ -480,12 +484,13 @@ use File::Basename;
 our @ISA = qw(OpenBSD::PackingElement::FileBase);
 
 sub keyword() { "rcscript" }
+sub absolute_okay() { 1 }
 __PACKAGE__->register_with_factory;
 
 sub destate
 {
 	my ($self, $state) = @_;
-	$self->compute_fullname($state, 1);
+	$self->compute_fullname($state);
 	if ($self->name =~ m/^\//) {
 		$state->set_cwd(dirname($self->name));
 	}
@@ -893,7 +898,15 @@ sub new
 	$cdrom =~ s/^\'(.*)\'$/$1/;
 	$ftp =~ s/^\"(.*)\"$/$1/;
 	$ftp =~ s/^\'(.*)\'$/$1/;
-	bless { subdir => $subdir, cdrom => $cdrom, ftp => $ftp}, $class;
+	bless { subdir => $subdir,
+		path => OpenBSD::PkgPath->new($subdir), 
+	    cdrom => $cdrom, 
+	    ftp => $ftp}, $class;
+}
+
+sub subdir
+{
+	return shift->{subdir};
 }
 
 sub may_quote
@@ -909,8 +922,10 @@ sub may_quote
 sub stringize
 {
 	my $self = shift;
-	return "subdir=".$self->{subdir}." cdrom=".may_quote($self->{cdrom}).
-	    " ftp=".may_quote($self->{ftp});
+	return join(' ',
+	    "subdir=".$self->{subdir},
+	    "cdrom=".may_quote($self->{cdrom}),
+	    "ftp=".may_quote($self->{ftp}));
 }
 
 package OpenBSD::PackingElement::Name;
@@ -1027,6 +1042,18 @@ our @ISA=qw(OpenBSD::PackingElement::Meta);
 sub keyword() { "pkgpath" }
 __PACKAGE__->register_with_factory;
 sub category() { "pkgpath" }
+
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	bless {name => $fullpkgpath, 
+	    path => OpenBSD::PkgPath::WithOpts->new($fullpkgpath)}, $class;
+}
+
+sub subdir
+{
+	return shift->{name};
+}
 
 package OpenBSD::PackingElement::Incompatibility;
 our @ISA=qw(OpenBSD::PackingElement::Meta);
@@ -1512,18 +1539,20 @@ package OpenBSD::PackingElement::Extra;
 our @ISA=qw(OpenBSD::PackingElement::FileObject);
 
 sub keyword() { 'extra' }
+sub absolute_okay() { 1 }
 __PACKAGE__->register_with_factory;
 
 sub destate
 {
 	my ($self, $state) = @_;
-	$self->compute_fullname($state, 1);
+	$self->compute_fullname($state);
 }
 
 sub dirclass() { "OpenBSD::PackingElement::Extradir" }
 
 package OpenBSD::PackingElement::Extradir;
 our @ISA=qw(OpenBSD::PackingElement::DirBase OpenBSD::PackingElement::Extra);
+sub absolute_okay() { 1 }
 
 sub destate
 {
@@ -1844,6 +1873,100 @@ sub register_old_keyword
 for my $k (qw(src display mtree ignore_inst dirrm pkgcfl pkgdep newdepend
     libdepend ignore)) {
 	__PACKAGE__->register_old_keyword($k);
+}
+
+# Real pkgpath objects, with matching properties
+package OpenBSD::PkgPath;
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	my ($dir, @mandatory) = split(/\,/, $fullpkgpath);
+	return bless {dir => $dir,
+		mandatory => {map {($_, 1)} @mandatory},
+	}, $class;
+}
+
+# a pkgpath has a dir, and some flavors/multi parts. To match, we must
+# remove them all. So, keep a full hash of everything we have (has), and
+# when stuff $to_rm matches, remove them from $from.
+# We match when we're left with nothing.
+sub trim
+{
+	my ($self, $has, $from, $to_rm) = @_;
+	for my $f (keys %$to_rm) {
+		if ($has->{$f}) {
+			delete $from->{$f};
+		} else {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+# basic match: after mandatory, nothing left
+sub match2
+{
+	my ($self, $has, $h) = @_;
+	if (keys %$h) {
+		return 0;
+	} else {
+		return 1;
+	}
+}
+
+# zap mandatory, check that what's left is okay.
+sub match
+{
+	my ($self, $other) = @_;
+	# make a copy of options
+	my %h = %{$other->{mandatory}};
+	if (!$self->trim($other->{mandatory}, \%h, $self->{mandatory})) {
+		return 0;
+	}
+	if ($self->match2($other->{mandatory}, \%h)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+package OpenBSD::PkgPath::WithOpts;
+our @ISA = qw(OpenBSD::PkgPath);
+
+sub new
+{
+	my ($class, $fullpkgpath) = @_;
+	my @opts = ();
+	while ($fullpkgpath =~ s/\[\,(.*?)\]//) {
+		push(@opts, {map {($_, 1)} split(/\,/, $1) });
+	};
+	my $o = $class->SUPER::new($fullpkgpath);
+	if (@opts == 0) {
+		bless $o, "OpenBSD::PkgPath";
+	} else {
+		$o->{opts} = \@opts;
+	}
+	return $o;
+}
+
+# match with options: systematically trim any optional part that  fully
+# matches, until we're left with nothing, or some options keep happening.
+sub match2
+{
+	my ($self, $has, $h) = @_;
+	if (!keys %$h) {
+		return 1;
+	}
+	for my $opts (@{$self->{opts}}) {
+		my %h2 = %$h;
+		if ($self->trim($has, \%h2, $opts)) {
+			$h = \%h2;
+			if (!keys %$h) {
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
 1;

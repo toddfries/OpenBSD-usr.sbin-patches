@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.16 2011/05/06 13:48:46 claudio Exp $ */
+/*	$OpenBSD: interface.c,v 1.19 2011/07/07 17:10:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -147,10 +147,10 @@ if_fsm(struct iface *iface, enum iface_event event)
 		orig_link_lsa(iface);
 
 		/* state change inform RDE */
-		ospfe_imsg_compose_rde(IMSG_IFINFO,
-		    iface->self->peerid, 0, iface, sizeof(struct iface));
+		ospfe_imsg_compose_rde(IMSG_IFINFO, iface->self->peerid, 0,
+		    &iface->state, sizeof(iface->state));
 	}
-
+	
 	if (old_state & (IF_STA_MULTI | IF_STA_POINTTOPOINT) &&
 	    (iface->state & (IF_STA_MULTI | IF_STA_POINTTOPOINT)) == 0)
 		ospfe_demote_iface(iface, 0);
@@ -370,9 +370,7 @@ if_act_start(struct iface *iface)
 	struct timeval		 now;
 
 	if (!((iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP)))) {
+	    LINK_STATE_IS_UP(iface->linkstate))) {
 		log_debug("if_act_start: interface %s link down",
 		    iface->name);
 		return (0);

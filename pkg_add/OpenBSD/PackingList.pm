@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.111 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.114 2011/06/16 14:48:36 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -49,9 +49,16 @@ package OpenBSD::PackingList::hashpath;
 sub match
 {
 	my ($h, $plist) = @_;
-	return
-	    defined $plist->fullpkgpath &&
-	    $h->{$plist->fullpkgpath};
+	my $f = $plist->fullpkgpath2;
+	if (!defined $f) {
+		return 0;
+	}
+	for my $i (@{$h->{$f->{dir}}}) {
+		if ($i->match($f)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 package OpenBSD::Composite;
@@ -448,18 +455,30 @@ sub fullpkgpath
 		return undef;
 	}
 }
+
+sub fullpkgpath2
+{
+	my $self = shift;
+	if (defined $self->{extrainfo} && $self->{extrainfo}->{subdir} ne '') {
+		return $self->{extrainfo}->{path};
+	} else {
+		return undef;
+	}
+}
+
 sub pkgpath
 {
 	my $self = shift;
 	if (!defined $self->{_hashpath}) {
 		my $h = $self->{_hashpath} =
 		    bless {}, "OpenBSD::PackingList::hashpath";
-		if (defined $self->fullpkgpath) {
-			$h->{$self->fullpkgpath} = 1;
+		my $f = $self->fullpkgpath2;
+		if (defined $f) {
+			push(@{$h->{$f->{dir}}}, $f);
 		}
 		if (defined $self->{pkgpath}) {
 			for my $i (@{$self->{pkgpath}}) {
-				$h->{$i->name} = 1;
+				push(@{$h->{$i->{path}->{dir}}}, $i->{path});
 			}
 		}
 	}

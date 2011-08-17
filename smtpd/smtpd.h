@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.224 2011/05/17 18:54:32 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.230 2011/08/16 19:02:03 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -158,6 +158,9 @@ enum imsg_type {
 	IMSG_QUEUE_SCHEDULE,
 	IMSG_QUEUE_REMOVE,
 
+	IMSG_RUNNER_REMOVE,
+	IMSG_RUNNER_SCHEDULE,
+
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
 	IMSG_BATCH_CLOSE,
@@ -276,18 +279,13 @@ struct map {
 	TAILQ_HEAD(mapel_list, mapel)	 m_contents;
 };
 
+
 struct map_backend {
-	enum map_src source;
 	void *(*open)(char *);
 	void (*close)(void *);
-	char *(*get)(void *, char *, size_t *);
-	int (*put)(void *, char *, char *);
+	void *(*lookup)(void *, char *, enum map_kind);
 };
 
-struct map_parser {
-	enum map_kind kind;
-	void *(*extract)(char *, char *, size_t);
-};
 
 enum cond_type {
 	C_ALL,
@@ -329,6 +327,7 @@ struct rule {
 	}				 r_value;
 
 	char				*r_user;
+	struct mailaddr			*r_as;
 	objid_t				 r_amap;
 	time_t				 r_qexpire;
 };
@@ -345,18 +344,6 @@ enum delivery_type {
 	D_MTA,
 	D_BOUNCE
 };
-
-/*
-enum delivery_method {
-	DM_INVALID = 0,
-	DM_RELAY,
-	DM_RELAYVIA,
-	DM_MAILDIR,
-	DM_MBOX,
-	DM_FILENAME,
-	DM_EXT
-};
-*/
 
 enum delivery_status {
 	DS_PERMFAILURE	= 0x2,
@@ -393,6 +380,7 @@ struct delivery_mda {
 
 struct delivery_mta {
 	struct relayhost relay;
+	struct mailaddr	relay_as;
 };
 
 struct delivery {
@@ -575,7 +563,7 @@ struct session {
 
 /* ram-queue structures */
 struct ramqueue_host {
-	RB_ENTRY(ramqueue_host)		host_entry;
+	RB_ENTRY(ramqueue_host)		hosttree_entry;
 	TAILQ_HEAD(,ramqueue_batch)	batch_queue;
 	u_int64_t			h_id;
 	char				hostname[MAXHOSTNAMELEN];
@@ -592,15 +580,22 @@ struct ramqueue_batch {
 struct ramqueue_envelope {
 	TAILQ_ENTRY(ramqueue_envelope)	 queue_entry;
 	TAILQ_ENTRY(ramqueue_envelope)	 batchqueue_entry;
+	RB_ENTRY(ramqueue_envelope)	 evptree_entry;
 	struct ramqueue_host		*host;
 	struct ramqueue_batch		*batch;
+	struct ramqueue_message		*message;
 	u_int64_t      			 evpid;
 	time_t				 sched;
 };
-
+struct ramqueue_message {
+	RB_ENTRY(ramqueue_message)		msgtree_entry;
+	RB_HEAD(evptree, ramqueue_envelope)	evptree;
+	u_int32_t				msgid;
+};
 struct ramqueue {
 	struct ramqueue_envelope	       *current_evp;
 	RB_HEAD(hosttree, ramqueue_host)	hosttree;
+	RB_HEAD(msgtree, ramqueue_message)	msgtree;
 	TAILQ_HEAD(,ramqueue_envelope)		queue;
 };
 
@@ -637,7 +632,6 @@ struct smtpd {
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
 	TAILQ_HEAD(rulelist, rule)		*sc_rules, *sc_rules_reload;
 	SPLAY_HEAD(sessiontree, session)	 sc_sessions;
-	SPLAY_HEAD(msgtree, envelope)		 sc_messages;
 	SPLAY_HEAD(ssltree, ssl)		*sc_ssl;
 	SPLAY_HEAD(childtree, child)		 children;
 	SPLAY_HEAD(lkatree, lka_session)	 lka_sessions;
@@ -716,9 +710,11 @@ struct s_lka {
 struct s_ramqueue {
 	size_t		hosts;
 	size_t		batches;
+	size_t		messages;
 	size_t		envelopes;
 	size_t		hosts_max;
 	size_t		batches_max;
+	size_t		messages_max;
 	size_t		envelopes_max;
 };
 
@@ -758,6 +754,14 @@ struct forward_req {
 	u_int8_t			 status;
 	char				 as_user[MAXLOGNAME];
 	struct envelope			 envelope;
+};
+
+enum dns_status {
+	DNS_OK = 0,
+	DNS_RETRY,
+	DNS_EINVAL,
+	DNS_ENONAME,
+	DNS_ENOTFOUND,
 };
 
 struct dns {
@@ -1089,6 +1093,8 @@ void ramqueue_init(struct ramqueue *);
 int ramqueue_load(struct ramqueue *, time_t *);
 int ramqueue_load_offline(struct ramqueue *);
 int ramqueue_host_cmp(struct ramqueue_host *, struct ramqueue_host *);
+int ramqueue_msg_cmp(struct ramqueue_message *, struct ramqueue_message *);
+int ramqueue_evp_cmp(struct ramqueue_envelope *, struct ramqueue_envelope *);
 void ramqueue_remove(struct ramqueue *, struct ramqueue_envelope *);
 int ramqueue_is_empty(struct ramqueue *);
 int ramqueue_is_empty(struct ramqueue *);
@@ -1096,10 +1102,18 @@ int ramqueue_batch_is_empty(struct ramqueue_batch *);
 int ramqueue_host_is_empty(struct ramqueue_host *);
 void ramqueue_remove_batch(struct ramqueue_host *, struct ramqueue_batch *);
 void ramqueue_remove_host(struct ramqueue *, struct ramqueue_host *);
+void ramqueue_reschedule(struct ramqueue *, u_int64_t);
+struct ramqueue_envelope *ramqueue_envelope_by_id(struct ramqueue *, u_int64_t);
 struct ramqueue_envelope *ramqueue_first_envelope(struct ramqueue *);
 struct ramqueue_envelope *ramqueue_next_envelope(struct ramqueue *);
 struct ramqueue_envelope *ramqueue_batch_first_envelope(struct ramqueue_batch *);
-RB_PROTOTYPE(hosttree, ramqueue_host, host_entry, ramqueue_host_cmp);
+void ramqueue_insert(struct ramqueue *, struct envelope *, time_t);
+int ramqueue_message_is_empty(struct ramqueue_message *);
+void ramqueue_remove_message(struct ramqueue *, struct ramqueue_message *);
+
+RB_PROTOTYPE(hosttree, ramqueue_host, hosttree_entry, ramqueue_host_cmp);
+RB_PROTOTYPE(msgtree,  ramqueue_message, msg_entry, ramqueue_msg_cmp);
+RB_PROTOTYPE(evptree,  ramqueue_envelope, evp_entry, ramqueue_evp_cmp);
 
 
 /* runner.c */

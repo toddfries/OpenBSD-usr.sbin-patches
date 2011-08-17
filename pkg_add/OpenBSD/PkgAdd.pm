@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.21 2011/01/03 19:01:04 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.30 2011/07/23 15:04:27 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -62,13 +62,48 @@ sub has_different_sig
 	return $plist->{different_sig};
 }
 
+package OpenBSD::PackingElement;
+sub hash_files
+{
+}
+sub tie_files
+{
+}
+
+package OpenBSD::PackingElement::FileBase;
+sub hash_files
+{
+	my ($self, $sha, $state) = @_;
+	return if $self->{link} or $self->{symlink} or $self->{nochecksum};
+	if (defined $self->{d}) {
+		$sha->{$self->{d}->key} = $self;
+	}
+}
+
+sub tie_files
+{
+	my ($self, $sha, $state) = @_;
+	return if $self->{link} or $self->{symlink} or $self->{nochecksum};
+	if (defined $sha->{$self->{d}->key}) {
+		my $tied = $sha->{$self->{d}->key};
+		# don't tie if there's a problem with the file
+		return unless -f $tied->realname($state);
+		# and do a sanity check that this file wasn't altered
+		return unless (stat _)[7] == $self->{size};
+		$self->{tieto} = $tied;
+		$tied->{tied} = 1;
+		$state->say("Tieing #1 to #2", $self->stringize, 
+		    $tied->stringize) if $state->verbose >= 3;
+	}
+}
+
 package OpenBSD::PkgAdd::State;
 our @ISA = qw(OpenBSD::AddDelete::State);
 
 sub handle_options
 {
 	my $state = shift;
-	$state->SUPER::handle_options('aruUzl:A:P:Q:',
+	$state->SUPER::handle_options('ruUzl:A:P:Q:',
 	    '[-acIinqrsUuvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
 	    '[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
 
@@ -109,7 +144,6 @@ sub handle_options
 	}
 
 
-	$state->{automatic} = $state->opt('a');
 	$state->{hard_replace} = $state->opt('r');
 	$state->{newupdates} = $state->opt('u') || $state->opt('U');
 	$state->{allow_replacing} = $state->{hard_replace} ||
@@ -123,45 +157,35 @@ sub handle_options
 	}
 }
 
-# one-level dependencies tree, for nicer printouts
-sub build_deptree
-{
-	my ($state, $set, @deps) = @_;
-
-	if (defined $state->{deptree}->{$set}) {
-		$set = $state->{deptree}->{$set};
-	}
-	for my $dep (@deps) {
-		$state->{deptree}->{$dep} = $set unless
-		    defined $state->{deptree}->{$dep};
-	}
-}
-
-sub todo
-{
-	my ($state, $offset) = @_;
-	return $state->tracker->sets_todo($offset);
-}
-
-sub deptree_header
-{
-	my ($state, $pkg) = @_;
-	if (defined $state->{deptree}->{$pkg}) {
-		my $s = $state->{deptree}->{$pkg}->real_set;
-		if ($s eq $pkg) {
-			delete $state->{deptree}->{$pkg};
-		} else {
-			return $s->short_print.':';
-		}
-	}
-	return '';
-}
-
 sub set_name_from_handle
 {
 	my ($state, $h, $extra) = @_;
 	$extra //= '';
 	$state->log->set_context($extra.$h->pkgname);
+}
+
+sub updateset
+{
+	my $self = shift;
+	require OpenBSD::UpdateSet;
+
+	return OpenBSD::UpdateSet->new($self);
+}
+
+sub updateset_with_new
+{
+	my ($self, $pkgname) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->create_new($pkgname));
+}
+
+sub updateset_from_location
+{
+	my ($self, $location) = @_;
+
+	return $self->updateset->add_newer(
+	    OpenBSD::Handle->from_location($location));
 }
 
 OpenBSD::Auto::cache(updater,
@@ -302,6 +326,11 @@ sub complete
 		      	my $o = $set->{older}->{$pkgname};
 			if (!defined $o) {
 				$o = OpenBSD::Handle->create_old($pkgname, $state);
+				if (!defined $o->pkgname) {
+					$state->{bad}++;
+					$set->cleanup(OpenBSD::Handle::CANT_INSTALL, "Bogus package already installed");
+					return 1;
+				}
 				$set->add_older($o);
 			}
 			$o->{update_found} = $o;
@@ -846,17 +875,9 @@ sub newer_has_errors
 	return 0;
 }
 
-sub install_set
+sub process_set
 {
-	my ($set, $state) = @_;
-
-	$set = $set->real_set;
-
-	$state->progress->set_header('Checking packages');
-
-	if ($set->{finished}) {
-		return ();
-	}
+	my ($self, $set, $state) = @_;
 
 	if (!$state->updater->process_set($set, $state)) {
 		return ();
@@ -865,6 +886,7 @@ sub install_set
 	for my $handle ($set->newer) {
 		if ($state->tracker->is_installed($handle->pkgname)) {
 			$set->move_kept($handle);
+			$handle->{tweaked} = OpenBSD::Add::tweak_package_status($handle->pkgname, $state);
 		}
 	}
 
@@ -938,6 +960,16 @@ sub install_set
 			return ();
 		}
 	}
+	if ($set->newer > 0 && $set->older_to_do > 0 && !$state->defines('donttie')) {
+		$set->{sha} = {};
+
+		for my $o ($set->older_to_do) {
+			$o->{plist}->hash_files($set->{sha}, $state);
+		}
+		for my $n ($set->newer) {
+			$n->{plist}->tie_files($set->{sha}, $state);
+		}
+	}
 	if ($set->newer > 0 || $set->older_to_do > 0) {
 		for my $h ($set->newer) {
 			$h->plist->set_infodir($h->location->info);
@@ -990,9 +1022,9 @@ sub quirk_set
 
 sub do_quirks
 {
-	my $state = shift;
+	my ($self, $state) = @_;
 
-	install_set(quirk_set($state), $state);
+	$self->process_set(quirk_set($state), $state);
 	eval {
 		require OpenBSD::Quirks;
 		# interface version number.
@@ -1079,25 +1111,25 @@ sub finish_display
 	inform_user_of_problems($state);
 }
 
+sub tweak_list
+{
+	my ($self, $state) = @_;
+
+	eval {
+		$state->quirks->tweak_list($state->{setlist}, $state);
+	}
+}
+
 sub main
 {
 	my ($self, $state) = @_;
 
 	$state->progress->set_header('');
 	if ($state->{allow_replacing}) {
-		do_quirks($state);
+		$self->do_quirks($state);
 	}
 
-	$state->tracker->todo(@{$state->{setlist}});
-	# This is the actual very small loop that adds all packages
-	while (my $set = shift @{$state->{setlist}}) {
-
-		$state->status->what->set($set);
-		unshift(@{$state->{setlist}}, install_set($set, $state));
-		eval {
-			$state->quirks->tweak_list($state->{setlist}, $state);
-		};
-	}
+	$self->process_setlist($state);
 }
 
 

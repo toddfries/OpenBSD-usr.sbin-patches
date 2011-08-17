@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntp.c,v 1.114 2009/06/11 17:36:53 henning Exp $ */
+/*	$OpenBSD: ntp.c,v 1.116 2011/06/17 18:12:05 henning Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -110,6 +110,7 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 		fatal(NULL);
 	hotplugfd = sensor_hotplugfd();
 
+	close(pipe_prnt[0]);
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pipe_dns) == -1)
 		fatal("socketpair");
 	dns_pid = ntp_dns(pipe_dns, nconf, pw);
@@ -150,7 +151,6 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 	signal(SIGHUP, SIG_IGN);
 	signal(SIGCHLD, SIG_DFL);
 
-	close(pipe_prnt[0]);
 	if ((ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
 		fatal(NULL);
 	imsg_init(ibuf_main, pipe_prnt[1]);
@@ -637,6 +637,8 @@ priv_adjtime(void)
 
 	conf->status.reftime = gettime();
 	conf->status.stratum++;	/* one more than selected peer */
+	if (conf->status.stratum > NTP_MAXSTRATUM)
+		conf->status.stratum = NTP_MAXSTRATUM;
 	update_scale(offset_median);
 
 	conf->status.refid = offsets[i]->status.send_refid;
