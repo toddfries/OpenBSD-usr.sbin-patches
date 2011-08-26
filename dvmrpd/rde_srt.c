@@ -1,6 +1,7 @@
-/*	$OpenBSD: rde_srt.c,v 1.17 2009/02/03 16:21:19 michele Exp $ */
+/*	$OpenBSD: rde_srt.c,v 1.25 2010/09/02 14:03:21 sobrado Exp $ */
 
 /*
+ * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -51,13 +52,12 @@ void	 srt_current_forwarder(struct rt_node *, struct iface *,
 
 /* Downstream neighbors */
 void		 srt_add_ds(struct rt_node *, u_int32_t, u_int32_t);
-struct ds_nbr	*srt_find_ds(struct rt_node *, u_int32_t);
 void		 srt_delete_ds(struct rt_node *, struct ds_nbr *,
 		    struct iface *);
 
 /* Flash updates */
-void		 flash_update(struct rt_node *); 
-void		 flash_update_ds(struct rt_node *); 
+void		 flash_update(struct rt_node *);
+void		 flash_update_ds(struct rt_node *);
 
 RB_HEAD(rt_tree, rt_node)	 rt;
 RB_PROTOTYPE(rt_tree, rt_node, entry, rt_compare)
@@ -201,6 +201,9 @@ rr_new_rt(struct route_report *rr, u_int32_t adj_metric, int connected)
 int
 rt_insert(struct rt_node *r)
 {
+	log_debug("rt_insert: inserting route %s/%d", inet_ntoa(r->prefix),
+	    r->prefixlen);
+
 	if (RB_INSERT(rt_tree, &rt, r) != NULL) {
 		log_warnx("rt_insert failed for %s/%u", inet_ntoa(r->prefix),
 		    r->prefixlen);
@@ -313,6 +316,20 @@ rt_update(struct rt_node *rn)
 		rt_start_expire_timer(rn);
 }
 
+struct rt_node *
+rt_match_origin(in_addr_t src)
+{
+	struct rt_node	*r;
+
+	RB_FOREACH(r, rt_tree, &rt) {
+		if (r->prefix.s_addr == (src &
+		    htonl(prefixlen2mask(r->prefixlen))))
+			return (r);
+	}
+
+	return (NULL);
+}
+
 int
 srt_check_route(struct route_report *rr, int connected)
 {
@@ -359,7 +376,7 @@ srt_check_route(struct route_report *rr, int connected)
 
 	if (rr->metric < INFINITY_METRIC) {
 		/* If it is our current nexthop it cannot be a
-		 * downstream router */ 
+		 * downstream router */
 		if (nbr_ip != nbr_report)
 			if ((ds_nbr = srt_find_ds(rn, nbr_report)))
 				srt_delete_ds(rn, ds_nbr, iface);
@@ -489,6 +506,9 @@ srt_add_ds(struct rt_node *rn, u_int32_t nbr_report, u_int32_t ifindex)
 {
 	struct ds_nbr	*ds_nbr;
 
+	log_debug("srt_add_ds: adding downstream router for source %s/%d",
+	    inet_ntoa(rn->prefix), rn->prefixlen);
+
 	if ((ds_nbr = malloc(sizeof(struct ds_nbr))) == NULL)
 		fatal("srt_add_ds");
 
@@ -497,6 +517,8 @@ srt_add_ds(struct rt_node *rn, u_int32_t nbr_report, u_int32_t ifindex)
 	LIST_INSERT_HEAD(&rn->ds_list, ds_nbr, entry);
 	rn->ds_cnt[ifindex]++;
 	rn->ttls[ifindex] = 1;
+
+	mfc_update_source(rn);
 }
 
 struct ds_nbr *
@@ -514,25 +536,64 @@ srt_find_ds(struct rt_node *rn, u_int32_t nbr_report)
 void
 srt_delete_ds(struct rt_node *rn, struct ds_nbr *ds_nbr, struct iface *iface)
 {
+	log_debug("srt_delete_ds: deleting downstream router for source %s/%d",
+	    inet_ntoa(rn->prefix), rn->prefixlen);
+
 	LIST_REMOVE(ds_nbr, entry);
 	free(ds_nbr);
 	rn->ds_cnt[iface->ifindex]--;
 
-	/* XXX */
-	if (!rn->ds_cnt[iface->ifindex])
-		rn->ttls[iface->ifindex] = 0;
+	srt_check_downstream_ifaces(rn, iface);
 }
 
 void
-srt_expire_nbr(struct in_addr addr, struct iface *iface)
+srt_check_downstream_ifaces(struct rt_node *rn, struct iface *iface)
+{
+	/* We are not the designated forwarder for this source on this
+	   interface. Keep things as they currently are */
+	if (rn->adv_rtr[iface->ifindex].addr.s_addr != iface->addr.s_addr)
+		return;
+
+	/* There are still downstream dependent router for this source
+	   Keep things as they currently are */
+	if (rn->ds_cnt[iface->ifindex])
+		return;
+
+	/* There are still group members for this source on this iface
+	   Keep things as they currently are */
+	if (mfc_check_members(rn, iface))
+		return;
+
+	/* Remove interface from the downstream list */
+	rn->ttls[iface->ifindex] = 0;
+	mfc_update_source(rn);
+}
+
+void
+srt_expire_nbr(struct in_addr addr, unsigned int ifindex)
 {
 	struct ds_nbr		*ds;
 	struct rt_node		*rn;
+	struct iface		*iface;
+
+	iface = if_find_index(ifindex);
+	if (iface == NULL)
+		fatal("srt_expire_nbr: interface not found");
 
 	RB_FOREACH(rn, rt_tree, &rt) {
-		ds = srt_find_ds(rn, addr.s_addr);
-		if (ds)
-			srt_delete_ds(rn, ds, iface);
+		if (rn->adv_rtr[ifindex].addr.s_addr == addr.s_addr) {
+			rn->adv_rtr[ifindex].addr.s_addr =
+			    iface->addr.s_addr;
+			rn->adv_rtr[ifindex].metric = rn->cost;
+			/* XXX: delete all routes learned from this nbr */
+		} else if (rn->adv_rtr[ifindex].addr.s_addr ==
+		    iface->addr.s_addr) {
+			ds = srt_find_ds(rn, addr.s_addr);
+			if (ds) {
+				srt_delete_ds(rn, ds, iface);
+				srt_check_downstream_ifaces(rn, iface);
+			}
+		}
 	}
 }
 

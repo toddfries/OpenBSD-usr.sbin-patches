@@ -1,4 +1,4 @@
-/*	$OpenBSD: cbcp.c,v 1.6 2004/11/03 03:33:11 danh Exp $	*/
+/*	$OpenBSD: cbcp.c,v 1.8 2010/05/01 08:14:26 mk Exp $	*/
 
 /*
  * cbcp - Call Back Configuration Protocol.
@@ -29,14 +29,6 @@
  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
-#ifndef lint
-#if 0
-static char rcsid[] = "Id: cbcp.c,v 1.2 1997/04/30 05:50:26 paulus Exp";
-#else
-static char rcsid[] = "$OpenBSD: cbcp.c,v 1.6 2004/11/03 03:33:11 danh Exp $";
-#endif
-#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -123,7 +115,7 @@ cbcp_open(unit)
     syslog(LOG_DEBUG, "cbcp_open");
 }
 
-/* process an incomming packet */
+/* process an incoming packet */
 static void
 cbcp_input(unit, inpacket, pktlen)
     int unit;

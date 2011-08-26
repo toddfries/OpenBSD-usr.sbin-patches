@@ -1,4 +1,4 @@
-/*	$OpenBSD: check_script.c,v 1.7 2008/12/05 16:37:55 reyk Exp $	*/
+/*	$OpenBSD: check_script.c,v 1.14 2011/05/26 14:48:20 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -39,19 +39,27 @@
 
 void	 script_sig_alarm(int);
 
-extern struct imsgbuf		*ibuf_main;
-pid_t				 child = -1;
+pid_t			 child = -1;
 
 void
-check_script(struct host *host)
+check_script(struct relayd *env, struct host *host)
 {
 	struct ctl_script	 scr;
+	struct table		*table;
+
+	if ((table = table_find(env, host->conf.tableid)) == NULL)
+		fatalx("check_script: invalid table id");
 
 	host->last_up = host->up;
 	host->flags &= ~(F_CHECK_SENT|F_CHECK_DONE);
 
 	scr.host = host->conf.id;
-	imsg_compose(ibuf_main, IMSG_SCRIPT, 0, 0, -1, &scr, sizeof(scr));
+	strlcpy(scr.name, host->conf.name, sizeof(host->conf.name));
+	strlcpy(scr.path, table->conf.path, sizeof(table->conf.path));
+	memcpy(&scr.timeout, &table->conf.timeout, sizeof(scr.timeout));
+
+	proc_compose_imsg(env->sc_ps, PROC_PARENT, 0, IMSG_SCRIPT,
+	    -1, &scr, sizeof(scr));
 }
 
 void
@@ -92,18 +100,19 @@ script_exec(struct relayd *env, struct ctl_script *scr)
 	struct itimerval	 it;
 	struct timeval		*tv;
 	const char		*file, *arg;
-	struct host		*host;
-	struct table		*table;
 	struct passwd		*pw;
 
-	if ((host = host_find(env, scr->host)) == NULL)
-		fatalx("script_exec: invalid host id");
-	if ((table = table_find(env, host->conf.tableid)) == NULL)
-		fatalx("script_exec: invalid table id");
+	if ((env->sc_flags & F_SCRIPT) == 0) {
+		log_warnx("%s: script disabled", __func__);
+		return (-1);
+	}
 
-	arg = host->conf.name;
-	file = table->conf.path;
-	tv = &table->conf.timeout;
+	DPRINTF("%s: running script %s, host %s",
+	    __func__, scr->path, scr->name);
+
+	arg = scr->name;
+	file = scr->path;
+	tv = &scr->timeout;
 
 	save_quit = signal(SIGQUIT, SIG_IGN);
 	save_int = signal(SIGINT, SIG_IGN);
@@ -127,6 +136,13 @@ script_exec(struct relayd *env, struct ctl_script *scr)
 		    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 			fatal("script_exec: can't drop privileges");
 
+		/*
+		 * close fds before executing an external program, to
+		 * prevent access to internal fds, eg. IMSG connections
+		 * of internal processes.
+		 */
+		closefrom(STDERR_FILENO + 1);
+
 		execlp(file, file, arg, (char *)NULL);
 		_exit(0);
 		break;
@@ -149,7 +165,7 @@ script_exec(struct relayd *env, struct ctl_script *scr)
 		if (WIFEXITED(status))
 			ret = WEXITSTATUS(status);
 		else
-			ret = -1;
+			ret = 0;
 	}
 
  done:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpe.c,v 1.3 2008/11/21 10:39:32 michele Exp $ */
+/*	$OpenBSD: dvmrpe.c,v 1.10 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -23,6 +23,7 @@
 #include <sys/queue.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if_types.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
@@ -47,8 +48,8 @@ void	 dvmrpe_shutdown(void);
 
 volatile sig_atomic_t	 dvmrpe_quit = 0;
 struct dvmrpd_conf	*deconf = NULL;
-struct imsgbuf		*ibuf_main;
-struct imsgbuf		*ibuf_rde;
+struct imsgev		*iev_main;
+struct imsgev		*iev_rde;
 struct ctl_conn		*ctl_conn;
 
 void
@@ -140,22 +141,25 @@ dvmrpe(struct dvmrpd_conf *xconf, int pipe_parent2dvmrpe[2],
 	close(pipe_parent2rde[0]);
 	close(pipe_parent2rde[1]);
 
-	if ((ibuf_rde = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_rde = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_main = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_rde, pipe_dvmrpe2rde[0], dvmrpe_dispatch_rde);
-	imsg_init(ibuf_main, pipe_parent2dvmrpe[1], dvmrpe_dispatch_main);
+	imsg_init(&iev_rde->ibuf, pipe_dvmrpe2rde[0]);
+	iev_rde->handler = dvmrpe_dispatch_rde;
+
+	imsg_init(&iev_main->ibuf, pipe_parent2dvmrpe[1]);
+	iev_main->handler = dvmrpe_dispatch_main;
 
 	/* setup event handler */
-	ibuf_rde->events = EV_READ;
-	event_set(&ibuf_rde->ev, ibuf_rde->fd, ibuf_rde->events,
-	    ibuf_rde->handler, ibuf_rde);
-	event_add(&ibuf_rde->ev, NULL);
+	iev_rde->events = EV_READ;
+	event_set(&iev_rde->ev, iev_rde->ibuf.fd, iev_rde->events,
+	    iev_rde->handler, iev_rde);
+	event_add(&iev_rde->ev, NULL);
 
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
+	iev_main->events = EV_READ;
+	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
+	    iev_main->handler, iev_main);
+	event_add(&iev_main->ev, NULL);
 
 	event_set(&deconf->ev, deconf->dvmrp_socket, EV_READ|EV_PERSIST,
 	    recv_packet, deconf);
@@ -165,7 +169,7 @@ dvmrpe(struct dvmrpd_conf *xconf, int pipe_parent2dvmrpe[2],
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
 
-	if ((pkt_ptr = calloc(1, READ_BUF_SIZE)) == NULL)
+	if ((pkt_ptr = calloc(1, IBUF_READ_SIZE)) == NULL)
 		fatal("dvmrpe");
 
 	/* start interfaces */
@@ -201,12 +205,12 @@ dvmrpe_shutdown(void)
 	}
 
 	/* clean up */
-	msgbuf_write(&ibuf_rde->w);
-	msgbuf_clear(&ibuf_rde->w);
-	free(ibuf_rde);
-	msgbuf_write(&ibuf_main->w);
-	msgbuf_clear(&ibuf_main->w);
-	free(ibuf_main);
+	msgbuf_write(&iev_rde->ibuf.w);
+	msgbuf_clear(&iev_rde->ibuf.w);
+	free(iev_rde);
+	msgbuf_write(&iev_main->ibuf.w);
+	msgbuf_clear(&iev_main->ibuf.w);
+	free(iev_main);
 	free(pkt_ptr);
 
 	log_info("dvmrp engine exiting");
@@ -216,37 +220,37 @@ dvmrpe_shutdown(void)
 int
 dvmrpe_imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, 0, pid, data, datalen));
+	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
 }
 
 int
 dvmrpe_imsg_compose_rde(int type, u_int32_t peerid, pid_t pid,
     void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_rde, type, peerid, pid, data, datalen));
+	return (imsg_compose_event(iev_rde, type, peerid, pid,
+	     -1, data, datalen));
 }
 
 void
 dvmrpe_dispatch_main(int fd, short event, void *bula)
 {
 	struct imsg	 imsg;
-	struct imsgbuf  *ibuf = bula;
-	int		 n;
+	struct imsgev	*iev = bula;
+	struct imsgbuf  *ibuf = &iev->ibuf;
+	struct kif	*kif;
+	struct iface	*iface;
+	ssize_t		 n;
+	int		 link_ok;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -256,6 +260,31 @@ dvmrpe_dispatch_main(int fd, short event, void *bula)
 			break;
 
 		switch (imsg.hdr.type) {
+		case IMSG_IFINFO:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE !=
+			    sizeof(struct kif))
+				fatalx("IFINFO imsg with wrong len");
+			kif = imsg.data;
+			link_ok = (kif->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(kif->link_state);
+
+			LIST_FOREACH(iface, &deconf->iface_list, entry) {
+				if (kif->ifindex == iface->ifindex) {
+					iface->flags = kif->flags;
+					iface->linkstate = kif->link_state;
+
+					if (link_ok) {
+						if_fsm(iface, IF_EVT_UP);
+						log_warnx("interface %s up",
+						    iface->name);
+					} else {
+						if_fsm(iface, IF_EVT_DOWN);
+						log_warnx("interface %s down",
+						    iface->name);
+					}
+				}
+			}
+			break;
 		default:
 			log_debug("dvmrpe_dispatch_main: error handling "
 			    "imsg %d", imsg.hdr.type);
@@ -263,33 +292,30 @@ dvmrpe_dispatch_main(int fd, short event, void *bula)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
 void
 dvmrpe_dispatch_rde(int fd, short event, void *bula)
 {
-	struct imsgbuf		*ibuf = bula;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct imsg		 imsg;
 	struct nbr		*nbr;
+	struct prune		 p;
 	struct iface		*iface;
 	struct route_report	*rr;
-	int			 n;
+	ssize_t			 n;
 
-	switch (event) {
-	case EV_READ:
+	 if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -349,6 +375,26 @@ dvmrpe_dispatch_rde(int fd, short event, void *bula)
 			nbr = nbr_find_peerid(imsg.hdr.peerid);
 			rr_list_send(&nbr->rr_list, NULL, nbr);
 			break;
+		case IMSG_SEND_PRUNE:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(p))
+				fatalx("invalid size of RDE request");
+
+			memcpy(&p, imsg.data, sizeof(p));
+
+			LIST_FOREACH(iface, &deconf->iface_list, entry)
+				if (p.ifindex == iface->ifindex)
+					break;
+
+			if (iface == NULL)
+				fatalx("invalid interface in mfc");
+
+			nbr = nbr_find_ip(iface, p.nexthop.s_addr);
+			if (nbr == NULL)
+				fatalx("unknown neighbor to send prune");
+
+			send_prune(nbr, &p);
+
+			break;
 		case IMSG_FLASH_UPDATE:
 			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(*rr))
 				fatalx("invalid size of RDE request");
@@ -392,7 +438,7 @@ dvmrpe_dispatch_rde(int fd, short event, void *bula)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
 void
@@ -404,8 +450,8 @@ dvmrpe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 	LIST_FOREACH(iface, &deconf->iface_list, entry)
 		if (idx == 0 || idx == iface->ifindex) {
 			ictl = if_to_ctl(iface);
-			imsg_compose(&c->ibuf, IMSG_CTL_SHOW_IFACE,
-			    0, 0, ictl, sizeof(struct ctl_iface));
+			imsg_compose_event(&c->iev, IMSG_CTL_SHOW_IFACE,
+			    0, 0, -1, ictl, sizeof(struct ctl_iface));
 		}
 }
 
@@ -418,8 +464,8 @@ dvmrpe_iface_igmp_ctl(struct ctl_conn *c, unsigned int idx)
 	LIST_FOREACH(iface, &deconf->iface_list, entry)
 		if (idx == 0 || idx == iface->ifindex) {
 			ictl = if_to_ctl(iface);
-			imsg_compose(&c->ibuf, IMSG_CTL_SHOW_IFACE,
-			    0, 0, ictl, sizeof(struct ctl_iface));
+			imsg_compose_event(&c->iev, IMSG_CTL_SHOW_IFACE,
+			    0, 0, -1, ictl, sizeof(struct ctl_iface));
 			group_list_dump(iface, c);
 
 		}
@@ -435,9 +481,9 @@ dvmrpe_nbr_ctl(struct ctl_conn *c)
 	LIST_FOREACH(iface, &deconf->iface_list, entry)
 		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 			nctl = nbr_to_ctl(nbr);
-			imsg_compose(&c->ibuf, IMSG_CTL_SHOW_NBR, 0, 0, nctl,
-			    sizeof(struct ctl_nbr));
+			imsg_compose_event(&c->iev, IMSG_CTL_SHOW_NBR,
+			    0, 0, -1, nctl, sizeof(struct ctl_nbr));
 		}
 
-	imsg_compose(&c->ibuf, IMSG_CTL_END, 0, 0, NULL, 0);
+	imsg_compose_event(&c->iev, IMSG_CTL_END, 0, 0, -1, NULL, 0);
 }

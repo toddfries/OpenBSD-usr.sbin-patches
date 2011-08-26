@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.h,v 1.39 2009/01/31 08:55:00 claudio Exp $ */
+/*	$OpenBSD: ospfe.h,v 1.44 2011/05/09 12:24:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -88,6 +88,7 @@ struct nbr {
 	int			 state;
 	u_int8_t		 priority;
 	u_int8_t		 options;
+	u_int8_t		 capa_options;
 	u_int8_t		 last_rx_options;
 	u_int8_t		 last_rx_bits;
 	u_int8_t		 dd_master;
@@ -97,11 +98,11 @@ struct nbr {
 /* auth.c */
 int		 auth_validate(void *buf, u_int16_t len, struct iface *,
 		     struct nbr *);
-int		 auth_gen(struct buf *, struct iface *);
+int		 auth_gen(struct ibuf *, struct iface *);
 void		 md_list_add(struct auth_md_head *, u_int8_t, char *);
 void		 md_list_copy(struct auth_md_head *, struct auth_md_head *);
 void		 md_list_clr(struct auth_md_head *);
-int		 md_list_send(struct auth_md_head *, struct imsgbuf *);
+int		 md_list_send(struct auth_md_head *, struct imsgev *);
 
 /* database.c */
 int	 send_db_description(struct nbr *);
@@ -151,13 +152,13 @@ int	 if_join_group(struct iface *, struct in_addr *);
 int	 if_leave_group(struct iface *, struct in_addr *);
 int	 if_set_mcast(struct iface *);
 int	 if_set_recvif(int, int);
-void	 if_set_recvbuf(int);
+void	 if_set_sockbuf(int);
 int	 if_set_mcast_loop(int);
 int	 if_set_ip_hdrincl(int);
 
 /* lsack.c */
 int	 delay_lsa_ack(struct iface *, struct lsa_hdr *);
-int	 send_ls_ack(struct iface *, struct in_addr, void *, size_t);
+int	 send_direct_ack(struct iface *, struct in_addr, void *, size_t);
 void	 recv_ls_ack(struct nbr *, char *, u_int16_t);
 int	 lsa_hdr_check(struct nbr *, struct lsa_hdr *);
 void	 ls_ack_list_add(struct iface *, struct lsa_hdr *);
@@ -233,8 +234,8 @@ struct ctl_nbr	*nbr_to_ctl(struct nbr *);
 struct lsa_hdr	*lsa_hdr_new(void);
 
 /* packet.c */
-int	 gen_ospf_hdr(struct buf *, struct iface *, u_int8_t);
-int	 send_packet(struct iface *, struct buf *, struct sockaddr_in *);
+int	 gen_ospf_hdr(struct ibuf *, struct iface *, u_int8_t);
+int	 send_packet(struct iface *, struct ibuf *, struct sockaddr_in *);
 void	 recv_packet(int, short, void *);
 
 char	*pkt_ptr;	/* packet buffer */

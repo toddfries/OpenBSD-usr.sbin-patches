@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: ArcCheck.pm,v 1.10 2007/06/12 09:53:36 espie Exp $
+# $OpenBSD: ArcCheck.pm,v 1.21 2011/01/02 15:25:45 espie Exp $
 #
 # Copyright (c) 2005-2006 Marc Espie <espie@openbsd.org>
 #
@@ -20,7 +20,11 @@
 # convention,  the names LongName\d+ and LongLink\d correspond to names
 # too long to fit. The actual names reside in the PLIST, but the archive
 # is still a valid archive.
-#
+
+use strict;
+use warnings;
+
+use OpenBSD::Ustar;
 
 package OpenBSD::Ustar::Object;
 
@@ -28,9 +32,9 @@ package OpenBSD::Ustar::Object;
 sub check_name
 {
 	my ($self, $item) = @_;
-	return 1 if $self->{name} eq $item->{name};
-	if ($self->{name} =~ m/^LongName\d+$/o) {
-		$self->{name} = $item->{name};
+	return 1 if $self->name eq $item->name;
+	if ($self->name =~ m/^LongName\d+$/o) {
+		$self->set_name($item->name);
 		return 1;
 	}
 	return 0;
@@ -64,30 +68,29 @@ sub verify_modes
 
 	if (!defined $item->{owner} && !$o->isSymLink) {
 	    if ($o->{uname} ne 'root' && $o->{uname} ne 'bin') {
-		    print STDERR "Error: no \@owner for ",
-			$item->fullname, " (", $o->{uname}, ")\n";
+		    $o->errsay("Error: no \@owner for #1 (#2)",
+			$item->fullname, $o->{uname});
 	    		$result = 0;
 	    }
 	}
 	if (!defined $item->{group} && !$o->isSymLink) {
 	    if ($o->{gname} ne 'bin' && $o->{gname} ne 'wheel') {
 		if (($o->{mode} & (S_ISUID | S_ISGID | S_IWGRP)) != 0) {
-		    print STDERR "Error: no \@group for ",
-			$item->fullname, " (", $o->{uname}, 
-			"), which has mode ",
-			sprintf("%4o", $o->{mode} & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID)), "\n";
+		    $o->errsay("Error: no \@group for #1 (#2), which has mode #3",
+			$item->fullname, $o->{uname},
+			sprintf("%4o", $o->{mode} & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID)));
 	    		$result = 0;
 		} else {
-		    print STDERR "Warning: no \@group for ",
-			$item->fullname, " (", $o->{gname}, ")\n";
+		    $o->errsay("Warning: no \@group for #1 (#2)",
+			$item->fullname, $o->{gname});
 	    	}
 	    }
 	}
 	if (!defined $item->{mode} && $o->isFile) {
 	    if (($o->{mode} & (S_ISUID | S_ISGID | S_IWOTH)) != 0) {
-		    print STDERR "Error: weird mode for ", 
-			$item->fullname, ": ", 
-			sprintf("%4o", $o->{mode} & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID)), "\n";
+		    $o->errsay("Error: weird mode for #1: #2",
+			$item->fullname,
+			sprintf("%4o", $o->{mode} & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID)));
 	    		$result = 0;
 	    }
 	}
@@ -98,12 +101,13 @@ sub verify_modes
 sub copy_long
 {
 	my ($self, $wrarc) = @_;
-	if ($self->{name} =~ m/^LongName(\d+)$/o) {
+	if ($self->name =~ m/^LongName(\d+)$/o) {
 		$wrarc->{name_index} = $1 + 1;
 	}
-	if (length($self->{name}) > MAXFILENAME+MAXPREFIX+1) {
+	if (length($self->name) >
+	    OpenBSD::Ustar::MAXFILENAME + OpenBSD::Ustar::MAXPREFIX + 1) {
 		$wrarc->{name_index} = 0 if !defined $wrarc->{name_index};
-		$entry->{name} = 'LongName'.$wrarc->{name_index}++;
+		$self->set_name('LongName'.$wrarc->{name_index}++);
 	}
 	$self->copy($wrarc);
 }
@@ -114,20 +118,29 @@ package OpenBSD::Ustar;
 sub prepare_long
 {
 	my ($self, $item) = @_;
-	my $filename = $item->{name};
-	my $entry = $self->prepare($filename);
+	my $entry;
+	if (defined $item->{wtempname}) {
+		$entry = $self->prepare($item->{wtempname}, '');
+	} else {
+		$entry = $self->prepare($item->name);
+	}
 	if (!defined $entry->{uname}) {
-		die "No user name for ", $entry->{name}, " (uid ", $entry->{uid}, ")";
+		$self->fatal("No user name for #1 (uid #2)",
+		    $item->name, $entry->{uid});
 	}
 	if (!defined $entry->{gname}) {
-		die "No group name for ", $entry->{name}, " (gid ", $entry->{gid}. ")";
+		$self->fatal("No group name for #1 (uid #2)",
+		    $item->name, $entry->{gid});
 	}
-	my ($prefix, $name) = split_name($entry->{name});
+
+	$entry->set_name($item->name);
+	my ($prefix, $name) = split_name($entry->name);
 	if (length($name) > MAXFILENAME || length($prefix) > MAXPREFIX) {
 		$self->{name_index} = 0 if !defined $self->{name_index};
-		$entry->{name} = 'LongName'.$self->{name_index}++;
+		$entry->set_name('LongName'.$self->{name_index}++);
 	}
-	if (length($entry->{linkname}) > MAXLINKNAME) {
+	if ((defined $entry->{linkname}) &&
+	    length($entry->{linkname}) > MAXLINKNAME) {
 		$self->{linkname_index} = 0 if !defined $self->{linkname_index};
 		$entry->{linkname} = 'LongLink'.$self->{linkname_index}++;
 	}

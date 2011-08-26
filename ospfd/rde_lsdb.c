@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_lsdb.c,v 1.42 2009/01/07 21:16:36 claudio Exp $ */
+/*	$OpenBSD: rde_lsdb.c,v 1.47 2011/05/09 12:24:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -27,9 +27,11 @@
 #include "rde.h"
 #include "log.h"
 
-struct vertex	*vertex_get(struct lsa *, struct rde_nbr *);
+struct vertex	*vertex_get(struct lsa *, struct rde_nbr *, struct lsa_tree *);
 
 int		 lsa_router_check(struct lsa *, u_int16_t);
+struct vertex	*lsa_find_tree(struct lsa_tree *, u_int16_t, u_int32_t,
+		    u_int32_t);
 void		 lsa_timeout(int, short, void *);
 void		 lsa_refresh(struct vertex *);
 int		 lsa_equal(struct lsa *, struct lsa *);
@@ -49,20 +51,20 @@ lsa_compare(struct vertex *a, struct vertex *b)
 		return (-1);
 	if (a->type > b->type)
 		return (1);
-	if (a->ls_id < b->ls_id)
-		return (-1);
-	if (a->ls_id > b->ls_id)
-		return (1);
 	if (a->adv_rtr < b->adv_rtr)
 		return (-1);
 	if (a->adv_rtr > b->adv_rtr)
+		return (1);
+	if (a->ls_id < b->ls_id)
+		return (-1);
+	if (a->ls_id > b->ls_id)
 		return (1);
 	return (0);
 }
 
 
 struct vertex *
-vertex_get(struct lsa *lsa, struct rde_nbr *nbr)
+vertex_get(struct lsa *lsa, struct rde_nbr *nbr, struct lsa_tree *tree)
 {
 	struct vertex	*v;
 	struct timespec	 tp;
@@ -79,6 +81,7 @@ vertex_get(struct lsa *lsa, struct rde_nbr *nbr)
 	v->ls_id = ntohl(lsa->hdr.ls_id);
 	v->adv_rtr = ntohl(lsa->hdr.adv_rtr);
 	v->type = lsa->hdr.type;
+	v->lsa_tree = tree;
 
 	if (!nbr->self)
 		v->flooded = 1; /* XXX fix me */
@@ -92,14 +95,41 @@ vertex_get(struct lsa *lsa, struct rde_nbr *nbr)
 void
 vertex_free(struct vertex *v)
 {
-	if (v->type == LSA_TYPE_EXTERNAL)
-		RB_REMOVE(lsa_tree, &asext_tree, v);
-	else
-		RB_REMOVE(lsa_tree, &v->area->lsa_tree, v);
+	RB_REMOVE(lsa_tree, v->lsa_tree, v);
 
 	(void)evtimer_del(&v->ev);
+	vertex_nexthop_clear(v);
 	free(v->lsa);
 	free(v);
+}
+
+void
+vertex_nexthop_clear(struct vertex *v)
+{
+	struct v_nexthop	*vn;
+
+	while ((vn = TAILQ_FIRST(&v->nexthop))) {
+		TAILQ_REMOVE(&v->nexthop, vn, entry);
+		free(vn);
+	}
+}
+
+void
+vertex_nexthop_add(struct vertex *dst, struct vertex *parent, u_int32_t nexthop)
+{
+	struct v_nexthop	*vn;
+
+	if (nexthop == 0)
+		/* invalid nexthop, skip it */
+		return;
+
+	if ((vn = calloc(1, sizeof(*vn))) == NULL)
+		fatal("vertex_nexthop_add");
+
+	vn->prev = parent;
+	vn->nexthop.s_addr = nexthop;
+
+	TAILQ_INSERT_TAIL(&dst->nexthop, vn, entry);
 }
 
 /* returns -1 if a is older, 1 if newer and 0 if equal to b */
@@ -225,13 +255,24 @@ lsa_check(struct rde_nbr *nbr, struct lsa *lsa, u_int16_t len)
 		if (area->stub)
 			return (0);
 		break;
+	case LSA_TYPE_LINK_OPAQ:
+	case LSA_TYPE_AREA_OPAQ:
+	case LSA_TYPE_AS_OPAQ:
+		if (len % sizeof(u_int32_t)) {
+			log_warnx("lsa_check: bad opaque LSA packet");
+			return (0);
+		}
+		/* Type-11 Opaque-LSA are silently discarded in stub areas */
+		if (lsa->hdr.type == LSA_TYPE_AS_OPAQ && area->stub)
+			return (0);
+		break;
 	default:
 		log_warnx("lsa_check: unknown type %u", lsa->hdr.type);
 		return (0);
 	}
 
 	/* MaxAge handling */
-	if (lsa->hdr.age == htons(MAX_AGE) && !nbr->self && lsa_find(area,
+	if (lsa->hdr.age == htons(MAX_AGE) && !nbr->self && lsa_find(nbr->iface,
 	    lsa->hdr.type, lsa->hdr.ls_id, lsa->hdr.adv_rtr) == NULL &&
 	    !rde_nbr_loading(area)) {
 		/*
@@ -260,6 +301,10 @@ lsa_router_check(struct lsa *lsa, u_int16_t len)
 	}
 
 	nlinks = ntohs(lsa->data.rtr.nlinks);
+	if (nlinks == 0) {
+		log_warnx("lsa_check: invalid LSA router packet");
+		return (0);
+	}
 	for (i = 0; i < nlinks; i++) {
 		rtr_link = (struct lsa_rtr_link *)(buf + off);
 		off += sizeof(struct lsa_rtr_link);
@@ -338,12 +383,15 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 	struct vertex	*new, *old;
 	struct timeval	 tv, now, res;
 
-	if (lsa->hdr.type == LSA_TYPE_EXTERNAL)
+	if (lsa->hdr.type == LSA_TYPE_EXTERNAL ||
+	    lsa->hdr.type == LSA_TYPE_AS_OPAQ)
 		tree = &asext_tree;
+	else if (lsa->hdr.type == LSA_TYPE_LINK_OPAQ)
+		tree = &nbr->iface->lsa_tree;
 	else
 		tree = &nbr->area->lsa_tree;
 
-	new = vertex_get(lsa, nbr);
+	new = vertex_get(lsa, nbr, tree);
 	old = RB_INSERT(lsa_tree, tree, new);
 
 	if (old != NULL) {
@@ -362,14 +410,16 @@ lsa_add(struct rde_nbr *nbr, struct lsa *lsa)
 			return (1);
 		}
 		if (!lsa_equal(new->lsa, old->lsa)) {
-			if (lsa->hdr.type != LSA_TYPE_EXTERNAL)
+			if (lsa->hdr.type != LSA_TYPE_EXTERNAL &&
+			    lsa->hdr.type != LSA_TYPE_AS_OPAQ)
 				nbr->area->dirty = 1;
 			start_spf_timer();
 		}
 		vertex_free(old);
 		RB_INSERT(lsa_tree, tree, new);
 	} else {
-		if (lsa->hdr.type != LSA_TYPE_EXTERNAL)
+		if (lsa->hdr.type != LSA_TYPE_EXTERNAL &&
+		    lsa->hdr.type != LSA_TYPE_AS_OPAQ)
 			nbr->area->dirty = 1;
 		start_spf_timer();
 	}
@@ -393,7 +443,7 @@ lsa_del(struct rde_nbr *nbr, struct lsa_hdr *lsa)
 	struct vertex	*v;
 	struct timeval	 tv;
 
-	v = lsa_find(nbr->area, lsa->type, lsa->ls_id, lsa->adv_rtr);
+	v = lsa_find(nbr->iface, lsa->type, lsa->ls_id, lsa->adv_rtr);
 	if (v == NULL)
 		return;
 
@@ -435,20 +485,38 @@ lsa_age(struct vertex *v)
 }
 
 struct vertex *
-lsa_find(struct area *area, u_int8_t type, u_int32_t ls_id, u_int32_t adv_rtr)
+lsa_find(struct iface *iface, u_int8_t type, u_int32_t ls_id, u_int32_t adv_rtr)
+{
+	struct lsa_tree	*tree;
+
+	if (type == LSA_TYPE_EXTERNAL ||
+	    type == LSA_TYPE_AS_OPAQ)
+		tree = &asext_tree;
+	else if (type == LSA_TYPE_LINK_OPAQ)
+		tree = &iface->lsa_tree;
+	else
+		tree = &iface->area->lsa_tree;
+
+	return lsa_find_tree(tree, type, ls_id, adv_rtr);
+}
+
+struct vertex *
+lsa_find_area(struct area *area, u_int8_t type, u_int32_t ls_id,
+    u_int32_t adv_rtr)
+{
+	return lsa_find_tree(&area->lsa_tree, type, ls_id, adv_rtr);
+}
+
+struct vertex *
+lsa_find_tree(struct lsa_tree *tree, u_int16_t type, u_int32_t ls_id,
+    u_int32_t adv_rtr)
 {
 	struct vertex	 key;
 	struct vertex	*v;
-	struct lsa_tree	*tree;
 
 	key.ls_id = ntohl(ls_id);
 	key.adv_rtr = ntohl(adv_rtr);
 	key.type = type;
-
-	if (type == LSA_TYPE_EXTERNAL)
-		tree = &asext_tree;
-	else
-		tree = &area->lsa_tree;
 
 	v = RB_FIND(lsa_tree, tree, &key);
 
@@ -495,31 +563,43 @@ lsa_num_links(struct vertex *v)
 	default:
 		fatalx("lsa_num_links: invalid LSA type");
 	}
-
-	return (0);
 }
 
 void
-lsa_snap(struct area *area, u_int32_t peerid)
+lsa_snap(struct rde_nbr *nbr)
 {
-	struct lsa_tree	*tree = &area->lsa_tree;
+	struct lsa_tree	*tree = &nbr->area->lsa_tree;
 	struct vertex	*v;
 
 	do {
 		RB_FOREACH(v, lsa_tree, tree) {
 			if (v->deleted)
 				continue;
+			switch (v->type) {
+			case LSA_TYPE_LINK_OPAQ:
+			case LSA_TYPE_AREA_OPAQ:
+			case LSA_TYPE_AS_OPAQ:
+				if (nbr->capa_options & OSPF_OPTION_O)
+					break;
+				continue;
+			}
 			lsa_age(v);
 			if (ntohs(v->lsa->hdr.age) >= MAX_AGE)
-				rde_imsg_compose_ospfe(IMSG_LS_UPD, peerid,
+				rde_imsg_compose_ospfe(IMSG_LS_UPD, nbr->peerid,
 				    0, &v->lsa->hdr, ntohs(v->lsa->hdr.len));
 			else
-				rde_imsg_compose_ospfe(IMSG_DB_SNAPSHOT, peerid,
-				    0, &v->lsa->hdr, sizeof(struct lsa_hdr));
+				rde_imsg_compose_ospfe(IMSG_DB_SNAPSHOT,
+				    nbr->peerid, 0, &v->lsa->hdr,
+				    sizeof(struct lsa_hdr));
 		}
-		if (tree != &area->lsa_tree || area->stub)
+		if (tree == &asext_tree)
 			break;
-		tree = &asext_tree;
+		if (tree == &nbr->area->lsa_tree)
+			tree = &nbr->iface->lsa_tree;
+		else if (nbr->area->stub)
+			break;
+		else
+			tree = &asext_tree;
 	} while (1);
 }
 
@@ -534,9 +614,7 @@ lsa_dump(struct lsa_tree *tree, int imsg_type, pid_t pid)
 		lsa_age(v);
 		switch (imsg_type) {
 		case IMSG_CTL_SHOW_DATABASE:
-			rde_imsg_compose_ospfe(IMSG_CTL_SHOW_DATABASE, 0, pid,
-			    &v->lsa->hdr, ntohs(v->lsa->hdr.len));
-			continue;
+			break;
 		case IMSG_CTL_SHOW_DB_SELF:
 			if (v->lsa->hdr.adv_rtr == rde_router_id())
 				break;
@@ -559,6 +637,12 @@ lsa_dump(struct lsa_tree *tree, int imsg_type, pid_t pid)
 			continue;
 		case IMSG_CTL_SHOW_DB_ASBR:
 			if (v->type == LSA_TYPE_SUM_ROUTER)
+				break;
+			continue;
+		case IMSG_CTL_SHOW_DB_OPAQ:
+			if (v->type == LSA_TYPE_LINK_OPAQ ||
+			    v->type == LSA_TYPE_AREA_OPAQ ||
+			    v->type == LSA_TYPE_AS_OPAQ)
 				break;
 			continue;
 		default:
@@ -586,7 +670,8 @@ lsa_timeout(int fd, short event, void *bula)
 			v->deleted = 0;
 
 			/* schedule recalculation of the RIB */
-			if (v->lsa->hdr.type != LSA_TYPE_EXTERNAL)
+			if (v->type != LSA_TYPE_EXTERNAL &&
+			    v->type != LSA_TYPE_AS_OPAQ)
 				v->area->dirty = 1;
 			start_spf_timer();
 
@@ -622,7 +707,11 @@ lsa_refresh(struct vertex *v)
 	u_int16_t	 len;
 
 	/* refresh LSA by increasing sequence number by one */
-	v->lsa->hdr.age = htons(DEFAULT_AGE);
+	if (v->self && ntohs(v->lsa->hdr.age) >= MAX_AGE)
+		/* self originated network that is currently beeing removed */
+		v->lsa->hdr.age = htons(MAX_AGE);
+	else
+		v->lsa->hdr.age = htons(DEFAULT_AGE);
 	seqnum = ntohl(v->lsa->hdr.seq_num);
 	if (seqnum++ == MAX_SEQ_NUM)
 		/* XXX fix me */
@@ -677,7 +766,8 @@ lsa_merge(struct rde_nbr *nbr, struct lsa *lsa, struct vertex *v)
 	free(v->lsa);
 	v->lsa = lsa;
 	start_spf_timer();
-	if (v->type != LSA_TYPE_EXTERNAL)
+	if (v->type != LSA_TYPE_EXTERNAL &&
+	    v->type != LSA_TYPE_AS_OPAQ)
 		nbr->area->dirty = 1;
 
 	/* set correct timeout for reflooding the LSA */
@@ -738,13 +828,13 @@ lsa_generate_stub_sums(struct area *area)
 			rn.cost = r->metric & LSA_METRIC_MASK;
 
 			/* update lsa but only if it was changed */
-			v = lsa_find(area, LSA_TYPE_SUM_NETWORK,
+			v = lsa_find_area(area, LSA_TYPE_SUM_NETWORK,
 			    rn.prefix.s_addr, rde_router_id());
 			lsa = orig_sum_lsa(&rn, area, LSA_TYPE_SUM_NETWORK, 0);
 			lsa_merge(rde_nbr_self(area), lsa, v);
 
 			if (v == NULL)
-				v = lsa_find(area, LSA_TYPE_SUM_NETWORK,
+				v = lsa_find_area(area, LSA_TYPE_SUM_NETWORK,
 				    rn.prefix.s_addr, rde_router_id());
 
 			/*
@@ -772,7 +862,7 @@ lsa_equal(struct lsa *a, struct lsa *b)
 		return (0);
 	if (a->hdr.opts != b->hdr.opts)
 		return (0);
-	/* LSA with age MAX_AGE are never equal */
+	/* LSAs with age MAX_AGE are never equal */
 	if (a->hdr.age == htons(MAX_AGE) || b->hdr.age == htons(MAX_AGE))
 		return (0);
 	if (memcmp(&a->data, &b->data, ntohs(a->hdr.len) -
@@ -781,4 +871,3 @@ lsa_equal(struct lsa *a, struct lsa *b)
 
 	return (1);
 }
-

@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.8 2008/09/26 15:19:55 reyk Exp $	*/
+/*	$OpenBSD: control.c,v 1.13 2010/05/14 11:52:19 claudio Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -142,23 +142,24 @@ control_accept(int listenfd, short event, void *arg)
 	if ((connfd = accept(listenfd,
 	    (struct sockaddr *)&sun, &len)) == -1) {
 		if (errno != EWOULDBLOCK && errno != EINTR)
-			log_warn("control_accept");
+			log_warn("control_accept: accept");
 		return;
 	}
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		log_warn("control_accept");
 		close(connfd);
 		return;
 	}
 
-	imsg_init(&c->ibuf, connfd, control_dispatch_imsg);
-	c->ibuf.events = EV_READ;
-	event_set(&c->ibuf.ev, c->ibuf.fd, c->ibuf.events,
-	    c->ibuf.handler, cs);
-	event_add(&c->ibuf.ev, NULL);
+	imsg_init(&c->iev.ibuf, connfd);
+	c->iev.handler = control_dispatch_imsg;
+	c->iev.events = EV_READ;
+	event_set(&c->iev.ev, c->iev.ibuf.fd, c->iev.events,
+	    c->iev.handler, cs);
+	event_add(&c->iev.ev, NULL);
 
 	TAILQ_INSERT_TAIL(&ctl_conns, c, entry);
 }
@@ -168,7 +169,7 @@ control_connbyfd(int fd)
 {
 	struct ctl_conn	*c;
 
-	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->ibuf.fd != fd;
+	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->iev.ibuf.fd != fd;
 	    c = TAILQ_NEXT(c, entry))
 		;	/* nothing */
 
@@ -180,14 +181,16 @@ control_close(int fd)
 {
 	struct ctl_conn	*c;
 
-	if ((c = control_connbyfd(fd)) == NULL)
+	if ((c = control_connbyfd(fd)) == NULL) {
 		log_warn("control_close: fd %d: not found", fd);
+		return;
+	}
 
-	msgbuf_clear(&c->ibuf.w);
+	msgbuf_clear(&c->iev.ibuf.w);
 	TAILQ_REMOVE(&ctl_conns, c, entry);
 
-	event_del(&c->ibuf.ev);
-	close(c->ibuf.fd);
+	event_del(&c->iev.ev);
+	close(c->iev.ibuf.fd);
 	free(c);
 }
 
@@ -207,24 +210,24 @@ control_dispatch_imsg(int fd, short event, void *arg)
 
 	switch (event) {
 	case EV_READ:
-		if ((n = imsg_read(&c->ibuf)) == -1 || n == 0) {
+		if ((n = imsg_read(&c->iev.ibuf)) == -1 || n == 0) {
 			control_close(fd);
 			return;
 		}
 		break;
 	case EV_WRITE:
-		if (msgbuf_write(&c->ibuf.w) < 0) {
+		if (msgbuf_write(&c->iev.ibuf.w) < 0) {
 			control_close(fd);
 			return;
 		}
-		imsg_event_add(&c->ibuf);
+		imsg_event_add(&c->iev);
 		return;
 	default:
 		fatalx("unknown event");
 	}
 
 	for (;;) {
-		if ((n = imsg_get(&c->ibuf, &imsg)) == -1) {
+		if ((n = imsg_get(&c->iev.ibuf, &imsg)) == -1) {
 			control_close(fd);
 			return;
 		}
@@ -237,6 +240,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 			case IMSG_SNMP_TRAP:
 			case IMSG_SNMP_ELEMENT:
 			case IMSG_SNMP_END:
+			case IMSG_SNMP_LOCK:
 				break;
 			default:
 				log_debug("control_dispatch_imsg: "
@@ -252,7 +256,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 			if (c->flags & CTL_CONN_NOTIFY) {
 				log_debug("control_dispatch_imsg: "
 				    "client requested notify more than once");
-				imsg_compose(&c->ibuf, IMSG_CTL_FAIL, 0, 0, -1,
+				imsg_compose(&c->iev.ibuf, IMSG_CTL_FAIL, 0, 0, -1,
 				    NULL, 0);
 				break;
 			}
@@ -263,7 +267,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 			c->flags |= CTL_CONN_LOCKED;
 			break;
 		case IMSG_SNMP_TRAP:
-			if (trap_imsg(&c->ibuf, imsg.hdr.pid) == -1) {
+			if (trap_imsg(&c->iev, imsg.hdr.pid) == -1) {
 				log_debug("control_dispatch_imsg: "
 				    "received invalid trap (pid %d)",
 				    imsg.hdr.pid);
@@ -280,7 +284,7 @@ control_dispatch_imsg(int fd, short event, void *arg)
 		imsg_free(&imsg);
 	}
 
-	imsg_event_add(&c->ibuf);
+	imsg_event_add(&c->iev);
 }
 
 void
@@ -290,7 +294,7 @@ control_imsg_forward(struct imsg *imsg)
 
 	TAILQ_FOREACH(c, &ctl_conns, entry)
 		if (c->flags & CTL_CONN_NOTIFY)
-			imsg_compose(&c->ibuf, imsg->hdr.type, 0, imsg->hdr.pid,
+			imsg_compose(&c->iev.ibuf, imsg->hdr.type, 0, imsg->hdr.pid,
 			    -1, imsg->data, imsg->hdr.len - IMSG_HEADER_SIZE);
 }
 

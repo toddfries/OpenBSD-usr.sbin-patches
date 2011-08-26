@@ -1,4 +1,4 @@
-/* $OpenBSD: memconfig.c,v 1.12 2007/09/02 15:19:39 deraadt Exp $ */
+/* $OpenBSD: memconfig.c,v 1.14 2011/06/06 14:59:16 tedu Exp $ */
 
 /*-
  * Copyright (c) 1999 Michael Smith <msmith@freebsd.org>
@@ -106,17 +106,18 @@ struct
 int
 main(int argc, char *argv[])
 {
-	int	 i, memfd;
+	int	 i, memfd = -1;
 
 	if (argc < 2) {
 		help(NULL);
 	} else {
-		if ((memfd = open("/dev/mem", O_RDONLY)) == -1)
-			err(1, "can't open /dev/mem");
-
 		for (i = 0; functions[i].cmd != NULL; i++)
 			if (!strcmp(argv[1], functions[i].cmd))
 				break;
+		
+		if ((functions[i].func != helpfunc) &&
+		    (memfd = open("/dev/mem", O_RDONLY)) == -1)
+			err(1, "can't open /dev/mem");
 		functions[i].func(memfd, argc - 1, argv + 1);
 		close(memfd);
 	}
@@ -254,7 +255,7 @@ clearfunc(int memfd, int argc, char *argv[])
 {
 	struct mem_range_desc	 mrd, *mrdp;
 	struct mem_range_op      mro;
-	int	i, nd, ch;
+	int	i, nd, ch, got_base = 0;
 	char	*ep, *owner;
 
 	mrd.mr_base = 0;
@@ -266,6 +267,8 @@ clearfunc(int memfd, int argc, char *argv[])
 			mrd.mr_base = strtouq(optarg, &ep, 0);
 			if ((ep == optarg) || (*ep != 0))
 				help("clear");
+			else
+				got_base = 1;
 			break;
 		case 'l':
 			mrd.mr_len = strtouq(optarg, &ep, 0);
@@ -285,7 +288,7 @@ clearfunc(int memfd, int argc, char *argv[])
 
 	if (owner != NULL) {
 		/* clear-by-owner */
-		if ((mrd.mr_base != 0) || (mrd.mr_len != 0))
+		if (got_base || mrd.mr_len != 0)
 			help("clear");
 
 		mrdp = mrgetall(memfd, &nd);
@@ -301,7 +304,7 @@ clearfunc(int memfd, int argc, char *argv[])
 					    owner);
 			}
 		}
-	} else if ((mrd.mr_base != 0) && (mrd.mr_len != 0)) {
+	} else if (got_base && mrd.mr_len != 0) {
 		/* clear-by-base/len */
 		mro.mo_arg[0] = MEMRANGE_SET_REMOVE;
 		mro.mo_desc = &mrd;

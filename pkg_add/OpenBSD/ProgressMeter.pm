@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: ProgressMeter.pm,v 1.11 2007/06/01 14:58:29 espie Exp $
+# $OpenBSD: ProgressMeter.pm,v 1.38 2010/12/24 09:04:14 espie Exp $
 #
-# Copyright (c) 2004-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -13,129 +13,84 @@
 # ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 # WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-#
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 use strict;
 use warnings;
 
 package OpenBSD::ProgressMeter;
-
-my $header;
-my $lastdisplay = '';
-my $isatty;
-my $continued = 0;
-
-# unless we know better
-my $width;
-my $playfield;
-
-my $wsz_format = 'SSSS';
-our %sizeof;
-
 sub new
 {
-	my $class = shift;
-	$isatty = -t STDERR;
-	return bless {}, $class;
+	bless {}, "OpenBSD::ProgressMeter::Stub";
 }
 
-sub find_window_size
+sub setup
 {
-	return if defined $width;
-	# try to get exact window width
-	my $r;
-	$r = pack($wsz_format, 0, 0, 0, 0);
-	$sizeof{'struct winsize'} = 8;
-	require 'sys/ttycom.ph';
-	$width = 80;
-	if (ioctl(STDERR, &TIOCGWINSZ, $r)) {
-		my ($rows, $cols, $xpix, $ypix) = 
-		    unpack($wsz_format, $r);
-		$width = $cols;
+	my ($self, $opt_x, $opt_m, $state) = @_;
+	if ($opt_m || (!$opt_x && -t STDOUT)) {
+		require OpenBSD::ProgressMeter::Term;
+		bless $self, "OpenBSD::ProgressMeter::Term";
+		$self->{state} = $state;
+		$self->init;
 	}
 }
 
-sub compute_playfield
+sub print
 {
-	return unless $isatty;
-	# compute playfield
-	$playfield = $width - length($header) - 10;
-	if ($playfield < 5) {
-		$playfield = 0;
-	}
+	shift->clear;
+	print @_;
 }
 
-sub set_header
+sub errprint
 {
-	my $self = shift;
-	$header = shift;
-	if ($isatty) {
-		find_window_size();
-		compute_playfield();
-		$SIG{'WINCH'} = sub {
-			$width = undef;
-			find_window_size();
-			compute_playfield();
-		};
-		$SIG{'CONT'} = sub {
-			$continued = 1;
-		};
-	}
-	return $isatty;
+	shift->clear;
+	print STDERR @_;
 }
 
-sub message
+sub for_list
 {
-	my $self = shift;
-	return unless $isatty;
-	my $message = shift;
-	my $d;
-	if ($playfield > length($message)) {
-		$message .= ' 'x($playfield - length($message));
+	my ($self, $msg, $l, $code) = @_;
+	if (defined $msg) {
+		$self->set_header($msg);
 	}
-	if ($playfield) {
-		$d = "$header|".substr($message, 0, $playfield);
-	} else {
-		$d = $header;
+	my $total = scalar @$l;
+	my $i = 0;
+	for my $e (@$l) {
+		$self->show(++$i, $total);
+		&$code($e);
 	}
-	return if $d eq $lastdisplay && !$continued;
-	$lastdisplay=$d;
-	$continued = 0;
-	print STDERR $d, "\r";
+	$self->next;
 }
 
-sub show
-{
-	my $self = shift;
-	return unless $isatty;
-	my ($current, $total) = @_;
-	my $d;
+# stub class when no actual progressmeter that still prints out.
+package OpenBSD::ProgressMeter::Stub;
+our @ISA = qw(OpenBSD::ProgressMeter);
 
-	if ($playfield) {
-	    my $stars = int (($current * $playfield) / $total + 0.5);
-	    my $percent = int (($current * 100)/$total + 0.5);
-	    $d = "$header|".'*'x$stars.' 'x($playfield-$stars)."| ".$percent."\%";
-	} else {
-	    $d = $header;
-	}
-	return if $d eq $lastdisplay;
-        $lastdisplay=$d;
-        print STDERR $d, "\r";
+sub clear {}
+
+sub show {}
+
+sub working {}
+sub message {}
+
+sub next {}
+
+sub set_header {}
+
+sub ntogo
+{
+	return "";
 }
 
-sub clear
+sub visit_with_size
 {
-	my $self = shift;
-	return unless $isatty;
-	print STDERR ' 'x length($lastdisplay), "\r";
+	my ($progress, $plist, $method, @r) = @_;
+	$plist->$method(@r);
 }
 
-sub next
+sub visit_with_count
 {
-	my $self = shift;
-	return unless $isatty;
-	$self->clear;
-	print STDERR"$header: complete\n";
+	&OpenBSD::ProgressMeter::Stub::visit_with_size;
 }
 
 1;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.15 2009/01/26 23:20:57 stsp Exp $ */
+/*	$OpenBSD: parse.y,v 1.21 2011/06/27 03:07:26 dlg Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -106,6 +106,7 @@ typedef struct {
 	union {
 		int64_t		 number;
 		char		*string;
+		struct redistribute *redist;
 	} v;
 	int lineno;
 } YYSTYPE;
@@ -120,20 +121,38 @@ typedef struct {
 %token	SET TYPE
 %token	YES NO
 %token	DEMOTE
+%token	INCLUDE
 %token	ERROR
 %token	<v.string>	STRING
 %token	<v.number>	NUMBER
 %type	<v.number>	yesno no optlist, optlist_l option demotecount
 %type	<v.string>	string
+%type	<v.redist>	redistribute
 
 %%
 
 grammar		: /* empty */
+		| grammar include '\n'
 		| grammar '\n'
 		| grammar conf_main '\n'
 		| grammar varset '\n'
 		| grammar area '\n'
 		| grammar error '\n'		{ file->errors++; }
+		;
+
+include		: INCLUDE STRING		{
+			struct file	*nfile;
+
+			if ((nfile = pushfile($2, 1)) == NULL) {
+				yyerror("failed to include file %s", $2);
+				free($2);
+				YYERROR;
+			}
+			free($2);
+
+			file = nfile;
+			lungetc('\n');
+		}
 		;
 
 string		: string STRING	{
@@ -180,57 +199,9 @@ conf_main	: ROUTERID STRING {
 			else
 				conf->flags &= ~OSPFD_FLAG_NO_FIB_UPDATE;
 		}
-		| no REDISTRIBUTE STRING optlist {
-			struct redistribute	*r;
-
-			if (!strcmp($3, "default")) {
-				if (!$1)
-					conf->redistribute |=
-					    REDISTRIBUTE_DEFAULT;
-				else
-					conf->redistribute &=
-					    ~REDISTRIBUTE_DEFAULT;
-				conf->defaultmetric = $4;
-			} else {
-				if ((r = calloc(1, sizeof(*r))) == NULL)
-					fatal(NULL);
-				if (!strcmp($3, "static"))
-					r->type = REDIST_STATIC;
-				else if (!strcmp($3, "connected"))
-					r->type = REDIST_CONNECTED;
-				else if (prefix($3, &r->addr, &r->prefixlen))
-					r->type = REDIST_ADDR;
-				else {
-					yyerror("unknown redistribute type");
-					free($3);
-					free(r);
-					YYERROR;
-				}
-
-				if ($1)
-					r->type |= REDIST_NO;
-				r->metric = $4;
-
-				SIMPLEQ_INSERT_TAIL(&conf->redist_list, r,
-				    entry);
-			}
-			conf->redistribute |= REDISTRIBUTE_ON;
-			free($3);
-		}
-		| no REDISTRIBUTE RTLABEL STRING optlist {
-			struct redistribute	*r;
-
-			if ((r = calloc(1, sizeof(*r))) == NULL)
-				fatal(NULL);
-			r->type = REDIST_LABEL;
-			r->label = rtlabel_name2id($4);
-			if ($1)
-				r->type |= REDIST_NO;
-			r->metric = $5;
-			free($4);
-
-			SIMPLEQ_INSERT_TAIL(&conf->redist_list, r, entry);
-			conf->redistribute |= REDISTRIBUTE_ON;
+		| redistribute {
+			SIMPLEQ_INSERT_TAIL(&conf->redist_list, $1, entry);
+			conf->redistribute = 1;
 		}
 		| RTLABEL STRING EXTTAG NUMBER {
 			if ($4 < 0 || $4 > UINT_MAX) {
@@ -269,7 +240,48 @@ conf_main	: ROUTERID STRING {
 		| defaults
 		;
 
-optlist		: /* empty */ 			{ $$ = DEFAULT_REDIST_METRIC; }
+redistribute	: no REDISTRIBUTE STRING optlist {
+			struct redistribute	*r;
+
+			if ((r = calloc(1, sizeof(*r))) == NULL)
+				fatal(NULL);
+			if (!strcmp($3, "default"))
+				r->type = REDIST_DEFAULT;
+			else if (!strcmp($3, "static"))
+				r->type = REDIST_STATIC;
+			else if (!strcmp($3, "connected"))
+				r->type = REDIST_CONNECTED;
+			else if (prefix($3, &r->addr, &r->prefixlen))
+				r->type = REDIST_ADDR;
+			else {
+				yyerror("unknown redistribute type");
+				free($3);
+				free(r);
+				YYERROR;
+			}
+
+			if ($1)
+				r->type |= REDIST_NO;
+			r->metric = $4;
+			free($3);
+			$$ = r;
+		}
+		| no REDISTRIBUTE RTLABEL STRING optlist {
+			struct redistribute	*r;
+
+			if ((r = calloc(1, sizeof(*r))) == NULL)
+				fatal(NULL);
+			r->type = REDIST_LABEL;
+			r->label = rtlabel_name2id($4);
+			if ($1)
+				r->type |= REDIST_NO;
+			r->metric = $5;
+			free($4);
+			$$ = r;
+		}
+		;
+
+optlist		: /* empty */			{ $$ = DEFAULT_REDIST_METRIC; }
 		| SET option			{
 			$$ = $2;
 			if (($$ & LSA_METRIC_MASK) == 0)
@@ -531,6 +543,7 @@ lookup(char *s)
 		{"external-tag",	EXTTAG},
 		{"fib-update",		FIBUPDATE},
 		{"hello-interval",	HELLOINTERVAL},
+		{"include",		INCLUDE},
 		{"interface",		INTERFACE},
 		{"metric",		METRIC},
 		{"no",			NO},
@@ -714,9 +727,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -825,9 +839,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("malloc");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
@@ -1042,6 +1060,8 @@ get_rtr_id(void)
 		fatal("getifaddrs");
 
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+		if (strncmp(ifa->ifa_name, "carp", 4) == 0)
+			continue;
 		if (ifa->ifa_addr->sa_family != AF_INET)
 			continue;
 		cur = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;

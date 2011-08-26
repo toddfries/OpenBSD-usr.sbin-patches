@@ -1,9 +1,7 @@
-#	$OpenBSD: Makefile,v 1.27 2007/12/20 17:08:47 henning Exp $
-
-.PATH:		${.CURDIR}/..
+#	$OpenBSD: Makefile,v 1.29 2010/05/26 16:44:32 nicm Exp $
 
 PROG=	bgpd
-SRCS=	bgpd.c buffer.c session.c log.c parse.y config.c imsg.c \
+SRCS=	bgpd.c session.c log.c parse.y config.c \
 	rde.c rde_rib.c rde_decide.c rde_prefix.c mrt.c kroute.c \
 	control.c pfkey.c rde_update.c rde_attr.c printconf.c \
 	rde_filter.c pftable.c name2id.c util.c carp.c timer.c
@@ -13,6 +11,8 @@ CFLAGS+= -Wmissing-declarations
 CFLAGS+= -Wshadow -Wpointer-arith -Wcast-qual
 CFLAGS+= -Wsign-compare
 YFLAGS=
+LDADD+=	-lutil
+DPADD+= ${LIBUTIL}
 MAN= bgpd.8 bgpd.conf.5
 
 .include <bsd.prog.mk>

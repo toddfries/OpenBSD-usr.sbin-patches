@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpd.c,v 1.6 2008/05/12 19:15:02 pyr Exp $ */
+/*	$OpenBSD: dvmrpd.c,v 1.13 2010/02/08 00:36:20 guenther Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -64,8 +64,8 @@ int	pipe_parent2rde[2];
 int	pipe_dvmrpe2rde[2];
 
 struct dvmrpd_conf	*conf = NULL;
-struct imsgbuf		*ibuf_dvmrpe;
-struct imsgbuf		*ibuf_rde;
+struct imsgev		*iev_dvmrpe;
+struct imsgev		*iev_rde;
 
 pid_t			 dvmrpe_pid;
 pid_t			 rde_pid;
@@ -145,6 +145,7 @@ main(int argc, char *argv[])
 			if (opts & DVMRPD_OPT_VERBOSE)
 				opts |= DVMRPD_OPT_VERBOSE2;
 			opts |= DVMRPD_OPT_VERBOSE;
+			log_verbose(1);
 			break;
 		default:
 			usage();
@@ -194,8 +195,6 @@ main(int argc, char *argv[])
 	if (getpwnam(DVMRPD_USER) == NULL)
 		errx(1, "unknown user %s", DVMRPD_USER);
 
-	endpwent();
-
 	/* start logging */
 	log_init(1);
 
@@ -242,8 +241,8 @@ main(int argc, char *argv[])
 	/* setup signal handler */
 	signal_set(&ev_sigint, SIGINT, main_sig_handler, NULL);
 	signal_set(&ev_sigterm, SIGTERM, main_sig_handler, NULL);
-	signal_set(&ev_sigchld, SIGINT, main_sig_handler, NULL);
-	signal_set(&ev_sighup, SIGTERM, main_sig_handler, NULL);
+	signal_set(&ev_sigchld, SIGCHLD, main_sig_handler, NULL);
+	signal_set(&ev_sighup, SIGHUP, main_sig_handler, NULL);
 	signal_add(&ev_sigint, NULL);
 	signal_add(&ev_sigterm, NULL);
 	signal_add(&ev_sigchld, NULL);
@@ -256,22 +255,24 @@ main(int argc, char *argv[])
 	close(pipe_dvmrpe2rde[0]);
 	close(pipe_dvmrpe2rde[1]);
 
-	if ((ibuf_dvmrpe = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_rde = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_dvmrpe = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_rde = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_dvmrpe, pipe_parent2dvmrpe[0], main_dispatch_dvmrpe);
-	imsg_init(ibuf_rde, pipe_parent2rde[0], main_dispatch_rde);
+	imsg_init(&iev_dvmrpe->ibuf, pipe_parent2dvmrpe[0]);
+	imsg_init(&iev_rde->ibuf, pipe_parent2rde[0]);
+	iev_dvmrpe->handler =  main_dispatch_dvmrpe;
+	iev_rde->handler = main_dispatch_rde;
 
 	/* setup event handler */
-	ibuf_dvmrpe->events = EV_READ;
-	event_set(&ibuf_dvmrpe->ev, ibuf_dvmrpe->fd, ibuf_dvmrpe->events,
-	    ibuf_dvmrpe->handler, ibuf_dvmrpe);
-	event_add(&ibuf_dvmrpe->ev, NULL);
+	iev_dvmrpe->events = EV_READ;
+	event_set(&iev_dvmrpe->ev, iev_dvmrpe->ibuf.fd, iev_dvmrpe->events,
+	    iev_dvmrpe->handler, iev_dvmrpe);
+	event_add(&iev_dvmrpe->ev, NULL);
 
-	ibuf_rde->events = EV_READ;
-	event_set(&ibuf_rde->ev, ibuf_rde->fd, ibuf_rde->events,
-	    ibuf_rde->handler, ibuf_rde);
-	event_add(&ibuf_rde->ev, NULL);
+	iev_rde->events = EV_READ;
+	event_set(&iev_rde->ev, iev_rde->ibuf.fd, iev_rde->events,
+	    iev_rde->handler, iev_rde);
+	event_add(&iev_rde->ev, NULL);
 
 	if (kmr_init(!(conf->flags & DVMRPD_FLAG_NO_FIB_UPDATE)) == -1)
 		dvmrpd_shutdown();
@@ -317,10 +318,10 @@ dvmrpd_shutdown(void)
 			fatal("wait");
 	} while (pid != -1 || (pid == -1 && errno == EINTR));
 
-	msgbuf_clear(&ibuf_dvmrpe->w);
-	free(ibuf_dvmrpe);
-	msgbuf_clear(&ibuf_rde->w);
-	free(ibuf_rde);
+	msgbuf_clear(&iev_dvmrpe->ibuf.w);
+	free(iev_dvmrpe);
+	msgbuf_clear(&iev_rde->ibuf.w);
+	free(iev_rde);
 
 	log_info("terminating");
 	exit(0);
@@ -350,24 +351,21 @@ check_child(pid_t pid, const char *pname)
 void
 main_dispatch_dvmrpe(int fd, short event, void *bula)
 {
-	struct imsgbuf  *ibuf = bula;
+	struct imsgev	*iev = bula;
+	struct imsgbuf  *ibuf = &iev->ibuf;
 	struct imsg	 imsg;
-	int		 n;
+	ssize_t		 n;
+	int		 verbose;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -388,6 +386,11 @@ main_dispatch_dvmrpe(int fd, short event, void *bula)
 		case IMSG_CTL_MFC_DECOUPLE:
 			kmr_mfc_decouple();
 			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			/* already checked by dvmrpe */
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
+			break;
 		default:
 			log_debug("main_dispatch_dvmrpe: error handling "
 			    "imsg %d", imsg.hdr.type);
@@ -395,31 +398,27 @@ main_dispatch_dvmrpe(int fd, short event, void *bula)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
 void
 main_dispatch_rde(int fd, short event, void *bula)
 {
 	struct mfc	 mfc;
-	struct imsgbuf  *ibuf = bula;
+	struct imsgev	*iev = bula;
+	struct imsgbuf  *ibuf = &iev->ibuf;
 	struct imsg	 imsg;
-	int		 n;
+	ssize_t		 n;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -453,30 +452,41 @@ main_dispatch_rde(int fd, short event, void *bula)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
 void
 main_imsg_compose_dvmrpe(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	imsg_compose(ibuf_dvmrpe, type, 0, pid, data, datalen);
+	imsg_compose_event(iev_dvmrpe, type, 0, pid, -1, data, datalen);
 }
 
 void
 main_imsg_compose_rde(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	imsg_compose(ibuf_rde, type, 0, pid, data, datalen);
+	imsg_compose_event(iev_rde, type, 0, pid, -1, data, datalen);
 }
 
-/* this needs to be added here so that dvmrpctl can be used without libevent */
 void
-imsg_event_add(struct imsgbuf *ibuf)
+imsg_event_add(struct imsgev *iev)
 {
-	ibuf->events = EV_READ;
-	if (ibuf->w.queued)
-		ibuf->events |= EV_WRITE;
+	iev->events = EV_READ;
+	if (iev->ibuf.w.queued)
+		iev->events |= EV_WRITE;
 
-	event_del(&ibuf->ev);
-	event_set(&ibuf->ev, ibuf->fd, ibuf->events, ibuf->handler, ibuf);
-	event_add(&ibuf->ev, NULL);
+	event_del(&iev->ev);
+	event_set(&iev->ev, iev->ibuf.fd, iev->events, iev->handler, iev);
+	event_add(&iev->ev, NULL);
+}
+
+int
+imsg_compose_event(struct imsgev *iev, u_int16_t type,
+    u_int32_t peerid, pid_t pid, int fd, void *data, u_int16_t datalen)
+{
+	int	ret;
+
+	if ((ret = imsg_compose(&iev->ibuf, type, peerid,
+	    pid, fd, data, datalen)) != -1)
+		imsg_event_add(iev);
+	return (ret);
 }

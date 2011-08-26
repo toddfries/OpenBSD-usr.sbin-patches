@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageLocation.pm,v 1.15 2007/06/10 17:13:48 espie Exp $
+# $OpenBSD: PackageLocation.pm,v 1.29 2011/03/20 08:17:49 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -22,14 +22,17 @@ package OpenBSD::PackageLocation;
 
 use OpenBSD::PackageInfo;
 use OpenBSD::Temp;
+use OpenBSD::Error;
 
 sub new
 {
 	my ($class, $repository, $name, $arch) = @_;
 
-	my $self = { repository => $repository, name => $repository->canonicalize($name), arch => $arch};
+	my $self = { repository => $repository, name => $repository->canonicalize($name), state => $repository->{state} };
+	if (defined $arch) {
+		$self->{arch} = $arch;
+	}
 	bless $self, $class;
-#	print STDERR "Built location ", $self->url, "\n";
 	return $self;
 
 }
@@ -54,70 +57,145 @@ sub name
 	return $self->{name};
 }
 
-sub openArchive
+OpenBSD::Auto::cache(pkgname,
+    sub {
+	my $self = shift;
+	return OpenBSD::PackageName->from_string($self->name);
+    });
+
+OpenBSD::Auto::cache(update_info,
+    sub {
+	my $self = shift;
+	return $self->plist(\&OpenBSD::PackingList::UpdateInfoOnly,
+	    sub {
+		return 0 if $_[0] =~ m/^\@option\s+always-update\b/m;
+		return 1 if $_[0] =~ m/^\@(?:newgroup|newuser|cwd)\b/m;
+		return 0;
+	    });
+    });
+
+
+# make sure self is opened and move to the right location if need be.
+sub _opened
 {
 	my $self = shift;
 
+	if (defined $self->{fh}) {
+		return $self;
+	}
 	my $fh = $self->{repository}->open($self);
 	if (!defined $fh) {
-		$self->{repository}->parse_problems($self->{errors}) 
+		$self->{repository}->parse_problems($self->{errors})
 		    if defined $self->{errors};
 		undef $self->{errors};
 		return;
 	}
 	require OpenBSD::Ustar;
-
-	my $archive = new OpenBSD::Ustar $fh;
+	my $archive = OpenBSD::Ustar->new($fh, $self->{state});
+	$archive->set_description($self->{repository}->url($self->{name}));
 	$self->{_archive} = $archive;
+
+	if (defined $self->{_current}) {
+		while (my $e = $self->{_archive}->next) {
+			if ($e->{name} eq $self->{_current}->{name}) {
+				$self->{_current} = $e;
+				return $self;
+			}
+		}
+	}
+	return $self;
 }
 
-sub grabInfoFiles
+sub find_contents
 {
-	my $self = shift;
-	my $dir = $self->{dir} = OpenBSD::Temp::dir();
+	my ($self, $extra) = @_;
 
-	if (defined $self->{contents} && ! -f $dir.CONTENTS) {
-		open my $fh, '>', $dir.CONTENTS or die "Permission denied";
-		print $fh $self->{contents};
-		close $fh;
-	}
-
-	while (my $e = $self->intNext) {
+	while (my $e = $self->_next) {
 		if ($e->isFile && is_info_name($e->{name})) {
-			$e->{name}=$dir.$e->{name};
-			eval { $e->create; };
-			if ($@) {
-				unlink($e->{name});
-				$@ =~ s/\s+at.*//o;
-				print STDERR $@;
-				return 0;
+			if ($e->{name} eq CONTENTS ) {
+				return $e->contents($extra);
 			}
 		} else {
 			$self->unput;
 			last;
 		}
 	}
-	return 1;
 }
 
-sub scanPackage
+sub find_fat_contents
 {
 	my $self = shift;
-	while (my $e = $self->intNext) {
+
+	while (my $e = $self->_next) {
+		unless ($e->{name} =~ m/^(.*)\/\+CONTENTS$/o) {
+			last;
+		}
+		my $prefix = $1;
+		my $contents = $e->contents;
+		require OpenBSD::PackingList;
+
+		my $plist = OpenBSD::PackingList->fromfile(\$contents,
+		    \&OpenBSD::PackingList::FatOnly);
+		if (defined $self->name) {
+			next if $plist->pkgname ne $self->name;
+		}
+		if ($plist->has('arch')) {
+			if ($plist->{arch}->check($self->{arch})) {
+				$self->{filter} = $prefix;
+				return $contents;
+			}
+		}
+	}
+}
+
+sub contents
+{
+	my ($self, $extra) = @_;
+	if (!defined $self->{contents}) {
+		if (!$self->_opened) {
+			return;
+		}
+		if (defined $extra) {
+			my $contents = $self->find_contents($extra);
+			if ($contents) {
+				$self->unput;
+				return $contents;
+			}
+			return $self->find_fat_contents;
+		}
+		$self->{contents} = $self->find_contents ||
+		    $self->find_fat_contents;
+	}
+
+	return $self->{contents};
+}
+
+sub grab_info
+{
+	my $self = shift;
+	my $dir = $self->{dir} = OpenBSD::Temp->dir;
+
+	my $c = $self->contents;
+	if (!defined $c) {
+		return 0;
+	}
+
+	if (! -f $dir.CONTENTS) {
+		open my $fh, '>', $dir.CONTENTS or die "Permission denied";
+		print $fh $self->contents;
+		close $fh;
+	}
+
+	while (my $e = $self->_next) {
 		if ($e->isFile && is_info_name($e->{name})) {
-			if ($e->{name} eq CONTENTS && !defined $self->{dir}) {
-				$self->{contents} = $e->contents;
-				last;
-			}
-			if (!defined $self->{dir}) {
-				$self->{dir} = OpenBSD::Temp::dir();
-			}
-			$e->{name}=$self->{dir}.$e->{name};
+			$e->{name} = $dir.$e->{name};
+			undef $e->{mtime};
+			undef $e->{atime};
 			eval { $e->create; };
 			if ($@) {
 				unlink($e->{name});
 				$@ =~ s/\s+at.*//o;
-				print STDERR $@;
+				$self->{state}->errprint('#1', $@);
 				return 0;
 			}
 		} else {
@@ -132,57 +210,21 @@ sub grabPlist
 {
 	my ($self, $code) = @_;
 
-	my $pkg = $self->openPackage;
-	if (defined $pkg) {
-		my $plist = $self->plist($code);
-		$pkg->wipe_info;
-		$pkg->close_now;
+	my $plist = $self->plist($code);
+	if (defined $plist) {
+		$self->wipe_info;
+		$self->close_now;
 		return $plist;
 	} else {
 		return;
 	}
 }
 
-sub openPackage
+sub forget
 {
 	my $self = shift;
-	my $arch = $self->{arch};
-	if (!$self->openArchive) {
-		return;
-	}
-	$self->scanPackage;
-
-	if (defined $self->{contents}) {
-		return $self;
-	} 
-
-	# maybe it's a fat package.
-	while (my $e = $self->intNext) {
-		unless ($e->{name} =~ m/^(.*)\/\+CONTENTS$/o) {
-			last;
-		}
-		my $prefix = $1;
-		my $contents = $e->contents;
-		require OpenBSD::PackingList;
-
-		my $plist = OpenBSD::PackingList->fromfile(\$contents, 
-		    \&OpenBSD::PackingList::FatOnly);
-		if (defined $self->{name}) {
-			next if $plist->pkgname ne $self->{name};
-		}
-		if ($plist->has('arch')) {
-			if ($plist->{arch}->check($arch)) {
-				$self->{filter} = $prefix;
-				bless $self, "OpenBSD::FatPackageLocation";
-				$self->{contents} = $contents;
-				return $self;
-			}
-		}
-	}
-	# hopeless
-	$self->close_with_client_error;
 	$self->wipe_info;
-	return;
+	$self->close_now;
 }
 
 sub wipe_info
@@ -194,27 +236,27 @@ sub wipe_info
 sub info
 {
 	my $self = shift;
+
 	if (!defined $self->{dir}) {
-		$self->grabInfoFiles;
+		$self->grab_info;
 	}
 	return $self->{dir};
 }
 
 sub plist
 {
-	my ($self, $code) = @_;
-
+	my ($self, $code, $extra) = @_;
 	require OpenBSD::PackingList;
 
-	if (defined $self->{contents}) {
-		my $value = $self->{contents};
-		return OpenBSD::PackingList->fromfile(\$value, $code);
-	} elsif (defined $self->{dir} && -f $self->{dir}.CONTENTS) {
-		my $plist = 
-		    OpenBSD::PackingList->fromfile($self->{dir}.CONTENTS, 
+	if (defined $self->{dir} && -f $self->{dir}.CONTENTS) {
+		my $plist =
+		    OpenBSD::PackingList->fromfile($self->{dir}.CONTENTS,
 		    $code);
 		$plist->set_infodir($self->{dir});
 		return $plist;
+	}
+	if (my $value = $self->contents($extra)) {
+		return OpenBSD::PackingList->fromfile(\$value, $code);
 	}
 	# hopeless
 	$self->close_with_client_error;
@@ -261,21 +303,6 @@ sub deref
 	$self->{_archive} = undef;
 }
 
-sub reopen
-{
-	my $self = shift;
-	if (!$self->openArchive) {
-		return;
-	}
-	while (my $e = $self->{_archive}->next) {
-		if ($e->{name} eq $self->{_current}->{name}) {
-			$self->{_current} = $e;
-			return $self;
-		}
-	}
-	return;
-}
-
 # proxy for archive operations
 sub next
 {
@@ -284,27 +311,26 @@ sub next
 	if (!defined $self->{dir}) {
 		$self->grabInfoFiles;
 	}
-	return $self->intNext;
+	return $self->_next;
 }
 
-sub intNext
+sub _next
 {
 	my $self = shift;
 
-	if (!defined $self->{fh}) {
-		if (!$self->reopen) {
-			return;
-		}
+	if (!$self->_opened) {
+		return;
 	}
 	if (!$self->{_unput}) {
 		$self->{_current} = $self->getNext;
+	} else {
+		$self->{_unput} = 0;
 	}
-	$self->{_unput} = 0;
 	return $self->{_current};
 }
 
 sub unput
-{ 	
+{
 	my $self = shift;
 	$self->{_unput} = 1;
 }
@@ -313,7 +339,20 @@ sub getNext
 {
 	my $self = shift;
 
-	return $self->{_archive}->next;
+	my $e = $self->{_archive}->next;
+	if (defined $self->{filter}) {
+		if ($e->{name} =~ m/^(.*?)\/(.*)$/o) {
+			my ($beg, $name) = ($1, $2);
+			if (index($beg, $self->{filter}) == -1) {
+				return $self->getNext;
+			}
+			$e->{name} = $name;
+			if ($e->isHardLink) {
+				$e->{linkname} =~ s/^(.*?)\///o;
+			}
+		}
+	}
+	return $e;
 }
 
 sub skip
@@ -322,25 +361,22 @@ sub skip
 	return $self->{_archive}->skip;
 }
 
-package OpenBSD::FatPackageLocation;
-our @ISA=qw(OpenBSD::PackageLocation);
+package OpenBSD::PackageLocation::Installed;
+our @ISA = qw(OpenBSD::PackageLocation);
 
-sub getNext
+
+sub info
 {
 	my $self = shift;
+	require OpenBSD::PackageInfo;
+	$self->{dir} = OpenBSD::PackageInfo::installed_info($self->name);
+}
 
-	my $e = $self->SUPER::getNext;
-	if ($e->{name} =~ m/^(.*?)\/(.*)$/o) {
-		my ($beg, $name) = ($1, $2);
-		if (index($beg, $self->{filter}) == -1) {
-			return $self->next;
-		}
-		$e->{name} = $name;
-		if ($e->isHardLink) {
-			$e->{linkname} =~ s/^(.*?)\///o;
-		}
-	}
-	return $e;
+sub plist
+{
+	my ($self, $code) = @_;
+	require OpenBSD::PackingList;
+	return OpenBSD::PackingList->from_installation($self->name, $code);
 }
 
 1;

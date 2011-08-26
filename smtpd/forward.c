@@ -1,4 +1,4 @@
-/*	$OpenBSD: forward.c,v 1.11 2009/01/29 21:50:10 form Exp $	*/
+/*	$OpenBSD: forward.c,v 1.24 2011/05/16 21:05:51 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,54 +24,28 @@
 #include <sys/stat.h>
 
 #include <ctype.h>
-#include <errno.h>
 #include <event.h>
-#include <pwd.h>
+#include <imsg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "smtpd.h"
+#include "log.h"
 
 int
-forwards_get(struct aliaseslist *aliases, char *username)
+forwards_get(int fd, struct expandtree *expandtree, char *as_user)
 {
 	FILE *fp;
-	struct alias alias;
-	struct alias *aliasp;
-	char pathname[MAXPATHLEN];
 	char *buf, *lbuf, *p, *cp;
 	size_t len;
-	struct stat sb;
-	struct passwd *pw;
 	size_t nbaliases = 0;
 	int quoted;
+	struct expandnode expnode;
 
-	pw = safe_getpwnam(username);
-	if (pw == NULL)
-		return 0;
-
-	if (snprintf(pathname, MAXPATHLEN, "%s/.forward", pw->pw_dir)
-	    >= MAXPATHLEN)
-		return 0;
-
-	fp = fopen(pathname, "r");
+	fp = fdopen(fd, "r");
 	if (fp == NULL)
 		return 0;
-
-	log_debug("+ opening forward file %s", pathname);
-	/* make sure ~/ is not writable by anyone but owner */
-	if (stat(pw->pw_dir, &sb) == -1)
-		goto bad;
-	if (sb.st_uid != pw->pw_uid || sb.st_mode & (S_IWGRP|S_IWOTH))
-		goto bad;
-
-	/* make sure ~/.forward is not writable by anyone but owner */
-	if (fstat(fileno(fp), &sb) == -1)
-		goto bad;
-	if (sb.st_uid != pw->pw_uid || sb.st_mode & (S_IWGRP|S_IWOTH))
-		goto bad;
 
 	lbuf = NULL;
 	while ((buf = fgetln(fp, &len))) {
@@ -94,7 +68,7 @@ forwards_get(struct aliaseslist *aliases, char *username)
 		cp = buf;
 		do {
 			/* skip whitespace */
-			while (isspace(*cp))
+			while (isspace((int)*cp))
 				cp++;
 
 			/* parse line */
@@ -108,33 +82,25 @@ forwards_get(struct aliaseslist *aliases, char *username)
 			buf = cp;
 			cp = p;
 
-			log_debug("\tforward: %s", buf);
-			if (! alias_parse(&alias, buf)) {
+			bzero(&expnode, sizeof (struct expandnode));
+			if (! alias_parse(&expnode, buf)) {
 				log_debug("bad entry in ~/.forward");
 				continue;
 			}
 
-			if (alias.type == ALIAS_INCLUDE) {
+			if (expnode.type == EXPAND_INCLUDE) {
 				log_debug(
 				    "includes are forbidden in ~/.forward");
 				continue;
 			}
 
-			aliasp = calloc(1, sizeof(struct alias));
-			if (aliasp == NULL)
-				fatal("calloc");
-			*aliasp = alias;
-			TAILQ_INSERT_HEAD(aliases, aliasp, entry);
+			(void)strlcpy(expnode.as_user, as_user, sizeof(expnode.as_user));
+
+			expandtree_increment_node(expandtree, &expnode);
 			nbaliases++;
 		} while (*cp != '\0');
 	}
 	free(lbuf);
 	fclose(fp);
 	return (nbaliases);
-
-bad:
-	log_debug("+ forward file error, probably bad perms/mode");
-	if (fp != NULL)
-		fclose(fp);
-	return (0);
 }

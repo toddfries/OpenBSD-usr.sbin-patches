@@ -1,4 +1,4 @@
-.\"	$OpenBSD: relayd.conf.5,v 1.100 2009/02/16 19:46:12 jmc Exp $
+.\"	$OpenBSD: relayd.conf.5,v 1.124 2011/06/24 14:42:36 jmc Exp $
 .\"
 .\" Copyright (c) 2006, 2007 Reyk Floeter <reyk@openbsd.org>
 .\" Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -15,7 +15,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: February 16 2009 $
+.Dd $Mdocdate: June 24 2011 $
 .Dt RELAYD.CONF 5
 .Os
 .Sh NAME
@@ -27,7 +27,7 @@ is the configuration file for the relay daemon,
 .Xr relayd 8 .
 .Sh SECTIONS
 .Nm
-is divided into six main sections:
+is divided into seven main sections:
 .Bl -tag -width xxxx
 .It Sy Macros
 User-defined variables may be defined and used later, simplifying the
@@ -35,29 +35,40 @@ configuration file.
 .It Sy Global Configuration
 Global settings for
 .Xr relayd 8 .
+Do note that the config file allows global settings to be added after
+defining tables in the config file, but those tables will use the
+built-in defaults instead of the global settings below them.
 .It Sy Tables
 Table definitions describe a list of hosts,
 in a similar fashion to
 .Xr pf 4
 tables.
-They are used for relay and redirection target selection with the
-described options and health checking on the host they contain.
+They are used for relay, redirection, and router target selection with
+the described options and health checking on the host they contain.
 .It Sy Redirections
 Redirections are translated to
 .Xr pf 4
-rdr rules for stateful forwarding to a target host from a
+rdr-to rules for stateful forwarding to a target host from a
 health-checked table on layer 3.
 .It Sy Relays
 Relays allow application layer load balancing, SSL acceleration, and
 general purpose TCP proxying on layer 7.
 .It Sy Protocols
 Protocols are predefined protocol handlers and settings for relays.
+.It Sy Routers
+Routers are used to insert routes with health-checked gateways for
+(WAN) link balancing.
 .El
 .Pp
 Within the sections,
 a host
 .Ar address
-can be specified by IPv4 address, IPv6 address, or DNS hostname.
+can be specified by IPv4 address, IPv6 address, interface name,
+interface group, or DNS hostname.
+If the address is an interface name,
+.Xr relayd 8
+will look up the first IPv4 address and any other IPv4 and IPv6
+addresses of the specified network interface.
 A
 .Ar port
 can be specified by number or name.
@@ -67,9 +78,13 @@ see
 .Xr services 5
 for details.
 .Pp
+The current line can be extended over multiple lines using a backslash
+.Pq Sq \e .
 Comments can be put anywhere in the file using a hash mark
 .Pq Sq # ,
 and extend to the end of the current line.
+Care should be taken when commenting out multi-line text:
+the comment is effective until the end of the entire block.
 .Pp
 Additional configuration files can be included with the
 .Ic include
@@ -99,8 +114,7 @@ table \*(Ltwebhosts\*(Gt {
 .Ed
 .Sh GLOBAL CONFIGURATION
 Here are the settings that can be set globally:
-.Pp
-.Bl -tag -width Ds -compact
+.Bl -tag -width Ds
 .It Ic demote Ar group
 Enable the global
 .Xr carp 4
@@ -112,16 +126,12 @@ see the
 .Ic group
 keyword in
 .Xr ifconfig 8 .
-.Pp
-.It Xo
-.Ic interval Ar number
-.Xc
+.It Ic interval Ar number
 Set the interval in seconds at which the hosts will be checked.
 The default interval is 10 seconds.
-.Pp
 .It Xo
 .Ic log
-.Pq Ic updates Ns \&| Ns Ic all
+.Pq Ic updates Ns | Ns Ic all
 .Xc
 Log state notifications after completed host checks.
 Either only log the
@@ -137,7 +147,6 @@ The host state can be
 or
 .Ar unknown
 (the host is disabled or has not been checked yet).
-.Pp
 .It Ic prefork Ar number
 When using relays, run the specified number of processes to handle
 relayed connections.
@@ -146,7 +155,6 @@ to a relay.
 .Xr relayd 8
 runs 5 relay processes by default and every process will handle
 all configured relays.
-.Pp
 .It Ic send trap
 Send an SNMP trap when the state of a host changes.
 .Xr relayd 8
@@ -156,10 +164,7 @@ and request it send a trap to the registered trap receivers;
 see
 .Xr snmpd.conf 5
 for more information about the configuration.
-.Pp
-.It Xo
-.Ic timeout Ar number
-.Xc
+.It Ic timeout Ar number
 Set the global timeout in milliseconds for checks.
 This can be overridden by the timeout value in the table definitions.
 The default interval is 200 milliseconds and it must not exceed the
@@ -167,6 +172,7 @@ global interval.
 Please note that the default value is optimized for checks within the
 same collision domain \(en use a higher timeout, such as 1000 milliseconds,
 for checks of hosts in other subnets.
+If this option is to be set, it should be placed before overrides in tables.
 .El
 .Sh TABLES
 Tables are used to group a set of hosts as the target for redirections
@@ -181,17 +187,13 @@ The table can be later enabled through
 .Xr relayctl 8 .
 .Pp
 .El
-Each table must contain at least one host;
+Each table must contain at least one host
+.Ar address ;
 multiple hosts are separated by newline, comma, or whitespace.
 Host entries may be defined with the following attributes:
 .Bl -tag -width retry
-.It Ic retry Ar number
-The optional retry option adds a tolerance for failed host checks;
-the check will be retried for
-.Ar number
-more times before setting the host state to down.
-If this table is used by a relay, it will also specify the number of
-retries for outgoing connection attempts.
+.It Ic ip ttl Ar number
+Change the default time-to-live value in the IP headers for host checks.
 .It Ic parent Ar number
 The optional parent option inherits the state from a parent
 host with the specified identifier.
@@ -203,6 +205,19 @@ starting with 1; it can be shown with the
 .Xr relayctl 8
 .Ic show summary
 commands.
+.It Ic priority Ar number
+Change the route priority used when adding a route.
+If not specified, the kernel will set a priority of 8 (RTP_STATIC).
+In ordinary use, a fallback route should be added statically with a very
+high (e.g. 52) priority.
+Unused in all other modes.
+.It Ic retry Ar number
+The optional retry option adds a tolerance for failed host checks;
+the check will be retried for
+.Ar number
+more times before setting the host state to down.
+If this table is used by a relay, it will also specify the number of
+retries for outgoing connection attempts.
 .El
 .Pp
 For example:
@@ -306,7 +321,7 @@ This method will automatically use ICMP or ICMPV6 depending on the
 address family of each host.
 .It Ic check script Ar path
 Execute an external program to check the host state.
-The program will be executed for each host by specifing the hostname
+The program will be executed for each host by specifying the hostname
 on the command line:
 .Bd -literal -offset indent
 /usr/local/bin/checkload.pl front-www1.private.example.com
@@ -373,7 +388,7 @@ TCP as the transport.
 This will override the global timeout, which is 200 milliseconds by default.
 .El
 .Pp
-The following options will set the scheduling algoritm to select a
+The following options will set the scheduling algorithm to select a
 host from the specified table:
 .Bl -tag -width Ds
 .It Ic mode hash
@@ -398,7 +413,7 @@ This mode is supported by redirections and relays.
 .Sh REDIRECTIONS
 Redirections represent a
 .Xr pf 4
-rdr rule.
+rdr-to rule.
 They are used for stateful redirections to the hosts in the specified
 tables.
 .Xr pf 4
@@ -430,7 +445,9 @@ This directive can be specified twice \(en the second entry will be used
 as the backup table if all hosts in the main table are down.
 At least one entry for the main table is mandatory.
 .It Xo
-.Ic listen on Ar address Ic port Ar port
+.Ic listen on Ar address
+.Op ip-proto
+.Ic port Ar port
 .Op Ic interface Ar name
 .Xc
 Specify an
@@ -446,7 +463,15 @@ The
 argument can optionally specify a port range instead of a single port;
 the format is
 .Ar min-port : Ns Ar max-port .
-The rdr rule can be optionally restricted to a given interface name.
+The optional argument
+.Ar ip-proto
+can be used to specify an IP protocol like
+.Ar tcp
+or
+.Ar udp ;
+it defaults to
+.Ar tcp .
+The rule can be optionally restricted to a given interface name.
 .It Xo
 .Ic route to
 .Aq Ar table
@@ -456,7 +481,9 @@ The rdr rule can be optionally restricted to a given interface name.
 Like the
 .Ic forward to
 directive, but directly routes the packets to the target host without
-modifying the target address.
+modifying the target address using a
+.Xr pf 4
+route-to rule.
 This can be used for
 .Dq direct server return
 to force the target host to respond via a different gateway.
@@ -468,15 +495,27 @@ Specify the inactivity timeout in seconds for established redirections.
 The default timeout is 600 seconds (10 minutes).
 .It Ic sticky-address
 This has the same effect as specifying sticky-address
-for an rdr rule in
+for an rdr-to rule in
 .Xr pf.conf 5 .
 It will ensure that multiple connections from the same source are
 mapped to the same redirection address.
-.It Ic tag Ar name
+.It Xo
+.Op Ic match
+.Ic tag Ar name
+.Xc
 Automatically tag packets passing through the
 .Xr pf 4
-rdr rule with the name supplied.
+rdr-to rule with the name supplied.
 This allows simpler filter rules.
+The optional
+.Ic match
+keyword will change the default rule action from
+.Ar pass in quick
+to
+.Ar match in
+to allow further evaluation in the pf ruleset using the
+.Ar tagged name
+rule option.
 .El
 .Sh RELAYS
 Relays will forward traffic between a client and a target server.
@@ -500,7 +539,9 @@ configuration directives are described below:
 Start the relay but immediately close any accepted connections.
 .It Xo
 .Op Ic transparent
-.Ic forward to
+.Ic forward
+.Op Ic with ssl
+.Ic to
 .Ar address
 .Op Ic port Ar port
 .Ar options ...
@@ -516,8 +557,14 @@ Use the
 keyword to enable fully-transparent mode; the source address of the
 client will be retained in this case.
 .Pp
-The following options may be specified for forward directives:
+The
+.Ic with ssl
+directive enables client-side SSL mode to connect to the remote host.
+Verification of server certificates can be enabled by setting the
+.Ic ca file
+option in the protocol section.
 .Pp
+The following options may be specified for forward directives:
 .Bl -tag -width Ds
 .It Ic retry Ar number
 The optional host
@@ -555,14 +602,15 @@ Like the previous directive, but connect to a host from the specified
 table; see the
 .Sx TABLES
 section above for information about table options.
+This directive can be specified twice \(en the second entry will be used
+as the backup table if all hosts in the main table are down.
+At least one entry for the main table is mandatory.
 .It Xo
 .Ic forward to
-.Ic nat lookup
+.Ic destination
 .Ar options ...
 .Xc
-When redirecting connections with an
-.Ar rdr
-rule in
+When redirecting connections with a divert-to rule in
 .Xr pf.conf 5
 to a relay listening on localhost, this directive will
 look up the real destination address of the intended target host,
@@ -570,7 +618,14 @@ allowing the relay to be run as a transparent proxy.
 If an additional
 .Ic forward to
 directive to a specified address or table is present,
-it will be used as a backup if the NAT lookup failed.
+it will be used as a backup if the lookup failed.
+.It Xo
+.Ic forward to
+.Ic nat lookup
+.Ar options ...
+.Xc
+Like the previous directive, but for redirections with rdr-to in
+.Xr pf.conf 5 .
 .It Xo
 .Ic listen on Ar address
 .Op Ic port Ar port
@@ -627,7 +682,7 @@ The requested IDs in the DNS header will be used to match the state.
 replaces these IDs with random values to compensate for
 predictable values generated by some hosts.
 .It Ic http protocol
-Handle the Hypertext Transfer Protocol
+Handle the HyperText Transfer Protocol
 (HTTP, or "HTTPS" if encapsulated in an SSL tunnel).
 .It Xo
 .Op Ic tcp
@@ -917,7 +972,7 @@ See
 .Ic expect file Ar path
 for more information.
 .It Ic return error Op Ar option
-Return an error reponse to the client if an internal operation or the
+Return an error response to the client if an internal operation or the
 forward connection to the client failed.
 By default, the connection will be silently dropped.
 The effect of this option depends on the protocol: HTTP will send an
@@ -936,6 +991,13 @@ Set the SSL options and session settings.
 This is only used if SSL is enabled in the relay.
 Valid options are:
 .Bl -tag -width Ds
+.It Ic ca file Ar path
+This option enables CA verification in SSL client mode.
+The daemon will load the CA (Certificate Authority) certificates from
+the specified path to verify the server certificates.
+.Ox
+provides a default CA bundle in
+.Pa /etc/ssl/cert.pem .
 .It Ic ciphers Ar string
 Set the string defining the SSL cipher suite.
 If not specified, the default value
@@ -993,7 +1055,7 @@ with a TTL lower than the specified value.
 This can be used to implement the
 .Ar Generalized TTL Security Mechanism (GTSM)
 according to RFC 3682.
-.It Ic ip ttl
+.It Ic ip ttl Ar number
 Change the default time-to-live value in the IP headers.
 .It Xo
 .Op Ic no
@@ -1011,7 +1073,71 @@ Use selective acknowledgements for this connection.
 Set the socket-level buffer size for input and output for this
 connection.
 This will affect the TCP window size.
+.It Xo
+.Op Ic no
+.Ic splice
+.Xc
+Use socket splicing for zero-copy data transfer.
+This option is enabled by default.
 .El
+.El
+.Sh ROUTERS
+Routers represent routing table entries in the kernel forwarding
+database, see
+.Xr route 4 ,
+and a table of associated gateways.
+They are used to dynamically insert or remove routes with gateways
+based on their availability and health-check results.
+A router can include multiple network statements and a single forward
+statement with a table of one or more gateways.
+All entries in a single router directive must match the same address
+family, either IPv4 or IPv6.
+.Pp
+The kernel supports multipath routing when multiple gateways exist to
+the same destination address.
+The multipath routing behaviour can be changed globally using the
+.Xr sysctl 8
+variables
+.Va net.inet.ip.multipath
+and
+.Va net.inet6.ip6.multipath .
+With the default setting of 0,
+the first route selected will be used for subsequent packets to that
+destination regardless of source.
+Setting it to 1 will enable load balancing based on the packet source
+address across gateways; multiple routes with the same priority are
+used equally.
+The kernel will also check the link state of the related network
+interface and try a different route if it is not active.
+.Pp
+The configuration directives that are valid in the
+.Ic routers
+context are described below:
+.Bl -tag -width Ds
+.It Xo
+.Ic forward to
+.Aq Ar table
+.Ic port Ar number
+.Ar options ...
+.Xc
+Specify the table of target gateways to be used; see the
+.Sx TABLES
+section above for information about table options.
+This entry is mandatory and must be specified once.
+.It Xo
+.Ic route
+.Ar address Ns Li / Ns Ar prefix
+.Xc
+Specify the network address and prefix length of a route destination
+that is reachable via the active gateways.
+This entry must be specified at least once in a router directive.
+.It Ic rtable Ar id
+Add the routes to the kernel routing table with the specified
+.Ar id .
+.It Ic rtlabel Ar label
+Add the routes with the specified
+.Ar label
+to the kernel routing table.
 .El
 .Sh FILES
 .Bl -tag -width "/etc/ssl/private/address.keyXX" -compact
@@ -1027,9 +1153,12 @@ Service name database.
 Location of the relay SSL server certificates, where
 .Ar address
 is the configured IP address of the relay.
+.It Pa /etc/ssl/cert.pem
+Default location of the CA bundle that can be used with
+.Xr relayd 8 .
 .El
 .Sh EXAMPLES
-This configuration file would create a service
+This configuration file would create a redirection service
 .Dq www
 which load balances four hosts
 and falls back to one host containing a
@@ -1054,6 +1183,17 @@ redirect "www" {
 	forward to \*(Ltphphosts\*(Gt port 8080 timeout 300 \e
 		check http "/" digest "630aa3c2f..."
 	forward to \*(Ltsorryhost\*(Gt port 8080 timeout 300 check icmp
+}
+.Ed
+.Pp
+It is possible to specify multiple listen directives with different IP
+protocols in a single redirection configuration:
+.Bd -literal -offset indent
+redirect "dns" {
+	listen on dns.example.com tcp port 53
+	listen on dns.example.com udp port 53
+
+	forward to \*(Ltdnshosts\*(Gt port 53 check tcp
 }
 .Ed
 .Pp
@@ -1107,6 +1247,16 @@ relay "sshforward" {
 	forward to shell.example.com port 22
 }
 .Ed
+.Pp
+The next simple router configuration example can be used to run
+redundant, health-checked WAN links:
+.Bd -literal -offset indent
+table \*(Ltgateways\*(Gt { $gw1 ip ttl 1, $gw2 ip ttl 1 }
+router "uplinks" {
+	route 0.0.0.0/0
+	forward to \*(Ltgateways\*(Gt check icmp
+}
+.Ed
 .Sh SEE ALSO
 .Xr relayctl 8 ,
 .Xr relayd 8 ,
@@ -1131,3 +1281,9 @@ program was written by
 .An Pierre-Yves Ritschard Aq pyr@openbsd.org
 and
 .An Reyk Floeter Aq reyk@openbsd.org .
+.Sh CAVEATS
+.Xr relayd 8
+Verification of SSL server certificates is based on a static CA bundle
+and
+.Xr relayd 8
+currently does not support CRLs (Certificate Revocation Lists).

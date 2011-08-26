@@ -1,4 +1,4 @@
-/*	$OpenBSD: apmd.c,v 1.51 2009/02/04 05:22:58 tedu Exp $	*/
+/*	$OpenBSD: apmd.c,v 1.57 2011/04/21 06:45:04 jasper Exp $	*/
 
 /*
  *  Copyright (c) 1995, 1996 John T. Kohl
@@ -61,15 +61,12 @@ const char sockfile[] = _PATH_APM_SOCKET;
 int debug = 0;
 
 int doperf = PERF_NONE;
-#define PERFINC 15
-#define PERFDEC 15
+#define PERFINC 50
+#define PERFDEC 20
 #define PERFMIN 0
 #define PERFMAX 100
 #define PERFINCTHRES 10
 #define PERFDECTHRES 30
-#define PERFTIMEOUTERR 999999999
-#define PERFTIMEOUTFAST 10000000
-#define PERFTIMEOUTSLOW 25000000
 
 extern char *__progname;
 
@@ -77,8 +74,9 @@ void usage(void);
 int power_status(int fd, int force, struct apm_power_info *pinfo);
 int bind_socket(const char *sn);
 enum apm_state handle_client(int sock_fd, int ctl_fd);
-int  get_min_idle_mp(int ncpu);
-useconds_t perf_status(struct apm_power_info *pinfo, int ncpu);
+int  get_avg_idle_mp(int ncpu);
+int  get_avg_idle_up(void);
+void perf_status(struct apm_power_info *pinfo, int ncpu);
 void suspend(int ctl_fd);
 void stand_by(int ctl_fd);
 void setperf(int new_perf);
@@ -98,7 +96,7 @@ void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: %s [-AaCdeHLmps] [-f devname] [-S sockname] [-t seconds]\n",
+	    "usage: %s [-AaCdHLs] [-f devname] [-S sockname] [-t seconds]\n",
 	    __progname);
 	exit(1);
 }
@@ -197,12 +195,13 @@ power_status(int fd, int force, struct apm_power_info *pinfo)
 
 /* multi- and uni-processor case */
 int
-get_min_idle_mp(int ncpu)
+get_avg_idle_mp(int ncpu)
 {
 	static int64_t **cp_time_old;
 	static int64_t **cp_time;
+	static int *avg_idle;
 	int64_t change, sum, idle;
-	int i, cpu, min_idle;
+	int i, cpu, min_avg_idle;
 	size_t cp_time_sz = CPUSTATES * sizeof(int64_t);
 
 	if (!cp_time_old)
@@ -213,7 +212,11 @@ get_min_idle_mp(int ncpu)
 		if ((cp_time = calloc(sizeof(int64_t *), ncpu)) == NULL)
 			return -1;
 
-	min_idle = 100;
+	if (!avg_idle)
+		if ((avg_idle = calloc(sizeof(int), ncpu)) == NULL)
+			return -1;
+
+	min_avg_idle = 0;
 	for (cpu = 0; cpu < ncpu; cpu++) {
 		int cp_time_mib[] = {CTL_KERN, KERN_CPTIME2, cpu};
 
@@ -227,14 +230,14 @@ get_min_idle_mp(int ncpu)
 			    calloc(sizeof(int64_t), CPUSTATES)) == NULL)
 				return -1;
 
-		if (sysctl(cp_time_mib, 3, cp_time[cpu], &cp_time_sz, NULL, 0))
+		if (sysctl(cp_time_mib, 3, cp_time[cpu], &cp_time_sz, NULL, 0)
+		    < 0)
 			syslog(LOG_INFO, "cannot read kern.cp_time2");
 
 		sum = 0;
-		idle = 100;
 		for (i = 0; i < CPUSTATES; i++) {
-			change = cp_time[cpu][i] - cp_time_old[cpu][i];
-			if (change < 0) {
+			if ((change = cp_time[cpu][i] - cp_time_old[cpu][i])
+			    < 0) {
 				/* counter wrapped */
 				change = ((uint64_t)cp_time[cpu][i] -
 				    (uint64_t)cp_time_old[cpu][i]);
@@ -246,52 +249,103 @@ get_min_idle_mp(int ncpu)
 		if (sum == 0)
 			sum = 1;
 
-		if ((100 * idle) / sum < min_idle)
-			min_idle = (100 * idle) / sum;
+		/* smooth data */
+		avg_idle[cpu] = (avg_idle[cpu] + (100 * idle) / sum) / 2;
+
+		if (cpu == 0)
+			min_avg_idle = avg_idle[cpu];
+
+		if (avg_idle[cpu] < min_avg_idle)
+			min_avg_idle = avg_idle[cpu];
 
 		memcpy(cp_time_old[cpu], cp_time[cpu], cp_time_sz);
 	}
 
-	return min_idle;
+	return min_avg_idle;
 }
 
-useconds_t
+int
+get_avg_idle_up(void)
+{
+	static long cp_time_old[CPUSTATES];
+	static int avg_idle;
+	long change, cp_time[CPUSTATES];
+	int cp_time_mib[] = {CTL_KERN, KERN_CPTIME};
+	size_t cp_time_sz = sizeof(cp_time);
+	int i, idle, sum = 0;
+
+	if (sysctl(cp_time_mib, 2, &cp_time, &cp_time_sz, NULL, 0) < 0)
+		syslog(LOG_INFO, "cannot read kern.cp_time");
+
+	for (i = 0; i < CPUSTATES; i++) {
+		if ((change = cp_time[i] - cp_time_old[i]) < 0) {
+			/* counter wrapped */
+			change = ((unsigned long)cp_time[i] -
+			    (unsigned long)cp_time_old[i]);
+		}
+		sum += change;
+		if (i == CP_IDLE)
+			idle = change;
+	}
+	if (sum == 0)
+		sum = 1;
+
+	/* smooth data */
+	avg_idle = (avg_idle + (100 * idle) / sum) / 2;
+
+	memcpy(cp_time_old, cp_time, sizeof(cp_time_old));
+
+	return avg_idle;
+}
+
+void
 perf_status(struct apm_power_info *pinfo, int ncpu)
 {
-	int avg_idle, min_idle;
+	int avg_idle;
 	int hw_perf_mib[] = {CTL_HW, HW_SETPERF};
 	int perf;
 	int forcehi = 0;
 	size_t perf_sz = sizeof(perf);
 
-	if (avg_idle == -1)
-		return PERFTIMEOUTERR;
+	if (ncpu > 1) {
+		avg_idle = get_avg_idle_mp(ncpu);
+	} else {
+		avg_idle = get_avg_idle_up();
+	}
 
-	if (sysctl(hw_perf_mib, 2, &perf, &perf_sz, NULL, 0) < 0)
-		syslog(LOG_INFO, "cannot read hw.setperf");
+	if (avg_idle == -1)
+		return;
 
 	switch (doperf) {
 	case PERF_AUTO:
-		if (pinfo->ac_state == APM_AC_ON && pinfo->battery_life > 15)
-			forcehi = 1;
+		/*
+		 * force setperf towards the max if we are connected to AC
+		 * power and have a battery life greater than 15%, or if
+		 * the battery is absent
+		 */
+		if (pinfo->ac_state == APM_AC_ON && pinfo->battery_life > 15 ||
+		    pinfo->battery_state == APM_BATTERY_ABSENT)
+			forcehi = 1;		
+		break;
 	case PERF_COOL:
-		min_idle = get_min_idle_mp(ncpu);
-		if (forcehi || (min_idle < PERFINCTHRES && perf < PERFMAX)) {
-			perf += PERFINC;
-			if (perf > PERFMAX)
-				perf = PERFMAX;
-			setperf(perf);
-			return PERFTIMEOUTFAST;
-		} else if (min_idle > PERFDECTHRES && perf > PERFMIN) {
-			perf -= PERFDEC;
-			if (perf < PERFMIN)
-				perf = PERFMIN;
-			setperf(perf);
-			return PERFTIMEOUTSLOW;
-		} else
-			return PERFTIMEOUTSLOW;
+		forcehi = 0;
+		break;
 	}
-	return PERFTIMEOUTSLOW;
+	
+	if (sysctl(hw_perf_mib, 2, &perf, &perf_sz, NULL, 0) < 0)
+		syslog(LOG_INFO, "cannot read hw.setperf");
+
+	if (forcehi || (avg_idle < PERFINCTHRES && perf < PERFMAX)) {
+		perf += PERFINC;
+		if (perf > PERFMAX)
+			perf = PERFMAX;
+		setperf(perf);
+	} else if (avg_idle > PERFDECTHRES && perf > PERFMIN) {
+		perf -= PERFDEC;
+		if (perf < PERFMIN)
+			perf = PERFMIN;
+		setperf(perf);
+	}
 }
 
 char socketname[MAXPATHLEN];
@@ -441,10 +495,7 @@ main(int argc, char *argv[])
 	const char *fname = apmdev;
 	int ctl_fd, sock_fd, ch, suspends, standbys, resumes;
 	int statonly = 0;
-	int enableonly = 0;
-	int pctonly = 0;
 	int powerstatus = 0, powerbak = 0, powerchange = 0;
-	int messages = 0;
 	int noacsleep = 0;
 	struct timespec ts = {TIMO, 0}, sts = {0, 0};
 	struct apm_power_info pinfo;
@@ -456,7 +507,7 @@ main(int argc, char *argv[])
 	int ncpu;
 	size_t ncpu_sz = sizeof(ncpu);
 
-	while ((ch = getopt(argc, argv, "aACdHLsepmf:t:S:")) != -1)
+	while ((ch = getopt(argc, argv, "aACdHLsf:t:S:")) != -1)
 		switch(ch) {
 		case 'a':
 			noacsleep = 1;
@@ -477,12 +528,6 @@ main(int argc, char *argv[])
 			break;
 		case 's':	/* status only */
 			statonly = 1;
-			break;
-		case 'e':
-			enableonly = 1;
-			break;
-		case 'p':
-			pctonly = 1;
 			break;
 		case 'A':
 			if (doperf != PERF_NONE)
@@ -506,9 +551,6 @@ main(int argc, char *argv[])
 			doperf = PERF_MANUAL;
 			setperf(PERFMAX);
 			break;
-		case 'm':
-			messages = 1;
-			break;
 		case '?':
 		default:
 			usage();
@@ -526,7 +568,8 @@ main(int argc, char *argv[])
 	if (debug)
 		openlog(__progname, LOG_CONS, LOG_LOCAL1);
 	else {
-		daemon(0, 0);
+		if (daemon(0, 0) < 0)
+			error("failed to daemonize", NULL);
 		openlog(__progname, LOG_CONS, LOG_DAEMON);
 		setlogmask(LOG_UPTO(LOG_NOTICE));
 	}
@@ -551,18 +594,7 @@ main(int argc, char *argv[])
 	if (statonly)
 		exit(0);
 
-	if (enableonly) {
-		set_driver_messages(ctl_fd, APM_PRINT_ON);
-		exit(0);
-	}
-
-	if (pctonly) {
-		set_driver_messages(ctl_fd, APM_PRINT_PCT);
-		exit(0);
-	}
-
-	if (!messages)
-		set_driver_messages(ctl_fd, APM_PRINT_OFF);
+	set_driver_messages(ctl_fd, APM_PRINT_OFF);
 
 	kq = kqueue();
 	if (kq <= 0)
@@ -593,8 +625,8 @@ main(int argc, char *argv[])
 		sts = ts;
 
 		if (doperf == PERF_AUTO || doperf == PERF_COOL) {
-			sts.tv_sec = 0;
-			sts.tv_nsec = perf_status(&pinfo, ncpu);
+			sts.tv_sec = 1;
+			perf_status(&pinfo, ncpu);
 		}
 
 		apmtimeout += sts.tv_sec;

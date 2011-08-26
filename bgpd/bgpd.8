@@ -1,4 +1,4 @@
-.\" $OpenBSD: bgpd.8,v 1.28 2009/01/13 23:01:36 sthen Exp $
+.\" $OpenBSD: bgpd.8,v 1.39 2010/10/15 07:45:32 claudio Exp $
 .\"
 .\" Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: January 13 2009 $
+.Dd $Mdocdate: October 15 2010 $
 .Dt BGPD 8
 .Os
 .Sh NAME
@@ -24,12 +24,8 @@
 .Nm bgpd
 .Bk -words
 .Op Fl cdnv
-.Oo Xo
-.Fl D Ar macro Ns = Ns Ar value Oc
-.Xc
+.Op Fl D Ar macro Ns = Ns Ar value
 .Op Fl f Ar file
-.Op Fl r Ar path
-.Op Fl s Ar path
 .Ek
 .Sh DESCRIPTION
 .Nm
@@ -42,7 +38,7 @@ concerning
 with other BGP systems.
 .Nm
 uses the Border Gateway Protocol, Version 4,
-as described in RFC 1771.
+as described in RFC 4271.
 Please refer to that document for more information about BGP.
 .Pp
 .Nm
@@ -121,15 +117,6 @@ instead of the default
 .It Fl n
 Configtest mode.
 Only check the configuration file for validity.
-.It Fl r Ar path
-Open a second, restricted, control socket that
-.Xr bgpctl 8
-can use.
-Only
-.Em show
-requests are allowed on this socket.
-.It Fl s Ar path
-Use an alternate location for the default control socket.
 .It Fl v
 Produce more verbose output.
 .El
@@ -150,9 +137,9 @@ control socket
 .Xr bgplg 8 ,
 .Xr bgplgsh 8
 .Rs
-.%R RFC 1771
+.%R RFC 4271
 .%T "A Border Gateway Protocol 4 (BGP-4)"
-.%D March 1995
+.%D January 2006
 .Re
 .Rs
 .%R RFC 1997
@@ -165,6 +152,11 @@ control socket
 .%D August 1998
 .Re
 .Rs
+.%R RFC 2545
+.%T "Use of BGP-4 Multiprotocol Extensions for IPv6 Inter-Domain Routing"
+.%D March 1999
+.Re
+.Rs
 .%R RFC 2796
 .%T "BGP Route Reflection - An Alternative to Full Mesh IBGP"
 .%D April 2000
@@ -173,11 +165,6 @@ control socket
 .%R RFC 2918
 .%T "Route Refresh Capability for BGP-4"
 .%D September 2000
-.Re
-.Rs
-.%R RFC 3392
-.%T "Capabilities Advertisement with BGP-4"
-.%D January 1999
 .Re
 .Rs
 .%R RFC 3682
@@ -190,6 +177,21 @@ control socket
 .%D April 2004
 .Re
 .Rs
+.%R RFC 4360
+.%T "BGP Extended Communities Attribute"
+.%D February 2006
+.Re
+.Rs
+.%R RFC 4364
+.%T "BGP/MPLS IP Virtual Private Networks (VPNs)"
+.%D February 2006
+.Re
+.Rs
+.%R RFC 4486
+.%T "BGP Cease Notification Message Subcodes"
+.%D April 2006
+.Re
+.Rs
 .%R RFC 4760
 .%T "Multiprotocol Extensions for BGP-4"
 .%D January 2007
@@ -198,6 +200,21 @@ control socket
 .%R RFC 4893
 .%T "BGP Support for Four-octet AS Number Space"
 .%D May 2007
+.Re
+.Rs
+.%R RFC 5492
+.%T "Capabilities Advertisement with BGP-4"
+.%D February 2009
+.Re
+.Rs
+.%R draft-ietf-idr-optional-transitive-00
+.%T "Error Handling for Optional Transitive BGP Attributes"
+.%D April 2009
+.Re
+.Rs
+.%R draft-ietf-idr-fsm-subcode-00
+.%T "Subcodes for BGP Finite State Machine Error"
+.%D September 2010
 .Re
 .Sh HISTORY
 The

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgConfig.pm,v 1.12 2008/10/20 10:25:16 espie Exp $
+# $OpenBSD: PkgConfig.pm,v 1.19 2011/06/21 07:18:35 jasper Exp $
 #
 # Copyright (c) 2006 Marc Espie <espie@openbsd.org>
 #
@@ -13,7 +13,7 @@
 # ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 # WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-#
+
 use strict;
 use warnings;
 
@@ -23,7 +23,7 @@ package OpenBSD::PkgConfig;
 # specific properties may have specific needs.
 
 my $parse = {
-	Requires => sub { 
+	Requires => sub {
 	    [split qr{
 	    	(?<![<=>]) 	# not preceded by <=>
 		[,\s]+ 		#    delimiter
@@ -43,9 +43,9 @@ sub new
 {
 	my $class = shift;
 
-	return bless { 
-		variables => {},  
-		vlist => [], 
+	return bless {
+		variables => {},
+		vlist => [],
 		properties => {},
 		proplist => []
 	}, $class;
@@ -73,7 +73,7 @@ sub add_property
 		if (defined $parse->{$name}) {
 			$v = $parse->{$name}($value);
 		} else {
-			$v = [split /\s+/o, $value] ;
+			$v = [split /(?<!\\)\s+/o, $value];
 		}
 	} else {
 		$v = [];
@@ -111,7 +111,7 @@ sub read_fh
 		}
 	}
 	if (defined $cfg->{properties}->{Libs}) {
-		$cfg->{properties}->{Libs} = 
+		$cfg->{properties}->{Libs} =
 		    $cfg->compress_list($cfg->{properties}->{Libs});
 	}
 	return $cfg;
@@ -139,7 +139,7 @@ sub write_fh
 		if (defined $write->{$property}) {
 			print $fh $write->{$property}($p);
 		} else {
-			print $fh (map { " $_" } @$p); 
+			print $fh (map { " $_" } @$p);
 		}
 	    	print $fh "\n";
 	}
@@ -184,7 +184,7 @@ sub expanded
 	my ($self, $v, $extra) = @_;
 
 	$extra = {} if !defined $extra;
-	my $get_value = 
+	my $get_value =
 		sub {
 			my $var = shift;
 			if (defined $extra->{$var}) {

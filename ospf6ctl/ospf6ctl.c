@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6ctl.c,v 1.24 2009/01/30 22:23:30 stsp Exp $ */
+/*	$OpenBSD: ospf6ctl.c,v 1.36 2011/05/05 15:58:53 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -54,6 +54,8 @@ char		*print_ls_type(u_int16_t);
 void		 show_db_hdr_msg_detail(struct lsa_hdr *);
 char		*print_rtr_link_type(u_int8_t);
 const char	*print_ospf_flags(u_int8_t);
+const char	*print_asext_flags(u_int32_t);
+const char	*print_prefix_opt(u_int8_t);
 int		 show_db_msg_detail(struct imsg *imsg);
 int		 show_nbr_msg(struct imsg *);
 const char	*print_ospf_options(u_int32_t);
@@ -79,13 +81,6 @@ usage(void)
 	exit(1);
 }
 
-/* dummy function so that ospf6ctl does not need libevent */
-void
-imsg_event_add(struct imsgbuf *i)
-{
-	/* nothing */
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -94,7 +89,7 @@ main(int argc, char *argv[])
 	struct imsg		 imsg;
 	unsigned int		 ifidx = 0;
 	int			 ctl_sock;
-	int			 done = 0;
+	int			 done = 0, verbose = 0;
 	int			 n;
 
 	/* parse options */
@@ -113,7 +108,7 @@ main(int argc, char *argv[])
 
 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
-	imsg_init(ibuf, ctl_sock, NULL);
+	imsg_init(ibuf, ctl_sock);
 	done = 0;
 
 	/* process user request */
@@ -123,7 +118,7 @@ main(int argc, char *argv[])
 		/* not reached */
 	case SHOW:
 	case SHOW_SUM:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_IFACE:
 		printf("%-11s %-29s %-6s %-10s %-10s %-8s\n",
@@ -136,7 +131,7 @@ main(int argc, char *argv[])
 			if (ifidx == 0)
 				errx(1, "no such interface %s", res->ifname);
 		}
-		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
 		    &ifidx, sizeof(ifidx));
 		break;
 	case SHOW_NBR:
@@ -144,52 +139,52 @@ main(int argc, char *argv[])
 		    "State", "DeadTime", "Iface","Uptime");
 		/*FALLTHROUGH*/
 	case SHOW_NBR_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DB:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBBYAREA:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, -1,
 		    &res->addr, sizeof(res->addr));
 		break;
 	case SHOW_DBEXT:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_EXT, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_EXT, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBLINK:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_LINK, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_LINK, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBNET:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_NET, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_NET, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBRTR:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_RTR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_RTR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBINTRA:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_INTRA, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_INTRA, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBSELF:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SELF, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SELF, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBSUM:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SUM, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SUM, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBASBR:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_ASBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_ASBR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_RIB:
 		printf("%-20s %-17s %-12s %-9s %-7s %-8s\n", "Destination",
 		    "Nexthop", "Path Type", "Type", "Cost", "Uptime");
 		/*FALLTHROUGH*/
 	case SHOW_RIB_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_FIB:
 		if (IN6_IS_ADDR_UNSPECIFIED(&res->addr))
-			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0, -1,
 			    &res->flags, sizeof(res->flags));
 		else
-			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0, -1,
 			    &res->addr, sizeof(res->addr));
 		show_fib_head();
 		break;
@@ -197,17 +192,26 @@ main(int argc, char *argv[])
 		errx(1, "fib couple|decouple");
 		break;
 	case FIB_COUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, -1, NULL, 0);
 		printf("couple request sent.\n");
 		done = 1;
 		break;
 	case FIB_DECOUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, -1, NULL, 0);
 		printf("decouple request sent.\n");
 		done = 1;
 		break;
+	case LOG_VERBOSE:
+		verbose = 1;
+		/* FALLTHROUGH */
+	case LOG_BRIEF:
+		imsg_compose(ibuf, IMSG_CTL_LOG_VERBOSE, 0, 0, -1,
+		    &verbose, sizeof(verbose));
+		printf("logging request sent.\n");
+		done = 1;
+		break;
 	case RELOAD:
-		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, -1, NULL, 0);
 		printf("reload request sent.\n");
 		done = 1;
 		break;
@@ -272,6 +276,8 @@ main(int argc, char *argv[])
 			case FIB:
 			case FIB_COUPLE:
 			case FIB_DECOUPLE:
+			case LOG_VERBOSE:
+			case LOG_BRIEF:
 			case RELOAD:
 				break;
 			}
@@ -355,8 +361,8 @@ show_interface_msg(struct imsg *imsg)
 		printf("%-11s %-29s %-6s %-10s %-10s %s\n",
 		    iface->name, netid, if_state_name(iface->state),
 		    fmt_timeframe_core(iface->hello_timer),
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate), fmt_timeframe_core(iface->uptime));
+		    get_linkstate(iface->mediatype, iface->linkstate),
+		    fmt_timeframe_core(iface->uptime));
 		free(netid);
 		break;
 	case IMSG_CTL_END:
@@ -384,8 +390,7 @@ show_interface_detail_msg(struct imsg *imsg)
 		    log_in6addr(&iface->addr), inet_ntoa(iface->area));
 		printf("  Link type %s, state %s",
 		    get_media_descr(get_ifms_type(iface->mediatype)),
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate));
+		    get_linkstate(iface->mediatype, iface->linkstate));
 		if (iface->linkstate != LINK_STATE_DOWN &&
 		    iface->baudrate > 0) {
 		    printf(", ");
@@ -570,8 +575,8 @@ int
 show_database_msg(struct imsg *imsg)
 {
 	static struct in_addr	 area_id;
-	static u_int16_t	 lasttype;
 	static char		 ifname[IF_NAMESIZE];
+	static u_int16_t	 lasttype;
 	struct area		*area;
 	struct iface		*iface;
 	struct lsa_hdr		*lsa;
@@ -693,19 +698,51 @@ print_ospf_flags(u_int8_t opts)
 	return (optbuf);
 }
 
+const char *
+print_asext_flags(u_int32_t opts)
+{
+	static char	optbuf[32];
+
+	snprintf(optbuf, sizeof(optbuf), "*|*|*|*|*|%s|%s|%s",
+	    opts & LSA_ASEXT_E_FLAG ? "E" : "-",
+	    opts & LSA_ASEXT_F_FLAG ? "F" : "-",
+	    opts & LSA_ASEXT_T_FLAG ? "T" : "-");
+	return (optbuf);
+}
+
+const char *
+print_prefix_opt(u_int8_t opts)
+{
+	static char	optbuf[32];
+
+	if (opts) {
+		snprintf(optbuf, sizeof(optbuf),
+		    " Options: *|*|*|%s|%s|x|%s|%s",
+		    opts & OSPF_PREFIX_DN ? "DN" : "-",
+		    opts & OSPF_PREFIX_P ? "P" : "-",
+		    opts & OSPF_PREFIX_LA ? "LA" : "-",
+		    opts & OSPF_PREFIX_NU ? "NU" : "-");
+		return (optbuf);
+	}
+	return ("");
+}
+
 int
 show_db_msg_detail(struct imsg *imsg)
 {
 	static struct in_addr	 area_id;
 	static char		 ifname[IF_NAMESIZE];
 	static u_int16_t	 lasttype;
+	struct in6_addr		 ia6;
 	struct in_addr		 addr, data;
 	struct area		*area;
 	struct iface		*iface;
 	struct lsa		*lsa;
 	struct lsa_rtr_link	*rtr_link;
+	struct lsa_net_link	*net_link;
 	struct lsa_prefix	*prefix;
 	struct lsa_asext	*asext;
+	u_int32_t		 ext_tag;
 	u_int16_t		 i, nlinks, off;
 
 	/* XXX sanity checks! */
@@ -716,22 +753,36 @@ show_db_msg_detail(struct imsg *imsg)
 		if (lsa->hdr.type != lasttype)
 			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
-		addr.s_addr = lsa->data.asext.mask;
-		printf("Network Mask: %s\n", inet_ntoa(addr));
 
 		asext = (struct lsa_asext *)((char *)lsa + sizeof(lsa->hdr));
 
-		printf("    Metric type: ");
+		printf("    Flags: %s\n",
+		    print_asext_flags(ntohl(lsa->data.asext.metric)));
+		printf("    Metric: %d Type: ", ntohl(asext->metric)
+		    & LSA_METRIC_MASK);
 		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_E_FLAG)
 			printf("2\n");
 		else
 			printf("1\n");
-		printf("    Metric: %d\n", ntohl(asext->metric)
-		    & LSA_METRIC_MASK);
-		addr.s_addr = asext->fw_addr;
-		printf("    Forwarding Address: %s\n", inet_ntoa(addr));
-		printf("    External Route Tag: %d\n\n", ntohl(asext->ext_tag));
 
+		prefix = &asext->prefix;
+		bzero(&ia6, sizeof(ia6));
+		bcopy(prefix + 1, &ia6, LSA_PREFIXSIZE(prefix->prefixlen));
+		printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+		    prefix->prefixlen, print_prefix_opt(prefix->options));
+
+		off = sizeof(*asext) + LSA_PREFIXSIZE(prefix->prefixlen);
+		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_F_FLAG) {
+			bcopy((char *)asext + off, &ia6, sizeof(ia6));
+			printf("    Forwarding Address: %s\n",
+			    log_in6addr(&ia6));
+			off += sizeof(ia6);
+		}
+		if (ntohl(lsa->data.asext.metric) & LSA_ASEXT_T_FLAG) {
+			bcopy((char *)asext + off, &ext_tag, sizeof(ext_tag));
+			printf("    External Route Tag: %d\n", ntohl(ext_tag));
+		}
+		printf("\n");
 		lasttype = lsa->hdr.type;
 		break;
 	case IMSG_CTL_SHOW_DB_LINK:
@@ -749,15 +800,14 @@ show_db_msg_detail(struct imsg *imsg)
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_link);
 
 		for (i = 0; i < nlinks; i++) {
-			struct in6_addr	ia6;
 			prefix = (struct lsa_prefix *)((char *)lsa + off);
 			bzero(&ia6, sizeof(ia6));
 			bcopy(prefix + 1, &ia6,
 			    LSA_PREFIXSIZE(prefix->prefixlen));
 
-			printf("    Prefix Address: %s\n", log_in6addr(&ia6));
-			printf("    Prefix Length: %d, Options: %x\n",
-			    prefix->prefixlen, prefix->options);
+			printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+			    prefix->prefixlen,
+			    print_prefix_opt(prefix->options));
 
 			off += sizeof(struct lsa_prefix)
 			    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -774,14 +824,16 @@ show_db_msg_detail(struct imsg *imsg)
 		printf("Options: %s\n",
 		    print_ospf_options(LSA_24_GETLO(ntohl(lsa->data.net.opts))));
 
-		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
-		    - sizeof(u_int32_t)) / sizeof(struct lsa_net_link);
-		off = sizeof(lsa->hdr) + sizeof(u_int32_t);
+		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr) -
+		    sizeof(struct lsa_net)) / sizeof(struct lsa_net_link);
+		net_link = (struct lsa_net_link *)((char *)lsa +
+		    sizeof(lsa->hdr) + sizeof(lsa->data.net));
 		printf("Number of Routers: %d\n", nlinks);
 
 		for (i = 0; i < nlinks; i++) {
-			addr.s_addr = lsa->data.net.att_rtr[i];
+			addr.s_addr = net_link->att_rtr;
 			printf("    Attached Router: %s\n", inet_ntoa(addr));
+			net_link++;
 		}
 
 		printf("\n");
@@ -799,18 +851,19 @@ show_db_msg_detail(struct imsg *imsg)
 
 		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
 		    - sizeof(u_int32_t)) / sizeof(struct lsa_rtr_link);
-		printf("Number of Links: %d\n", nlinks);
+		printf("Number of Links: %d\n\n", nlinks);
 
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_rtr);
 
 		for (i = 0; i < nlinks; i++) {
 			rtr_link = (struct lsa_rtr_link *)((char *)lsa + off);
 
-			printf("    Link connected to: %s\n",
+			printf("    Link (Interface ID %s) connected to: %s\n",
+			    log_id(rtr_link->iface_id),
 			    print_rtr_link_type(rtr_link->type));
 
 			addr.s_addr = rtr_link->nbr_rtr_id;
-			data.s_addr = rtr_link->iface_id;
+			data.s_addr = rtr_link->nbr_iface_id;
 
 			switch (rtr_link->type) {
 			case LINK_TYPE_POINTTOPOINT:
@@ -847,7 +900,7 @@ show_db_msg_detail(struct imsg *imsg)
 		show_db_hdr_msg_detail(&lsa->hdr);
 		printf("Referenced LS Type: %s\n",
 		    print_ls_type(lsa->data.pref_intra.ref_type));
-		addr.s_addr = lsa->data.pref_intra.ref_lsid;
+		addr.s_addr = lsa->data.pref_intra.ref_ls_id;
 		printf("Referenced Link State ID: %s\n", inet_ntoa(addr));
 		addr.s_addr = lsa->data.pref_intra.ref_adv_rtr;
 		printf("Referenced Advertising Router: %s\n", inet_ntoa(addr));
@@ -857,15 +910,14 @@ show_db_msg_detail(struct imsg *imsg)
 		off = sizeof(lsa->hdr) + sizeof(struct lsa_intra_prefix);
 
 		for (i = 0; i < nlinks; i++) {
-			struct in6_addr	ia6;
 			prefix = (struct lsa_prefix *)((char *)lsa + off);
 			bzero(&ia6, sizeof(ia6));
 			bcopy(prefix + 1, &ia6,
 			    LSA_PREFIXSIZE(prefix->prefixlen));
 
-			printf("    Prefix Address: %s\n", log_in6addr(&ia6));
-			printf("    Prefix Length: %d, Options: %x\n",
-			    prefix->prefixlen, prefix->options);
+			printf("    Prefix: %s/%d%s\n", log_in6addr(&ia6),
+			    prefix->prefixlen,
+			    print_prefix_opt(prefix->options));
 
 			off += sizeof(struct lsa_prefix)
 			    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -1019,8 +1071,9 @@ show_rib_msg(struct imsg *imsg)
 		}
 
 		printf("%-20s %-17s %-12s %-9s %-7d %s\n", dstnet,
-		    log_in6addr(&rt->nexthop), path_type_name(rt->p_type),
-		    dst_type_name(rt->d_type), rt->cost,
+		    log_in6addr_scope(&rt->nexthop, rt->ifindex),
+		    path_type_name(rt->p_type), dst_type_name(rt->d_type),
+		    rt->cost,
 		    rt->uptime == 0 ? "-" : fmt_timeframe_core(rt->uptime));
 		free(dstnet);
 		break;
@@ -1130,7 +1183,7 @@ show_rib_detail_msg(struct imsg *imsg)
 				errx(1, "unknown route type");
 			}
 			printf("%-18s %-15s ", dstnet,
-			    log_in6addr(&rt->nexthop));
+			    log_in6addr_scope(&rt->nexthop, rt->ifindex));
 			printf("%-15s %-12s %-7d", inet_ntoa(rt->adv_rtr),
 			    path_type_name(rt->p_type), rt->cost);
 			free(dstnet);
@@ -1151,7 +1204,7 @@ show_rib_detail_msg(struct imsg *imsg)
 				err(1, NULL);
 
 			printf("%-18s %-15s ", dstnet,
-			    log_in6addr(&rt->nexthop));
+			    log_in6addr_scope(&rt->nexthop, rt->ifindex));
 			printf("%-15s %-12s %-7d %-7d\n",
 			    inet_ntoa(rt->adv_rtr), path_type_name(rt->p_type),
 			    rt->cost, rt->cost2);
@@ -1218,7 +1271,7 @@ show_fib_msg(struct imsg *imsg)
 		free(p);
 
 		if (!IN6_IS_ADDR_UNSPECIFIED(&k->nexthop))
-			printf("%s", log_in6addr(&k->nexthop));
+			printf("%s", log_in6addr_scope(&k->nexthop, k->scope));
 		else if (k->flags & F_CONNECTED)
 			printf("link#%u", k->ifindex);
 		printf("\n");
@@ -1234,9 +1287,8 @@ show_fib_msg(struct imsg *imsg)
 	return (0);
 }
 
-const int	ifm_status_valid_list[] = IFM_STATUS_VALID_LIST;
-const struct ifmedia_status_description
-		ifm_status_descriptions[] = IFM_STATUS_DESCRIPTIONS;
+const struct if_status_description
+		if_status_descriptions[] = LINK_STATE_DESCRIPTIONS;
 const struct ifmedia_description
 		ifm_type_descriptions[] = IFM_TYPE_DESCRIPTIONS;
 
@@ -1255,23 +1307,15 @@ get_media_descr(int media_type)
 const char *
 get_linkstate(int media_type, int link_state)
 {
-	const struct ifmedia_status_description	*p;
-	int					 i;
+	const struct if_status_description *p;
+	static char buf[8];
 
-	if (link_state == LINK_STATE_UNKNOWN)
-		return ("unknown");
-
-	for (i = 0; ifm_status_valid_list[i] != 0; i++)
-		for (p = ifm_status_descriptions; p->ifms_valid != 0; p++) {
-			if (p->ifms_type != media_type ||
-			    p->ifms_valid != ifm_status_valid_list[i])
-				continue;
-			if (LINK_STATE_IS_UP(link_state))
-				return (p->ifms_string[1]);
-			return (p->ifms_string[0]);
-		}
-
-	return ("unknown");
+	for (p = if_status_descriptions; p->ifs_string != NULL; p++) {
+		if (LINK_STATE_DESC_MATCH(p, media_type, link_state))
+			return (p->ifs_string);
+	}
+	snprintf(buf, sizeof(buf), "[#%d]", link_state);
+	return (buf);
 }
 
 void

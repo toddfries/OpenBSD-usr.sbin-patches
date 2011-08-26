@@ -1,4 +1,4 @@
-/*	$OpenBSD: traceroute.c,v 1.66 2008/10/04 02:21:49 deraadt Exp $	*/
+/*	$OpenBSD: traceroute.c,v 1.77 2011/06/21 17:31:07 mikeb Exp $	*/
 /*	$NetBSD: traceroute.c,v 1.10 1995/05/21 15:50:45 mycroft Exp $	*/
 
 /*-
@@ -32,20 +32,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifndef lint
-static char copyright[] =
-"@(#) Copyright (c) 1990, 1993\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
-
-#ifndef lint
-#if 0
-static char sccsid[] = "@(#)traceroute.c	8.1 (Berkeley) 6/6/93";*/
-#else
-static char rcsid[] = "$OpenBSD: traceroute.c,v 1.66 2008/10/04 02:21:49 deraadt Exp $";
-#endif
-#endif /* not lint */
 
 /*
  * traceroute host  - trace the route ip packets follow going to "host".
@@ -234,6 +220,8 @@ static char rcsid[] = "$OpenBSD: traceroute.c,v 1.66 2008/10/04 02:21:49 deraadt
 
 #include <arpa/inet.h>
 
+#include <netmpls/mpls.h>
+
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -243,7 +231,10 @@ static char rcsid[] = "$OpenBSD: traceroute.c,v 1.66 2008/10/04 02:21:49 deraadt
 #include <string.h>
 #include <unistd.h>
 
-#define	MAX_LSRR	((MAX_IPOPTLEN - 4) / 4)
+#define MAX_LSRR		((MAX_IPOPTLEN - 4) / 4)
+
+#define MPLS_LABEL(m)		((m & MPLS_LABEL_MASK) >> MPLS_LABEL_OFFSET)
+#define MPLS_EXP(m)		((m & MPLS_EXP_MASK) >> MPLS_EXP_OFFSET)
 
 /*
  * Format of the data in a (udp) probe packet.
@@ -266,6 +257,7 @@ u_char packet[512], *outpacket;	/* last inbound (icmp) packet */
 int wait_for_reply(int, struct sockaddr_in *, struct timeval *);
 void send_probe(int, u_int8_t, int, struct sockaddr_in *);
 int packet_ok(u_char *, int, struct sockaddr_in *, int, int);
+void print_exthdr(u_char *, int);
 void print(u_char *, int, struct sockaddr_in *);
 char *inetname(struct in_addr);
 u_short in_cksum(u_short *, int);
@@ -293,6 +285,8 @@ int verbose;
 int waittime = 5;		/* time to wait for response (in seconds) */
 int nflag;			/* print addresses numerically */
 int dump;
+int xflag;			/* show ICMP extension header */
+int tflag;			/* tos flag was set */
 
 int
 main(int argc, char *argv[])
@@ -300,15 +294,19 @@ main(int argc, char *argv[])
 	int mib[4] = { CTL_NET, PF_INET, IPPROTO_IP, IPCTL_DEFTTL };
 	int ttl_flag = 0, incflag = 1, protoset = 0, sump = 0;
 	int ch, i, lsrr = 0, on = 1, probe, seq = 0, tos = 0;
+	int last_tos, tos_returned;
 	size_t size = sizeof(max_ttl);
 	struct sockaddr_in from, to;
 	struct hostent *hp;
 	u_int32_t tmprnd;
-	struct ip *ip;
+	struct ip *ip, *inner_ip;
+	struct icmp *icp;
 	u_int8_t ttl;
 	char *ep;
+	const char *errstr;
 	long l;
 	uid_t uid;
+	u_int rtableid;
 
 	if ((s = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)) < 0)
 		err(5, "icmp socket");
@@ -323,7 +321,8 @@ main(int argc, char *argv[])
 	(void) sysctl(mib, sizeof(mib)/sizeof(mib[0]), &max_ttl, &size,
 	    NULL, 0);
 
-	while ((ch = getopt(argc, argv, "SDIdg:f:m:np:q:rs:t:w:vlP:c")) != -1)
+	while ((ch = getopt(argc, argv, "cDdf:g:Ilm:nP:p:q:rSs:t:V:vw:x"))
+			!= -1)
 		switch (ch) {
 		case 'S':
 			sump = 1;
@@ -431,10 +430,24 @@ main(int argc, char *argv[])
 			l = strtol(optarg, &ep, 10);
 			if (errno || !*optarg || *ep || l < 0 || l > 255)
 				errx(1, "tos must be 0 to 255.");
-			tos = (int)l;
+			last_tos = tos = (int)l;
+			tflag = 1;
 			break;
 		case 'v':
 			verbose++;
+			break;
+		case 'V':
+			rtableid = (unsigned int)strtonum(optarg, 0,
+			    RT_TABLEID_MAX, &errstr);
+			if (errstr)
+				errx(1, "rtable value is %s: %s",
+				    errstr, optarg);
+			if (setsockopt(sndsock, SOL_SOCKET, SO_RTABLE,
+			    &rtableid, sizeof(rtableid)) == -1)
+				err(1, "setsockopt SO_RTABLE");
+			if (setsockopt(s, SOL_SOCKET, SO_RTABLE,
+			    &rtableid, sizeof(rtableid)) == -1)
+				err(1, "setsockopt SO_RTABLE");
 			break;
 		case 'w':
 			errno = 0;
@@ -443,6 +456,9 @@ main(int argc, char *argv[])
 			if (errno || !*optarg || *ep || l <= 1 || l > INT_MAX)
 				errx(1, "wait must be >1 sec.");
 			waittime = (int)l;
+			break;
+		case 'x':
+			xflag = 1;
 			break;
 		default:
 			usage();
@@ -624,6 +640,17 @@ main(int argc, char *argv[])
 					++got_there;
 					break;
 				}
+
+				icp = (struct icmp *) (((u_char *)ip)+(ip->ip_hl<<2));
+				inner_ip = (struct ip *) (((u_char *)icp)+8);
+
+				tos_returned = inner_ip->ip_tos;
+
+				if (tflag && (tos_returned != last_tos))
+					printf (" (TOS=%d!)", tos_returned);
+
+				last_tos = tos_returned;
+
 				/* time exceeded in transit */
 				if (i == -1)
 					break;
@@ -694,7 +721,9 @@ main(int argc, char *argv[])
 				printf(" *");
 				timeout++;
 				loss++;
-			}
+			} else if (cc && probe == nprobes - 1 &&
+			    (xflag || verbose))
+				print_exthdr(packet, cc);
 			(void) fflush(stdout);
 		}
 		if (sump)
@@ -704,6 +733,120 @@ main(int argc, char *argv[])
 			break;
 	}
 	exit(0);
+}
+
+void
+print_exthdr(u_char *buf, int cc)
+{
+	struct icmp_ext_hdr exthdr;
+	struct icmp_ext_obj_hdr objhdr;
+	struct ip *ip;
+	struct icmp *icp;
+	int hlen, first;
+	u_int32_t label;
+	u_int16_t off, olen;
+	u_int8_t type;
+			
+	ip = (struct ip *)buf;
+	hlen = ip->ip_hl << 2;
+	if (cc < hlen + ICMP_MINLEN)
+		return;
+	icp = (struct icmp *)(buf + hlen);
+	cc -= hlen + ICMP_MINLEN;
+	buf += hlen + ICMP_MINLEN;
+
+	type = icp->icmp_type;
+	if (type != ICMP_TIMXCEED && type != ICMP_UNREACH &&
+	    type != ICMP_PARAMPROB)
+		/* Wrong ICMP type for extension */
+		return;
+
+	off = icp->icmp_length * sizeof(u_int32_t);
+	if (off == 0)
+		/*
+		 * rfc 4884 Section 5.5: traceroute MUST try to parse
+		 * broken ext headers. Again IETF bent over to please
+		 * idotic corporations.
+		 */
+		off = ICMP_EXT_OFFSET;
+	else if (off < ICMP_EXT_OFFSET)
+		/* rfc 4884 requires an offset of at least 128 bytes */
+		return;
+
+	/* make sure that at least one extension is present */
+	if (cc < off + sizeof(exthdr) + sizeof(objhdr))
+		/* Not enough space for ICMP extensions */
+		return;
+
+	cc -= off;
+	buf += off;
+	memcpy(&exthdr, buf, sizeof(exthdr));
+
+	/* verify version */		
+	if ((exthdr.ieh_version & ICMP_EXT_HDR_VMASK) != ICMP_EXT_HDR_VERSION)
+		return;
+
+	/* verify checksum */
+	if (exthdr.ieh_cksum && in_cksum((u_short *)buf, cc))
+		return;
+
+	buf += sizeof(exthdr);
+	cc -= sizeof(exthdr);
+
+	while (cc > sizeof(objhdr)) {
+		memcpy(&objhdr, buf, sizeof(objhdr)); 
+		olen = ntohs(objhdr.ieo_length);
+
+		/* Sanity check the length field */	
+		if (olen < sizeof(objhdr) || olen > cc)
+			return;
+
+		cc -= olen;
+
+		/* Move past the object header */
+		buf += sizeof(objhdr);
+		olen -= sizeof(objhdr);
+
+		switch (objhdr.ieo_cnum) {
+		case ICMP_EXT_MPLS:
+			/* RFC 4950: ICMP Extensions for MPLS */
+			switch (objhdr.ieo_ctype) {
+			case 1:
+				first = 0;
+				while (olen >= sizeof(u_int32_t)) {
+					memcpy(&label, buf, sizeof(u_int32_t));
+					label = htonl(label);
+					buf += sizeof(u_int32_t);
+					olen -= sizeof(u_int32_t);
+					
+					if (first == 0) {
+						printf(" [MPLS Label ");
+						first++;
+					} else
+						printf(", ");
+					printf("%d", MPLS_LABEL(label));
+					if (MPLS_EXP(label))
+						printf(" (Exp %x)",
+						    MPLS_EXP(label));
+				}
+				if (olen > 0) {
+					printf("|]");
+					return;	
+				}
+				if (first != 0)
+					printf("]");
+				break;
+			default:
+				buf += olen;
+				break;
+			}
+			break;
+		case ICMP_EXT_IFINFO:
+		default:
+			buf += olen;
+			break;
+		}
+	}
 }
 
 int
@@ -727,7 +870,7 @@ wait_for_reply(int sock, struct sockaddr_in *from, struct timeval *sent)
 		wait.tv_sec--;
 	}
 	if (wait.tv_sec < 0)
-		wait.tv_sec = wait.tv_usec = 0;
+		timerclear(&wait);
 
 	if (select(sock+1, fdsp, (fd_set *)0, (fd_set *)0, &wait) > 0)
 		cc = recvfrom(s, (char *)packet, sizeof(packet), 0,
@@ -963,7 +1106,7 @@ print(u_char *buf, int cc, struct sockaddr_in *from)
 		    inet_ntoa(from->sin_addr));
 
 	if (verbose)
-		printf(" %d bytes to %s", cc, inet_ntoa (ip->ip_dst));
+		printf(" %d bytes to %s", cc, inet_ntoa(ip->ip_dst));
 }
 
 
@@ -1002,8 +1145,6 @@ in_cksum(u_short *addr, int len)
 
 /*
  * Construct an Internet address representation.
- * If the nflag has been supplied, give
- * numeric value, otherwise try for symbolic name.
  */
 char *
 inetname(struct in_addr in)
@@ -1013,14 +1154,14 @@ inetname(struct in_addr in)
 	struct hostent *hp;
 	char *cp;
 
-	if (first && !nflag) {
+	if (first) {
 		first = 0;
 		if (gethostname(domain, sizeof domain) == 0 &&
 		    (cp = strchr(domain, '.')) != NULL) {
 			strlcpy(domain, cp + 1, sizeof(domain));
 		}
 	}
-	if (!nflag && in.s_addr != INADDR_ANY) {
+	if (in.s_addr != INADDR_ANY) {
 		hp = gethostbyaddr((char *)&in, sizeof(in), AF_INET);
 		if (hp != NULL) {
 			if ((cp = strchr(hp->h_name, '.')) != NULL &&
@@ -1039,8 +1180,8 @@ usage(void)
 	extern char *__progname;
 
 	fprintf(stderr,
-	    "usage: %s [-cDdIlnrSv] [-f first_ttl] [-g gateway_addr] [-m max_ttl]\n"
+	    "usage: %s [-cDdIlnrSvx] [-f first_ttl] [-g gateway_addr] [-m max_ttl]\n"
 	    "\t[-P proto] [-p port] [-q nqueries] [-s src_addr] [-t tos]\n"
-	    "\t[-w waittime] host [packetsize]\n", __progname);
+	    "\t[-V rtable] [-w waittime] host [packetsize]\n", __progname);
 	exit(1);
 }

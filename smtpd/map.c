@@ -1,4 +1,4 @@
-/*	$OpenBSD: map.c,v 1.4 2009/01/01 16:15:47 jacekm Exp $	*/
+/*	$OpenBSD: map.c,v 1.24 2011/05/21 18:43:08 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -22,16 +22,20 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
-#include <errno.h>
 #include <event.h>
+#include <imsg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "smtpd.h"
+#include "log.h"
+
+struct map_backend *map_backend_lookup(enum map_src);
+struct map_parser *map_parser_lookup(enum map_kind);
 
 struct map *
-map_findbyname(struct smtpd *env, const char *name)
+map_findbyname(const char *name)
 {
 	struct map	*m;
 
@@ -43,7 +47,7 @@ map_findbyname(struct smtpd *env, const char *name)
 }
 
 struct map *
-map_find(struct smtpd *env, objid_t id)
+map_find(objid_t id)
 {
 	struct map	*m;
 
@@ -52,4 +56,29 @@ map_find(struct smtpd *env, objid_t id)
 			break;
 	}
 	return (m);
+}
+
+void *
+map_lookup(objid_t mapid, char *key, enum map_kind kind)
+{
+	void *hdl = NULL;
+	char *ret = NULL;
+	struct map *map;
+	struct map_backend *backend = NULL;
+
+	map = map_find(mapid);
+	if (map == NULL)
+		return NULL;
+
+	backend = map_backend_lookup(map->m_src);
+	hdl = backend->open(map->m_config);
+	if (hdl == NULL) {
+		log_warn("map_lookup: can't open %s", map->m_config);
+		return NULL;
+	}
+
+	ret = backend->lookup(hdl, key, kind);
+
+	backend->close(hdl);
+	return ret;
 }

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: dhcpd.conf.5,v 1.8 2009/02/01 10:48:57 sobrado Exp $
+.\"	$OpenBSD: dhcpd.conf.5,v 1.10 2009/09/01 08:42:31 reyk Exp $
 .\"
 .\" Copyright (c) 1995, 1996, 1997, 1998, 1998, 1999
 .\" The Internet Software Consortium.    All rights reserved.
@@ -36,7 +36,7 @@
 .\" see ``http://www.isc.org/isc''.  To learn more about Vixie
 .\" Enterprises, see ``http://www.vix.com''.
 .\"
-.Dd $Mdocdate: February 1 2009 $
+.Dd $Mdocdate: September 1 2009 $
 .Dt DHCPD.CONF 5
 .Os
 .Sh NAME
@@ -386,12 +386,9 @@ declaration.
 .Pp
 The
 .Ar subnet-number
-should be an IP address or domain name which resolves to the subnet
-number of the subnet being described.
-The
+and
 .Ar netmask
-should be an IP address or domain name which resolves to the subnet mask
-of the subnet being described.
+should be specified as numeric IP addresses.
 The subnet number, together with the netmask, are sufficient to determine
 whether any given IP address is on the specified subnet.
 .Pp
@@ -593,14 +590,16 @@ clause in the
 .Ic host
 statement.
 .Ar hardware-type
-must be the name of a physical hardware interface type.
-Currently, only the
-.Ar ethernet
-and
+must be the name of a hardware interface type.
+Currently, the
+.Ar ethernet ,
 .Ar token-ring
-types are recognized, although support for an
+and
 .Ar fddi
-hardware type (and others) would also be desirable.
+physical interface types are recognized,
+although support for DHCP-over-IPSec virtual interface type
+.Ar ipsec-tunnel
+is provided.
 The
 .Ar hardware-address
 should be a set of hexadecimal octets (numbers from 0 through ff)
@@ -932,7 +931,7 @@ manual page.
 .Xr dhcpd.leases 5 ,
 .Xr dhcpd 8
 .Pp
-RFC 2132, RFC 2131.
+RFC 2132, RFC 2131, RFC 3046, RFC 3456
 .Sh AUTHORS
 .An -nosplit
 .Xr dhcpd 8

@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Installed.pm,v 1.12 2007/06/10 17:13:48 espie Exp $
+# $OpenBSD: Installed.pm,v 1.26 2010/07/02 11:17:46 espie Exp $
 #
-# Copyright (c) 2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -26,26 +26,54 @@ use warnings;
 
 package OpenBSD::PackageRepositoryBase;
 
-sub match
+sub parse_url
 {
-	my ($self, $search, @filters) = @_;
-	my @l = $search->match($self);
-	while (my $filter = (shift @filters)) {
-		last if @l == 0; # don't bother filtering empty list
-		@l = $filter->filter(@l);
+	my ($class, $r, $state) = @_;
+
+	my $path;
+
+	if ($$r =~ m/^(.*?)\:(.*)/) {
+		$path = $1;
+		$$r = $2;
+	} else {
+		$path = $$r;
+		$$r = '';
 	}
-	return @l;
+
+	$path .= '/' unless $path =~ m/\/$/;
+	bless { path => $path, state => $state }, $class;
+}
+
+sub parse_fullurl
+{
+	my ($class, $r, $state) = @_;
+
+	$class->strip_urlscheme($r) or return undef;
+	return $class->parse_url($r, $state);
+}
+
+sub strip_urlscheme
+{
+	my ($class, $r) = @_;
+	if ($$r =~ m/^(.*?)\:(.*)$/) {
+		my $scheme = lc($1);
+		if ($scheme eq $class->urlscheme) {
+			$$r = $2;
+			return 1;
+	    	}
+	}
+	return 0;
 }
 
 sub match_locations
 {
 	my ($self, $search, @filters) = @_;
-	my @l = $search->match_locations($self);
+	my $l = $search->match_locations($self);
 	while (my $filter = (shift @filters)) {
-		last if @l == 0; # don't bother filtering empty list
-		@l = $filter->filter_locations(@l);
+		last if @$l == 0; # don't bother filtering empty list
+		$l = $filter->filter_locations($l);
 	}
-	return @l;
+	return $l;
 }
 
 sub url
@@ -88,6 +116,31 @@ sub canonicalize
 	return $name;
 }
 
+sub new_location
+{
+	my ($self, @args) = @_;
+
+	return $self->locationClassName->new($self, @args);
+}
+
+sub locationClassName
+{ "OpenBSD::PackageLocation" }
+
+sub locations_list
+{
+	my $self = shift;
+	if (!defined $self->{locations}) {
+		my $l = [];
+		require OpenBSD::PackageLocation;
+
+		for my $name (@{$self->list}) {
+			push @$l, $self->new_location($name);
+		}
+		$self->{locations} = $l;
+	}
+	return $self->{locations};
+}
+
 package OpenBSD::PackageRepository::Installed;
 
 our @ISA = (qw(OpenBSD::PackageRepositoryBase));
@@ -97,15 +150,13 @@ sub urlscheme
 	return 'inst';
 }
 
-use OpenBSD::PackageInfo (qw(is_installed installed_info 
+use OpenBSD::PackageInfo (qw(is_installed installed_info
     installed_packages installed_stems installed_name));
-
-my $singleton = bless {}, __PACKAGE__;
-my $s2 = bless {all => 1}, __PACKAGE__;
 
 sub new
 {
-	return $_[1] ? $s2 : $singleton;
+	my ($class, $all, $state) = @_;
+	return bless { all => $all, state => $state }, $class;
 }
 
 sub relative_url
@@ -123,6 +174,7 @@ sub canonicalize
 	my ($self, $name) = @_;
 	return installed_name($name);
 }
+
 sub find
 {
 	my ($repository, $name, $arch) = @_;
@@ -131,11 +183,14 @@ sub find
 	if (is_installed($name)) {
 		require OpenBSD::PackageLocation;
 
-		$self = OpenBSD::PackageLocation->new($repository, $name);
+		$self = $repository->new_location($name);
 		$self->{dir} = installed_info($name);
 	}
 	return $self;
 }
+
+sub locationClassName
+{ "OpenBSD::PackageLocation::Installed" }
 
 sub grabPlist
 {

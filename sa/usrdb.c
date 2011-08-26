@@ -1,4 +1,4 @@
-/*	$OpenBSD: usrdb.c,v 1.7 2003/06/28 20:22:21 deraadt Exp $	*/
+/*	$OpenBSD: usrdb.c,v 1.9 2010/08/30 16:14:36 matthew Exp $	*/
 /*
  * Copyright (c) 1994 Christopher G. Demetriou
  * All rights reserved.
@@ -28,10 +28,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-#ifndef LINT
-static char rcsid[] = "$Id: usrdb.c,v 1.7 2003/06/28 20:22:21 deraadt Exp $";
-#endif
 
 #include <sys/types.h>
 #include <sys/acct.h>
@@ -268,7 +264,7 @@ usracct_print(void)
 static int
 uid_compare(const DBT *k1, const DBT *k2)
 {
-	u_long d1, d2;
+	uid_t d1, d2;
 
 	memcpy(&d1, k1->data, sizeof(d1));
 	memcpy(&d2, k2->data, sizeof(d2));

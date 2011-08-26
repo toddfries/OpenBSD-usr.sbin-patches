@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.21 2008/12/17 14:19:39 michele Exp $ */
+/*	$OpenBSD: parse.y,v 1.28 2010/08/03 18:42:41 henning Exp $ */
 
 /*
  * Copyright (c) 2006 Michele Marchetto <mydecay@openbeer.it>
@@ -101,7 +101,7 @@ typedef struct {
 
 %}
 
-%token	SPLIT_HORIZON TRIGGERED_UPDATES FIBUPDATE REDISTRIBUTE
+%token	SPLIT_HORIZON TRIGGERED_UPDATES FIBUPDATE REDISTRIBUTE RDOMAIN
 %token	AUTHKEY AUTHTYPE AUTHMD AUTHMDKEYID
 %token	INTERFACE RTLABEL
 %token	COST PASSIVE
@@ -159,12 +159,12 @@ conf_main	: SPLIT_HORIZON STRING {
 			    OPT_SPLIT_POISONED);
 			if (!strcmp($2, "none"))
 				/* nothing */ ;
-			else if (!strcmp($2, "default"))
+			else if (!strcmp($2, "simple"))
 				conf->options |= OPT_SPLIT_HORIZON;
 			else if (!strcmp($2, "poisoned"))
 				conf->options |= OPT_SPLIT_POISONED;
 			else {
-				yyerror("unknon split horizon type");
+				yyerror("unknown split horizon type");
 				free($2);
 				YYERROR;
 			}
@@ -176,6 +176,13 @@ conf_main	: SPLIT_HORIZON STRING {
 			else
 				conf->options &= ~OPT_TRIGGERED_UPDATES;
 		}
+		| RDOMAIN NUMBER {
+			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+				yyerror("invalid rdomain");
+				YYERROR;
+			}
+			conf->rdomain = $2;
+		}
 		| FIBUPDATE yesno {
 			if ($2 == 0)
 				conf->flags |= RIPD_FLAG_NO_FIB_UPDATE;
@@ -185,35 +192,29 @@ conf_main	: SPLIT_HORIZON STRING {
 		| no REDISTRIBUTE STRING {
 			struct redistribute	*r;
 
-			if (!strcmp($3, "default")) {
-				if (!$1)
-					conf->redistribute |=
-					    REDISTRIBUTE_DEFAULT;
-				else
-					conf->redistribute &=
-					    ~REDISTRIBUTE_DEFAULT;
-			} else {
-				if ((r = calloc(1, sizeof(*r))) == NULL)
-					fatal(NULL);
-				if (!strcmp($3, "static"))
-					r->type = REDIST_STATIC;
-				else if (!strcmp($3, "connected"))
-					r->type = REDIST_CONNECTED;
-				else if (host($3, &r->addr, &r->mask))
-					r->type = REDIST_ADDR;
-				else {
-					yyerror("unknown redistribute type");
-					free($3);
-					free(r);
-					YYERROR;
-				}
-
-				if ($1)
-					r->type |= REDIST_NO;
-
-				SIMPLEQ_INSERT_TAIL(&conf->redist_list, r,
-				    entry);
+			if ((r = calloc(1, sizeof(*r))) == NULL)
+				fatal(NULL);
+			if (!strcmp($3, "static"))
+				r->type = REDIST_STATIC;
+			else if (!strcmp($3, "connected"))
+				r->type = REDIST_CONNECTED;
+			else if (!strcmp($3, "default"))
+				r->type = REDIST_DEFAULT;
+			else if (host($3, &r->addr, &r->mask))
+				r->type = REDIST_ADDR;
+			else {
+				yyerror("unknown redistribute type");
+				free($3);
+				free(r);
+				YYERROR;
 			}
+
+			if ($1)
+				r->type |= REDIST_NO;
+
+			SIMPLEQ_INSERT_TAIL(&conf->redist_list, r,
+			    entry);
+
 			conf->redistribute |= REDISTRIBUTE_ON;
 			free($3);
 		}
@@ -348,7 +349,7 @@ interfaceopts_l	: interfaceopts_l interfaceoptsl nl
 		| interfaceoptsl optnl
 		;
 
-interfaceoptsl	: PASSIVE  		{ iface->passive = 1; }
+interfaceoptsl	: PASSIVE		{ iface->passive = 1; }
 		| DEMOTE STRING		{
 			if (strlcpy(iface->demote_group, $2,
 			    sizeof(iface->demote_group)) >=
@@ -409,6 +410,7 @@ lookup(char *s)
 	    {"interface",		INTERFACE},
 	    {"no",			NO},
 	    {"passive",			PASSIVE},
+	    {"rdomain",			RDOMAIN},
 	    {"redistribute",		REDISTRIBUTE},
 	    {"rtlabel",			RTLABEL},
 	    {"split-horizon",		SPLIT_HORIZON},
@@ -579,9 +581,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -690,9 +693,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("malloc");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
@@ -742,6 +749,7 @@ parse_config(char *filename, int opts)
 	defs->cost = DEFAULT_COST;
 	defs->auth_type = AUTH_NONE;
 	conf->opts = opts;
+	conf->options = OPT_SPLIT_POISONED;
 	SIMPLEQ_INIT(&conf->redist_list);
 
 	if ((file = pushfile(filename, !(conf->opts & RIPD_OPT_NOACTION))) == NULL) {

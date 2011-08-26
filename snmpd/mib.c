@@ -1,4 +1,4 @@
-/*	$OpenBSD: mib.c,v 1.30 2008/12/23 08:06:10 reyk Exp $	*/
+/*	$OpenBSD: mib.c,v 1.45 2011/07/04 04:34:14 claudio Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -329,8 +329,8 @@ int	 mib_hrprocessor(struct oid *, struct ber_oid *, struct ber_element **);
 int	 mib_hrswrun(struct oid *, struct ber_oid *, struct ber_element **);
 
 int	 kinfo_proc_comp(const void *, const void *);
-int	 kinfo_proc(u_int32_t, struct kinfo_proc2 **);
-int	 kinfo_args(struct kinfo_proc2 *, char **);
+int	 kinfo_proc(u_int32_t, struct kinfo_proc **);
+int	 kinfo_args(struct kinfo_proc *, char **);
 
 static struct oid hr_mib[] = {
 	{ MIB(host),				OID_MIB },
@@ -607,7 +607,7 @@ int
 mib_hrswrun(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 {
 	struct ber_element	*ber = *elm;
-	struct kinfo_proc2	*kinfo;
+	struct kinfo_proc	*kinfo;
 	char			*s;
 
 	/* Get and verify the current row index */
@@ -681,20 +681,20 @@ mib_hrswrun(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 int
 kinfo_proc_comp(const void *a, const void *b)
 {
-	struct kinfo_proc2 * const *k1 = a;
-	struct kinfo_proc2 * const *k2 = b;
+	struct kinfo_proc * const *k1 = a;
+	struct kinfo_proc * const *k2 = b;
 
 	return (((*k1)->p_pid > (*k2)->p_pid) ? 1 : -1);
 }
 
 int
-kinfo_proc(u_int32_t idx, struct kinfo_proc2 **kinfo)
+kinfo_proc(u_int32_t idx, struct kinfo_proc **kinfo)
 {
-	static struct kinfo_proc2 *kp = NULL;
+	static struct kinfo_proc *kp = NULL;
 	static size_t		 nkp = 0;
-	int			 mib[] = { CTL_KERN, KERN_PROC2,
+	int			 mib[] = { CTL_KERN, KERN_PROC,
 				    KERN_PROC_ALL, 0, sizeof(*kp), 0 };
-	struct kinfo_proc2	**klist;
+	struct kinfo_proc	**klist;
 	size_t			 size, count, i;
 
 	for (;;) {
@@ -723,7 +723,7 @@ kinfo_proc(u_int32_t idx, struct kinfo_proc2 **kinfo)
 		nkp = count;
 	}
 
-	klist = malloc(count * sizeof(*klist));
+	klist = calloc(count, sizeof(*klist));
 	if (klist == NULL)
 		return (-1);
 
@@ -744,7 +744,7 @@ kinfo_proc(u_int32_t idx, struct kinfo_proc2 **kinfo)
 }
 
 int
-kinfo_args(struct kinfo_proc2 *kinfo, char **s)
+kinfo_args(struct kinfo_proc *kinfo, char **s)
 {
 	static char		 str[128];
 	static char		*buf = NULL;
@@ -881,11 +881,12 @@ mib_ifget(u_int idx)
 		if (kif == NULL)
 			return (NULL);
 	}
+	idx = kif->if_index;
 
 	/* Update interface information */
-	kr_updateif(kif->if_index);
-	if ((kif = kr_getif(kif->if_index)) == NULL) {
-		log_debug("mib_ifxtable: interface disappeared?");
+	kr_updateif(idx);
+	if ((kif = kr_getif(idx)) == NULL) {
+		log_debug("mib_ifxtable: interface %d disappeared?", idx);
 		return (NULL);
 	}
 
@@ -957,14 +958,14 @@ mib_iftable(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 		break;
 	case 8:
 		/* ifOperStatus */
-		if ((kif->if_flags & IFF_UP) == 0) {
+		if ((kif->if_flags & IFF_UP) == 0)
 			i = 2;	/* down(2) */
-		} else if (LINK_STATE_IS_UP(kif->if_link_state)) {
-			i = 1;	/* up(1) */
-		} else if (kif->if_link_state == LINK_STATE_DOWN) {
-			i = 7;	/* lowerLayerDown(7) or dormant(5)? */
-		} else
+		else if (kif->if_link_state == LINK_STATE_UNKNOWN)
 			i = 4;	/* unknown(4) */
+		else if (LINK_STATE_IS_UP(kif->if_link_state))
+			i = 1;	/* up(1) */
+		else
+			i = 7;	/* lowerLayerDown(7) or dormant(5)? */
 		ber = ber_add_integer(ber, i);
 		break;
 	case 9:
@@ -1220,7 +1221,7 @@ char	*mib_sensorvalue(struct sensor *);
 int	 mib_memiftable(struct oid *, struct ber_oid *, struct ber_element **);
 
 static struct oid openbsd_mib[] = {
-	{ MIB(sensorMIBObjects),	OID_MIB },
+	{ MIB(sensorsMIBObjects),	OID_MIB },
 	{ MIB(sensorNumber),		OID_RD,	mib_sensornum },
 	{ MIB(sensorIndex),		OID_TRD, mib_sensors },
 	{ MIB(sensorDescr),		OID_TRD, mib_sensors },
@@ -1232,7 +1233,7 @@ static struct oid openbsd_mib[] = {
 	{ MIB(memMIBObjects),		OID_MIB },
 	{ MIB(memMIBVersion),		OID_RD, mps_getint, NULL, NULL,
 	    OIDVER_OPENBSD_MEM },
-	{ MIB(memIfName), 		OID_TRD, mib_memiftable },
+	{ MIB(memIfName),		OID_TRD, mib_memiftable },
 	{ MIB(memIfLiveLocks),		OID_TRD, mib_memiftable },
 	{ MIBEND }
 };
@@ -1245,13 +1246,15 @@ mib_sensornum(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 	int			 mib[] = { CTL_HW, HW_SENSORS, 0 };
 	int			 i, c;
 
-	for (i = c = 0; i < MAXSENSORDEVICES; i++) {
+	for (i = c = 0; ; i++) {
 		mib[2] = i;
 		if (sysctl(mib, sizeofa(mib),
 		    &sensordev, &len, NULL, 0) == -1) {
-			if (errno != ENOENT)
-				return (-1);
-			continue;
+			if (errno == ENXIO)
+				continue;
+			if (errno == ENOENT)
+				break;
+			return (-1);
 		}
 		c += sensordev.sensors_count;
 	}
@@ -1269,19 +1272,21 @@ mib_sensors(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 	struct sensor		 sensor;
 	size_t			 slen = sizeof(sensor);
 	int			 mib[] = { CTL_HW, HW_SENSORS, 0, 0, 0 };
-	int			 i, c, j, k;
+	int			 i, j, k;
 	u_int32_t		 idx = 0, n;
 	char			*s;
 
 	/* Get and verify the current row index */
 	idx = o->bo_id[OIDIDX_sensorEntry];
 
-	for (i = c = 0, n = 1; i < MAXSENSORDEVICES; i++) {
+	for (i = 0, n = 1; ; i++) {
 		mib[2] = i;
 		if (sysctl(mib, 3, &sensordev, &len, NULL, 0) == -1) {
-			if (errno != ENOENT)
-				return (-1);
-			continue;
+			if (errno == ENXIO)
+				continue;
+			if (errno == ENOENT)
+				break;
+			return (-1);
 		}
 		for (j = 0; j < SENSOR_MAX_TYPES; j++) {
 			mib[3] = j;
@@ -1289,9 +1294,11 @@ mib_sensors(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 				mib[4] = k;
 				if (sysctl(mib, 5,
 				    &sensor, &slen, NULL, 0) == -1) {
-					if (errno != ENOENT)
-						return (-1);
-					continue;
+					if (errno == ENXIO)
+						continue;
+					if (errno == ENOENT)
+						break;
+					return (-1);
 				}
 				if (n == idx)
 					goto found;
@@ -1366,6 +1373,7 @@ mib_sensorvalue(struct sensor *s)
 		break;
 	case SENSOR_VOLTS_DC:
 	case SENSOR_VOLTS_AC:
+	case SENSOR_WATTS:
 	case SENSOR_AMPS:
 	case SENSOR_WATTHOUR:
 	case SENSOR_AMPHOUR:
@@ -1376,6 +1384,7 @@ mib_sensorvalue(struct sensor *s)
 		ret = asprintf(&v, "%s", s->value ? "on" : "off");
 		break;
 	case SENSOR_PERCENT:
+	case SENSOR_HUMIDITY:
 		ret = asprintf(&v, "%.2f%%", s->value / 1000.0);
 		break;
 	case SENSOR_TIMEDELTA:
@@ -1389,6 +1398,7 @@ mib_sensorvalue(struct sensor *s)
 		/* FALLTHROUGH */
 	case SENSOR_FANRPM:
 	case SENSOR_INTEGER:
+	case SENSOR_FREQ:
 	default:
 		ret = asprintf(&v, "%lld", s->value);
 		break;
@@ -1418,7 +1428,7 @@ mib_memiftable(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 		ber = ber_add_string(ber, kif->if_name);
 		break;
 	case 2:
-		ber = ber_add_integer(ber, kif->if_data.ifi_livelocks);
+		ber = ber_add_integer(ber, 0);
 		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER64);
 		break;
 	default:
@@ -1672,10 +1682,14 @@ mib_iproutingdiscards(struct oid *oid, struct ber_oid *o,
 struct ber_oid *
 mib_ipaddrtable(struct oid *oid, struct ber_oid *o, struct ber_oid *no)
 {
+	struct sockaddr_in	 addr;
 	u_int32_t		 col, id;
 	struct oid		 a, b;
-	struct in_addr		 addr;
 	struct kif_addr		*ka;
+
+	bzero(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_len = sizeof(addr);
 
 	bcopy(&oid->o_id, no, sizeof(*no));
 	id = oid->o_oidlen - 1;
@@ -1698,13 +1712,16 @@ mib_ipaddrtable(struct oid *oid, struct ber_oid *o, struct ber_oid *no)
 		}
 	}
 
-	mps_decodeinaddr(no, &addr, OIDIDX_ipAddr + 1);
-	if (addr.s_addr == INADDR_ANY)
+	mps_decodeinaddr(no, &addr.sin_addr, OIDIDX_ipAddr + 1);
+	if (addr.sin_addr.s_addr == INADDR_ANY)
 		ka = kr_getaddr(NULL);
 	else
-		ka = kr_getnextaddr(&addr);
-	addr.s_addr = ka == NULL ? 0 : ka->addr.s_addr;
-	mps_encodeinaddr(no, &addr, OIDIDX_ipAddr + 1);
+		ka = kr_getnextaddr((struct sockaddr *)&addr);
+	if (ka == NULL || ka->addr.sa.sa_family != AF_INET)
+		addr.sin_addr.s_addr = 0;
+	else
+		addr.sin_addr.s_addr = ka->addr.sin.sin_addr.s_addr;
+	mps_encodeinaddr(no, &addr.sin_addr, OIDIDX_ipAddr + 1);
 	smi_oidlen(o);
 
 	return (no);
@@ -1713,14 +1730,18 @@ mib_ipaddrtable(struct oid *oid, struct ber_oid *o, struct ber_oid *no)
 int
 mib_ipaddr(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 {
+	struct sockaddr_in	 addr;
 	struct ber_element	*ber = *elm;
 	struct kif_addr		*ka;
-	struct in_addr		 addr;
 	u_int32_t		 val;
 
-	mps_decodeinaddr(o, &addr, OIDIDX_ipAddr + 1);
-	ka = kr_getaddr(&addr);
-	if (ka == NULL)
+	bzero(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_len = sizeof(addr);
+
+	mps_decodeinaddr(o, &addr.sin_addr, OIDIDX_ipAddr + 1);
+	ka = kr_getaddr((struct sockaddr *)&addr);
+	if (ka == NULL || ka->addr.sa.sa_family != AF_INET)
 		return (1);
 
 	/* write OID */
@@ -1728,7 +1749,7 @@ mib_ipaddr(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 
 	switch (o->bo_id[OIDIDX_ipAddr]) {
 	case 1:
-		val = addr.s_addr;
+		val = addr.sin_addr.s_addr;
 		ber = ber_add_nstring(ber, (char *)&val, sizeof(u_int32_t));
 		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_IPADDR);
 		break;
@@ -1736,15 +1757,258 @@ mib_ipaddr(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 		ber = ber_add_integer(ber, ka->if_index);
 		break;
 	case 3:
-		val = ka->mask.s_addr;
+		val = ka->mask.sin.sin_addr.s_addr;
 		ber = ber_add_nstring(ber, (char *)&val, sizeof(u_int32_t));
 		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_IPADDR);
 		break;
 	case 4:
-		ber = ber_add_integer(ber, ka->dstbrd.s_addr ? 1 : 0);
+		ber = ber_add_integer(ber, ka->dstbrd.sa.sa_len ? 1 : 0);
 		break;
 	case 5:
 		ber = ber_add_integer(ber, IP_MAXPACKET);
+		break;
+	default:
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Defined in IP-FORWARD-MIB.txt (rfc4292)
+ */
+
+int mib_ipfnroutes(struct oid *, struct ber_oid *, struct ber_element **);
+struct ber_oid *
+mib_ipfroutetable(struct oid *oid, struct ber_oid *o, struct ber_oid *no);
+int mib_ipfroute(struct oid *, struct ber_oid *, struct ber_element **);
+
+static struct oid ipf_mib[] = {
+	{ MIB(ipfMIB),			OID_MIB },
+	{ MIB(ipfInetCidrRouteNumber),	OID_RD, mib_ipfnroutes },
+
+	{ MIB(ipfRouteEntIfIndex),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntType),		OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntProto),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntAge),		OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntNextHopAS),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntRouteMetric1),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntRouteMetric2),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntRouteMetric3),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntRouteMetric4),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntRouteMetric5),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIB(ipfRouteEntStatus),	OID_TRD, mib_ipfroute, NULL,
+	    mib_ipfroutetable },
+	{ MIBEND }
+};
+
+int
+mib_ipfnroutes(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
+{
+	*elm = ber_add_integer(*elm, kr_routenumber());
+	ber_set_header(*elm, BER_CLASS_APPLICATION, SNMP_T_GAUGE32);
+	
+	return (0);
+}
+
+struct ber_oid *
+mib_ipfroutetable(struct oid *oid, struct ber_oid *o, struct ber_oid *no)
+{
+	u_int32_t		 col, id;
+	struct oid		 a, b;
+	struct sockaddr_in	 addr;
+	struct kroute		*kr;
+	int			 af, atype, idx;
+	u_int8_t		 prefixlen;
+	u_int8_t		 prio;
+
+	bzero(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_len = sizeof(addr);
+
+	bcopy(&oid->o_id, no, sizeof(*no));
+	id = oid->o_oidlen - 1;
+
+	if (o->bo_n >= oid->o_oidlen) {
+		/*
+		 * Compare the requested and the matched OID to see
+		 * if we have to iterate to the next element.
+		 */
+		bzero(&a, sizeof(a));
+		bcopy(o, &a.o_id, sizeof(struct ber_oid));
+		bzero(&b, sizeof(b));
+		bcopy(&oid->o_id, &b.o_id, sizeof(struct ber_oid));
+		b.o_oidlen--;
+		b.o_flags |= OID_TABLE;
+		if (smi_oid_cmp(&a, &b) == 0) {
+			col = oid->o_oid[id];
+			o->bo_id[id] = col;
+			bcopy(o, no, sizeof(*no));
+		}
+	}
+
+	af = no->bo_id[OIDIDX_ipfInetCidrRoute + 1];
+	mps_decodeinaddr(no, &addr.sin_addr, OIDIDX_ipfInetCidrRoute + 3);
+	prefixlen = o->bo_id[OIDIDX_ipfInetCidrRoute + 7];
+	prio = o->bo_id[OIDIDX_ipfInetCidrRoute + 10];
+
+	if (af == 0)
+		kr = kroute_first();
+	else
+		kr = kroute_getaddr(addr.sin_addr.s_addr, prefixlen, prio, 1);
+
+	if (kr == NULL) {
+		addr.sin_addr.s_addr = 0;
+		prefixlen = 0;
+		prio = 0;
+		addr.sin_family = 0;
+	} else {
+		addr.sin_addr.s_addr = kr->prefix.s_addr;
+		prefixlen = kr->prefixlen;
+		prio = kr->priority;
+	}
+
+	switch(addr.sin_family) {
+	case AF_INET:
+		atype = 1;
+		break;
+	case AF_INET6:
+		atype = 2;
+		break;
+	default:
+		atype = 0;
+		break;
+	}
+	idx = OIDIDX_ipfInetCidrRoute + 1;
+	no->bo_id[idx++] = atype;
+	no->bo_id[idx++] = 0x04;
+	no->bo_n++;
+
+	mps_encodeinaddr(no, &addr.sin_addr, idx);
+	no->bo_id[no->bo_n++] = prefixlen;
+	no->bo_id[no->bo_n++] = 0x02;
+	no->bo_n += 2; /* policy */
+	no->bo_id[OIDIDX_ipfInetCidrRoute + 10]  = prio;
+
+	if (kr != NULL) {
+		no->bo_id[no->bo_n++] = atype;
+		no->bo_id[no->bo_n++] = 0x04;
+		mps_encodeinaddr(no, &kr->nexthop, no->bo_n);
+	} else
+		no->bo_n += 2;
+
+	smi_oidlen(o);
+
+	return (no);
+}
+
+int
+mib_ipfroute(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
+{
+	struct ber_element	*ber = *elm;
+	struct kroute		*kr;
+	struct sockaddr_in	 addr, nhaddr;
+	int			 idx = o->bo_id[OIDIDX_ipfInetCidrRoute];
+	int			 af;
+	u_int8_t		 prefixlen, prio, type, proto;
+
+
+	bzero(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_len = sizeof(addr);
+
+	af = o->bo_id[OIDIDX_ipfInetCidrRoute + 1];
+	mps_decodeinaddr(o, &addr.sin_addr, OIDIDX_ipfInetCidrRoute + 3);
+	mps_decodeinaddr(o, &nhaddr.sin_addr, OIDIDX_ipfInetCidrRoute + 23);
+	prefixlen = o->bo_id[OIDIDX_ipfInetCidrRoute + 7];
+	prio = o->bo_id[OIDIDX_ipfInetCidrRoute + 10];
+	kr = kroute_getaddr(addr.sin_addr.s_addr, prefixlen, prio, 0);
+	if (kr == NULL || af == 0) {
+		return (1);
+	}
+
+	/* write OID */
+	ber = ber_add_oid(ber, o);
+
+	switch (idx) {
+	case 7: /* IfIndex */
+		ber = ber_add_integer(ber, kr->if_index);
+		break;
+	case 8: /* Type */
+		if (kr->flags & F_REJECT)
+			type = 2;
+		else if (kr->flags & F_BLACKHOLE)
+			type = 5;
+		else if (kr->flags & F_CONNECTED)
+			type = 3;
+		else
+			type = 4;
+		ber = ber_add_integer(ber, type);
+		break;
+	case 9: /* Proto */
+		switch (kr->priority) {
+		case RTP_CONNECTED:
+			proto = 2;
+			break;
+		case RTP_STATIC:
+			proto = 3;
+			break;
+		case RTP_OSPF:
+			proto = 13;
+			break;
+		case RTP_ISIS:
+			proto = 9;
+			break;
+		case RTP_RIP:
+			proto = 8;
+			break;
+		case RTP_BGP:
+			proto = 14;
+			break;
+		default:
+			if (kr->flags & F_DYNAMIC)
+				proto = 4;
+			else
+				proto = 1; /* not specified */
+			break;
+		}
+		ber = ber_add_integer(ber, proto);
+		break;
+	case 10: /* Age */
+		ber = ber_add_integer(ber, 0);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_GAUGE32);
+		break;
+	case 11: /* NextHopAS */
+		ber = ber_add_integer(ber, 0);	/* unknown */
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_GAUGE32);
+		break;
+	case 12: /* Metric1 */
+		ber = ber_add_integer(ber, -1);	/* XXX */
+		break;
+	case 13: /* Metric2 */
+		ber = ber_add_integer(ber, -1);	/* XXX */
+		break;
+	case 14: /* Metric3 */
+		ber = ber_add_integer(ber, -1);	/* XXX */
+		break;
+	case 15: /* Metric4 */
+		ber = ber_add_integer(ber, -1);	/* XXX */
+		break;
+	case 16: /* Metric5 */
+		ber = ber_add_integer(ber, -1);	/* XXX */
+		break;
+	case 17: /* Status */
+		ber = ber_add_integer(ber, 1);	/* XXX */
 		break;
 	default:
 		return (-1);
@@ -1836,6 +2100,9 @@ mib_init(void)
 
 	/* IP-MIB */
 	smi_mibtree(ip_mib);
+
+	/* IP-FORWARD-MIB */
+	smi_mibtree(ipf_mib);
 
 	/* BRIDGE-MIB */
 	smi_mibtree(bridge_mib);

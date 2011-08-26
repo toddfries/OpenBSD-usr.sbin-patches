@@ -1,4 +1,4 @@
-/*	$OpenBSD: neighbor.c,v 1.37 2008/02/11 12:37:37 norby Exp $ */
+/*	$OpenBSD: neighbor.c,v 1.43 2011/05/09 12:24:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -313,6 +313,7 @@ nbr_new(u_int32_t nbr_id, struct iface *iface, int self)
 	bzero(&rn, sizeof(rn));
 	rn.id.s_addr = nbr->id.s_addr;
 	rn.area_id.s_addr = nbr->iface->area->id.s_addr;
+	rn.ifindex = nbr->iface->ifindex;
 	rn.state = nbr->state;
 	rn.self = self;
 	ospfe_imsg_compose_rde(IMSG_NEIGHBOR_UP, nbr->peerid, 0, &rn,
@@ -342,7 +343,8 @@ nbr_del(struct nbr *nbr)
 	db_sum_list_clr(nbr);
 	ls_req_list_clr(nbr);
 
-	LIST_REMOVE(nbr, entry);
+	if (nbr->peerid != NBR_IDSELF)
+		LIST_REMOVE(nbr, entry);
 	LIST_REMOVE(nbr, hash);
 
 	free(nbr);
@@ -431,8 +433,8 @@ nbr_adj_timer(int fd, short event, void *arg)
 		return ;
 
 	if (nbr->state & NBR_STA_ACTIVE && nbr->state != NBR_STA_FULL) {
-		log_warnx("nbr_adj_timer: failed to form adjacency with %s",
-		    inet_ntoa(nbr->id));
+		log_warnx("nbr_adj_timer: failed to form adjacency with %s "
+		    "on interface %s", inet_ntoa(nbr->id), nbr->iface->name);
 		nbr_fsm(nbr, NBR_EVT_ADJTMOUT);
 	}
 }
@@ -518,6 +520,8 @@ nbr_act_snapshot(struct nbr *nbr)
 {
 	stop_db_tx_timer(nbr);
 
+	ospfe_imsg_compose_rde(IMSG_NEIGHBOR_CAPA, nbr->peerid, 0,
+	    &nbr->capa_options, sizeof(nbr->capa_options));
 	ospfe_imsg_compose_rde(IMSG_DB_SNAPSHOT, nbr->peerid, 0, NULL, 0);
 
 	return (0);
@@ -585,8 +589,11 @@ nbr_act_delete(struct nbr *nbr)
 {
 	struct timeval	tv;
 
-	if (nbr == nbr->iface->self)
+	if (nbr == nbr->iface->self) {
+		nbr->dr.s_addr = 0;
+		nbr->bdr.s_addr = 0;
 		return (0);
+	}
 
 	/* stop timers */
 	nbr_stop_itimer(nbr);
@@ -594,6 +601,7 @@ nbr_act_delete(struct nbr *nbr)
 	/* clear dr and bdr */
 	nbr->dr.s_addr = 0;
 	nbr->bdr.s_addr = 0;
+	/* XXX reset crypt_seq_num will allow replay attacks. */
 	nbr->crypt_seq_num = 0;
 
 	/* schedule kill timer */
@@ -672,7 +680,7 @@ nbr_to_ctl(struct nbr *nbr)
 	nctl.state_chng_cnt = nbr->stats.sta_chng;
 
 	nctl.priority = nbr->priority;
-	nctl.options = nbr->options;
+	nctl.options = nbr->options | nbr->capa_options;
 
 	gettimeofday(&now, NULL);
 	if (evtimer_pending(&nbr->inactivity_timer, &tv)) {

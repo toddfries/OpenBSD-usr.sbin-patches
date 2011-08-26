@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.10 2009/02/03 16:21:19 michele Exp $ */
+/*	$OpenBSD: rde.h,v 1.16 2009/09/06 09:52:14 michele Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -28,46 +28,58 @@
 
 struct adv_rtr {
 	struct in_addr		 addr;
-	u_int32_t		 metric;
+	u_int8_t		 metric;
 };
 
 struct rt_node {
 	RB_ENTRY(rt_node)	 entry;
 	struct event		 expiration_timer;
 	struct event		 holddown_timer;
+
+	struct adv_rtr		 adv_rtr[MAXVIFS];
+
+	u_int16_t		 ds_cnt[MAXVIFS];
 	u_int8_t		 ttls[MAXVIFS];	/* downstream vif(s) */
+
+	LIST_HEAD(, ds_nbr)	 ds_list;
+
 	struct in_addr		 prefix;
 	struct in_addr		 nexthop;
-	u_int32_t		 cost;
-	u_int32_t		 old_cost;	/* used when in hold-down */
-	u_short			 ifindex;	/* learned from this iface */
-	struct adv_rtr		 adv_rtr[MAXVIFS];
-	u_int16_t		 ds_cnt[MAXVIFS];
-	LIST_HEAD(, ds_nbr)	 ds_list;
 	time_t			 uptime;
+
+	u_short			 ifindex;	/* learned from this iface */
+
+	u_int8_t		 cost;
+	u_int8_t		 old_cost;	/* used when in hold-down */
 	u_int8_t		 flags;
 	u_int8_t		 prefixlen;
 	u_int8_t		 invalid;
 	u_int8_t		 connected;
 };
 
+struct prune_node {
+	LIST_ENTRY(prune_node)	 entry;
+	struct event		 lifetime_timer;
+
+	struct mfc_node		*parent;	/* back ptr to mfc_node */
+
+	struct in_addr		 nbr;
+	unsigned int		 ifindex;
+};
+
 struct mfc_node {
 	RB_ENTRY(mfc_node)	 entry;
 	struct event		 expiration_timer;
-	u_int8_t		 ttls[MAXVIFS];	/* outgoing vif(s) */
+	struct event		 prune_timer;
+
+	LIST_HEAD(, prune_node)	 prune_list;
+
 	struct in_addr		 origin;
 	struct in_addr		 group;
-	u_short			 ifindex;	/* incoming vif */
 	time_t			 uptime;
-};
-
-/* just the infos rde needs */
-struct rde_nbr {
-	LIST_ENTRY(rde_nbr)	 entry, hash;
-	struct in_addr		 addr;
-	u_int32_t		 peerid;
-
-	struct iface		*iface;
+	u_short			 ifindex;		/* incoming vif */
+	u_int8_t		 ttls[MAXVIFS];		/* outgoing vif(s) */
+	u_int8_t		 prune_cnt[MAXVIFS];
 };
 
 /* downstream neighbor per source */
@@ -81,6 +93,10 @@ pid_t	rde(struct dvmrpd_conf *, int [2], int [2], int [2]);
 int	rde_imsg_compose_parent(int, pid_t, void *, u_int16_t);
 int	rde_imsg_compose_dvmrpe(int, u_int32_t, pid_t, void *, u_int16_t);
 
+void	rde_group_list_add(struct iface *, struct in_addr);
+int	rde_group_list_find(struct iface *, struct in_addr);
+void	rde_group_list_remove(struct iface *, struct in_addr);
+
 /* rde_mfc.c */
 void		 mfc_init(void);
 int		 mfc_compare(struct mfc_node *, struct mfc_node *);
@@ -91,7 +107,10 @@ void		 mfc_clear(void);
 void		 mfc_dump(pid_t);
 void		 mfc_update(struct mfc *);
 void		 mfc_delete(struct mfc *);
+struct rt_node	*mfc_find_origin(struct in_addr);
 void		 mfc_update_source(struct rt_node *);
+int		 mfc_check_members(struct rt_node *, struct iface *);
+void		 mfc_recv_prune(struct prune *);
 
 /* rde_srt.c */
 void		 rt_init(void);
@@ -104,11 +123,14 @@ int		 rt_remove(struct rt_node *);
 void		 rt_clear(void);
 void		 rt_snap(u_int32_t);
 void		 rt_dump(pid_t);
+struct rt_node	*rt_match_origin(in_addr_t);
 
 int		 srt_check_route(struct route_report *, int);
 int		 src_compare(struct src_node *, struct src_node *);
 
-void		 srt_expire_nbr(struct in_addr, struct iface *);
+struct ds_nbr	*srt_find_ds(struct rt_node *, u_int32_t);
+void		 srt_expire_nbr(struct in_addr, unsigned int);
+void		 srt_check_downstream_ifaces(struct rt_node *, struct iface *);
 
 RB_PROTOTYPE(src_head, src_node, entry, src_compare);
 

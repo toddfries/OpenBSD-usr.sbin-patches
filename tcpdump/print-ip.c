@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-ip.c,v 1.34 2007/10/07 16:41:05 deraadt Exp $	*/
+/*	$OpenBSD: print-ip.c,v 1.36 2010/01/12 06:10:33 naddy Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997
@@ -20,11 +20,6 @@
  * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
-
-#ifndef lint
-static const char rcsid[] =
-    "@(#) $Id: print-ip.c,v 1.34 2007/10/07 16:41:05 deraadt Exp $ (LBL)";
-#endif
 
 #include <sys/param.h>
 #include <sys/time.h>
@@ -325,7 +320,7 @@ trunc:
  * don't modifiy the packet.
  */
 u_short
-in_cksum(const u_short *addr, register int len, u_short csum)
+in_cksum(const u_short *addr, register int len, int csum)
 {
 	int nleft = len;
 	const u_short *w = addr;

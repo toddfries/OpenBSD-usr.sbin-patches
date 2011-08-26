@@ -1,4 +1,4 @@
-.\"	$OpenBSD: Makefile.yp.8,v 1.1 2008/10/22 20:31:20 jmc Exp $
+.\"	$OpenBSD: Makefile.yp.8,v 1.6 2010/01/20 23:20:28 schwarze Exp $
 .\"
 .\" Copyright (c) 2008 Ingo Schwarze <schwarze@usta.de>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: October 22 2008 $
+.Dd $Mdocdate: January 20 2010 $
 .Dt MAKEFILE.YP 8
 .Os
 .Sh NAME
@@ -114,6 +114,20 @@ If the
 variable is changed to be empty, the encrypted passwords are replaced by
 asterisks
 .Pq Ql \&* .
+This
+.Dq secure
+mode is compatible with
+.Ox
+and
+.Fx
+clients.
+.Pp
+The
+.Dv MINUID
+and
+.Dv MAXUID
+variables restrict the range of user IDs included into the four passwd maps.
+By default, system users are not included.
 .It Ic netgroup
 Generates the
 .Pa netgroup ,
@@ -138,6 +152,13 @@ maps from
 .Xr group 5
 for use by
 .Xr getgrent 3 .
+.Pp
+The
+.Dv MINGID
+and
+.Dv MAXGID
+variables restrict the range of group IDs included into both group maps.
+By default, system groups are not included.
 .It Ic netid
 Generates the
 .Pa netid.byname
@@ -149,6 +170,11 @@ and
 .Xr hosts 5
 for use by
 .Xr getgrouplist 3 .
+Falls back to
+.Xr master.passwd 5
+in case
+.Xr passwd 5
+is not available.
 Requires the
 .Xr mknetid 8
 utility.
@@ -235,7 +261,9 @@ Generates the
 map from the file
 .Pa /etc/amd/amd.home .
 .It Ic all
-Generates all of the above.
+Generates all of the above, and sends a hangup signal to
+.Xr ypserv 8
+such that it uses the new maps.
 .El
 .Pp
 In order to keep additional custom YP maps up to date, the
@@ -263,3 +291,17 @@ Cookies controlling the operation of
 .Xr ypinit 8 ,
 .Xr yppush 8 ,
 .Xr ypserv 8
+.Sh BUGS
+When
+.Dv NOPUSH
+is set and individual maps are regenerated (as opposed to
+.Ic all ) ,
+the hangup signal to
+.Xr ypserv 8
+must be sent manually, or the new maps won't be used.
+.Pp
+When
+.Dv NOPUSH
+is unset, maps are pushed to the master server on the local host too,
+slowing down
+.Nm .

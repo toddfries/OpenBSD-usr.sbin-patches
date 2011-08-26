@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_create.1,v 1.48 2008/07/26 01:11:30 jmc Exp $
+.\"	$OpenBSD: pkg_create.1,v 1.77 2011/06/09 11:19:33 sthen Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -21,7 +21,7 @@
 .\" [jkh] Took John's changes back and made some additional extensions for
 .\" better integration with FreeBSD's new ports collection.
 .\"
-.Dd $Mdocdate: July 26 2008 $
+.Dd $Mdocdate: June 9 2011 $
 .Dt PKG_CREATE 1
 .Os
 .Sh NAME
@@ -30,27 +30,25 @@
 .Sh SYNOPSIS
 .Nm pkg_create
 .Bk -words
-.Op Fl nQqv
+.Op Fl mnQqvx
 .Op Fl A Ar arches
 .Op Fl B Ar pkg-destdir
-.Oo Fl D Ar name
-.Ns = Ns Ar value
-.Oc
-.Op Fl i Ar iscript
-.Op Fl k Ar dscript
+.Op Fl D Ar name Ns Op = Ns Ar value
 .Op Fl L Ar localbase
 .Op Fl M Ar displayfile
 .Op Fl P Ar pkg-dependency
-.Op Fl p Ar prefix
-.Op Fl S Ar pkg-destdir
+.Op Fl s Ar signature-parameter
 .Op Fl U Ar undisplayfile
 .Op Fl W Ar wantedlib
-.Fl c Ar desc
 .Fl d Ar desc
+.Fl D Ar COMMENT Ns = Ns Ar value
+.Fl D Ar PORTSDIR Ns = Ns Ar value
 .Fl f Ar packinglist
+.Fl p Ar prefix
 .Ar pkg-name
 .Ek
 .Nm pkg_create
+.Op Fl s Ar signature-parameter
 .Fl f Ar packinglist
 .Sh DESCRIPTION
 The
@@ -87,6 +85,26 @@ records extra information in the packing-list, such as the existence
 of symlinks and hard links, computes and stores file checksums, and
 verifies that all special objects are properly annotated in the packing-list.
 .Pp
+It will also check all
+.Cm @wantlib
+for reachability, by looking into all installed
+.Cm @depend .
+It may also ask the ports tree for extra dependencies,
+provided some other
+.Cm @depend
+refers to the same
+.Ev BASE_PKGPATH
+.Po
+see
+.Xr bsd.port.mk 5
+.Pc .
+The rationale is that those libraries must already be present for
+the package to build correctly, and thus be reachable through the
+subset of
+.Cm @depend
+that are not pure
+.Ev RUN_DEPENDS .
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
 .It Fl A Ar arches
@@ -100,26 +118,40 @@ to mean any architecture (e.g., arch-independent packages).
 Set
 .Ar pkg-destdir
 as the prefix to prepend to any file to select for the package.
-.It Fl c No [-] Ns Ar desc
-Fetch package
-.Dq one line description
-from file
-.Ar desc
-or, if preceded by
-.Sq - ,
-the argument itself.
-This string should also
-give some idea of which version of the product (if any) the package
-represents.
-Deprecated, use
-.Fl D Ar COMMENT Ns = Ns Ar value
-instead.
-.It Fl D Ar name Ns = Ns Ar value
+.It Fl D Ar name Ns Op = Ns Ar value
 Define
 .Ar name
 to
-.Ar value ,
+.Ar value
+(or just define it)
 for substitution and fragment inclusion purposes.
+Some specific
+.Ar names
+have extra meaning, see
+.Xr bsd.port.mk 5
+for details:
+.Pp
+.Bl -tag -width FULLPKGPATH -compact
+.It Ar CDROM
+Set to the port's Makefile
+.Ar PERMIT_PACKAGE_CDROM .
+.It Ar COMMENT
+Set package
+.Dq one line description
+(mandatory).
+.It Ar FTP
+Set to the port's Makefile
+.Ar PERMIT_PACKAGE_FTP .
+.It Ar FULLPKGPATH
+Strongly recommended, otherwise updates won't work.
+.It Ar HOMEPAGE
+If defined, appended to the description.
+.It Ar MAINTAINER
+If defined, appended to the description.
+.It Ar USE_GROFF
+Set to 1 to have groff format manpages behind the scenes during
+package creation.
+.El
 .It Fl d No [-] Ns Ar desc
 Fetch long description for package from file
 .Ar desc
@@ -128,29 +160,11 @@ or, if preceded by
 the argument itself.
 .It Fl f Ar packinglist
 Fetch
-.Dq packing list
+.Dq packing-list
 for package from the file
 .Ar packinglist .
 Several packing-lists can be mentioned, in which case they will be
 concatenated together.
-.It Fl i Ar iscript
-Set
-.Ar iscript
-to be the install procedure for the package (deprecated, use
-.Cm @exec
-instead).
-This can be any executable program (or shell script).
-It will be invoked automatically
-when the package is later installed.
-.It Fl k Ar dscript
-Set
-.Ar dscript
-to be the de-install procedure for the package (deprecated, use
-.Cm @unexec
-instead).
-This can be any executable program (or shell script).
-It will be invoked automatically
-when the package is later (if ever) de-installed.
 .It Fl L Ar localbase
 Record
 .Ar localbase
@@ -167,6 +181,10 @@ Display the file (using
 after installing the package.
 Useful for things like
 legal notices on almost-free software, etc.
+.It Fl m
+Causes
+.Nm
+to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually create a package.
 .It Fl P Ar pkg-dependency
@@ -189,11 +207,28 @@ Print out the actual packing-list of the package being generated
 (query mode).
 Most often used in combination with
 .Fl n .
-.It Fl S Ar pkg-destdir
-Deprecated, use
-identical
-.Fl B
-option instead.
+.It Xo
+.Fl s Ar x509
+.Fl s Ar cert
+.Fl s Ar privkey
+.Xc
+Specify signature parameters for signed packages.
+For now, the only supported use involves three
+.Fl s
+options:
+.Ar x509
+to indicate x509-style signatures,
+.Ar cert
+the path to the signer's certificate
+and
+.Ar privkey
+the path to the signer's private key.
+The signer's certificate and the signer's private key should be generated
+using standard openssl x509 commands.
+This assumes the existence of a certificate authority (or several), whose
+public information is recorded as a
+.Pa /etc/ssl/pkgca.pem
+file.
 .It Fl U Ar undisplayfile
 Display the file (using
 .Xr more 1 )
@@ -205,6 +240,8 @@ Turn on verbose output.
 Specify a
 .Cm @wantlib
 requirement on the command line.
+.It Fl x
+Disable progress meter.
 .El
 .Pp
 .Nm
@@ -218,9 +255,9 @@ package:
 .Bd -literal -offset indent
 pkg_create -f /var/db/pkg/kdelibs-3.4.3/+CONTENTS
 .Ed
-.Sh PACKING LIST DETAILS
+.Sh PACKING-LIST DETAILS
 The
-.Dq packing list
+.Dq packing-list
 format (see
 .Fl f )
 is fairly simple, being basically a list of filenames and directory names
@@ -237,6 +274,28 @@ All these commands start with an
 Here is a list:
 .Pp
 .Bl -tag -width Ds -compact
+.It Cm @ask-update Ar pkgspec Ar message
+Mechanism to prevent unwanted updates.
+If the new package is installed as part of an update matching
+.Ar pkgspec ,
+the
+.Ar message
+will be displayed to the user.
+In non-interactive mode, the update will abort.
+Otherwise, the user will have a chance to proceed.
+Automated updates can be done by using
+.Fl D Ar update_stem ,
+with
+.Ar stem
+the stem of the
+.Ar pkgspec .
+Classical use case for postgresql:
+.Bd -literal -offset 3n
+@ask-update postgresql-server-<8 Make sure your existing database is backed up
+.Ed
+.Pp
+Use very sparingly.
+Most cases that seem to require manual updates just require a bit more thought.
 .Pp
 .It Cm @arch Ar arches
 List of architectures for which this package is intended.
@@ -247,7 +306,7 @@ Describe the file as an
 binary executable (not a script).
 .Pp
 .It Cm @comment Ar string
-Imbed a comment in the packing list.
+Imbed a comment in the packing-list.
 Useful in trying to document some particularly hairy sequence that
 may trip someone up later.
 Can also be used to comment out elements that update-plist
@@ -320,14 +379,6 @@ If
 .Ar name
 does not begin with an @, same as
 .Dl name/
-.Pp
-.It Cm @dirrm Ar directoryname
-Declare directory
-.Pa directoryname
-to be deleted at deinstall time.
-Deprecated, use
-.Dl directoryname/
-instead, as it handles proper directory creation as well.
 .Pp
 .It Cm @display Ar name
 Declare
@@ -510,6 +561,10 @@ database when needed.
 Added after a file entry by
 .Nm
 to record the files's cryptographic checksum.
+Replaced by
+.Cm @sha
+since
+.Ox 4.5 .
 .Pp
 .It Cm @mode Ar mode
 Set default permission for all subsequently extracted files to
@@ -582,6 +637,19 @@ Effects vary depending on
 .Ar name .
 Some options are not documented yet.
 .Bl -tag -width indent
+.It Ar always-update
+By default,
+.Xr pkg_add 1
+uses some simplified information to decide whether an installed package
+needs updating.
+With this option, the package is updated whenever anything changes.
+To be used sparingly, as this is more expensive.
+.It Ar explicit-update
+packages tagged with this option, either in the installed version or in an
+update candidate, won't be considered during a global update.
+User has to explicitly ask to update them.
+Typical use is for firmware packages, whose updates are usually tied to
+kernel changes.
 .It Ar no-default-conflict
 By default, a package conflicts with other versions of the same package.
 With this option, the older package version will still be noticed, but the
@@ -629,6 +697,53 @@ When ports get renamed, or flavors change, extra
 annotations can help
 .Nm pkg_add
 get a sense of continuity.
+Note that these
+.Ar pkgpath
+can take extra optional components, to allow the matching of several
+flavors at once, and are order independent.
+For instance,
+.Bd -literal -offset indent
+@pkgpath some/dir,f1,f2
+.Ed
+.Pp
+and
+.Bd -literal -offset indent
+@pkgpath some/dir,f2,f2,f1
+.Ed
+.Pp
+are equivalent.
+.Bd -literal -offset indent
+@pkgpath some/dir,f1[,f2,f3][,f4]
+.Ed
+.Pp
+will match all pkgpaths to some/dir with flavor f1, and optionally f4, and
+optionally both f2 and f3, e.g.,
+.Ar some/dir,f1,f4 ,
+.Ar some/dir,f1,f2,f3 ,
+.Ar some/dir,f1,f2,f3,f4 ,
+.Ar some/dir,f1
+would match,
+but
+.Ar some/dir,f1,f5 ,
+.Ar some/dir,f2,f3 ,
+.Ar some/dir,f1,f2,f4
+would not.
+.Pp
+.It Cm @rcscript Ar filename
+Script for the
+.Pa /etc/rc.d
+framework.
+Contrary to
+.Cm @file ,
+absolute paths are okay, e.g.,
+.Bd -literal -offset indent
+@rcscript ${RCDIR}/ballsd
+.Ed
+.Pp
+In this case, performs an implicit
+.Cm @cwd
+to
+.Pa ${RCDIR} .
 .Pp
 .It Cm @sample Ar filename
 Last preceding
@@ -648,6 +763,12 @@ If
 .Ar filename
 ends with a slash,
 it refers to a configuration directory instead.
+.Pp
+.It Cm @sha
+Added after a file entry by
+.Nm
+to record the files's cryptographic checksum,
+as a sha256 digest encoded in base64.
 .Pp
 .It Cm @shell Ar filename
 Specialized version of
@@ -712,6 +833,11 @@ Similar to
 .Cm @unexec ,
 except it only gets executed while removing an old package during updates,
 and not during true deletions.
+.Pp
+.It Cm @url
+Original location of the package, automatically recorded in installed packages
+by
+.Xr pkg_add 1 .
 .Pp
 .It Cm @wantlib Ar libspec
 Package needs a shared library to work.
@@ -810,17 +936,17 @@ Default value for
 .Ar pkg-destdir ,
 if no
 .Fl B
-or
-.Fl S
 option is specified.
 .El
 .Sh SEE ALSO
+.Xr openssl 1 ,
 .Xr pkg_add 1 ,
 .Xr pkg_delete 1 ,
 .Xr pkg_info 1 ,
 .Xr tar 1 ,
 .Xr bsd.port.mk 5 ,
 .Xr package 5 ,
+.Xr pkg.conf 5 ,
 .Xr packages-specs 7 ,
 .Xr ports 7
 .Sh HISTORY

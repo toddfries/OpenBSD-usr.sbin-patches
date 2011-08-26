@@ -1,4 +1,4 @@
-/*	$OpenBSD: entry.c,v 1.30 2005/01/30 20:44:50 millert Exp $	*/
+/*	$OpenBSD: entry.c,v 1.33 2011/05/19 15:00:17 phessler Exp $	*/
 
 /*
  * Copyright 1988,1990,1993,1994 by Paul Vixie
@@ -21,10 +21,6 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
  * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
-#if !defined(lint) && !defined(LINT)
-static char const rcsid[] = "$OpenBSD: entry.c,v 1.30 2005/01/30 20:44:50 millert Exp $";
-#endif
 
 /* vix 26jan87 [RCS'd; rest of log is in RCS file]
  * vix 01jan87 [added line-level error recovery]
@@ -63,7 +59,8 @@ void
 free_entry(entry *e) {
 	free(e->cmd);
 	free(e->pwd);
-	env_free(e->envp);
+	if (e->envp)
+		env_free(e->envp);
 	free(e);
 }
 
@@ -107,6 +104,10 @@ load_entry(FILE *file, void (*error_func)(const char *), struct passwd *pw,
 	 */
 
 	e = (entry *) calloc(sizeof(entry), sizeof(char));
+	if (e == NULL) {
+		ecode = e_memory;
+		goto eof;
+	}
 
 	if (ch == '@') {
 		/* all of these should be flagged and load-limited; i.e.,
@@ -345,7 +346,8 @@ load_entry(FILE *file, void (*error_func)(const char *), struct passwd *pw,
 
 	/* If the first character of the command is '-' it is a cron option.
 	 */
-	while ((ch = get_char(file)) == '-') {
+	ch = get_char(file);
+	while (ch == '-') {
 		switch (ch = get_char(file)) {
 		case 'q':
 			e->flags |= DONT_LOG;
@@ -390,13 +392,8 @@ load_entry(FILE *file, void (*error_func)(const char *), struct passwd *pw,
 	return (e);
 
  eof:
-	if (e->envp)
-		env_free(e->envp);
-	if (e->pwd)
-		free(e->pwd);
-	if (e->cmd)
-		free(e->cmd);
-	free(e);
+	if (e)
+		free_entry(e);
 	while (ch != '\n' && !feof(file))
 		ch = get_char(file);
 	if (ecode != e_none && error_func)

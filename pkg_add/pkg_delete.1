@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_delete.1,v 1.28 2008/03/09 15:36:45 jmc Exp $
+.\"	$OpenBSD: pkg_delete.1,v 1.40 2011/07/18 19:19:08 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -15,7 +15,7 @@
 .\" Jordan K. Hubbard
 .\"
 .\"
-.Dd $Mdocdate: March 9 2008 $
+.Dd $Mdocdate: July 18 2011 $
 .Dt PKG_DELETE 1
 .Os
 .Sh NAME
@@ -23,9 +23,9 @@
 .Nd delete software package distributions
 .Sh SYNOPSIS
 .Nm pkg_delete
-.Op Fl cIinqvx
+.Op Fl acIimnqsvx
 .Op Fl B Ar pkg-destdir
-.Op Fl F Ar keywords
+.Op Fl D Ar name Ns Op = Ns Ar value
 .Ar pkg-name Op Ar ...
 .Sh DESCRIPTION
 The
@@ -51,6 +51,11 @@ can be omitted, unless the resulting specification is ambiguous.
 .Pp
 The options are as follows:
 .Bl -tag -width BB-pkg-destdir
+.It Fl a
+Delete unused dependencies (packages that are not needed by anything tagged
+as installed manually).
+Can be used without
+.Ar pkgnames .
 .It Fl B Ar pkg-destdir
 Set
 .Ar pkg-destdir
@@ -59,15 +64,16 @@ as the prefix to prepend to any object deleted.
 Delete extra configuration file, mentioned as
 .Dl @extra file
 in the packing-list.
-.It Fl F Ar keywords
+.It Xo
+.Fl D
+.Ar name Ns Op = Ns Ar value
+.Xc
 Force removal of the package.
-.Ar keywords
-is a comma-separated list of keywords that state what failsafes
+.Ar name
+is a keyword that states what failsafe
 should be waived.
-These include:
+Recognized keywords include:
 .Bl -tag -width "dependenciesXX"
-.It Ar ambiguous
-delete all packages matching ambiguous package specifications.
 .It Ar baddepend
 force the deletion of packages even if they reference inexistent dependencies.
 .It Ar dependencies
@@ -76,10 +82,6 @@ also delete the whole set of packages that depends upon the requested packages.
 uninstall even if not running as root.
 .It Ar scripts
 external scripts may fail.
-.It Ar uninstalled
-proceed even if some package names don't resolve to installed package names.
-.It Ar verbosedeps
-show detailed dependency information.
 .El
 .It Fl I
 If scripts exist for a given package, do not execute them.
@@ -87,21 +89,45 @@ If scripts exist for a given package, do not execute them.
 Switch on interactive mode.
 .Nm
 may ask questions to the user if faced with difficult decisions.
+.It Fl m
+Causes
+.Nm
+to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually deinstall a package, just report the steps that
 would be taken if it were.
 .It Fl q
 Delete package quickly, do not bother with checksums before removing normal
 files.
+For signed packages, do not bother verifying signatures either.
 If used twice,
 it will not bother with checksums for configuration files either.
+.It Fl s
+Don't actually deinstall packages, report the disk size changes
+that would happen.
 .It Fl v
 Turn on verbose output.
 Several
 .Fl v
 turn on more verbose output.
+By default,
+.Nm
+is almost completely silent, but it reacts to keyboard status requests
+.Po
+see
+.Xr stty 1
+.Pc .
+.Fl v
+turns on basic messages,
+.Fl vv
+adds relevant system operations,
+.Fl vvv
+shows most internal computations apart from individual file/directory
+additions, and
+.Fl vvvvv
+shows everything.
 .It Fl x
-Disable progress-meter.
+Disable progress meter.
 .El
 .Sh TECHNICAL DETAILS
 .Nm
@@ -119,7 +145,10 @@ will list those dependent packages and refuse to delete the package.
 .Pp
 If a
 .Cm deinstall
-script exists for the package, it is executed before any files are removed.
+script exists for the package (deprecated,
+.Cm @unexec
+is more versatile),
+it is executed before any files are removed.
 Such a script can be used to remove messy dynamic files created by the
 package on installation or during usage.
 The
@@ -156,6 +185,7 @@ script invoked from the package.
 .Xr pkg_add 1 ,
 .Xr pkg_create 1 ,
 .Xr pkg_info 1 ,
+.Xr pkg.conf 5 ,
 .Xr packages-specs 7
 .Sh AUTHORS
 .Bl -tag -width indent -compact

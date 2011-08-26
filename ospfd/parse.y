@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.65 2009/01/26 23:03:28 claudio Exp $ */
+/*	$OpenBSD: parse.y,v 1.73 2010/12/13 13:43:37 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -87,6 +87,7 @@ struct config_defaults {
 	char		auth_key[MAX_SIMPLE_AUTH_LEN];
 	struct auth_md_head	 md_list;
 	u_int32_t	dead_interval;
+	u_int32_t	fast_hello_interval;
 	u_int16_t	transmit_delay;
 	u_int16_t	hello_interval;
 	u_int16_t	rxmt_interval;
@@ -115,30 +116,49 @@ typedef struct {
 
 %}
 
-%token	AREA INTERFACE ROUTERID FIBUPDATE REDISTRIBUTE RTLABEL
+%token	AREA INTERFACE ROUTERID FIBUPDATE REDISTRIBUTE RTLABEL RDOMAIN
 %token	RFC1583COMPAT STUB ROUTER SPFDELAY SPFHOLDTIME EXTTAG
 %token	AUTHKEY AUTHTYPE AUTHMD AUTHMDKEYID
 %token	METRIC PASSIVE
-%token	HELLOINTERVAL TRANSMITDELAY
+%token	HELLOINTERVAL FASTHELLOINTERVAL TRANSMITDELAY
 %token	RETRANSMITINTERVAL ROUTERDEADTIME ROUTERPRIORITY
 %token	SET TYPE
 %token	YES NO
+%token	MSEC MINIMAL
 %token	DEMOTE
+%token	INCLUDE
 %token	ERROR
 %token	<v.string>	STRING
 %token	<v.number>	NUMBER
-%type	<v.number>	yesno no optlist optlist_l option demotecount
+%type	<v.number>	yesno no optlist optlist_l option demotecount msec
+%type	<v.number>	deadtime
 %type	<v.string>	string
 %type	<v.redist>	redistribute
 
 %%
 
 grammar		: /* empty */
+		| grammar include '\n'
 		| grammar '\n'
 		| grammar conf_main '\n'
 		| grammar varset '\n'
 		| grammar area '\n'
 		| grammar error '\n'		{ file->errors++; }
+		;
+
+include		: INCLUDE STRING		{
+			struct file	*nfile;
+
+			if ((nfile = pushfile($2, 1)) == NULL) {
+				yyerror("failed to include file %s", $2);
+				free($2);
+				YYERROR;
+			}
+			free($2);
+
+			file = nfile;
+			lungetc('\n');
+		}
 		;
 
 string		: string STRING	{
@@ -160,6 +180,14 @@ yesno		: YES	{ $$ = 1; }
 
 no		: /* empty */	{ $$ = 0; }
 		| NO		{ $$ = 1; }
+		;
+
+msec		: MSEC NUMBER {
+			$$ = $2;
+		}
+		| NUMBER {
+			$$ = $1 * 1000;
+		}
 		;
 
 varset		: STRING '=' string		{
@@ -199,10 +227,17 @@ conf_main	: ROUTERID STRING {
 			rtlabel_tag(rtlabel_name2id($2), $4);
 			free($2);
 		}
+		| RDOMAIN NUMBER {
+			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+				yyerror("invalid rdomain");
+				YYERROR;
+			}
+			conf->rdomain = $2;
+		}
 		| RFC1583COMPAT yesno {
 			conf->rfc1583compat = $2;
 		}
-		| SPFDELAY NUMBER {
+		| SPFDELAY msec {
 			if ($2 < MIN_SPF_DELAY || $2 > MAX_SPF_DELAY) {
 				yyerror("spf-delay out of range "
 				    "(%d-%d)", MIN_SPF_DELAY,
@@ -211,7 +246,7 @@ conf_main	: ROUTERID STRING {
 			}
 			conf->spf_delay = $2;
 		}
-		| SPFHOLDTIME NUMBER {
+		| SPFHOLDTIME msec {
 			if ($2 < MIN_SPF_HOLDTIME || $2 > MAX_SPF_HOLDTIME) {
 				yyerror("spf-holdtime out of range "
 				    "(%d-%d)", MIN_SPF_HOLDTIME,
@@ -416,12 +451,7 @@ defaults	: METRIC NUMBER {
 			}
 			defs->priority = $2;
 		}
-		| ROUTERDEADTIME NUMBER {
-			if ($2 < MIN_RTR_DEAD_TIME || $2 > MAX_RTR_DEAD_TIME) {
-				yyerror("router-dead-time out of range (%d-%d)",
-				    MIN_RTR_DEAD_TIME, MAX_RTR_DEAD_TIME);
-				YYERROR;
-			}
+		| ROUTERDEADTIME deadtime {
 			defs->dead_interval = $2;
 		}
 		| TRANSMITDELAY NUMBER {
@@ -442,6 +472,16 @@ defaults	: METRIC NUMBER {
 			}
 			defs->hello_interval = $2;
 		}
+		| FASTHELLOINTERVAL MSEC NUMBER {
+			if ($3 < MIN_FAST_INTERVAL ||
+			    $3 > MAX_FAST_INTERVAL) {
+				yyerror("fast-hello-interval msec out of "
+				    "range (%d-%d)", MIN_FAST_INTERVAL,
+				    MAX_FAST_INTERVAL);
+				YYERROR;
+			}
+			defs->fast_hello_interval = $3;
+		}
 		| RETRANSMITINTERVAL NUMBER {
 			if ($2 < MIN_RXMT_INTERVAL || $2 > MAX_RXMT_INTERVAL) {
 				yyerror("retransmit-interval out of range "
@@ -456,6 +496,18 @@ defaults	: METRIC NUMBER {
 		| authmdkeyid
 		| authmd
 		;
+
+deadtime	: NUMBER {
+			if ($1 < MIN_RTR_DEAD_TIME || $1 > MAX_RTR_DEAD_TIME) {
+				yyerror("router-dead-time out of range (%d-%d)",
+				    MIN_RTR_DEAD_TIME, MAX_RTR_DEAD_TIME);
+				YYERROR;
+			}
+			$$ = $1;
+		}
+		| MINIMAL {
+			$$ = FAST_RTR_DEAD_TIME;
+		}
 
 optnl		: '\n' optnl
 		|
@@ -580,8 +632,12 @@ interface	: INTERFACE STRING	{
 			defs = &ifacedefs;
 		} interface_block {
 			iface->dead_interval = defs->dead_interval;
+			iface->fast_hello_interval = defs->fast_hello_interval;
 			iface->transmit_delay = defs->transmit_delay;
-			iface->hello_interval = defs->hello_interval;
+			if (iface->dead_interval == FAST_RTR_DEAD_TIME)
+				iface->hello_interval = 0;
+			else
+				iface->hello_interval = defs->hello_interval;
 			iface->rxmt_interval = defs->rxmt_interval;
 			iface->metric = defs->metric;
 			iface->priority = defs->priority;
@@ -665,12 +721,17 @@ lookup(char *s)
 		{"auth-type",		AUTHTYPE},
 		{"demote",		DEMOTE},
 		{"external-tag",	EXTTAG},
+		{"fast-hello-interval",	FASTHELLOINTERVAL},
 		{"fib-update",		FIBUPDATE},
 		{"hello-interval",	HELLOINTERVAL},
+		{"include",		INCLUDE},
 		{"interface",		INTERFACE},
 		{"metric",		METRIC},
+		{"minimal",		MINIMAL},
+		{"msec",		MSEC},
 		{"no",			NO},
 		{"passive",		PASSIVE},
+		{"rdomain",		RDOMAIN},
 		{"redistribute",	REDISTRIBUTE},
 		{"retransmit-interval",	RETRANSMITINTERVAL},
 		{"rfc1583compat",	RFC1583COMPAT},
@@ -851,9 +912,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -962,9 +1024,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("malloc");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
@@ -1015,6 +1081,7 @@ parse_config(char *filename, int opts)
 	defs = &globaldefs;
 	TAILQ_INIT(&defs->md_list);
 	defs->dead_interval = DEFAULT_RTR_DEAD_TIME;
+	defs->fast_hello_interval = DEFAULT_FAST_INTERVAL;
 	defs->transmit_delay = DEFAULT_TRANSMIT_DELAY;
 	defs->hello_interval = DEFAULT_HELLO_INTERVAL;
 	defs->rxmt_interval = DEFAULT_RXMT_INTERVAL;
@@ -1203,6 +1270,8 @@ get_rtr_id(void)
 		fatal("getifaddrs");
 
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+		if (strncmp(ifa->ifa_name, "carp", 4) == 0)
+			continue;
 		if (ifa->ifa_addr->sa_family != AF_INET)
 			continue;
 		cur = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.113 2008/12/05 16:37:56 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.150 2011/05/26 14:48:20 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -20,6 +20,10 @@
 
 #include <sys/tree.h>
 
+#include <sys/param.h>		/* MAXHOSTNAMELEN */
+#include <limits.h>
+#include <imsg.h>
+
 #define CONF_FILE		"/etc/relayd.conf"
 #define RELAYD_SOCKET		"/var/run/relayd.sock"
 #define PF_SOCKET		"/dev/pf"
@@ -32,6 +36,7 @@
 #define EMPTY_ID		UINT_MAX
 #define TABLE_NAME_SIZE		64
 #define	TAG_NAME_SIZE		64
+#define	RT_LABEL_SIZE		32
 #define SRV_NAME_SIZE		64
 #define MAX_NAME_SIZE		64
 #define SRV_MAX_VIRTS		16
@@ -46,15 +51,17 @@
 #define RELAY_BACKLOG		10
 #define RELAY_MAXLOOKUPLEVELS	5
 
-#define SMALL_READ_BUF_SIZE	1024
-#define READ_BUF_SIZE		65535
-#define ICMP_BUF_SIZE		64
+#define CONFIG_RELOAD		0x00
+#define CONFIG_TABLES		0x01
+#define CONFIG_RDRS		0x02
+#define CONFIG_RELAYS		0x04
+#define CONFIG_PROTOS		0x08
+#define CONFIG_ROUTES		0x10
+#define CONFIG_RTS		0x20
+#define CONFIG_ALL		0xff
 
-#define PURGE_TABLES		0x01
-#define PURGE_RDRS		0x02
-#define PURGE_RELAYS		0x04
-#define PURGE_PROTOS		0x08
-#define PURGE_EVERYTHING	0xff
+#define SMALL_READ_BUF_SIZE	1024
+#define ICMP_BUF_SIZE		64
 
 #define SNMP_RECONNECT_TIMEOUT	{ 3, 0 }	/* sec, usec */
 
@@ -70,116 +77,13 @@ struct shuffle {
 	int		 isindex;
 };
 
-/* buffer */
-struct buf {
-	TAILQ_ENTRY(buf)	 entry;
-	u_char			*buf;
-	size_t			 size;
-	size_t			 max;
-	size_t			 wpos;
-	size_t			 rpos;
-	int			 fd;
-};
-
-struct msgbuf {
-	TAILQ_HEAD(, buf)	 bufs;
-	u_int32_t		 queued;
-	int			 fd;
-};
-
-#define IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
-#define MAX_IMSGSIZE		8192
-
-struct buf_read {
-	u_char			 buf[READ_BUF_SIZE];
-	u_char			*rptr;
-	size_t			 wpos;
-};
-
-struct imsg_fd {
-	TAILQ_ENTRY(imsg_fd)	entry;
-	int			fd;
-};
-
-struct imsgbuf {
-	TAILQ_HEAD(, imsg_fd)	 fds;
-	struct buf_read		 r;
-	struct msgbuf		 w;
-	struct event		 ev;
-	void			(*handler)(int, short, void *);
-	int			 fd;
-	pid_t			 pid;
-	short			 events;
-};
-
-enum imsg_type {
-	IMSG_NONE,
-	IMSG_CTL_OK,		/* answer to relayctl requests */
-	IMSG_CTL_FAIL,
-	IMSG_CTL_END,
-	IMSG_CTL_RDR,
-	IMSG_CTL_TABLE,
-	IMSG_CTL_HOST,
-	IMSG_CTL_RELAY,
-	IMSG_CTL_SESSION,
-	IMSG_CTL_TABLE_CHANGED,
-	IMSG_CTL_PULL_RULESET,
-	IMSG_CTL_PUSH_RULESET,
-	IMSG_CTL_SHOW_SUM,	/* relayctl requests */
-	IMSG_CTL_RDR_ENABLE,
-	IMSG_CTL_RDR_DISABLE,
-	IMSG_CTL_TABLE_ENABLE,
-	IMSG_CTL_TABLE_DISABLE,
-	IMSG_CTL_HOST_ENABLE,
-	IMSG_CTL_HOST_DISABLE,
-	IMSG_CTL_SHUTDOWN,
-	IMSG_CTL_RELOAD,
-	IMSG_CTL_POLL,
-	IMSG_CTL_NOTIFY,
-	IMSG_CTL_RDR_STATS,
-	IMSG_CTL_RELAY_STATS,
-	IMSG_RDR_ENABLE,	/* notifies from pfe to hce */
-	IMSG_RDR_DISABLE,
-	IMSG_TABLE_ENABLE,
-	IMSG_TABLE_DISABLE,
-	IMSG_HOST_ENABLE,
-	IMSG_HOST_DISABLE,
-	IMSG_HOST_STATUS,	/* notifies from hce to pfe */
-	IMSG_SYNC,
-	IMSG_NATLOOK,
-	IMSG_DEMOTE,
-	IMSG_STATISTICS,
-	IMSG_RECONF,		/* reconfiguration notifies */
-	IMSG_RECONF_TABLE,
-	IMSG_RECONF_SENDBUF,
-	IMSG_RECONF_HOST,
-	IMSG_RECONF_RDR,
-	IMSG_RECONF_VIRT,
-	IMSG_RECONF_PROTO,
-	IMSG_RECONF_REQUEST_TREE,
-	IMSG_RECONF_RESPONSE_TREE,
-	IMSG_RECONF_PNODE_KEY,
-	IMSG_RECONF_PNODE_VAL,
-	IMSG_RECONF_RELAY,
-	IMSG_RECONF_END,
-	IMSG_SCRIPT,
-	IMSG_SNMPSOCK,
-	IMSG_BINDANY
-};
-
-struct imsg_hdr {
-	u_int16_t	 type;
-	u_int16_t	 len;
-	u_int32_t	 peerid;
-	pid_t		 pid;
-};
-
-struct imsg {
-	struct imsg_hdr	 hdr;
-	void		*data;
-};
 
 typedef u_int32_t objid_t;
+
+struct ctl_flags {
+	u_int8_t	 cf_opts;
+	u_int32_t	 cf_flags;
+};
 
 struct ctl_status {
 	objid_t		 id;
@@ -197,6 +101,9 @@ struct ctl_id {
 struct ctl_script {
 	objid_t		 host;
 	int		 retval;
+	struct timeval	 timeout;
+	char		 name[MAXHOSTNAMELEN];
+	char		 path[MAXPATHLEN];
 };
 
 struct ctl_demote {
@@ -216,7 +123,7 @@ struct ctl_icmp_event {
 struct ctl_tcp_event {
 	int			 s;
 	char			*req;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct host		*host;
 	struct table		*table;
 	struct timeval		 tv_start;
@@ -224,7 +131,6 @@ struct ctl_tcp_event {
 	int			(*validate_read)(struct ctl_tcp_event *);
 	int			(*validate_close)(struct ctl_tcp_event *);
 	SSL			*ssl;
-	char			 rbuf[SMALL_READ_BUF_SIZE];
 };
 
 enum httpmethod {
@@ -252,7 +158,7 @@ struct ctl_relay_event {
 	struct bufferevent	*bev;
 	struct evbuffer		*output;
 	struct ctl_relay_event	*dst;
-	void			*con;
+	struct rsession		*con;
 	SSL			*ssl;
 	u_int8_t		*nodes;
 	struct proto_tree	*tree;
@@ -261,6 +167,7 @@ struct ctl_relay_event {
 	char			*args;
 	char			*version;
 
+	off_t			 splicelen;
 	int			 line;
 	size_t			 toread;
 	int			 chunked;
@@ -316,7 +223,9 @@ struct portrange {
 };
 
 struct address {
+	objid_t			 rdrid;
 	struct sockaddr_storage	 ss;
+	int			 ipproto;
 	struct portrange	 port;
 	char			 ifname[IFNAMSIZ];
 	TAILQ_ENTRY(address)	 entry;
@@ -344,6 +253,18 @@ TAILQ_HEAD(addresslist, address);
 #define F_TRAP			0x00040000
 #define F_NEEDPF		0x00080000
 #define F_PORT			0x00100000
+#define F_SSLCLIENT		0x00200000
+#define F_NEEDRT		0x00400000
+#define F_MATCH			0x00800000
+#define F_DIVERT		0x01000000
+#define F_SCRIPT		0x02000000
+
+#define F_BITS								\
+	"\10\01DISABLE\02BACKUP\03USED\04DOWN\05ADD\06DEL\07CHANGED"	\
+	"\10STICKY-ADDRESS\11CHECK_DONE\12ACTIVE_RULESET\13CHECK_SENT"	\
+	"\14SSL\15NAT_LOOKUP\16DEMOTE\17LOOKUP_PATH\20DEMOTED\21UDP"	\
+	"\22RETURN\23TRAP\24NEEDPF\25PORT\26SSL_CLIENT\27NEEDRT"	\
+	"\30MATCH\31DIVERT\32SCRIPT"
 
 enum forwardmode {
 	FWD_NORMAL		= 0,
@@ -358,6 +279,8 @@ struct host_config {
 	int			 retry;
 	char			 name[MAXHOSTNAMELEN];
 	struct sockaddr_storage	 ss;
+	int			 ttl;
+	int			 priority;
 };
 
 struct host {
@@ -385,7 +308,9 @@ enum host_error {
 	HCE_ICMP_OK,
 	HCE_ICMP_READ_TIMEOUT,
 	HCE_ICMP_WRITE_TIMEOUT,
-	HCE_TCP_CONNECT_ERROR,
+	HCE_TCP_SOCKET_ERROR,
+	HCE_TCP_SOCKET_LIMIT,
+	HCE_TCP_SOCKET_OPTION,
 	HCE_TCP_CONNECT_FAIL,
 	HCE_TCP_CONNECT_TIMEOUT,
 	HCE_TCP_CONNECT_OK,
@@ -452,7 +377,6 @@ struct table {
 	int			 skipped;
 	struct hostlist		 hosts;
 	SSL_CTX			*ssl_ctx;
-	int			 sendbuf_len;
 	char			*sendbuf;
 };
 TAILQ_HEAD(tablelist, table);
@@ -489,7 +413,7 @@ struct rdr {
 TAILQ_HEAD(rdrlist, rdr);
 
 struct relay;
-struct session {
+struct rsession {
 	objid_t				 se_id;
 	objid_t				 se_relayid;
 	struct ctl_relay_event		 se_in;
@@ -508,9 +432,11 @@ struct session {
 	struct ctl_natlook		*se_cnl;
 	int				 se_bnds;
 
-	SPLAY_ENTRY(session)		 se_nodes;
+	int				 se_cid;
+	pid_t				 se_pid;
+	SPLAY_ENTRY(rsession)		 se_nodes;
 };
-SPLAY_HEAD(session_tree, session);
+SPLAY_HEAD(session_tree, rsession);
 
 enum nodeaction {
 	NODE_ACTION_NONE	= 0,
@@ -547,15 +473,25 @@ enum noderesult {
 	PN_FAIL			= -1
 };
 
+struct protonode_config {
+	objid_t			 	 protoid;
+	size_t			 	 keylen;
+	size_t			 	 valuelen;
+	size_t			 	 len;
+	u_int			 	 dir;
+};
+
 struct protonode {
+	struct protonode_config		 conf;
 	objid_t				 id;
-	char				*key;
 	enum nodeaction			 action;
-	char				*value;
 	u_int8_t			 flags;
 	enum nodetype			 type;
 	u_int16_t			 mark;
 	u_int16_t			 label;
+
+	char				*key;
+	char				*value;
 
 	SIMPLEQ_HEAD(, protonode)	 head;
 	SIMPLEQ_ENTRY(protonode)	 entry;
@@ -580,13 +516,21 @@ enum prototype {
 #define TCPFLAG_BUFSIZ		0x10
 #define TCPFLAG_IPTTL		0x20
 #define TCPFLAG_IPMINTTL	0x40
+#define TCPFLAG_NSPLICE		0x80
 #define TCPFLAG_DEFAULT		0x00
+
+#define TCPFLAG_BITS						\
+	"\10\01NODELAY\02NO_NODELAY\03SACK\04NO_SACK"		\
+	"\05SOCKET_BUFFER_SIZE\06IP_TTL\07IP_MINTTL\10NO_SPLICE"
 
 #define SSLFLAG_SSLV2		0x01
 #define SSLFLAG_SSLV3		0x02
 #define SSLFLAG_TLSV1		0x04
 #define SSLFLAG_VERSION		0x07
 #define SSLFLAG_DEFAULT		(SSLFLAG_SSLV3|SSLFLAG_TLSV1)
+
+#define SSLFLAG_BITS						\
+	"\10\01sslv2\02sslv3\03tlsv1\04version"
 
 #define SSLCIPHERS_DEFAULT	"HIGH:!ADH"
 
@@ -600,6 +544,7 @@ struct protocol {
 	u_int8_t		 tcpipminttl;
 	u_int8_t		 sslflags;
 	char			 sslciphers[768];
+	char			 sslca[MAXPATHLEN];
 	char			 name[MAX_NAME_SIZE];
 	int			 cache;
 	enum prototype		 type;
@@ -611,11 +556,11 @@ struct protocol {
 	int			 response_nodes;
 	struct proto_tree	 response_tree;
 
-	int			(*cmp)(struct session *, struct session *);
-	void			*(*validate)(struct session *, struct relay *,
+	int			(*cmp)(struct rsession *, struct rsession *);
+	void			*(*validate)(struct rsession *, struct relay *,
 				    struct sockaddr_storage *,
 				    u_int8_t *, size_t);
-	int			(*request)(struct session *);
+	int			(*request)(struct rsession *);
 
 	TAILQ_ENTRY(protocol)	 entry;
 };
@@ -632,11 +577,15 @@ struct relay_config {
 	int			 dstmode;
 	int			 dstretry;
 	objid_t			 dsttable;
+	objid_t			 backuptable;
 	struct sockaddr_storage	 ss;
 	struct sockaddr_storage	 dstss;
 	struct sockaddr_storage	 dstaf;
 	struct timeval		 timeout;
 	enum forwardmode	 fwdmode;
+	off_t			 ssl_cert_len;
+	off_t			 ssl_key_len;
+	off_t			 ssl_ca_len;
 };
 
 struct relay {
@@ -652,6 +601,7 @@ struct relay {
 	struct bufferevent	*rl_dstbev;
 
 	struct table		*rl_dsttable;
+	struct table		*rl_backuptable;
 	u_int32_t		 rl_dstkey;
 	struct host		*rl_dsthost[RELAY_MAXHOSTS];
 	int			 rl_dstnhosts;
@@ -660,9 +610,8 @@ struct relay {
 
 	SSL_CTX			*rl_ssl_ctx;
 	char			*rl_ssl_cert;
-	off_t			 rl_ssl_cert_len;
 	char			*rl_ssl_key;
-	off_t			 rl_ssl_key_len;
+	char			*rl_ssl_ca;
 
 	struct ctl_stats	 rl_stats[RELAY_MAXPROC + 1];
 
@@ -677,22 +626,218 @@ enum dstmode {
 };
 #define RELAY_DSTMODE_DEFAULT		RELAY_DSTMODE_ROUNDROBIN
 
-enum {
-	PROC_MAIN,
-	PROC_PFE,
+struct router;
+struct netroute_config {
+	objid_t			 id;
+	struct sockaddr_storage	 ss;
+	int			 prefixlen;
+	objid_t			 routerid;
+};
+
+struct netroute {
+	struct netroute_config	 nr_conf;
+
+	TAILQ_ENTRY(netroute)	 nr_entry;
+	TAILQ_ENTRY(netroute)	 nr_route;
+
+	struct router		*nr_router;
+};
+TAILQ_HEAD(netroutelist, netroute);
+
+struct router_config {
+	objid_t			 id;
+	u_int32_t		 flags;
+	char			 name[MAXHOSTNAMELEN];
+	char			 label[RT_LABEL_SIZE];
+	int			 nroutes;
+	objid_t			 gwtable;
+	in_port_t		 gwport;
+	int			 rtable;
+	int			 af;
+};
+
+struct router {
+	struct router_config	 rt_conf;
+
+	struct table		*rt_gwtable;
+	struct netroutelist	 rt_netroutes;
+
+	TAILQ_ENTRY(router)	 rt_entry;
+};
+TAILQ_HEAD(routerlist, router);
+
+struct ctl_netroute {
+	int			up;
+	struct host_config	host;
+	struct netroute_config	nr;
+	struct router_config	rt;
+};
+
+/* initially control.h */
+struct control_sock {
+	const char	*cs_name;
+	struct event	 cs_ev;
+	int		 cs_fd;
+	int		 cs_restricted;
+	void		*cs_env;
+};
+
+struct {
+	struct event	 ev;
+	int		 fd;
+} control_state;
+
+enum blockmodes {
+	BM_NORMAL,
+	BM_NONBLOCK
+};
+
+
+struct imsgev {
+	struct imsgbuf		 ibuf;
+	void			(*handler)(int, short, void *);
+	struct event		 ev;
+	struct privsep_proc	*proc;
+	void			*data;
+	short			 events;
+};
+
+#define IMSG_SIZE_CHECK(imsg, p) do {				\
+	if (IMSG_DATA_SIZE(imsg) < sizeof(*p))			\
+		fatalx("bad length imsg received");		\
+} while (0)
+#define IMSG_DATA_SIZE(imsg)	((imsg)->hdr.len - IMSG_HEADER_SIZE)
+
+struct ctl_conn {
+	TAILQ_ENTRY(ctl_conn)	 entry;
+	u_int8_t		 flags;
+	u_int			 waiting;
+#define CTL_CONN_NOTIFY		 0x01
+	struct imsgev	 	 iev;
+
+};
+TAILQ_HEAD(ctl_connlist, ctl_conn);
+
+enum imsg_type {
+	IMSG_NONE,
+	IMSG_CTL_OK,		/* answer to relayctl requests */
+	IMSG_CTL_FAIL,
+	IMSG_CTL_VERBOSE,
+	IMSG_CTL_END,
+	IMSG_CTL_RDR,
+	IMSG_CTL_TABLE,
+	IMSG_CTL_HOST,
+	IMSG_CTL_RELAY,
+	IMSG_CTL_SESSION,
+	IMSG_CTL_ROUTER,
+	IMSG_CTL_NETROUTE,
+	IMSG_CTL_TABLE_CHANGED,
+	IMSG_CTL_PULL_RULESET,
+	IMSG_CTL_PUSH_RULESET,
+	IMSG_CTL_SHOW_SUM,	/* relayctl requests */
+	IMSG_CTL_RDR_ENABLE,
+	IMSG_CTL_RDR_DISABLE,
+	IMSG_CTL_TABLE_ENABLE,
+	IMSG_CTL_TABLE_DISABLE,
+	IMSG_CTL_HOST_ENABLE,
+	IMSG_CTL_HOST_DISABLE,
+	IMSG_CTL_SHUTDOWN,
+	IMSG_CTL_RELOAD,
+	IMSG_CTL_RESET,
+	IMSG_CTL_POLL,
+	IMSG_CTL_NOTIFY,
+	IMSG_CTL_RDR_STATS,
+	IMSG_CTL_RELAY_STATS,
+	IMSG_RDR_ENABLE,	/* notifies from pfe to hce */
+	IMSG_RDR_DISABLE,
+	IMSG_TABLE_ENABLE,
+	IMSG_TABLE_DISABLE,
+	IMSG_HOST_ENABLE,
+	IMSG_HOST_DISABLE,
+	IMSG_HOST_STATUS,	/* notifies from hce to pfe */
+	IMSG_SYNC,
+	IMSG_NATLOOK,
+	IMSG_DEMOTE,
+	IMSG_STATISTICS,
+	IMSG_SCRIPT,
+	IMSG_SNMPSOCK,
+	IMSG_BINDANY,
+	IMSG_RTMSG,		/* from pfe to parent */
+	IMSG_CFG_TABLE,		/* configuration from parent */
+	IMSG_CFG_HOST,
+	IMSG_CFG_RDR,
+	IMSG_CFG_VIRT,
+	IMSG_CFG_ROUTER,
+	IMSG_CFG_ROUTE,
+	IMSG_CFG_PROTO,
+	IMSG_CFG_PROTONODE,
+	IMSG_CFG_RELAY,
+	IMSG_CFG_DONE
+};
+
+enum privsep_procid {
+	PROC_ALL	= -1,
+	PROC_PARENT	= 0,
 	PROC_HCE,
-	PROC_RELAY
-} relayd_process;
+	PROC_RELAY,
+	PROC_PFE,
+	PROC_MAX
+} privsep_process;
+
+/* Attach the control socket to the following process */
+#define PROC_CONTROL	PROC_PFE
+
+struct privsep {
+	int				*ps_pipes[PROC_MAX][PROC_MAX];
+	struct imsgev			*ps_ievs[PROC_MAX];
+	const char			*ps_title[PROC_MAX];
+	pid_t				 ps_pid[PROC_MAX];
+	u_int8_t			 ps_what[PROC_MAX];
+
+	u_int				 ps_instances[PROC_MAX];
+	u_int				 ps_instance;
+
+	struct control_sock		 ps_csock;
+
+	/* Event and signal handlers */
+	struct event			 ps_evsigint;
+	struct event			 ps_evsigterm;
+	struct event			 ps_evsigchld;
+	struct event			 ps_evsighup;
+	struct event			 ps_evsigpipe;
+
+	int				 ps_noaction;
+	struct passwd			*ps_pw;
+	struct relayd			*ps_env;
+};
+
+struct privsep_proc {
+	const char		*p_title;
+	enum privsep_procid	 p_id;
+	int			(*p_cb)(int, struct privsep_proc *,
+				    struct imsg *);
+	pid_t			(*p_init)(struct privsep *,
+				    struct privsep_proc *);
+	void			(*p_shutdown)(void);
+	u_int			 p_instance;
+	const char		*p_chroot;
+	struct privsep		*p_ps;
+	struct relayd		*p_env;
+};
 
 struct relayd {
 	u_int8_t		 sc_opts;
 	u_int32_t		 sc_flags;
-	const char		*sc_confpath;
+	const char		*sc_conffile;
 	struct pfdata		*sc_pf;
+	int			 sc_rtsock;
+	int			 sc_rtseq;
 	int			 sc_tablecount;
 	int			 sc_rdrcount;
 	int			 sc_protocount;
 	int			 sc_relaycount;
+	int			 sc_routercount;
+	int			 sc_routecount;
 	struct timeval		 sc_interval;
 	struct timeval		 sc_timeout;
 	struct table		 sc_empty_table;
@@ -702,6 +847,8 @@ struct relayd {
 	struct rdrlist		*sc_rdrs;
 	struct protolist	*sc_protos;
 	struct relaylist	*sc_relays;
+	struct routerlist	*sc_rts;
+	struct netroutelist	*sc_routes;
 	u_int16_t		 sc_prefork_relay;
 	char			 sc_demote_group[IFNAMSIZ];
 	u_int16_t		 sc_id;
@@ -719,6 +866,9 @@ struct relayd {
 	struct ctl_icmp_event	 sc_icmp_recv;
 	struct ctl_icmp_event	 sc_icmp6_send;
 	struct ctl_icmp_event	 sc_icmp6_recv;
+
+	struct privsep		*sc_ps;
+	int			 sc_reload;
 };
 
 #define RELAYD_OPT_VERBOSE		0x01
@@ -727,50 +877,24 @@ struct relayd {
 #define RELAYD_OPT_LOGNOTIFY		0x10
 #define RELAYD_OPT_LOGALL		0x18
 
-/* initially control.h */
-struct {
-	struct event	 ev;
-	int		 fd;
-} control_state;
-
-enum blockmodes {
-	BM_NORMAL,
-	BM_NONBLOCK
-};
-
-struct ctl_conn {
-	TAILQ_ENTRY(ctl_conn)	 entry;
-	u_int8_t		 flags;
-#define CTL_CONN_NOTIFY		 0x01
-	struct imsgbuf		 ibuf;
-
-};
-TAILQ_HEAD(ctl_connlist, ctl_conn);
-
 /* control.c */
-int	control_init(void);
-int	control_listen(struct relayd *, struct imsgbuf *, struct imsgbuf *);
-void    control_accept(int, short, void *);
-void    control_dispatch_imsg(int, short, void *);
-void	control_imsg_forward(struct imsg *);
-void    control_cleanup(void);
-
-void    session_socket_blockmode(int, enum blockmodes);
+int	 control_init(struct privsep *, struct control_sock *);
+int	 control_listen(struct control_sock *);
+void	 control_cleanup(struct control_sock *);
+void	 control_dispatch_imsg(int, short, void *);
+void	 control_imsg_forward(struct imsg *);
+struct ctl_conn	*
+	 control_connbyfd(int);
+void	 socket_set_blockmode(int, enum blockmodes);
 
 extern  struct ctl_connlist ctl_conns;
 
 /* parse.y */
-struct relayd	*parse_config(const char *, int);
-int		 cmdline_symset(char *);
+int	 parse_config(const char *, struct relayd *);
+int	 load_config(const char *, struct relayd *);
+int	 cmdline_symset(char *);
 
 /* log.c */
-void	log_init(int);
-void	log_warn(const char *, ...);
-void	log_warnx(const char *, ...);
-void	log_info(const char *, ...);
-void	log_debug(const char *, ...);
-__dead void fatal(const char *);
-__dead void fatalx(const char *);
 const char *host_error(enum host_error);
 const char *host_status(enum host_status);
 const char *table_check(enum table_check);
@@ -778,39 +902,11 @@ const char *print_availability(u_long, u_long);
 const char *print_host(struct sockaddr_storage *, char *, size_t);
 const char *print_time(struct timeval *, struct timeval *, char *, size_t);
 const char *print_httperror(u_int);
+const char *printb_flags(const u_int32_t, const char *);
 
-/* buffer.c */
-struct buf	*buf_open(size_t);
-struct buf	*buf_dynamic(size_t, size_t);
-int		 buf_add(struct buf *, void *, size_t);
-void		*buf_reserve(struct buf *, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
-void		 buf_free(struct buf *);
-void		 msgbuf_init(struct msgbuf *);
-void		 msgbuf_clear(struct msgbuf *);
-int		 msgbuf_write(struct msgbuf *);
-
-/* imsg.c */
-void	 imsg_init(struct imsgbuf *, int, void (*)(int, short, void *));
-ssize_t	 imsg_read(struct imsgbuf *);
-ssize_t	 imsg_get(struct imsgbuf *, struct imsg *);
-int	 imsg_compose(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-	    int, void *, u_int16_t);
-int	 imsg_composev(struct imsgbuf *, enum imsg_type, u_int32_t,
-	    pid_t, int, const struct iovec *, int);
-struct buf *imsg_create(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-	    u_int16_t);
-int	 imsg_add(struct buf *, void *, u_int16_t);
-int	 imsg_close(struct imsgbuf *, struct buf *);
-void	 imsg_free(struct imsg *);
-void	 imsg_event_add(struct imsgbuf *); /* needs to be provided externally */
-int	 imsg_get_fd(struct imsgbuf *);
-int	 imsg_flush(struct imsgbuf *);
-void	 imsg_clear(struct imsgbuf *);
 
 /* pfe.c */
-pid_t	 pfe(struct relayd *, int [2], int [2], int [RELAY_MAXPROC][2],
-	    int [2], int [RELAY_MAXPROC][2]);
+pid_t	 pfe(struct privsep *, struct privsep_proc *);
 void	 show(struct ctl_conn *);
 void	 show_sessions(struct ctl_conn *);
 int	 enable_rdr(struct ctl_conn *, struct ctl_id *);
@@ -821,7 +917,7 @@ int	 disable_table(struct ctl_conn *, struct ctl_id *);
 int	 disable_host(struct ctl_conn *, struct ctl_id *, struct host *);
 
 /* pfe_filter.c */
-void	 init_filter(struct relayd *);
+void	 init_filter(struct relayd *, int);
 void	 init_tables(struct relayd *);
 void	 flush_table(struct relayd *, struct rdr *);
 void	 sync_table(struct relayd *, struct rdr *, struct table *);
@@ -831,28 +927,33 @@ int	 natlook(struct relayd *, struct ctl_natlook *);
 u_int64_t
 	 check_table(struct relayd *, struct rdr *, struct table *);
 
+/* pfe_route.c */
+void	 init_routes(struct relayd *);
+void	 sync_routes(struct relayd *, struct router *);
+int	 pfe_route(struct relayd *, struct ctl_netroute *);
+
 /* hce.c */
-pid_t	 hce(struct relayd *, int [2], int [2], int [RELAY_MAXPROC][2],
-	    int [2], int [RELAY_MAXPROC][2]);
+pid_t	 hce(struct privsep *, struct privsep_proc *);
 void	 hce_notify_done(struct host *, enum host_error);
 
 /* relay.c */
-pid_t	 relay(struct relayd *, int [2], int [2], int [RELAY_MAXPROC][2],
-	    int [2], int [RELAY_MAXPROC][2]);
+pid_t	 relay(struct privsep *, struct privsep_proc *);
+int	 relay_privinit(struct relay *);
 void	 relay_notify_done(struct host *, const char *);
-int	 relay_session_cmp(struct session *, struct session *);
+int	 relay_session_cmp(struct rsession *, struct rsession *);
 int	 relay_load_certfiles(struct relay *);
-void	 relay_close(struct session *, const char *);
+void	 relay_close(struct rsession *, const char *);
 void	 relay_natlook(int, short, void *);
-void	 relay_session(struct session *);
-int	 relay_from_table(struct session *);
+void	 relay_session(struct rsession *);
+int	 relay_from_table(struct rsession *);
 int	 relay_socket_af(struct sockaddr_storage *, in_port_t);
+in_port_t
+	 relay_socket_getport(struct sockaddr_storage *);
 int	 relay_cmp_af(struct sockaddr_storage *,
 		 struct sockaddr_storage *);
 
-
 RB_PROTOTYPE(proto_tree, protonode, se_nodes, relay_proto_cmp);
-SPLAY_PROTOTYPE(session_tree, session, se_nodes, relay_session_cmp);
+SPLAY_PROTOTYPE(session_tree, rsession, se_nodes, relay_session_cmp);
 
 /* relay_udp.c */
 void	 relay_udp_privinit(struct relayd *, struct relay *);
@@ -870,7 +971,7 @@ void	 check_icmp(struct relayd *, struct timeval *);
 void	 check_tcp(struct ctl_tcp_event *);
 
 /* check_script.c */
-void	 check_script(struct host *);
+void	 check_script(struct relayd *, struct host *);
 void	 script_done(struct relayd *, struct ctl_script *);
 int	 script_exec(struct relayd *, struct ctl_script *);
 
@@ -883,11 +984,14 @@ void	 ssl_error(const char *, const char *);
 /* ssl_privsep.c */
 int	 ssl_ctx_use_private_key(SSL_CTX *, char *, off_t);
 int	 ssl_ctx_use_certificate_chain(SSL_CTX *, char *, off_t);
+int	 ssl_ctx_load_verify_memory(SSL_CTX *, char *, off_t);
 
 /* relayd.c */
 struct host	*host_find(struct relayd *, objid_t);
 struct table	*table_find(struct relayd *, objid_t);
 struct rdr	*rdr_find(struct relayd *, objid_t);
+struct netroute	*route_find(struct relayd *, objid_t);
+struct router	*router_find(struct relayd *, objid_t);
 struct host	*host_findbyname(struct relayd *, const char *);
 struct table	*table_findbyname(struct relayd *, const char *);
 struct table	*table_findbyconf(struct relayd *, struct table *);
@@ -896,13 +1000,15 @@ void		 event_again(struct event *, int, short,
 		    void (*)(int, short, void *),
 		    struct timeval *, struct timeval *, void *);
 struct relay	*relay_find(struct relayd *, objid_t);
-struct session	*session_find(struct relayd *, objid_t);
+struct protocol	*proto_find(struct relayd *, objid_t);
+struct rsession	*session_find(struct relayd *, objid_t);
 struct relay	*relay_findbyname(struct relayd *, const char *);
+struct relay	*relay_findbyaddr(struct relayd *, struct relay_config *);
 int		 expand_string(char *, size_t, const char *, const char *);
 void		 translate_string(char *);
-void		 purge_config(struct relayd *, u_int8_t);
+void		 purge_tree(struct proto_tree *);
 void		 purge_table(struct tablelist *, struct table *);
-void		 merge_config(struct relayd *, struct relayd *);
+void		 purge_relay(struct relayd *, struct relay *);
 char		*digeststr(enum digest_type, const u_int8_t *, size_t, char *);
 const char	*canonicalize_host(const char *, char *, size_t);
 struct protonode *protonode_header(enum direction, struct protocol *,
@@ -913,6 +1019,12 @@ int		 protonode_load(enum direction, struct protocol *,
 		    struct protonode *, const char *);
 int		 map6to4(struct sockaddr_storage *);
 int		 map4to6(struct sockaddr_storage *, struct sockaddr_storage *);
+void		 imsg_event_add(struct imsgev *);
+int	 	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+		    pid_t, int, void *, u_int16_t);
+void		 socket_rlimit(int);
+char		*get_string(u_int8_t *, size_t);
+void		*get_data(u_int8_t *, size_t);
 
 /* carp.c */
 int	 carp_demote_init(char *, int);
@@ -928,11 +1040,69 @@ void		 pn_unref(u_int16_t);
 void		 pn_ref(u_int16_t);
 
 /* snmp.c */
-void	 snmp_init(struct relayd *, struct imsgbuf *);
-int	 snmp_sendsock(struct imsgbuf *);
-void	 snmp_hosttrap(struct table *, struct host *);
+void	 snmp_init(struct relayd *, enum privsep_procid);
+int	 snmp_setsock(struct relayd *, enum privsep_procid);
+int	 snmp_getsock(struct relayd *, struct imsg *);
+void	 snmp_hosttrap(struct relayd *, struct table *, struct host *);
 
 /* shuffle.c */
 void		shuffle_init(struct shuffle *);
 u_int16_t	shuffle_generate16(struct shuffle *);
 
+/* log.c */
+void	log_init(int);
+void	log_verbose(int);
+void	log_warn(const char *, ...);
+void	log_warnx(const char *, ...);
+void	log_info(const char *, ...);
+void	log_debug(const char *, ...);
+__dead void fatal(const char *);
+__dead void fatalx(const char *);
+
+/* proc.c */
+void	 proc_init(struct privsep *, struct privsep_proc *, u_int);
+void	 proc_kill(struct privsep *);
+void	 proc_clear(struct privsep *, int);
+void	 proc_config(struct privsep *, struct privsep_proc *, u_int);
+void	 proc_dispatch(int, short event, void *);
+pid_t	 proc_run(struct privsep *, struct privsep_proc *,
+	    struct privsep_proc *, u_int,
+	    void (*)(struct privsep *, struct privsep_proc *, void *), void *);
+void	 proc_range(struct privsep *, enum privsep_procid, int *, int *);
+int	 proc_compose_imsg(struct privsep *, enum privsep_procid, int,
+	    u_int16_t, int, void *, u_int16_t);
+int	 proc_composev_imsg(struct privsep *, enum privsep_procid, int,
+	    u_int16_t, int, const struct iovec *, int);
+int	 proc_forward_imsg(struct privsep *, struct imsg *,
+	    enum privsep_procid, int);
+void	 proc_flush_imsg(struct privsep *, enum privsep_procid, int);
+struct imsgbuf *
+	 proc_ibuf(struct privsep *, enum privsep_procid, int);
+void	 imsg_event_add(struct imsgev *);
+int	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+	    pid_t, int, void *, u_int16_t);
+int	 imsg_composev_event(struct imsgev *, u_int16_t, u_int32_t,
+	    pid_t, int, const struct iovec *, int);
+
+/* config.c */
+int	 config_init(struct relayd *);
+void	 config_purge(struct relayd *, u_int);
+int	 config_setreset(struct relayd *, u_int);
+int	 config_getreset(struct relayd *, struct imsg *);
+int	 config_getcfg(struct relayd *, struct imsg *);
+int	 config_settable(struct relayd *, struct table *);
+int	 config_gettable(struct relayd *, struct imsg *);
+int	 config_gethost(struct relayd *, struct imsg *);
+int	 config_setrdr(struct relayd *, struct rdr *);
+int	 config_getrdr(struct relayd *, struct imsg *);
+int	 config_getvirt(struct relayd *, struct imsg *);
+int	 config_setrt(struct relayd *, struct router *);
+int	 config_getrt(struct relayd *, struct imsg *);
+int	 config_getroute(struct relayd *, struct imsg *);
+int	 config_setproto(struct relayd *env, struct protocol *);
+int	 config_getproto(struct relayd *, struct imsg *);
+int	 config_setprotonode(struct relayd *, enum privsep_procid,
+	    struct protocol *, enum direction);
+int	 config_getprotonode(struct relayd *, struct imsg *);
+int	 config_setrelay(struct relayd *env, struct relay *);
+int	 config_getrelay(struct relayd *, struct imsg *);

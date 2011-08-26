@@ -1,4 +1,4 @@
-/* $OpenBSD: user.c,v 1.77 2009/02/08 11:37:43 chl Exp $ */
+/* $OpenBSD: user.c,v 1.81 2011/04/16 07:41:08 sobrado Exp $ */
 /* $NetBSD: user.c,v 1.69 2003/04/14 17:40:07 agc Exp $ */
 
 /*
@@ -304,7 +304,7 @@ copydotfiles(char *skeldir, uid_t uid, gid_t gid, char *dir)
 	if (n == 0) {
 		warnx("No \"dot\" initialisation files found");
 	} else {
-		(void) asystem("cd %s && %s -rw -pe %s . %s", 
+		(void) asystem("cd %s && %s -rw -pe %s . %s",
 				skeldir, PAX, (verbose) ? "-v" : "", dir);
 	}
 	(void) asystem("%s -R -P %u:%u %s", CHOWN, uid, gid, dir);
@@ -429,23 +429,31 @@ modify_gid(char *group, char *newent)
 		if (cc > 0 && buf[cc - 1] != '\n' && !feof(from)) {
 			while (fgetc(from) != '\n' && !feof(from))
 				cc++;
-			warn("%s: line `%s' too long (%d bytes), skipping",
+			warnx("%s: line `%s' too long (%d bytes), skipping",
 			    _PATH_GROUP, buf, cc);
 			continue;
 		}
 		if ((colon = strchr(buf, ':')) == NULL) {
-			warn("badly formed entry `%s'", buf);
-			continue;
-		}
-		entc = (int)(colon - buf);
-		if (entc == groupc && strncmp(group, buf, entc) == 0) {
-			if (newent == NULL) {
+			/*
+			 * The only valid entry with no column is the all-YP
+			 * line.
+			 */
+			if (strcmp(buf, "+\n") != 0) {
+				warnx("badly formed entry `%.*s'", cc - 1, buf);
 				continue;
-			} else {
-				cc = strlcpy(buf, newent, sizeof(buf));
-				if (cc >= sizeof(buf)) {
-					warnx("group `%s' entry too long", newent);
-					return (0);
+			}
+		} else {
+			entc = (int)(colon - buf);
+			if (entc == groupc && strncmp(group, buf, entc) == 0) {
+				if (newent == NULL) {
+					continue;
+				} else {
+					cc = strlcpy(buf, newent, sizeof(buf));
+					if (cc >= sizeof(buf)) {
+						warnx("group `%s' entry too long",
+						    newent);
+						return (0);
+					}
 				}
 			}
 		}
@@ -533,7 +541,7 @@ append_group(char *user, int ngroups, const char **groups)
 		if (cc > 0 && buf[cc - 1] != '\n' && !feof(from)) {
 			while (fgetc(from) != '\n' && !feof(from))
 				cc++;
-			warn("%s: line `%s' too long (%d bytes), skipping",
+			warnx("%s: line `%s' too long (%d bytes), skipping",
 			    _PATH_GROUP, buf, cc);
 			continue;
 		}
@@ -916,7 +924,7 @@ scantime(time_t *tp, char *s)
 			*tp = mktime(&tm);
 		} else if (strptime(s, "%B %d %Y", &tm) != NULL) {
 			*tp = mktime(&tm);
-		} else if (isdigit((unsigned char) s[0]) != NULL) {
+		} else if (isdigit((unsigned char) s[0]) != 0) {
 			*tp = atoi(s);
 		} else {
 			return 0;
@@ -1017,7 +1025,7 @@ adduser(char *login_name, user_t *up)
 		 * Look for a free UID in the command line ranges (if any).
 		 * These start after the ranges specified in the config file.
 		 */
-		for (i = up->u_defrc; got_id == 0 && i < up->u_rc ; i++) { 
+		for (i = up->u_defrc; got_id == 0 && i < up->u_rc ; i++) {
 			got_id = getnextuid(sync_uid_gid, &up->u_uid,
 			    up->u_rv[i].r_from, up->u_rv[i].r_to);
 	 	}
@@ -1027,7 +1035,7 @@ adduser(char *login_name, user_t *up)
 		 * be at least one default).
 		 */
 		if (got_id == 0) {
-			for (i = 0; got_id == 0 && i < up->u_defrc; i++) { 
+			for (i = 0; got_id == 0 && i < up->u_defrc; i++) {
 				got_id = getnextuid(sync_uid_gid, &up->u_uid,
 				    up->u_rv[i].r_from, up->u_rv[i].r_to);
 			}
@@ -1245,7 +1253,7 @@ rm_user_from_groups(char *login_name)
 		if (cc > 0 && buf[cc - 1] != '\n' && !feof(from)) {
 			while (fgetc(from) != '\n' && !feof(from))
 				cc++;
-			warn("%s: line `%s' too long (%d bytes), skipping",
+			warnx("%s: line `%s' too long (%d bytes), skipping",
 			    _PATH_GROUP, buf, cc);
 			continue;
 		}
@@ -1320,7 +1328,7 @@ is_local(char *name, const char *file)
 		if (cc > 0 && buf[cc - 1] != '\n' && !feof(fp)) {
 			while (fgetc(fp) != '\n' && !feof(fp))
 				cc++;
-			warn("%s: line `%s' too long (%d bytes), skipping",
+			warnx("%s: line `%s' too long (%d bytes), skipping",
 			    file, buf, cc);
 			continue;
 		}
@@ -1549,10 +1557,10 @@ moduser(char *login_name, char *newlogin, user_t *up)
 	if (up == NULL) {
 		syslog(LOG_INFO, "user removed: name=%s", login_name);
 	} else if (strcmp(login_name, newlogin) == 0) {
-		syslog(LOG_INFO, "user information modified: name=%s, uid=%d, gid=%d, home=%s, shell=%s", 
+		syslog(LOG_INFO, "user information modified: name=%s, uid=%d, gid=%d, home=%s, shell=%s",
 			login_name, pwp->pw_uid, pwp->pw_gid, pwp->pw_dir, pwp->pw_shell);
 	} else {
-		syslog(LOG_INFO, "user information modified: name=%s, new name=%s, uid=%d, gid=%d, home=%s, shell=%s", 
+		syslog(LOG_INFO, "user information modified: name=%s, new name=%s, uid=%d, gid=%d, home=%s, shell=%s",
 			login_name, newlogin, pwp->pw_uid, pwp->pw_gid, pwp->pw_dir, pwp->pw_shell);
 	}
 	return 1;
@@ -1613,9 +1621,9 @@ usermgmt_usage(const char *prog)
 		    "               [-s shell] [-u uid] user\n", prog);
 	} else if (strcmp(prog, "usermod") == 0) {
 		(void) fprintf(stderr, "usage: %s [-mov] "
-		    "[-G secondary-group[,group,...]] [-c comment]\n"
-		    "               [-d home-directory] [-e expiry-time] "
-		    "[-f inactive-time]\n"
+		    "[-c comment] [-d home-directory] [-e expiry-time]\n"
+		    "               [-f inactive-time] "
+		    "[-G secondary-group[,group,...]]\n"
 		    "               [-g gid | name | =uid] [-L login-class] "
 		    "[-l new-login]\n"
 		    "               [-p password] [-s shell] [-u uid] user\n",

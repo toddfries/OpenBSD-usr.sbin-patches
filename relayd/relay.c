@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.107 2008/09/29 15:50:56 reyk Exp $	*/
+/*	$OpenBSD: relay.c,v 1.138 2011/05/20 09:43:53 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -24,7 +24,6 @@
 #include <sys/un.h>
 #include <sys/tree.h>
 #include <sys/hash.h>
-#include <sys/resource.h>
 
 #include <net/if.h>
 #include <netinet/in_systm.h>
@@ -48,36 +47,37 @@
 
 #include "relayd.h"
 
-void		 relay_sig_handler(int sig, short, void *);
 void		 relay_statistics(int, short, void *);
-void		 relay_dispatch_pfe(int, short, void *);
-void		 relay_dispatch_parent(int, short, void *);
+int		 relay_dispatch_parent(int, struct privsep_proc *,
+		    struct imsg *);
+int		 relay_dispatch_pfe(int, struct privsep_proc *,
+		    struct imsg *);
 void		 relay_shutdown(void);
 
-void		 relay_privinit(void);
 void		 relay_nodedebug(const char *, struct protonode *);
 void		 relay_protodebug(struct relay *);
-void		 relay_init(void);
+void		 relay_init(struct privsep *, struct privsep_proc *p, void *);
 void		 relay_launch(void);
 int		 relay_socket(struct sockaddr_storage *, in_port_t,
-		    struct protocol *, int);
+		    struct protocol *, int, int);
 int		 relay_socket_listen(struct sockaddr_storage *, in_port_t,
 		    struct protocol *);
 int		 relay_socket_connect(struct sockaddr_storage *, in_port_t,
 		    struct protocol *, int);
 
 void		 relay_accept(int, short, void *);
-void		 relay_input(struct session *);
+void		 relay_input(struct rsession *);
 
-int		 relay_connect(struct session *);
+int		 relay_connect(struct rsession *);
 void		 relay_connected(int, short, void *);
-void		 relay_bindanyreq(struct session *, in_port_t, int);
+void		 relay_bindanyreq(struct rsession *, in_port_t, int);
 void		 relay_bindany(int, short, void *);
 
 u_int32_t	 relay_hash_addr(struct sockaddr_storage *, u_int32_t);
 
 void		 relay_write(struct bufferevent *, void *);
 void		 relay_read(struct bufferevent *, void *);
+int		 relay_splicelen(struct ctl_relay_event *);
 void		 relay_error(struct bufferevent *, short, void *);
 void		 relay_dump(struct ctl_relay_event *, const void *, size_t);
 
@@ -86,7 +86,7 @@ int		 relay_resolve(struct ctl_relay_event *,
 int		 relay_handle_http(struct ctl_relay_event *,
 		    struct protonode *, struct protonode *,
 		    struct protonode *, int);
-int		 relay_lognode(struct session *,
+int		 relay_lognode(struct rsession *,
 		    struct protonode *, struct protonode *, char *, size_t);
 void		 relay_read_http(struct bufferevent *, void *);
 static int	_relay_lookup_url(struct ctl_relay_event *, char *, char *,
@@ -99,12 +99,15 @@ void		 relay_read_httpcontent(struct bufferevent *, void *);
 void		 relay_read_httpchunks(struct bufferevent *, void *);
 char		*relay_expand_http(struct ctl_relay_event *, char *,
 		    char *, size_t);
-void		 relay_close_http(struct session *, u_int, const char *,
+void		 relay_close_http(struct rsession *, u_int, const char *,
 		    u_int16_t);
+void		 relay_http_request_close(struct ctl_relay_event *);
 
 SSL_CTX		*relay_ssl_ctx_create(struct relay *);
-void		 relay_ssl_transaction(struct session *);
+void		 relay_ssl_transaction(struct rsession *,
+		    struct ctl_relay_event *);
 void		 relay_ssl_accept(int, short, void *);
+void		 relay_ssl_connect(int, short, void *);
 void		 relay_ssl_connected(struct ctl_relay_event *);
 void		 relay_ssl_readcb(int, short, void *);
 void		 relay_ssl_writecb(int, short, void *);
@@ -131,148 +134,25 @@ volatile sig_atomic_t relay_sessions;
 objid_t relay_conid;
 
 static struct relayd		*env = NULL;
-struct imsgbuf			*ibuf_pfe;
-struct imsgbuf			*ibuf_main;
 int				 proc_id;
 
-void
-relay_sig_handler(int sig, short event, void *arg)
-{
-	switch (sig) {
-	case SIGTERM:
-	case SIGINT:
-		(void)event_loopexit(NULL);
-	}
-}
+static struct privsep_proc procs[] = {
+	{ "parent",	PROC_PARENT,	relay_dispatch_parent },
+	{ "pfe",	PROC_PFE,	relay_dispatch_pfe },
+};
 
 pid_t
-relay(struct relayd *x_env, int pipe_parent2pfe[2], int pipe_parent2hce[2],
-    int pipe_parent2relay[RELAY_MAXPROC][2], int pipe_pfe2hce[2],
-    int pipe_pfe2relay[RELAY_MAXPROC][2])
+relay(struct privsep *ps, struct privsep_proc *p)
 {
-	pid_t		 pid;
-	struct passwd	*pw;
-	struct event	 ev_sigint;
-	struct event	 ev_sigterm;
-	int		 i;
-
-	switch (pid = fork()) {
-	case -1:
-		fatal("relay: cannot fork");
-	case 0:
-		break;
-	default:
-		return (pid);
-	}
-
-	env = x_env;
-	purge_config(env, PURGE_RDRS);
-
-	/* Need root privileges for relay initialization */
-	relay_privinit();
-
-	if ((pw = getpwnam(RELAYD_USER)) == NULL)
-		fatal("relay: getpwnam");
-
-#ifndef DEBUG
-	if (chroot(pw->pw_dir) == -1)
-		fatal("relay: chroot");
-	if (chdir("/") == -1)
-		fatal("relay: chdir(\"/\")");
-
-#else
-#warning disabling privilege revocation and chroot in DEBUG mode
-#endif
-
-	setproctitle("socket relay engine");
-	relayd_process = PROC_RELAY;
-
-#ifndef DEBUG
-	if (setgroups(1, &pw->pw_gid) ||
-	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
-		fatal("relay: can't drop privileges");
-#endif
-
-	/* Fork child handlers */
-	for (i = 1; i < env->sc_prefork_relay; i++) {
-		if (fork() == 0) {
-			proc_id = i;
-			break;
-		}
-	}
-
-	event_init();
-
-	/* Per-child initialization */
-	relay_init();
-
-	signal_set(&ev_sigint, SIGINT, relay_sig_handler, NULL);
-	signal_set(&ev_sigterm, SIGTERM, relay_sig_handler, NULL);
-	signal_add(&ev_sigint, NULL);
-	signal_add(&ev_sigterm, NULL);
-	signal(SIGHUP, SIG_IGN);
-	signal(SIGPIPE, SIG_IGN);
-
-	/* setup pipes */
-	close(pipe_pfe2hce[0]);
-	close(pipe_pfe2hce[1]);
-	close(pipe_parent2hce[0]);
-	close(pipe_parent2hce[1]);
-	close(pipe_parent2pfe[0]);
-	close(pipe_parent2pfe[1]);
-	for (i = 0; i < env->sc_prefork_relay; i++) {
-		if (i == proc_id)
-			continue;
-		close(pipe_parent2relay[i][0]);
-		close(pipe_parent2relay[i][1]);
-		close(pipe_pfe2relay[i][0]);
-		close(pipe_pfe2relay[i][1]);
-	}
-	close(pipe_parent2relay[proc_id][1]);
-	close(pipe_pfe2relay[proc_id][1]);
-
-	if ((ibuf_pfe = calloc(1, sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = calloc(1, sizeof(struct imsgbuf))) == NULL)
-		fatal("relay");
-	imsg_init(ibuf_main, pipe_parent2relay[proc_id][0],
-	    relay_dispatch_parent);
-	imsg_init(ibuf_pfe, pipe_pfe2relay[proc_id][0], relay_dispatch_pfe);
-
-	ibuf_pfe->events = EV_READ;
-	event_set(&ibuf_pfe->ev, ibuf_pfe->fd, ibuf_pfe->events,
-	    ibuf_pfe->handler, ibuf_pfe);
-	event_add(&ibuf_pfe->ev, NULL);
-
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
-
-	relay_launch();
-
-	event_dispatch();
-	relay_shutdown();
-
-	return (0);
+	env = ps->ps_env;
+	return (proc_run(ps, p, procs, nitems(procs), relay_init, NULL));
 }
 
 void
 relay_shutdown(void)
 {
-	struct session	*con;
-
-	struct relay	*rlay;
-	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		if (rlay->rl_conf.flags & F_DISABLE)
-			continue;
-		close(rlay->rl_s);
-		while ((con = SPLAY_ROOT(&rlay->rl_sessions)) != NULL)
-			relay_close(con, "shutdown");
-	}
+	config_purge(env, CONFIG_ALL);
 	usleep(200);	/* XXX relay needs to shutdown last */
-	log_info("socket relay engine exiting");
-	_exit(0);
 }
 
 void
@@ -356,8 +236,17 @@ relay_protodebug(struct relay *rlay)
 	const char		*name;
 	int			 i;
 
-	fprintf(stderr, "protocol %d: name %s\n", proto->id, proto->name);
-	fprintf(stderr, "\tflags: 0x%04x\n", proto->flags);
+	fprintf(stderr, "protocol %d: name %s\n",
+	    proto->id, proto->name);
+	fprintf(stderr, "\tflags: %s, relay flags: %s\n",
+	    printb_flags(proto->flags, F_BITS),
+	    printb_flags(rlay->rl_conf.flags, F_BITS));
+	if (proto->tcpflags)
+		fprintf(stderr, "\ttcp flags: %s\n",
+		    printb_flags(proto->tcpflags, TCPFLAG_BITS));
+	if ((rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)) && proto->sslflags)
+		fprintf(stderr, "\tssl flags: %s\n",
+		    printb_flags(proto->sslflags, SSLFLAG_BITS));
 	if (proto->cache != -1)
 		fprintf(stderr, "\tssl session cache: %d\n", proto->cache);
 	fprintf(stderr, "\ttype: ");
@@ -402,65 +291,132 @@ relay_protodebug(struct relay *rlay)
 	}
 }
 
-void
-relay_privinit(void)
+int
+relay_privinit(struct relay *rlay)
 {
-	struct relay	*rlay;
 	extern int	 debug;
 
-	if (env->sc_flags & F_SSL)
-		ssl_init(env);
+	log_debug("%s: adding relay %s", __func__, rlay->rl_conf.name);
 
-	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		log_debug("relay_privinit: adding relay %s",
-		    rlay->rl_conf.name);
+	if (debug)
+		relay_protodebug(rlay);
 
-		if (debug)
-			relay_protodebug(rlay);
-
-		switch (rlay->rl_proto->type) {
-		case RELAY_PROTO_DNS:
-			relay_udp_privinit(env, rlay);
-			break;
-		case RELAY_PROTO_TCP:
-		case RELAY_PROTO_HTTP:
-			/* Use defaults */
-			break;
-		}
-
-		if (rlay->rl_conf.flags & F_UDP)
-			rlay->rl_s = relay_udp_bind(&rlay->rl_conf.ss,
-			    rlay->rl_conf.port, rlay->rl_proto);
-		else
-			rlay->rl_s = relay_socket_listen(&rlay->rl_conf.ss,
-			    rlay->rl_conf.port, rlay->rl_proto);
-		if (rlay->rl_s == -1)
-			fatal("relay_privinit: failed to listen");
+	switch (rlay->rl_proto->type) {
+	case RELAY_PROTO_DNS:
+		relay_udp_privinit(env, rlay);
+		break;
+	case RELAY_PROTO_TCP:
+	case RELAY_PROTO_HTTP:
+		/* Use defaults */
+		break;
 	}
+
+	if (rlay->rl_conf.flags & F_UDP)
+		rlay->rl_s = relay_udp_bind(&rlay->rl_conf.ss,
+		    rlay->rl_conf.port, rlay->rl_proto);
+	else
+		rlay->rl_s = relay_socket_listen(&rlay->rl_conf.ss,
+		    rlay->rl_conf.port, rlay->rl_proto);
+	if (rlay->rl_s == -1)
+		return (-1);
+
+	return (0);
 }
 
 void
-relay_init(void)
+relay_init(struct privsep *ps, struct privsep_proc *p, void *arg)
 {
-	struct relay	*rlay;
-	struct host	*host;
 	struct timeval	 tv;
-	struct rlimit	 rl;
 
-	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("relay_init: failed to get resource limit");
-	log_debug("relay_init: max open files %d", rl.rlim_max);
+	if (config_init(ps->ps_env) == -1)
+		fatal("failed to initialize configuration");
+
+	/* We use a custom shutdown callback */
+	p->p_shutdown = relay_shutdown;
+
+	/* Unlimited file descriptors (use system limits) */
+	socket_rlimit(-1);
+
+	/* Schedule statistics timer */
+	evtimer_set(&env->sc_statev, relay_statistics, NULL);
+	bcopy(&env->sc_statinterval, &tv, sizeof(tv));
+	evtimer_add(&env->sc_statev, &tv);
+}
+
+void
+relay_statistics(int fd, short events, void *arg)
+{
+	struct relay		*rlay;
+	struct ctl_stats	 crs, *cur;
+	struct timeval		 tv, tv_now;
+	int			 resethour = 0, resetday = 0;
+	struct rsession		*con, *next_con;
 
 	/*
-	 * Allow the maximum number of open file descriptors for this
-	 * login class (which should be the class "daemon" by default).
+	 * This is a hack to calculate some average statistics.
+	 * It doesn't try to be very accurate, but could be improved...
 	 */
-	rl.rlim_cur = rl.rlim_max;
-	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("relay_init: failed to set resource limit");
+
+	timerclear(&tv);
+	if (gettimeofday(&tv_now, NULL) == -1)
+		fatal("relay_init: gettimeofday");
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		if ((rlay->rl_conf.flags & F_SSL) &&
+		bzero(&crs, sizeof(crs));
+		resethour = resetday = 0;
+
+		cur = &rlay->rl_stats[proc_id];
+		cur->cnt += cur->last;
+		cur->tick++;
+		cur->avg = (cur->last + cur->avg) / 2;
+		cur->last_hour += cur->last;
+		if ((cur->tick % (3600 / env->sc_statinterval.tv_sec)) == 0) {
+			cur->avg_hour = (cur->last_hour + cur->avg_hour) / 2;
+			resethour++;
+		}
+		cur->last_day += cur->last;
+		if ((cur->tick % (86400 / env->sc_statinterval.tv_sec)) == 0) {
+			cur->avg_day = (cur->last_day + cur->avg_day) / 2;
+			resethour++;
+		}
+		bcopy(cur, &crs, sizeof(crs));
+
+		cur->last = 0;
+		if (resethour)
+			cur->last_hour = 0;
+		if (resetday)
+			cur->last_day = 0;
+
+		crs.id = rlay->rl_conf.id;
+		crs.proc = proc_id;
+		proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_STATISTICS, -1,
+		    &crs, sizeof(crs));
+
+		for (con = SPLAY_ROOT(&rlay->rl_sessions);
+		    con != NULL; con = next_con) {
+			next_con = SPLAY_NEXT(session_tree,
+			    &rlay->rl_sessions, con);
+			timersub(&tv_now, &con->se_tv_last, &tv);
+			if (timercmp(&tv, &rlay->rl_conf.timeout, >=))
+				relay_close(con, "hard timeout");
+		}
+	}
+
+	/* Schedule statistics timer */
+	evtimer_set(&env->sc_statev, relay_statistics, NULL);
+	bcopy(&env->sc_statinterval, &tv, sizeof(tv));
+	evtimer_add(&env->sc_statev, &tv);
+}
+
+void
+relay_launch(void)
+{
+	void		(*callback)(int, short, void *);
+	struct relay	*rlay;
+	struct host	*host;
+
+	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
+		if ((rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)) &&
 		    (rlay->rl_ssl_ctx = relay_ssl_ctx_create(rlay)) == NULL)
 			fatal("relay_init: failed to create SSL context");
 
@@ -500,87 +456,9 @@ relay_init(void)
 			/* Use defaults */
 			break;
 		}
-	}
 
-	/* Schedule statistics timer */
-	evtimer_set(&env->sc_statev, relay_statistics, NULL);
-	bcopy(&env->sc_statinterval, &tv, sizeof(tv));
-	evtimer_add(&env->sc_statev, &tv);
-}
-
-void
-relay_statistics(int fd, short events, void *arg)
-{
-	struct relay		*rlay;
-	struct ctl_stats	 crs, *cur;
-	struct timeval		 tv, tv_now;
-	int			 resethour = 0, resetday = 0;
-	struct session		*con, *next_con;
-
-	/*
-	 * This is a hack to calculate some average statistics.
-	 * It doesn't try to be very accurate, but could be improved...
-	 */
-
-	timerclear(&tv);
-	if (gettimeofday(&tv_now, NULL) == -1)
-		fatal("relay_init: gettimeofday");
-
-	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		bzero(&crs, sizeof(crs));
-		resethour = resetday = 0;
-
-		cur = &rlay->rl_stats[proc_id];
-		cur->cnt += cur->last;
-		cur->tick++;
-		cur->avg = (cur->last + cur->avg) / 2;
-		cur->last_hour += cur->last;
-		if ((cur->tick % (3600 / env->sc_statinterval.tv_sec)) == 0) {
-			cur->avg_hour = (cur->last_hour + cur->avg_hour) / 2;
-			resethour++;
-		}
-		cur->last_day += cur->last;
-		if ((cur->tick % (86400 / env->sc_statinterval.tv_sec)) == 0) {
-			cur->avg_day = (cur->last_day + cur->avg_day) / 2;
-			resethour++;
-		}
-		bcopy(cur, &crs, sizeof(crs));
-
-		cur->last = 0;
-		if (resethour)
-			cur->last_hour = 0;
-		if (resetday)
-			cur->last_day = 0;
-
-		crs.id = rlay->rl_conf.id;
-		crs.proc = proc_id;
-		imsg_compose(ibuf_pfe, IMSG_STATISTICS, 0, 0, -1,
-		    &crs, sizeof(crs));
-
-		for (con = SPLAY_ROOT(&rlay->rl_sessions);
-		    con != NULL; con = next_con) {
-			next_con = SPLAY_NEXT(session_tree,
-			    &rlay->rl_sessions, con);
-			timersub(&tv_now, &con->se_tv_last, &tv);
-			if (timercmp(&tv, &rlay->rl_conf.timeout, >=))
-				relay_close(con, "hard timeout");
-		}
-	}
-
-	/* Schedule statistics timer */
-	evtimer_set(&env->sc_statev, relay_statistics, NULL);
-	bcopy(&env->sc_statinterval, &tv, sizeof(tv));
-	evtimer_add(&env->sc_statev, &tv);
-}
-
-void
-relay_launch(void)
-{
-	struct relay	*rlay;
-	void		(*callback)(int, short, void *);
-
-	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
-		log_debug("relay_launch: running relay %s", rlay->rl_conf.name);
+		log_debug("%s: running relay %s", __func__,
+		    rlay->rl_conf.name);
 
 		rlay->rl_up = HOST_UP;
 
@@ -616,9 +494,25 @@ relay_socket_af(struct sockaddr_storage *ss, in_port_t port)
 	return (0);
 }
 
+in_port_t
+relay_socket_getport(struct sockaddr_storage *ss)
+{
+	switch (ss->ss_family) {
+	case AF_INET:
+		return (((struct sockaddr_in *)ss)->sin_port);
+	case AF_INET6:
+		return (((struct sockaddr_in6 *)ss)->sin6_port);
+	default:
+		return (0);
+	}
+
+	/* NOTREACHED */
+	return (0);
+}
+
 int
 relay_socket(struct sockaddr_storage *ss, in_port_t port,
-    struct protocol *proto, int fd)
+    struct protocol *proto, int fd, int reuseport)
 {
 	int s = -1, val;
 	struct linger lng;
@@ -636,9 +530,12 @@ relay_socket(struct sockaddr_storage *ss, in_port_t port,
 	bzero(&lng, sizeof(lng));
 	if (setsockopt(s, SOL_SOCKET, SO_LINGER, &lng, sizeof(lng)) == -1)
 		goto bad;
-	val = 1;
-	if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(int)) == -1)
-		goto bad;
+	if (reuseport) {
+		val = 1;
+		if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &val,
+			sizeof(int)) == -1)
+			goto bad;
+	}
 	if (fcntl(s, F_SETFL, O_NONBLOCK) == -1)
 		goto bad;
 	if (proto->tcpflags & TCPFLAG_BUFSIZ) {
@@ -704,7 +601,7 @@ relay_socket_connect(struct sockaddr_storage *ss, in_port_t port,
 {
 	int	s;
 
-	if ((s = relay_socket(ss, port, proto, fd)) == -1)
+	if ((s = relay_socket(ss, port, proto, fd, 0)) == -1)
 		return (-1);
 
 	if (connect(s, (struct sockaddr *)ss, ss->ss_len) == -1) {
@@ -725,7 +622,7 @@ relay_socket_listen(struct sockaddr_storage *ss, in_port_t port,
 {
 	int s;
 
-	if ((s = relay_socket(ss, port, proto, -1)) == -1)
+	if ((s = relay_socket(ss, port, proto, -1, 1)) == -1)
 		return (-1);
 
 	if (bind(s, (struct sockaddr *)ss, ss->ss_len) == -1)
@@ -743,19 +640,25 @@ relay_socket_listen(struct sockaddr_storage *ss, in_port_t port,
 void
 relay_connected(int fd, short sig, void *arg)
 {
-	struct session		*con = (struct session *)arg;
+	struct rsession		*con = (struct rsession *)arg;
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct protocol		*proto = rlay->rl_proto;
 	evbuffercb		 outrd = relay_read;
 	evbuffercb		 outwr = relay_write;
 	struct bufferevent	*bev;
+	struct ctl_relay_event	*out = &con->se_out;
 
 	if (sig == EV_TIMEOUT) {
 		relay_close_http(con, 504, "connect timeout", 0);
 		return;
 	}
 
-	DPRINTF("relay_connected: session %d: %ssuccessful",
+	if ((rlay->rl_conf.flags & F_SSLCLIENT) && (out->ssl == NULL)) {
+		relay_ssl_transaction(con, out);
+		return;
+	}
+
+	DPRINTF("%s: session %d: %ssuccessful", __func__,
 	    con->se_id, rlay->rl_proto->lateconnect ? "late connect " : "");
 
 	switch (rlay->rl_proto->type) {
@@ -772,7 +675,23 @@ relay_connected(int fd, short sig, void *arg)
 		}
 		break;
 	case RELAY_PROTO_TCP:
-		/* Use defaults */
+		if ((proto->tcpflags & TCPFLAG_NSPLICE) ||
+		    (rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)))
+			break;
+		if (setsockopt(con->se_in.s, SOL_SOCKET, SO_SPLICE,
+		    &con->se_out.s, sizeof(int)) == -1) {
+			log_debug("%s: session %d: splice forward failed: %s",
+			    __func__, con->se_id, strerror(errno));
+			return;
+		}
+		con->se_in.splicelen = 0;
+		if (setsockopt(con->se_out.s, SOL_SOCKET, SO_SPLICE,
+		    &con->se_in.s, sizeof(int)) == -1) {
+			log_debug("%s: session %d: splice backward failed: %s",
+			    __func__, con->se_id, strerror(errno));
+			return;
+		}
+		con->se_out.splicelen = 0;
 		break;
 	default:
 		fatalx("relay_input: unknown protocol");
@@ -791,15 +710,19 @@ relay_connected(int fd, short sig, void *arg)
 	bev->output = con->se_out.output;
 	if (bev->output == NULL)
 		fatal("relay_connected: invalid output buffer");
-
 	con->se_out.bev = bev;
+
+	/* Initialize the SSL wrapper */
+	if ((rlay->rl_conf.flags & F_SSLCLIENT) && (out->ssl != NULL))
+		relay_ssl_connected(out);
+
 	bufferevent_settimeout(bev,
 	    rlay->rl_conf.timeout.tv_sec, rlay->rl_conf.timeout.tv_sec);
 	bufferevent_enable(bev, EV_READ|EV_WRITE);
 }
 
 void
-relay_input(struct session *con)
+relay_input(struct rsession *con)
 {
 	struct relay	*rlay = (struct relay *)con->se_relay;
 	struct protocol *proto = rlay->rl_proto;
@@ -849,7 +772,7 @@ void
 relay_write(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	if (gettimeofday(&con->se_tv_last, NULL) == -1)
 		con->se_done = 1;
 	if (con->se_done)
@@ -878,7 +801,7 @@ void
 relay_read(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 
 	if (gettimeofday(&con->se_tv_last, NULL) == -1)
@@ -889,7 +812,8 @@ relay_read(struct bufferevent *bev, void *arg)
 		goto fail;
 	if (con->se_done)
 		goto done;
-	bufferevent_enable(con->se_in.bev, EV_READ);
+	if (cre->dst->bev)
+		bufferevent_enable(cre->dst->bev, EV_READ);
 	return;
  done:
 	relay_close(con, "last read (done)");
@@ -902,8 +826,8 @@ int
 relay_resolve(struct ctl_relay_event *cre,
     struct protonode *proot, struct protonode *pn)
 {
-	struct session		*con = (struct session *)cre->con;
-	char			 buf[READ_BUF_SIZE], *ptr;
+	struct rsession		*con = cre->con;
+	char			 buf[IBUF_READ_SIZE], *ptr;
 	int			 id;
 
 	if (pn->mark && (pn->mark != con->se_mark))
@@ -947,17 +871,14 @@ relay_resolve(struct ctl_relay_event *cre,
 			    "failed to modify header", 0);
 			return (-1);
 		}
-		DPRINTF("relay_resolve: add '%s: %s'",
-		    pn->key, ptr);
+		DPRINTF("%s: add '%s: %s'", __func__, pn->key, ptr);
 		break;
 	case NODE_ACTION_EXPECT:
-		DPRINTF("relay_resolve: missing '%s: %s'",
-		    pn->key, pn->value);
+		DPRINTF("%s: missing '%s: %s'", __func__, pn->key, pn->value);
 		relay_close_http(con, 403, "incomplete request", pn->label);
 		return (-1);
 	case NODE_ACTION_FILTER:
-		DPRINTF("relay_resolve: filtered '%s: %s'",
-		    pn->key, pn->value);
+		DPRINTF("%s: filtered '%s: %s'", __func__, pn->key, pn->value);
 		relay_close_http(con, 403, "rejecting request", pn->label);
 		return (-1);
 	default:
@@ -969,7 +890,7 @@ relay_resolve(struct ctl_relay_event *cre,
 char *
 relay_expand_http(struct ctl_relay_event *cre, char *val, char *buf, size_t len)
 {
-	struct session	*con = (struct session *)cre->con;
+	struct rsession	*con = cre->con;
 	struct relay	*rlay = (struct relay *)con->se_relay;
 	char		 ibuf[128];
 
@@ -1023,7 +944,7 @@ relay_expand_http(struct ctl_relay_event *cre, char *val, char *buf, size_t len)
 }
 
 int
-relay_lognode(struct session *con, struct protonode *pn, struct protonode *pk,
+relay_lognode(struct rsession *con, struct protonode *pn, struct protonode *pk,
     char *buf, size_t len)
 {
 	const char		*label = NULL;
@@ -1046,8 +967,8 @@ int
 relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
     struct protonode *pn, struct protonode *pk, int header)
 {
-	struct session		*con = (struct session *)cre->con;
-	char			 buf[READ_BUF_SIZE], *ptr;
+	struct rsession		*con = cre->con;
+	char			 buf[IBUF_READ_SIZE], *ptr;
 	int			 ret = PN_DROP, mark = 0;
 	struct protonode	*next;
 
@@ -1083,14 +1004,14 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 		    relay_bufferevent_print(cre->dst, "\r\n") == -1)
 			goto fail;
 		cre->nodes[pn->id] = 1;
-		DPRINTF("relay_handle_http: append '%s: %s, %s'",
+		DPRINTF("%s: append '%s: %s, %s'", __func__,
 		    pk->key, pk->value, ptr);
 		break;
 	case NODE_ACTION_CHANGE:
 	case NODE_ACTION_REMOVE:
 		if (!header)
 			return (PN_PASS);
-		DPRINTF("relay_handle_http: change/remove '%s: %s'",
+		DPRINTF("%s: change/remove '%s: %s'", __func__,
 		    pk->key, pk->value);
 		break;
 	case NODE_ACTION_EXPECT:
@@ -1104,7 +1025,7 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 		}
 		/* FALLTHROUGH */
 	case NODE_ACTION_FILTER:
-		DPRINTF("relay_handle_http: %s '%s: %s'",
+		DPRINTF("%s: %s '%s: %s'", __func__,
 		    (pn->action == NODE_ACTION_EXPECT) ? "expect" : "filter",
 		    pn->key, pn->value);
 
@@ -1129,18 +1050,18 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 			cre->nodes[proot->id]++;
 		break;
 	case NODE_ACTION_HASH:
-		DPRINTF("relay_handle_http: hash '%s: %s'",
+		DPRINTF("%s: hash '%s: %s'", __func__,
 		    pn->key, pk->value);
 		con->se_hashkey = hash32_str(pk->value, con->se_hashkey);
 		ret = PN_PASS;
 		break;
 	case NODE_ACTION_LOG:
-		DPRINTF("relay_handle_http: log '%s: %s'",
+		DPRINTF("%s: log '%s: %s'", __func__,
 		    pn->key, pk->value);
 		ret = PN_PASS;
 		break;
 	case NODE_ACTION_MARK:
-		DPRINTF("relay_handle_http: mark '%s: %s'",
+		DPRINTF("%s: mark '%s: %s'", __func__,
 		    pn->key, pk->value);
 		if (fnmatch(pn->value, pk->value, FNM_CASEFOLD) == 0)
 			con->se_mark = pn->mark;
@@ -1162,14 +1083,14 @@ void
 relay_read_httpcontent(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 	size_t			 size;
 
 	if (gettimeofday(&con->se_tv_last, NULL) == -1)
 		goto fail;
 	size = EVBUFFER_LENGTH(src);
-	DPRINTF("relay_read_httpcontent: size %d, to read %d",
+	DPRINTF("%s: size %d, to read %d", __func__,
 	    size, cre->toread);
 	if (!size)
 		return;
@@ -1178,7 +1099,7 @@ relay_read_httpcontent(struct bufferevent *bev, void *arg)
 	if (size >= cre->toread)
 		bev->readcb = relay_read_http;
 	cre->toread -= size;
-	DPRINTF("relay_read_httpcontent: done, size %d, to read %d",
+	DPRINTF("%s: done, size %d, to read %d", __func__,
 	    size, cre->toread);
 	if (con->se_done)
 		goto done;
@@ -1197,7 +1118,7 @@ void
 relay_read_httpchunks(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 	char			*line;
 	long			 lval;
@@ -1206,7 +1127,7 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 	if (gettimeofday(&con->se_tv_last, NULL) == -1)
 		goto fail;
 	size = EVBUFFER_LENGTH(src);
-	DPRINTF("relay_read_httpchunks: size %d, to read %d",
+	DPRINTF("%s: size %d, to read %d", __func__,
 	    size, cre->toread);
 	if (!size)
 		return;
@@ -1239,7 +1160,7 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 
 		/* Last chunk is 0 bytes followed by an empty newline */
 		if ((cre->toread = lval) == 0) {
-			DPRINTF("relay_read_httpchunks: last chunk");
+			DPRINTF("%s: last chunk", __func__);
 
 			line = evbuffer_readline(src);
 			if (line == NULL) {
@@ -1260,7 +1181,7 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 		if (relay_bufferevent_write_chunk(cre->dst, src, size) == -1)
 			goto fail;
 		cre->toread -= size;
-		DPRINTF("relay_read_httpchunks: done, size %d, to read %d",
+		DPRINTF("%s: done, size %d, to read %d", __func__,
 		    size, cre->toread);
 
 		if (cre->toread == 0) {
@@ -1289,10 +1210,33 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 }
 
 void
+relay_http_request_close(struct ctl_relay_event *cre)
+{
+	if (cre->path != NULL) {
+		free(cre->path);
+		cre->path = NULL;
+	}
+
+	cre->args = NULL;
+	cre->version = NULL;
+
+	if (cre->buf != NULL) {
+		free(cre->buf);
+		cre->buf = NULL;
+		cre->buflen = 0;
+	}
+
+	cre->line = 0;
+	cre->method = 0;
+	cre->done = 0;
+	cre->chunked = 0;
+}
+
+void
 relay_read_http(struct bufferevent *bev, void *arg)
 {
 	struct ctl_relay_event	*cre = (struct ctl_relay_event *)arg;
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct protocol		*proto = rlay->rl_proto;
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
@@ -1305,7 +1249,7 @@ relay_read_http(struct bufferevent *bev, void *arg)
 	if (gettimeofday(&con->se_tv_last, NULL) == -1)
 		goto fail;
 	size = EVBUFFER_LENGTH(src);
-	DPRINTF("relay_read_http: size %d, to read %d", size, cre->toread);
+	DPRINTF("%s: size %d, to read %d", __func__, size, cre->toread);
 	if (!size) {
 		if (cre->dir == RELAY_DIR_RESPONSE)
 			return;
@@ -1342,7 +1286,7 @@ relay_read_http(struct bufferevent *bev, void *arg)
 				return;
 			}
 
-			DPRINTF("relay_read_http: request '%s'", line);
+			DPRINTF("%s: request '%s'", __func__, line);
 			/* Append line to the output buffer */
 			if (relay_bufferevent_print(cre->dst, line) == -1 ||
 			    relay_bufferevent_print(cre->dst, "\r\n") == -1) {
@@ -1354,14 +1298,14 @@ relay_read_http(struct bufferevent *bev, void *arg)
 		}
 		if (*pk.value == ':') {
 			*pk.value++ = '\0';
-			pk.value++;
+			pk.value += strspn(pk.value, " \t\r\n");
 			header = 1;
 		} else {
 			*pk.value++ = '\0';
 			header = 0;
 		}
 
-		DPRINTF("relay_read_http: header '%s: %s'", pk.key, pk.value);
+		DPRINTF("%s: header '%s: %s'", __func__, pk.key, pk.value);
 
 		/*
 		 * Identify and handle specific HTTP request methods
@@ -1423,8 +1367,8 @@ relay_read_http(struct bufferevent *bev, void *arg)
 			pkv.type = NODE_TYPE_PATH;
 			pkv.value = cre->args == NULL ? "" : cre->args;
 
-			DPRINTF("relay_read_http: "
-			    "lookup path '%s: %s'", pkv.key, pkv.value);
+			DPRINTF("%s: lookup path '%s: %s'",
+			    __func__, pkv.key, pkv.value);
 
 			if ((proot = RB_FIND(proto_tree,
 			    cre->tree, &pkv)) == NULL)
@@ -1557,10 +1501,7 @@ relay_read_http(struct bufferevent *bev, void *arg)
 		if (relay_bufferevent_print(cre->dst, "\r\n") == -1)
 			goto fail;
 
-		cre->line = 0;
-		cre->method = 0;
-		cre->done = 0;
-		cre->chunked = 0;
+		relay_http_request_close(cre);
 
  done:
 		if (cre->dir == RELAY_DIR_REQUEST && !cre->toread &&
@@ -1593,7 +1534,7 @@ static int
 _relay_lookup_url(struct ctl_relay_event *cre, char *host, char *path,
     char *query, enum digest_type type)
 {
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct protonode	*proot, *pnv, pkv;
 	char			*val, *md = NULL;
 	int			 ret = PN_FAIL;
@@ -1606,7 +1547,7 @@ _relay_lookup_url(struct ctl_relay_event *cre, char *host, char *path,
 		return (PN_FAIL);
 	}
 
-	DPRINTF("_relay_lookup_url: %s", val);
+	DPRINTF("%s: %s", __func__, val);
 
 	switch (type) {
 	case DIGEST_SHA1:
@@ -1647,7 +1588,7 @@ int
 relay_lookup_url(struct ctl_relay_event *cre, const char *str,
     enum digest_type type)
 {
-	struct session	*con = (struct session *)cre->con;
+	struct rsession	*con = cre->con;
 	int		 i, j, dots;
 	char		*hi[RELAY_MAXLOOKUPLEVELS], *p, *pp, *c, ch;
 	char		 ph[MAXHOSTNAMELEN];
@@ -1662,7 +1603,7 @@ relay_lookup_url(struct ctl_relay_event *cre, const char *str,
 	 *     developers_guide.html#PerformingLookups
 	 */
 
-	DPRINTF("relay_lookup_url: host: '%s', path: '%s', query: '%s'",
+	DPRINTF("%s: host: '%s', path: '%s', query: '%s'", __func__,
 	    str, cre->path, cre->args == NULL ? "" : cre->args);
 
 	if (canonicalize_host(str, ph, sizeof(ph)) == NULL) {
@@ -1724,7 +1665,7 @@ relay_lookup_url(struct ctl_relay_event *cre, const char *str,
 int
 relay_lookup_query(struct ctl_relay_event *cre)
 {
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct protonode	*proot, *pnv, pkv;
 	char			*val, *ptr;
 	int			 ret;
@@ -1767,7 +1708,7 @@ relay_lookup_query(struct ctl_relay_event *cre)
 int
 relay_lookup_cookie(struct ctl_relay_event *cre, const char *str)
 {
-	struct session		*con = (struct session *)cre->con;
+	struct rsession		*con = cre->con;
 	struct protonode	*proot, *pnv, pkv;
 	char			*val, *ptr;
 	int			 ret;
@@ -1816,7 +1757,7 @@ relay_lookup_cookie(struct ctl_relay_event *cre, const char *str)
 }
 
 void
-relay_close_http(struct session *con, u_int code, const char *msg,
+relay_close_http(struct rsession *con, u_int code, const char *msg,
     u_int16_t labelid)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
@@ -1900,15 +1841,47 @@ relay_close_http(struct session *con, u_int code, const char *msg,
 	}
 }
 
+int
+relay_splicelen(struct ctl_relay_event *cre)
+{
+	struct rsession *con = cre->con;
+	off_t len;
+	socklen_t optlen;
+
+	optlen = sizeof(len);
+	if (getsockopt(cre->s, SOL_SOCKET, SO_SPLICE, &len, &optlen) == -1) {
+		relay_close(con, strerror(errno));
+		return (0);
+	}
+	if (len > cre->splicelen) {
+		cre->splicelen = len;
+		return (1);
+	}
+	return (0);
+}
+
 void
 relay_error(struct bufferevent *bev, short error, void *arg)
 {
 	struct ctl_relay_event *cre = (struct ctl_relay_event *)arg;
-	struct session *con = (struct session *)cre->con;
+	struct rsession *con = cre->con;
 	struct evbuffer *dst;
+	struct timeval tv, tv_now;
 
 	if (error & EVBUFFER_TIMEOUT) {
-		relay_close(con, "buffer event timeout");
+		if (gettimeofday(&tv_now, NULL) == -1) {
+			relay_close(con, strerror(errno));
+			return;
+		}
+		if (cre->splicelen >= 0 && relay_splicelen(cre))
+			con->se_tv_last = tv_now;
+		if (cre->dst->splicelen >= 0 && relay_splicelen(cre->dst))
+			con->se_tv_last = tv_now;
+		timersub(&tv_now, &con->se_tv_last, &tv);
+		if (timercmp(&tv, &con->se_relay->rl_conf.timeout, >=))
+			relay_close(con, "buffer event timeout");
+		else
+			bufferevent_enable(cre->bev, EV_READ);
 		return;
 	}
 	if (error & (EVBUFFER_READ|EVBUFFER_WRITE|EVBUFFER_EOF)) {
@@ -1932,7 +1905,7 @@ relay_accept(int fd, short sig, void *arg)
 {
 	struct relay *rlay = (struct relay *)arg;
 	struct protocol *proto = rlay->rl_proto;
-	struct session *con = NULL;
+	struct rsession *con = NULL;
 	struct ctl_natlook *cnl = NULL;
 	socklen_t slen;
 	struct timeval tv;
@@ -1950,8 +1923,7 @@ relay_accept(int fd, short sig, void *arg)
 	if (fcntl(s, F_SETFL, O_NONBLOCK) == -1)
 		goto err;
 
-	if ((con = (struct session *)
-	    calloc(1, sizeof(struct session))) == NULL)
+	if ((con = calloc(1, sizeof(*con))) == NULL)
 		goto err;
 
 	con->se_in.s = s;
@@ -1962,9 +1934,12 @@ relay_accept(int fd, short sig, void *arg)
 	con->se_out.dst = &con->se_in;
 	con->se_in.con = con;
 	con->se_out.con = con;
+	con->se_in.splicelen = -1;
+	con->se_out.splicelen = -1;
 	con->se_relay = rlay;
 	con->se_id = ++relay_conid;
 	con->se_relayid = rlay->rl_conf.id;
+	con->se_pid = getpid();
 	con->se_hashkey = rlay->rl_dstkey;
 	con->se_in.tree = &proto->request_tree;
 	con->se_out.tree = &proto->response_tree;
@@ -2006,15 +1981,27 @@ relay_accept(int fd, short sig, void *arg)
 		return;
 	}
 
-	if (rlay->rl_conf.flags & F_NATLOOK) {
+	if (rlay->rl_conf.flags & F_DIVERT) {
+		slen = sizeof(con->se_out.ss);
+		if (getsockname(s, (struct sockaddr *)&con->se_out.ss,
+		    &slen) == -1) {
+			relay_close(con, "peer lookup failed");
+			return;
+		}
+		con->se_out.port = relay_socket_getport(&con->se_out.ss);
+
+		/* Detect loop and fall back to the alternate forward target */
+		if (bcmp(&rlay->rl_conf.ss, &con->se_out.ss,
+		    sizeof(con->se_out.ss)) == 0 &&
+		    con->se_out.port == rlay->rl_conf.port)
+			con->se_out.ss.ss_family = AF_UNSPEC;
+	} else if (rlay->rl_conf.flags & F_NATLOOK) {
 		if ((cnl = (struct ctl_natlook *)
 		    calloc(1, sizeof(struct ctl_natlook))) == NULL) {
 			relay_close(con, "failed to allocate nat lookup");
 			return;
 		}
-	}
 
-	if (rlay->rl_conf.flags & F_NATLOOK && cnl != NULL) {
 		con->se_cnl = cnl;
 		bzero(cnl, sizeof(*cnl));
 		cnl->in = -1;
@@ -2030,7 +2017,7 @@ relay_accept(int fd, short sig, void *arg)
 			return;
 		}
 
-		imsg_compose(ibuf_pfe, IMSG_NATLOOK, 0, 0, -1, cnl,
+		proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_NATLOOK, -1, cnl,
 		    sizeof(*cnl));
 
 		/* Schedule timeout */
@@ -2070,7 +2057,7 @@ relay_hash_addr(struct sockaddr_storage *ss, u_int32_t p)
 }
 
 int
-relay_from_table(struct session *con)
+relay_from_table(struct rsession *con)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct host		*host;
@@ -2078,9 +2065,11 @@ relay_from_table(struct session *con)
 	u_int32_t		 p = con->se_hashkey;
 	int			 idx = 0;
 
-	if (table->conf.check && !table->up) {
-		log_debug("relay_from_table: no active hosts");
+	if (table->conf.check && !table->up && !rlay->rl_backuptable->up) {
+		log_debug("%s: no active hosts", __func__);
 		return (-1);
+	} else if (!table->up && rlay->rl_backuptable->up) {
+		table = rlay->rl_backuptable;
 	}
 
 	switch (rlay->rl_conf.dstmode) {
@@ -2100,16 +2089,16 @@ relay_from_table(struct session *con)
 			return (-1);
 	}
 	host = rlay->rl_dsthost[idx];
-	DPRINTF("relay_from_table: host %s, p 0x%08x, idx %d",
+	DPRINTF("%s: host %s, p 0x%08x, idx %d", __func__,
 	    host->conf.name, p, idx);
 	while (host != NULL) {
-		DPRINTF("relay_from_table: host %s", host->conf.name);
+		DPRINTF("%s: host %s", __func__, host->conf.name);
 		if (!table->conf.check || host->up == HOST_UP)
 			goto found;
 		host = TAILQ_NEXT(host, entry);
 	}
 	TAILQ_FOREACH(host, &table->hosts, entry) {
-		DPRINTF("relay_from_table: next host %s", host->conf.name);
+		DPRINTF("%s: next host %s", __func__, host->conf.name);
 		if (!table->conf.check || host->up == HOST_UP)
 			goto found;
 	}
@@ -2130,7 +2119,7 @@ relay_from_table(struct session *con)
 void
 relay_natlook(int fd, short event, void *arg)
 {
-	struct session		*con = (struct session *)arg;
+	struct rsession		*con = (struct rsession *)arg;
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct ctl_natlook	*cnl = con->se_cnl;
 
@@ -2154,15 +2143,14 @@ relay_natlook(int fd, short event, void *arg)
 }
 
 void
-relay_session(struct session *con)
+relay_session(struct rsession *con)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct ctl_relay_event	*in = &con->se_in, *out = &con->se_out;
 
 	if (bcmp(&rlay->rl_conf.ss, &out->ss, sizeof(out->ss)) == 0 &&
 	    out->port == rlay->rl_conf.port) {
-		log_debug("relay_session: session %d: looping",
-		    con->se_id);
+		log_debug("%s: session %d: looping", __func__, con->se_id);
 		relay_close(con, "session aborted");
 		return;
 	}
@@ -2179,7 +2167,7 @@ relay_session(struct session *con)
 	}
 
 	if ((rlay->rl_conf.flags & F_SSL) && (in->ssl == NULL)) {
-		relay_ssl_transaction(con);
+		relay_ssl_transaction(con, in);
 		return;
 	}
 
@@ -2196,7 +2184,7 @@ relay_session(struct session *con)
 }
 
 void
-relay_bindanyreq(struct session *con, in_port_t port, int proto)
+relay_bindanyreq(struct rsession *con, in_port_t port, int proto)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct ctl_bindany	 bnd;
@@ -2208,7 +2196,8 @@ relay_bindanyreq(struct session *con, in_port_t port, int proto)
 	bnd.bnd_port = port;
 	bnd.bnd_proto = proto;
 	bcopy(&con->se_in.ss, &bnd.bnd_ss, sizeof(bnd.bnd_ss));
-	imsg_compose(ibuf_main, IMSG_BINDANY, 0, 0, -1, &bnd, sizeof(bnd));
+	proc_compose_imsg(env->sc_ps, PROC_PARENT, -1, IMSG_BINDANY,
+	    -1, &bnd, sizeof(bnd));
 
 	/* Schedule timeout */
 	evtimer_set(&con->se_ev, relay_bindany, con);
@@ -2219,19 +2208,19 @@ relay_bindanyreq(struct session *con, in_port_t port, int proto)
 void
 relay_bindany(int fd, short event, void *arg)
 {
-	struct session	*con = (struct session *)arg;
+	struct rsession	*con = (struct rsession *)arg;
 
 	if (con->se_bnds == -1) {
 		relay_close(con, "bindany failed, invalid socket");
 		return;
 	}
 
-	if (relay_connect((struct session *)con) == -1)
+	if (relay_connect(con) == -1)
 		relay_close(con, "session failed");
 }
 
 int
-relay_connect(struct session *con)
+relay_connect(struct rsession *con)
 {
 	struct relay	*rlay = (struct relay *)con->se_relay;
 	int		 bnds = -1, ret;
@@ -2250,7 +2239,7 @@ relay_connect(struct session *con)
 
 	if (rlay->rl_conf.fwdmode == FWD_TRANS) {
 		if (con->se_bnds == -1) {
-			log_debug("relay_connect: could not bind any sock");
+			log_debug("%s: could not bind any sock", __func__);
 			return (-1);
 		}
 		bnds = con->se_bnds;
@@ -2267,7 +2256,7 @@ relay_connect(struct session *con)
 		else
 			ret = 0;
 		if (ret != 0) {
-			log_debug("relay_connect: mapped to invalid address");
+			log_debug("%s: mapped to invalid address", __func__);
 			return (-1);
 		}
 	}
@@ -2277,13 +2266,13 @@ relay_connect(struct session *con)
 	    con->se_out.port, rlay->rl_proto, bnds)) == -1) {
 		if (con->se_retry) {
 			con->se_retry--;
-			log_debug("relay_connect: session %d: "
-			    "forward failed: %s, %s",
+			log_debug("%s: session %d: "
+			    "forward failed: %s, %s", __func__,
 			    con->se_id, strerror(errno),
 			    con->se_retry ? "next retry" : "last retry");
 			goto retry;
 		}
-		log_debug("relay_connect: session %d: forward failed: %s",
+		log_debug("%s: session %d: forward failed: %s", __func__,
 		    con->se_id, strerror(errno));
 		return (-1);
 	}
@@ -2298,7 +2287,7 @@ relay_connect(struct session *con)
 }
 
 void
-relay_close(struct session *con, const char *msg)
+relay_close(struct rsession *con, const char *msg)
 {
 	struct relay	*rlay = (struct relay *)con->se_relay;
 	char		 ibuf[128], obuf[128], *ptr = NULL;
@@ -2311,7 +2300,7 @@ relay_close(struct session *con, const char *msg)
 	if (con->se_out.bev != NULL)
 		bufferevent_disable(con->se_out.bev, EV_READ|EV_WRITE);
 
-	if (env->sc_opts & RELAYD_OPT_LOGUPDATE) {
+	if ((env->sc_opts & RELAYD_OPT_LOGUPDATE) && msg != NULL) {
 		bzero(&ibuf, sizeof(ibuf));
 		bzero(&obuf, sizeof(obuf));
 		(void)print_host(&con->se_in.ss, ibuf, sizeof(ibuf));
@@ -2319,7 +2308,8 @@ relay_close(struct session *con, const char *msg)
 		if (EVBUFFER_LENGTH(con->se_log) &&
 		    evbuffer_add_printf(con->se_log, "\r\n") != -1)
 			ptr = evbuffer_readline(con->se_log);
-		log_info("relay %s, session %d (%d active), %d, %s -> %s:%d, "
+		log_info("relay %s, "
+		    "session %d (%d active), %d, %s -> %s:%d, "
 		    "%s%s%s", rlay->rl_conf.name, con->se_id, relay_sessions,
 		    con->se_mark, ibuf, obuf, ntohs(con->se_out.port), msg,
 		    ptr == NULL ? "" : ",", ptr == NULL ? "" : ptr);
@@ -2352,6 +2342,12 @@ relay_close(struct session *con, const char *msg)
 		bufferevent_free(con->se_out.bev);
 	else if (con->se_out.output != NULL)
 		evbuffer_free(con->se_out.output);
+	if (con->se_out.ssl != NULL) {
+		/* XXX handle non-blocking shutdown */
+		if (SSL_shutdown(con->se_out.ssl) == 0)
+			SSL_shutdown(con->se_out.ssl);
+		SSL_free(con->se_out.ssl);
+	}
 	if (con->se_out.s != -1)
 		close(con->se_out.s);
 	if (con->se_out.path != NULL)
@@ -2366,7 +2362,7 @@ relay_close(struct session *con, const char *msg)
 
 	if (con->se_cnl != NULL) {
 #if 0
-		imsg_compose(ibuf_pfe, IMSG_KILLSTATES, 0, 0, -1,
+		proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_KILLSTATES, -1,
 		    cnl, sizeof(*cnl));
 #endif
 		free(con->se_cnl);
@@ -2376,195 +2372,176 @@ relay_close(struct session *con, const char *msg)
 	relay_sessions--;
 }
 
-void
-relay_dispatch_pfe(int fd, short event, void *ptr)
+int
+relay_dispatch_pfe(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
 	struct relay		*rlay;
-	struct session		*con;
+	struct rsession		*con, se;
 	struct ctl_natlook	 cnl;
 	struct timeval		 tv;
 	struct host		*host;
 	struct table		*table;
 	struct ctl_status	 st;
 	objid_t			 id;
+	int			 cid;
 
-	ibuf = ptr;
-	switch (event) {
-	case EV_READ:
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("relay_dispatch_pfe: imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&ibuf->ev);
-			event_loopexit(NULL);
-			return;
-		}
+	switch (imsg->hdr.type) {
+	case IMSG_HOST_DISABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((host = host_find(env, id)) == NULL)
+			fatalx("relay_dispatch_pfe: desynchronized");
+		if ((table = table_find(env, host->conf.tableid)) ==
+		    NULL)
+			fatalx("relay_dispatch_pfe: invalid table id");
+		if (host->up == HOST_UP)
+			table->up--;
+		host->flags |= F_DISABLE;
+		host->up = HOST_UNKNOWN;
 		break;
-	case EV_WRITE:
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("relay_dispatch_pfe: msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("relay_dispatch_pfe: unknown event");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("relay_dispatch_pfe: imsg_read error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_HOST_DISABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((host = host_find(env, id)) == NULL)
-				fatalx("relay_dispatch_pfe: desynchronized");
-			if ((table = table_find(env, host->conf.tableid)) ==
-			    NULL)
-				fatalx("relay_dispatch_pfe: invalid table id");
-			if (host->up == HOST_UP)
-				table->up--;
-			host->flags |= F_DISABLE;
+	case IMSG_HOST_ENABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((host = host_find(env, id)) == NULL)
+			fatalx("relay_dispatch_pfe: desynchronized");
+		host->flags &= ~(F_DISABLE);
+		host->up = HOST_UNKNOWN;
+		break;
+	case IMSG_TABLE_DISABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((table = table_find(env, id)) == NULL)
+			fatalx("relay_dispatch_pfe: desynchronized");
+		table->conf.flags |= F_DISABLE;
+		table->up = 0;
+		TAILQ_FOREACH(host, &table->hosts, entry)
 			host->up = HOST_UNKNOWN;
-			break;
-		case IMSG_HOST_ENABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((host = host_find(env, id)) == NULL)
-				fatalx("relay_dispatch_pfe: desynchronized");
-			host->flags &= ~(F_DISABLE);
+		break;
+	case IMSG_TABLE_ENABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((table = table_find(env, id)) == NULL)
+			fatalx("relay_dispatch_pfe: desynchronized");
+		table->conf.flags &= ~(F_DISABLE);
+		table->up = 0;
+		TAILQ_FOREACH(host, &table->hosts, entry)
 			host->up = HOST_UNKNOWN;
+		break;
+	case IMSG_HOST_STATUS:
+		IMSG_SIZE_CHECK(imsg, &st);
+		memcpy(&st, imsg->data, sizeof(st));
+		if ((host = host_find(env, st.id)) == NULL)
+			fatalx("relay_dispatch_pfe: invalid host id");
+		if (host->flags & F_DISABLE)
 			break;
-		case IMSG_HOST_STATUS:
-			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(st))
-				fatalx("relay_dispatch_pfe: invalid request");
-			memcpy(&st, imsg.data, sizeof(st));
-			if ((host = host_find(env, st.id)) == NULL)
-				fatalx("relay_dispatch_pfe: invalid host id");
-			if (host->flags & F_DISABLE)
-				break;
-			if (host->up == st.up) {
-				log_debug("relay_dispatch_pfe: host %d => %d",
-				    host->conf.id, host->up);
-				fatalx("relay_dispatch_pfe: desynchronized");
-			}
+		if (host->up == st.up) {
+			log_debug("%s: host %d => %d", __func__,
+			    host->conf.id, host->up);
+			fatalx("relay_dispatch_pfe: desynchronized");
+		}
 
-			if ((table = table_find(env, host->conf.tableid))
-			    == NULL)
-				fatalx("relay_dispatch_pfe: invalid table id");
+		if ((table = table_find(env, host->conf.tableid))
+		    == NULL)
+			fatalx("relay_dispatch_pfe: invalid table id");
 
-			DPRINTF("relay_dispatch_pfe: [%d] state %d for "
-			    "host %u %s", proc_id, st.up,
-			    host->conf.id, host->conf.name);
+		DPRINTF("%s: [%d] state %d for "
+		    "host %u %s", __func__, proc_id, st.up,
+		    host->conf.id, host->conf.name);
 
-			if ((st.up == HOST_UNKNOWN && host->up == HOST_DOWN) ||
-			    (st.up == HOST_DOWN && host->up == HOST_UNKNOWN)) {
-				host->up = st.up;
-				break;
-			}
-			if (st.up == HOST_UP)
-				table->up++;
-			else
-				table->up--;
+		if ((st.up == HOST_UNKNOWN && host->up == HOST_DOWN) ||
+		    (st.up == HOST_DOWN && host->up == HOST_UNKNOWN)) {
 			host->up = st.up;
 			break;
-		case IMSG_NATLOOK:
-			bcopy(imsg.data, &cnl, sizeof(cnl));
-			if ((con = session_find(env, cnl.id)) == NULL ||
-			    con->se_cnl == NULL) {
-				log_debug("relay_dispatch_pfe: "
-				    "session expired");
-				break;
-			}
-			bcopy(&cnl, con->se_cnl, sizeof(*con->se_cnl));
-			evtimer_del(&con->se_ev);
-			evtimer_set(&con->se_ev, relay_natlook, con);
-			bzero(&tv, sizeof(tv));
-			evtimer_add(&con->se_ev, &tv);
-			break;
-		case IMSG_CTL_SESSION:
-			TAILQ_FOREACH(rlay, env->sc_relays, rl_entry)
-				SPLAY_FOREACH(con, session_tree,
-				    &rlay->rl_sessions)
-					imsg_compose(ibuf, IMSG_CTL_SESSION,
-					    0, 0, -1, con, sizeof(*con));
-			imsg_compose(ibuf, IMSG_CTL_END, 0, 0, -1, NULL, 0);
-			break;
-		default:
-			log_debug("relay_dispatch_msg: unexpected imsg %d",
-			    imsg.hdr.type);
+		}
+		if (st.up == HOST_UP)
+			table->up++;
+		else
+			table->up--;
+		host->up = st.up;
+		break;
+	case IMSG_NATLOOK:
+		bcopy(imsg->data, &cnl, sizeof(cnl));
+		if ((con = session_find(env, cnl.id)) == NULL ||
+		    con->se_cnl == NULL) {
+			log_debug("%s: session %d: expired",
+			    __func__, cnl.id);
 			break;
 		}
-		imsg_free(&imsg);
+		bcopy(&cnl, con->se_cnl, sizeof(*con->se_cnl));
+		evtimer_del(&con->se_ev);
+		evtimer_set(&con->se_ev, relay_natlook, con);
+		bzero(&tv, sizeof(tv));
+		evtimer_add(&con->se_ev, &tv);
+		break;
+	case IMSG_CTL_SESSION:
+		IMSG_SIZE_CHECK(imsg, &cid);
+		memcpy(&cid, imsg->data, sizeof(cid));
+		TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
+			SPLAY_FOREACH(con, session_tree,
+			    &rlay->rl_sessions) {
+				memcpy(&se, con, sizeof(se));
+				se.se_cid = cid;
+				proc_compose_imsg(env->sc_ps, p->p_id, -1,
+				    IMSG_CTL_SESSION,
+				    -1, &se, sizeof(se));
+			}
+		}
+		proc_compose_imsg(env->sc_ps, p->p_id, -1, IMSG_CTL_END,
+		    -1, &cid, sizeof(cid));
+		break;
+	default:
+		return (-1);
 	}
-	imsg_event_add(ibuf);
+
+	return (0);
 }
 
-void
-relay_dispatch_parent(int fd, short event, void * ptr)
+int
+relay_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct session		*con;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
+	struct rsession		*con;
 	struct timeval		 tv;
 	objid_t			 id;
 
-	ibuf = ptr;
-	switch (event) {
-	case EV_READ:
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("relay_dispatch_parent: imsg_read error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&ibuf->ev);
-			event_loopexit(NULL);
-			return;
+	switch (imsg->hdr.type) {
+	case IMSG_BINDANY:
+		bcopy(imsg->data, &id, sizeof(id));
+		if ((con = session_find(env, id)) == NULL) {
+			log_debug("%s: session %d: expired",
+			    __func__, id);
+			break;
 		}
+
+		/* Will validate the result later */
+		con->se_bnds = imsg->fd;
+
+		evtimer_del(&con->se_ev);
+		evtimer_set(&con->se_ev, relay_bindany, con);
+		bzero(&tv, sizeof(tv));
+		evtimer_add(&con->se_ev, &tv);
 		break;
-	case EV_WRITE:
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("relay_dispatch_parent: msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
+	case IMSG_CFG_TABLE:
+		config_gettable(env, imsg);
+		break;
+	case IMSG_CFG_HOST:
+		config_gethost(env, imsg);
+		break;
+	case IMSG_CFG_PROTO:
+		config_getproto(env, imsg);
+		break;
+	case IMSG_CFG_PROTONODE:
+		return (config_getprotonode(env, imsg));
+	case IMSG_CFG_RELAY:
+		config_getrelay(env, imsg);
+		break;
+	case IMSG_CFG_DONE:
+		config_getcfg(env, imsg);
+		relay_launch();
+		break;
+	case IMSG_CTL_RESET:
+		config_getreset(env, imsg);
+		break;
 	default:
-		fatalx("relay_dispatch_parent: unknown event");
+		return (-1);
 	}
 
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("relay_dispatch_parent: imsg_read error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_BINDANY:
-			bcopy(imsg.data, &id, sizeof(id));
-			if ((con = session_find(env, id)) == NULL) {
-				log_debug("relay_dispatch_parent: "
-				    "session expired");
-				break;
-			}
-
-			/* Will validate the result later */
-			con->se_bnds = imsg_get_fd(ibuf);
-
-			evtimer_del(&con->se_ev);
-			evtimer_set(&con->se_ev, relay_bindany, con);
-			bzero(&tv, sizeof(tv));
-			evtimer_add(&con->se_ev, &tv);
-			break;
-		default:
-			log_debug("relay_dispatch_parent: unexpected imsg %d",
-			    imsg.hdr.type);
-			break;
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(ibuf);
+	return (0);
 }
 
 SSL_CTX *
@@ -2603,14 +2580,26 @@ relay_ssl_ctx_create(struct relay *rlay)
 	if (!SSL_CTX_set_cipher_list(ctx, proto->sslciphers))
 		goto err;
 
-	log_debug("relay_ssl_ctx_create: loading certificate");
+	/* Verify the server certificate if we have a CA chain */
+	if ((rlay->rl_conf.flags & F_SSLCLIENT) &&
+	    (rlay->rl_ssl_ca != NULL)) {
+		if (!ssl_ctx_load_verify_memory(ctx,
+		    rlay->rl_ssl_ca, rlay->rl_conf.ssl_ca_len))
+			goto err;
+		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+	}
+
+	if ((rlay->rl_conf.flags & F_SSL) == 0)
+		return (ctx);
+
+	log_debug("%s: loading certificate", __func__);
 	if (!ssl_ctx_use_certificate_chain(ctx,
-	    rlay->rl_ssl_cert, rlay->rl_ssl_cert_len))
+	    rlay->rl_ssl_cert, rlay->rl_conf.ssl_cert_len))
 		goto err;
 
-	log_debug("relay_ssl_ctx_create: loading private key");
+	log_debug("%s: loading private key", __func__);
 	if (!ssl_ctx_use_private_key(ctx, rlay->rl_ssl_key,
-	    rlay->rl_ssl_key_len))
+	    rlay->rl_conf.ssl_key_len))
 		goto err;
 	if (!SSL_CTX_check_private_key(ctx))
 		goto err;
@@ -2630,37 +2619,55 @@ relay_ssl_ctx_create(struct relay *rlay)
 }
 
 void
-relay_ssl_transaction(struct session *con)
+relay_ssl_transaction(struct rsession *con, struct ctl_relay_event *cre)
 {
-	struct relay	*rlay = (struct relay *)con->se_relay;
-	SSL		*ssl;
+	struct relay		*rlay = (struct relay *)con->se_relay;
+	SSL			*ssl;
+	const SSL_METHOD	*method;
+	void			(*cb)(int, short, void *);
+	u_int			 flags = EV_TIMEOUT;
 
 	ssl = SSL_new(rlay->rl_ssl_ctx);
 	if (ssl == NULL)
 		goto err;
 
-	if (!SSL_set_ssl_method(ssl, SSLv23_server_method()))
-		goto err;
-	if (!SSL_set_fd(ssl, con->se_in.s))
-		goto err;
-	SSL_set_accept_state(ssl);
+	if (cre->dir == RELAY_DIR_REQUEST) {
+		cb = relay_ssl_accept;
+		method = SSLv23_server_method();
+		flags |= EV_READ;
+	} else {
+		cb = relay_ssl_connect;
+		method = SSLv23_client_method();
+		flags |= EV_WRITE;
+	}
 
-	con->se_in.ssl = ssl;
+	if (!SSL_set_ssl_method(ssl, method))
+		goto err;
+	if (!SSL_set_fd(ssl, cre->s))
+		goto err;
 
-	event_again(&con->se_ev, con->se_in.s, EV_TIMEOUT|EV_READ,
-	    relay_ssl_accept, &con->se_tv_start, &env->sc_timeout, con);
+	if (cre->dir == RELAY_DIR_REQUEST)
+		SSL_set_accept_state(ssl);
+	else
+		SSL_set_connect_state(ssl);
+
+	cre->ssl = ssl;
+
+	event_again(&con->se_ev, cre->s, EV_TIMEOUT|flags,
+	    cb, &con->se_tv_start, &env->sc_timeout, con);
 	return;
 
  err:
 	if (ssl != NULL)
 		SSL_free(ssl);
 	ssl_error(rlay->rl_conf.name, "relay_ssl_transaction");
+	relay_close(con, "session ssl failed");
 }
 
 void
 relay_ssl_accept(int fd, short event, void *arg)
 {
-	struct session	*con = (struct session *)arg;
+	struct rsession	*con = (struct rsession *)arg;
 	struct relay	*rlay = (struct relay *)con->se_relay;
 	int		 ret;
 	int		 ssl_err;
@@ -2700,19 +2707,79 @@ relay_ssl_accept(int fd, short event, void *arg)
 
 
 #ifdef DEBUG
-	log_info("relay %s, session %d established (%d active)",
-	    rlay->rl_conf.name, con->se_id, relay_sessions);
+	log_info(
 #else
-	log_debug("relay %s, session %d established (%d active)",
-	    rlay->rl_conf.name, con->se_id, relay_sessions);
+	log_debug(
 #endif
+	    "relay %s, session %d established (%d active)",
+	    rlay->rl_conf.name, con->se_id, relay_sessions);
+
 	relay_session(con);
 	return;
 
 retry:
-	DPRINTF("relay_ssl_accept: session %d: scheduling on %s", con->se_id,
+	DPRINTF("%s: session %d: scheduling on %s", __func__, con->se_id,
 	    (retry_flag == EV_READ) ? "EV_READ" : "EV_WRITE");
 	event_again(&con->se_ev, fd, EV_TIMEOUT|retry_flag, relay_ssl_accept,
+	    &con->se_tv_start, &env->sc_timeout, con);
+}
+
+void
+relay_ssl_connect(int fd, short event, void *arg)
+{
+	struct rsession	*con = (struct rsession *)arg;
+	struct relay	*rlay = (struct relay *)con->se_relay;
+	int		 ret;
+	int		 ssl_err;
+	int		 retry_flag;
+
+	if (event == EV_TIMEOUT) {
+		relay_close(con, "SSL connect timeout");
+		return;
+	}
+
+	retry_flag = ssl_err = 0;
+
+	ret = SSL_connect(con->se_out.ssl);
+	if (ret <= 0) {
+		ssl_err = SSL_get_error(con->se_out.ssl, ret);
+
+		switch (ssl_err) {
+		case SSL_ERROR_WANT_READ:
+			retry_flag = EV_READ;
+			goto retry;
+		case SSL_ERROR_WANT_WRITE:
+			retry_flag = EV_WRITE;
+			goto retry;
+		case SSL_ERROR_ZERO_RETURN:
+		case SSL_ERROR_SYSCALL:
+			if (ret == 0) {
+				relay_close(con, "closed");
+				return;
+			}
+			/* FALLTHROUGH */
+		default:
+			ssl_error(rlay->rl_conf.name, "relay_ssl_connect");
+			relay_close(con, "SSL connect error");
+			return;
+		}
+	}
+
+#ifdef DEBUG
+	log_info(
+#else
+	log_debug(
+#endif
+	    "relay %s, session %d connected (%d active)",
+	    rlay->rl_conf.name, con->se_id, relay_sessions);
+
+	relay_connected(fd, EV_WRITE, con);
+	return;
+
+retry:
+	DPRINTF("%s: session %d: scheduling on %s", __func__, con->se_id,
+	    (retry_flag == EV_READ) ? "EV_READ" : "EV_WRITE");
+	event_again(&con->se_ev, fd, EV_TIMEOUT|retry_flag, relay_ssl_connect,
 	    &con->se_tv_start, &env->sc_timeout, con);
 }
 
@@ -2734,13 +2801,13 @@ relay_ssl_readcb(int fd, short event, void *arg)
 {
 	struct bufferevent *bufev = arg;
 	struct ctl_relay_event *cre = (struct ctl_relay_event *)bufev->cbarg;
-	struct session *con = (struct session *)cre->con;
+	struct rsession *con = cre->con;
 	struct relay *rlay = (struct relay *)con->se_relay;
 	int ret = 0, ssl_err = 0;
 	short what = EVBUFFER_READ;
 	size_t len;
-	char rbuf[READ_BUF_SIZE];
-	int howmuch = READ_BUF_SIZE;
+	char rbuf[IBUF_READ_SIZE];
+	int howmuch = IBUF_READ_SIZE;
 
 	if (event == EV_TIMEOUT) {
 		what |= EVBUFFER_TIMEOUT;
@@ -2756,12 +2823,12 @@ relay_ssl_readcb(int fd, short event, void *arg)
 
 		switch (ssl_err) {
 		case SSL_ERROR_WANT_READ:
-			DPRINTF("relay_ssl_readcb: session %d: "
-			    "want read", con->se_id);
+			DPRINTF("%s: session %d: want read",
+			    __func__, con->se_id);
 			goto retry;
 		case SSL_ERROR_WANT_WRITE:
-			DPRINTF("relay_ssl_readcb: session %d: "
-			    "want write", con->se_id);
+			DPRINTF("%s: session %d: want write",
+			    __func__, con->se_id);
 			goto retry;
 		default:
 			if (ret == 0)
@@ -2809,7 +2876,7 @@ relay_ssl_writecb(int fd, short event, void *arg)
 {
 	struct bufferevent *bufev = arg;
 	struct ctl_relay_event *cre = (struct ctl_relay_event *)bufev->cbarg;
-	struct session *con = (struct session *)cre->con;
+	struct rsession *con = cre->con;
 	struct relay *rlay = (struct relay *)con->se_relay;
 	int ret = 0, ssl_err;
 	short what = EVBUFFER_WRITE;
@@ -2836,12 +2903,12 @@ relay_ssl_writecb(int fd, short event, void *arg)
 
 			switch (ssl_err) {
 			case SSL_ERROR_WANT_READ:
-				DPRINTF("relay_ssl_writecb: session %d: "
-				    "want read", con->se_id);
+				DPRINTF("%s: session %d: want read",
+				    __func__, con->se_id);
 				goto retry;
 			case SSL_ERROR_WANT_WRITE:
-				DPRINTF("relay_ssl_writecb: session %d: "
-				    "want write", con->se_id);
+				DPRINTF("%s: session %d: want write",
+				    __func__, con->se_id);
 				goto retry;
 			default:
 				if (ret == 0)
@@ -3009,7 +3076,7 @@ relay_load_file(const char *name, off_t *len)
 
 	close(fd);
 
-	*len = size + 1;
+	*len = size;
 	return (buf);
 
  fail:
@@ -3022,8 +3089,16 @@ relay_load_file(const char *name, off_t *len)
 int
 relay_load_certfiles(struct relay *rlay)
 {
+	struct protocol *proto = rlay->rl_proto;
 	char	 certfile[PATH_MAX];
 	char	 hbuf[sizeof("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255")];
+
+	if ((rlay->rl_conf.flags & F_SSLCLIENT) && strlen(proto->sslca)) {
+		if ((rlay->rl_ssl_ca = relay_load_file(proto->sslca,
+		    &rlay->rl_conf.ssl_ca_len)) == NULL)
+			return (-1);
+		log_debug("%s: using ca %s", __func__, proto->sslca);
+	}
 
 	if ((rlay->rl_conf.flags & F_SSL) == 0)
 		return (0);
@@ -3035,17 +3110,17 @@ relay_load_certfiles(struct relay *rlay)
 	    "/etc/ssl/%s.crt", hbuf) == -1)
 		return (-1);
 	if ((rlay->rl_ssl_cert = relay_load_file(certfile,
-	    &rlay->rl_ssl_cert_len)) == NULL)
+	    &rlay->rl_conf.ssl_cert_len)) == NULL)
 		return (-1);
-	log_debug("relay_load_certfile: using certificate %s", certfile);
+	log_debug("%s: using certificate %s", __func__, certfile);
 
 	if (snprintf(certfile, sizeof(certfile),
 	    "/etc/ssl/private/%s.key", hbuf) == -1)
 		return -1;
 	if ((rlay->rl_ssl_key = relay_load_file(certfile,
-	    &rlay->rl_ssl_key_len)) == NULL)
+	    &rlay->rl_conf.ssl_key_len)) == NULL)
 		return (-1);
-	log_debug("relay_load_certfile: using private key %s", certfile);
+	log_debug("%s: using private key %s", __func__, certfile);
 
 	return (0);
 }
@@ -3063,7 +3138,7 @@ relay_proto_cmp(struct protonode *a, struct protonode *b)
 RB_GENERATE(proto_tree, protonode, nodes, relay_proto_cmp);
 
 int
-relay_session_cmp(struct session *a, struct session *b)
+relay_session_cmp(struct rsession *a, struct rsession *b)
 {
 	struct relay	*rlay = (struct relay *)b->se_relay;
 	struct protocol	*proto = rlay->rl_proto;
@@ -3074,4 +3149,4 @@ relay_session_cmp(struct session *a, struct session *b)
 	return ((int)a->se_id - b->se_id);
 }
 
-SPLAY_GENERATE(session_tree, session, se_nodes, relay_session_cmp);
+SPLAY_GENERATE(session_tree, rsession, se_nodes, relay_session_cmp);

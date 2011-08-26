@@ -1,4 +1,4 @@
-/*	$OpenBSD: arp.c,v 1.45 2008/12/12 20:23:20 claudio Exp $ */
+/*	$OpenBSD: arp.c,v 1.50 2011/01/11 16:34:20 jasper Exp $ */
 /*	$NetBSD: arp.c,v 1.12 1995/04/24 13:25:18 cgd Exp $ */
 
 /*
@@ -34,14 +34,15 @@
  */
 
 /*
- * arp - display, set, and delete arp table entries
+ * arp - display, set, delete arp table entries and wake up hosts.
  */
 
 #include <sys/param.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
-
+#include <sys/ioctl.h>
+#include <net/bpf.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_types.h>
@@ -58,6 +59,7 @@
 #include <string.h>
 #include <paths.h>
 #include <unistd.h>
+#include <ifaddrs.h>
 
 int delete(const char *, const char *);
 void search(in_addr_t addr, void (*action)(struct sockaddr_dl *sdl,
@@ -66,6 +68,7 @@ void print_entry(struct sockaddr_dl *sdl,
 	struct sockaddr_inarp *sin, struct rt_msghdr *rtm);
 void nuke_entry(struct sockaddr_dl *sdl,
 	struct sockaddr_inarp *sin, struct rt_msghdr *rtm);
+int wake(const char *ether_addr, const char *iface);
 void ether_print(const char *);
 int file(char *);
 int get(const char *);
@@ -80,6 +83,7 @@ static int replace;	/* replace entries when adding */
 static int nflag;	/* no reverse dns lookups */
 static int aflag;	/* do it for all entries */
 static int s = -1;
+static int rdomain = 0;
 
 extern int h_errno;
 
@@ -92,15 +96,17 @@ extern int h_errno;
 #define F_SET		2
 #define F_FILESET	3
 #define F_DELETE	4
+#define F_WAKE		5
 
 int
 main(int argc, char *argv[])
 {
-	int	ch, func = 0, rtn;
+	int		 ch, func = 0, rtn;
+	const char	*errstr;
 
 	pid = getpid();
 	opterr = 0;
-	while ((ch = getopt(argc, argv, "andsFf")) != -1) {
+	while ((ch = getopt(argc, argv, "andsFfV:W")) != -1) {
 		switch (ch) {
 		case 'a':
 			aflag = 1;
@@ -125,6 +131,18 @@ main(int argc, char *argv[])
 			if (func)
 				usage();
 			func = F_FILESET;
+			break;
+		case 'V':
+			rdomain = strtonum(optarg, 0, RT_TABLEID_MAX, &errstr);
+			if (errstr != NULL) {
+				warn("bad rdomain: %s", errstr);
+				usage();
+			}
+			break;
+		case 'W':
+			if (func)
+				usage();
+			func = F_WAKE;
 			break;
 		default:
 			usage();
@@ -166,6 +184,16 @@ main(int argc, char *argv[])
 		if (argc != 1)
 			usage();
 		rtn = file(argv[0]);
+		break;
+	case F_WAKE:
+		if (aflag || nflag || replace || rdomain > 0)
+			usage();
+		if (argc == 1)
+			rtn = wake(argv[0], NULL);
+		else if (argc == 2)
+			rtn = wake(argv[0], argv[1]);
+		else
+			usage();
 		break;
 	}
 	return (rtn);
@@ -287,7 +315,7 @@ tryagain:
 		warn("%s", host);
 		return (1);
 	}
-	sin = (struct sockaddr_inarp *)(rtm + 1);
+	sin = (struct sockaddr_inarp *)((char *)rtm + rtm->rtm_hdrlen);
 	sdl = (struct sockaddr_dl *)(ROUNDUP(sin->sin_len) + (char *)sin);
 	if (sin->sin_addr.s_addr == sin_m.sin_addr.s_addr) {
 		if (sdl->sdl_family == AF_LINK &&
@@ -411,7 +439,7 @@ void
 search(in_addr_t addr, void (*action)(struct sockaddr_dl *sdl,
     struct sockaddr_inarp *sin, struct rt_msghdr *rtm))
 {
-	int mib[6];
+	int mib[7];
 	size_t needed;
 	char *lim, *buf, *next;
 	struct rt_msghdr *rtm;
@@ -424,13 +452,14 @@ search(in_addr_t addr, void (*action)(struct sockaddr_dl *sdl,
 	mib[3] = AF_INET;
 	mib[4] = NET_RT_FLAGS;
 	mib[5] = RTF_LLINFO;
-	if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0)
+	mib[6] = rdomain;
+	if (sysctl(mib, 7, NULL, &needed, NULL, 0) < 0)
 		err(1, "route-sysctl-estimate");
 	if (needed == 0)
 		return;
 	if ((buf = malloc(needed)) == NULL)
 		err(1, "malloc");
-	if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0)
+	if (sysctl(mib, 7, buf, &needed, NULL, 0) < 0)
 		err(1, "actual retrieval of routing table");
 	lim = buf + needed;
 	for (next = buf; next < lim; next += rtm->rtm_msglen) {
@@ -520,9 +549,11 @@ ether_print(const char *scp)
 void
 usage(void)
 {
-	fprintf(stderr, "usage: arp [-adn] hostname\n");
-	fprintf(stderr, "       arp [-F] [-f file] -s hostname ether_addr "
-	    "[temp | permanent] [pub]\n");
+	fprintf(stderr, "usage: arp [-adn] [-V rdomain] hostname\n");
+	fprintf(stderr, "       arp [-F] [-f file] [-V rdomain] "
+	    "-s hostname ether_addr\n"
+	    "           [temp | permanent] [pub]\n");
+	fprintf(stderr, "       arp -W ether_addr [iface]\n");
 	exit(1);
 }
 
@@ -544,6 +575,7 @@ rtmsg(int cmd)
 	rtm->rtm_flags = flags;
 	rtm->rtm_version = RTM_VERSION;
 	rtm->rtm_hdrlen = sizeof(*rtm);
+	rtm->rtm_tableid = rdomain;
 
 	switch (cmd) {
 	default:
@@ -591,7 +623,8 @@ doit:
 
 	do {
 		l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
-	} while (l > 0 && (rtm->rtm_seq != seq || rtm->rtm_pid != pid));
+	} while (l > 0 && (rtm->rtm_version != RTM_VERSION ||
+	    rtm->rtm_seq != seq || rtm->rtm_pid != pid));
 
 	if (l < 0)
 		warn("read from routing socket");
@@ -610,5 +643,179 @@ getinetaddr(const char *host, struct in_addr *inap)
 		return (-1);
 	}
 	memcpy(inap, hp->h_addr, sizeof(*inap));
+	return (0);
+}
+
+/*
+ * Copyright (c) 2011 Jasper Lievisse Adriaanse <jasper@openbsd.org>
+ * Copyright (C) 2006,2007,2008,2009 Marc Balmer <mbalmer@openbsd.org>
+ * Copyright (C) 2000 Eugene M. Kim.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Author's name may not be used endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#ifndef BPF_PATH_FORMAT
+#define BPF_PATH_FORMAT "/dev/bpf%u"
+#endif
+
+int	do_wakeup(const char *, const char *, int);
+int	get_bpf(void);
+int	bind_if_to_bpf(const char *, int);
+int	get_ether(const char *, struct ether_addr *);
+int	send_frame(int, const struct ether_addr *);
+
+int
+wake(const char *ether_addr, const char *iface)
+{
+	struct ifaddrs		*ifa, *ifap;
+	char			*pname = NULL;
+	int			 bpf;
+
+	bpf = get_bpf();
+	if (bpf == -1)
+		errx(1, "Failed to bind to bpf.");
+
+	if (iface == NULL) {
+		if (getifaddrs(&ifa) == -1)
+			errx(1, "Could not get interface addresses.");
+
+		for (ifap = ifa; ifap != NULL; ifap = ifap->ifa_next){
+			if (pname && !strcmp(pname, ifap->ifa_name))
+				continue;
+			pname = ifap->ifa_name;
+
+			/*
+			 * We're only interested in sending the WoL frame on
+			 * certain interfaces. So skip the loopback interface,
+			 * as well as point-to-point and down interfaces.
+			 */
+			if ((ifap->ifa_flags & IFF_LOOPBACK) ||
+			    (ifap->ifa_flags & IFF_POINTOPOINT) ||
+			    (!(ifap->ifa_flags & IFF_UP)) ||
+			    (!(ifap->ifa_flags & IFF_BROADCAST)))
+				continue;
+
+			do_wakeup(ether_addr, ifap->ifa_name, bpf);
+		}
+		freeifaddrs(ifa);
+	} else {
+		do_wakeup(ether_addr, iface, bpf);
+	}
+
+	(void)close(bpf);
+
+	return 0;
+}
+
+int
+do_wakeup(const char *eaddr, const char *iface, int bpf)
+{
+	struct ether_addr	 macaddr;
+
+	if (get_ether(eaddr, &macaddr) != 0)
+		errx(1, "Invalid Ethernet address: %s", eaddr);
+	if (bind_if_to_bpf(iface, bpf) != 0)
+		errx(1, "Failed to bind %s to bpf.", iface);
+	if (send_frame(bpf, &macaddr) != 0)
+		errx(1, "Failed to send WoL frame on %s", iface);
+	return 0;
+}
+
+int
+get_bpf(void)
+{
+	char path[MAXPATHLEN];
+	int i, fd;
+
+	for (i = 0; ; i++) {
+		if (snprintf(path, sizeof(path), BPF_PATH_FORMAT, i) == -1)
+			return -1;
+		fd = open(path, O_RDWR);
+		if (fd != -1)
+			return fd;
+		if (errno == EBUSY)
+			continue;
+		break;
+	}
+	return -1;
+}
+
+int
+bind_if_to_bpf(const char *ifname, int bpf)
+{
+	struct ifreq ifr;
+	u_int dlt;
+
+	if (strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name)) >=
+	    sizeof(ifr.ifr_name))
+		return -1;
+	if (ioctl(bpf, BIOCSETIF, &ifr) == -1)
+		return -1;
+	if (ioctl(bpf, BIOCGDLT, &dlt) == -1)
+		return -1;
+	if (dlt != DLT_EN10MB)
+		return -1;
+	return 0;
+}
+
+int
+get_ether(const char *text, struct ether_addr *addr)
+{
+	struct ether_addr *eaddr;
+
+	eaddr = ether_aton(text);
+
+	if (eaddr == NULL) {
+		if (ether_hostton(text, addr))
+			return -1;
+	} else {
+		*addr = *eaddr;
+		return 0;
+	}
+
+	return 0;
+}
+
+#define SYNC_LEN 6
+#define DESTADDR_COUNT 16
+
+int
+send_frame(int bpf, const struct ether_addr *addr)
+{
+	struct {
+		struct ether_header hdr;
+		u_char sync[SYNC_LEN];
+		u_char dest[ETHER_ADDR_LEN * DESTADDR_COUNT];
+	} __packed pkt;
+	u_char *p;
+	int i;
+
+	(void)memset(&pkt, 0, sizeof(pkt));
+	(void)memset(&pkt.hdr.ether_dhost, 0xff, sizeof(pkt.hdr.ether_dhost));
+	pkt.hdr.ether_type = htons(0);
+	(void)memset(pkt.sync, 0xff, SYNC_LEN);
+	for (p = pkt.dest, i = 0; i < DESTADDR_COUNT; p += ETHER_ADDR_LEN, i++)
+		bcopy(addr->ether_addr_octet, p, ETHER_ADDR_LEN);
+	if (write(bpf, &pkt, sizeof(pkt)) != sizeof(pkt))
+		return (errno);
 	return (0);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpe.h,v 1.2 2006/11/10 11:09:56 michele Exp $ */
+/*	$OpenBSD: dvmrpe.h,v 1.4 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -183,7 +183,7 @@ const char	*nbr_action_name(int);
 struct ctl_nbr	*nbr_to_ctl(struct nbr *);
 
 /* packet.c */
-int		 gen_dvmrp_hdr(struct buf *, struct iface *, u_int8_t);
+int		 gen_dvmrp_hdr(struct ibuf *, struct iface *, u_int8_t);
 int		 send_packet(struct iface *, void *, size_t, struct sockaddr_in *);
 void		 recv_packet(int, short, void *);
 
@@ -195,7 +195,7 @@ void		 recv_probe(struct iface *, struct in_addr, u_int32_t, u_int8_t,
 		    char *, u_int16_t);
 
 /* prune.c */
-int		 send_prune(struct nbr *, void *, int);
+int		 send_prune(struct nbr *, struct prune *);
 void		 recv_prune(struct nbr *, char *, u_int16_t);
 
 /* report.c */

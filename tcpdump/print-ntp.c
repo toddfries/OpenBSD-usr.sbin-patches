@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-ntp.c,v 1.13 2007/10/07 16:41:05 deraadt Exp $	*/
+/*	$OpenBSD: print-ntp.c,v 1.15 2009/10/27 23:59:55 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997
@@ -24,11 +24,6 @@
  *	By Jeffrey Mogul/DECWRL
  *	loosely based on print-bootp.c
  */
-
-#ifndef lint
-static const char rcsid[] =
-    "@(#) $Id: print-ntp.c,v 1.13 2007/10/07 16:41:05 deraadt Exp $ (LBL)";
-#endif
 
 #include <sys/param.h>
 #include <sys/time.h>
@@ -79,6 +74,10 @@ ntp_print(register const u_char *cp, u_int length)
 	switch (leapind) {
 
 	case NO_WARNING:
+		break;
+
+	case ALARM:
+		fputs(" alarm", stdout);
 		break;
 
 	case PLUS_SEC:

@@ -1,4 +1,4 @@
-/*	$OpenBSD: privsep.c,v 1.27 2008/04/18 21:35:11 djm Exp $	*/
+/*	$OpenBSD: privsep.c,v 1.29 2011/04/03 21:11:27 stsp Exp $	*/
 
 /*
  * Copyright (c) 2003 Can Erkin Acar
@@ -32,6 +32,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <netdb.h>
 #include <paths.h>
 #include <pwd.h>
@@ -49,7 +50,7 @@
 #include "pfctl_parser.h"
 
 /*
- * tcpdump goes through five states: STATE_INIT is where the
+ * tcpdump goes through four states: STATE_INIT is where the
  * bpf device and the input file is opened. In STATE_BPF, the
  * pcap filter gets set. STATE_FILTER is used for parsing
  * /etc/services and /etc/protocols and opening the output
@@ -161,6 +162,9 @@ priv_init(int argc, char **argv)
 		pw = getpwnam("_tcpdump");
 		if (pw == NULL)
 			errx(1, "unknown user _tcpdump");
+
+		/* set the locale before chrooting */
+		(void)setlocale(LC_CTYPE, "");
 
 		/* chroot, drop privs and return */
 		if (chroot(pw->pw_dir) != 0)

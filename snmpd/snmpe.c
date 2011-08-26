@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpe.c,v 1.23 2008/12/08 11:34:55 reyk Exp $	*/
+/*	$OpenBSD: snmpe.c,v 1.28 2010/09/20 12:32:41 martinh Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -36,6 +36,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <vis.h>
 
 #include "snmpd.h"
 
@@ -51,7 +52,7 @@ void	 snmpe_recvmsg(int fd, short, void *);
 
 struct snmpd	*env = NULL;
 
-struct imsgbuf	*ibuf_parent;
+struct imsgev	*iev_parent;
 
 void
 snmpe_sig_handler(int sig, short event, void *arg)
@@ -137,15 +138,16 @@ snmpe(struct snmpd *x_env, int pipe_parent2snmpe[2])
 
 	close(pipe_parent2snmpe[0]);
 
-	if ((ibuf_parent = calloc(1, sizeof(struct imsgbuf))) == NULL)
+	if ((iev_parent = calloc(1, sizeof(struct imsgev))) == NULL)
 		fatal("snmpe");
 
-	imsg_init(ibuf_parent, pipe_parent2snmpe[1], snmpe_dispatch_parent);
+	imsg_init(&iev_parent->ibuf, pipe_parent2snmpe[1]);
+	iev_parent->handler = snmpe_dispatch_parent;
 
-	ibuf_parent->events = EV_READ;
-	event_set(&ibuf_parent->ev, ibuf_parent->fd, ibuf_parent->events,
-	    ibuf_parent->handler, ibuf_parent);
-	event_add(&ibuf_parent->ev, NULL);
+	iev_parent->events = EV_READ;
+	event_set(&iev_parent->ev, iev_parent->ibuf.fd, iev_parent->events,
+	    iev_parent->handler, iev_parent);
+	event_add(&iev_parent->ev, NULL);
 
 	TAILQ_INIT(&ctl_conns);
 
@@ -180,18 +182,20 @@ snmpe_shutdown(void)
 void
 snmpe_dispatch_parent(int fd, short event, void * ptr)
 {
+	struct imsgev	*iev;
 	struct imsgbuf	*ibuf;
 	struct imsg	 imsg;
 	ssize_t		 n;
 
-	ibuf = ptr;
+	iev = ptr;
+	ibuf = &iev->ibuf;
 	switch (event) {
 	case EV_READ:
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0) {
 			/* this pipe is dead, so remove the event handler */
-			event_del(&ibuf->ev);
+			event_del(&iev->ev);
 			event_loopexit(NULL);
 			return;
 		}
@@ -199,7 +203,7 @@ snmpe_dispatch_parent(int fd, short event, void * ptr)
 	case EV_WRITE:
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 		return;
 	default:
 		fatalx("snmpe_dispatch_parent: unknown event");
@@ -219,7 +223,7 @@ snmpe_dispatch_parent(int fd, short event, void * ptr)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
 int
@@ -430,9 +434,14 @@ snmpe_debug_elements(struct ber_element *root)
 		    root->be_type == SNMP_T_IPADDR) {
 			fprintf(stderr, "addr %s\n",
 			    inet_ntoa(*(struct in_addr *)buf));
-		} else
-			fprintf(stderr, "string \"%s\"\n",
-			    root->be_len ? buf : "");
+		} else {
+			char *visbuf;
+			if ((visbuf = malloc(root->be_len * 4 + 1)) == NULL)
+				fatal("malloc");
+			strvisx(visbuf, buf, root->be_len, 0);
+			fprintf(stderr, "string \"%s\"\n",  visbuf);
+			free(visbuf);
+		}
 		break;
 	case BER_TYPE_NULL:	/* no payload */
 	case BER_TYPE_EOC:
@@ -482,7 +491,8 @@ snmpe_parse(struct sockaddr_storage *ss,
 	struct ber_element	*a, *b, *c, *d, *e, *f, *next, *last;
 	const char		*errstr = "invalid message";
 	long long		 ver, req;
-	unsigned long		 type, errval, erridx;
+	long long		 errval, erridx;
+	unsigned long		 type;
 	u_int			 class, state, i = 0, j = 0;
 	char			*comn, buf[BUFSIZ], host[MAXHOSTNAMELEN];
 	struct ber_oid		 o;
@@ -571,7 +581,7 @@ snmpe_parse(struct sockaddr_storage *ss,
 		goto fail;
 	}
 
-	/* SNMP PDU */		    
+	/* SNMP PDU */
 	if (ber_scanf_elements(a, "iiie{et",
 	    &req, &errval, &erridx, &msg->sm_pduend,
 	    &msg->sm_varbind, &class, &type) != 0) {
@@ -633,7 +643,8 @@ snmpe_parse(struct sockaddr_storage *ss,
 					break;	/* ignore error */
 				case SNMP_C_GETREQ:
 					c = ber_add_sequence(NULL);
-					if ((d = mps_getreq(c, &o)) != NULL)
+					if ((d = mps_getreq(c, &o,
+					    msg->sm_version)) != NULL)
 						break;
 					msg->sm_error = SNMP_ERROR_NOSUCHNAME;
 					ber_free_elements(c);

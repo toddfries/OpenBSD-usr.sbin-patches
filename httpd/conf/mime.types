@@ -13,7 +13,7 @@ application/activemessage
 application/andrew-inset	ez
 application/applefile
 application/atomicmail
-application/atom+xml           atom
+application/atom+xml		atom
 application/batch-smtp
 application/beep+xml
 application/cals-1840
@@ -53,7 +53,7 @@ application/ocsp-request
 application/ocsp-response
 application/octet-stream	bin dms lha lzh exe class so dll
 application/oda			oda
-application/ogg			ogg
+application/ogg			ogx oggx
 application/parityfec
 application/pdf			pdf
 application/pgp-encrypted
@@ -75,6 +75,7 @@ application/rdf+xml		rdf
 application/reginfo+xml
 application/remote-printing
 application/riscos
+application/rss+xml		rss
 application/rtf
 application/sdp
 application/set-payment
@@ -267,6 +268,23 @@ application/vnd.noblenet-web
 application/vnd.novadigm.edm
 application/vnd.novadigm.edx
 application/vnd.novadigm.ext
+application/vnd.oasis.opendocument.chart			odc
+application/vnd.oasis.opendocument.chart-template		otc
+application/vnd.oasis.opendocument.database			odb
+application/vnd.oasis.opendocument.formula			odf
+application/vnd.oasis.opendocument.formula-template		otf
+application/vnd.oasis.opendocument.graphics			odg
+application/vnd.oasis.opendocument.graphics-template		otg
+application/vnd.oasis.opendocument.image			odi
+application/vnd.oasis.opendocument.image-template		oti
+application/vnd.oasis.opendocument.presentation			odp
+application/vnd.oasis.opendocument.presentation-template	otp
+application/vnd.oasis.opendocument.spreadsheet			ods
+application/vnd.oasis.opendocument.spreadsheet-template		ots
+application/vnd.oasis.opendocument.text				odt
+application/vnd.oasis.opendocument.text-master			odm
+application/vnd.oasis.opendocument.text-template		ott
+application/vnd.oasis.opendocument.text-web			oth
 application/vnd.obn
 application/vnd.osa.netdeploy
 application/vnd.palm
@@ -417,6 +435,7 @@ audio/mpa
 audio/mpa-robust
 audio/mp4a-latm
 audio/mpeg			mpga mp2 mp3
+audio/ogg			oga ogga spx
 audio/parityfec
 audio/pcma
 audio/pcmu
@@ -580,6 +599,7 @@ video/mp4v-es
 video/mpv
 video/mpeg			mpeg mpg mpe
 video/nv
+video/ogg			ogv oggv
 video/parityfec
 video/pointer
 video/quicktime			qt mov

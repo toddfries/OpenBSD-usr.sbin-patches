@@ -1,4 +1,4 @@
-/*	$OpenBSD: client.c,v 1.21 2007/09/03 14:26:54 deraadt Exp $	*/
+/*	$OpenBSD: client.c,v 1.23 2011/07/04 16:29:35 sthen Exp $	*/
 
 /*
  * Copyright (c) 2000 Network Security Technologies, Inc. http://www.netsec.net

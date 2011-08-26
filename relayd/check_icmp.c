@@ -1,4 +1,4 @@
-/*	$OpenBSD: check_icmp.c,v 1.26 2008/12/05 16:37:55 reyk Exp $	*/
+/*	$OpenBSD: check_icmp.c,v 1.31 2011/05/09 12:08:47 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -16,9 +16,11 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <sys/param.h>
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
 
 #include <net/if.h>
 #include <netinet/in_systm.h>
@@ -57,7 +59,7 @@ icmp_setup(struct relayd *env, struct ctl_icmp_event *cie, int af)
 		proto = IPPROTO_ICMPV6;
 	if ((cie->s = socket(af, SOCK_RAW, proto)) < 0)
 		fatal("icmp_init: socket");
-	session_socket_blockmode(cie->s, BM_NONBLOCK);
+	socket_set_blockmode(cie->s, BM_NONBLOCK);
 	cie->env = env;
 	cie->af = af;
 }
@@ -148,7 +150,7 @@ icmp_checks_timeout(struct ctl_icmp_event *cie, enum host_error he)
 			if (((struct sockaddr *)&host->conf.ss)->sa_family !=
 			    cie->af)
 				continue;
-			if (!(host->flags & F_CHECK_DONE)) {
+			if (!(host->flags & (F_CHECK_DONE|F_DISABLE))) {
 				host->up = HOST_DOWN;
 				hce_notify_done(host, he);
 			}
@@ -168,7 +170,8 @@ send_icmp(int s, short event, void *arg)
 	ssize_t			 r;
 	u_char			 packet[ICMP_BUF_SIZE];
 	socklen_t		 slen;
-	int			 i = 0;
+	int			 i = 0, ttl, mib[4];
+	size_t			 len;
 
 	if (event == EV_TIMEOUT) {
 		icmp_checks_timeout(cie, HCE_ICMP_WRITE_TIMEOUT);
@@ -221,6 +224,21 @@ send_icmp(int s, short event, void *arg)
 				    sizeof(packet));
 			}
 
+			if ((ttl = host->conf.ttl) > 0)
+				(void)setsockopt(s, IPPROTO_IP, IP_TTL,
+				    &host->conf.ttl, sizeof(int));
+			else {
+				/* Revert to default TTL */
+				mib[0] = CTL_NET;
+				mib[1] = cie->af;
+				mib[2] = IPPROTO_IP;
+				mib[3] = IPCTL_DEFTTL;
+				len = sizeof(ttl);
+				if (sysctl(mib, 4, &ttl, &len, NULL, 0) == 0)
+					(void)setsockopt(s, IPPROTO_IP, IP_TTL,
+					    &ttl, sizeof(int));
+			}
+
 			r = sendto(s, packet, sizeof(packet), 0, to, slen);
 			if (r == -1) {
 				if (errno == EAGAIN || errno == EINTR)
@@ -266,7 +284,7 @@ recv_icmp(int s, short event, void *arg)
 	    (struct sockaddr *)&ss, &slen);
 	if (r == -1 || r != ICMP_BUF_SIZE) {
 		if (r == -1 && errno != EAGAIN && errno != EINTR)
-			log_debug("recv_icmp: receive error");
+			log_debug("%s: receive error", __func__);
 		goto retry;
 	}
 
@@ -283,11 +301,11 @@ recv_icmp(int s, short event, void *arg)
 		goto retry;
 	host = host_find(cie->env, id);
 	if (host == NULL) {
-		log_warn("recv_icmp: ping for unknown host received");
+		log_warn("%s: ping for unknown host received", __func__);
 		goto retry;
 	}
 	if (bcmp(&ss, &host->conf.ss, slen)) {
-		log_warnx("recv_icmp: forged icmp packet?");
+		log_warnx("%s: forged icmp packet?", __func__);
 		goto retry;
 	}
 

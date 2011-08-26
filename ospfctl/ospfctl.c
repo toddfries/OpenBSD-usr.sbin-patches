@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfctl.c,v 1.45 2009/01/30 12:43:18 norby Exp $ */
+/*	$OpenBSD: ospfctl.c,v 1.56 2011/05/09 12:25:35 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -47,7 +47,7 @@ const char	*fmt_timeframe(time_t t);
 const char	*fmt_timeframe_core(time_t t);
 const char	*log_id(u_int32_t );
 const char	*log_adv_rtr(u_int32_t);
-void		 show_database_head(struct in_addr, u_int8_t);
+void		 show_database_head(struct in_addr, char *, u_int8_t);
 int		 show_database_msg(struct imsg *);
 char		*print_ls_type(u_int8_t);
 void		 show_db_hdr_msg_detail(struct lsa_hdr *);
@@ -76,15 +76,9 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s command [argument ...]\n", __progname);
+	fprintf(stderr, "usage: %s [-s socket] command [argument ...]\n",
+	    __progname);
 	exit(1);
-}
-
-/* dummy function so that ospfctl does not need libevent */
-void
-imsg_event_add(struct imsgbuf *i)
-{
-	/* nothing */
 }
 
 int
@@ -96,10 +90,26 @@ main(int argc, char *argv[])
 	unsigned int		 ifidx = 0;
 	int			 ctl_sock;
 	int			 done = 0;
-	int			 n;
+	int			 n, verbose = 0;
+	int			 ch;
+	char			*sockname;
+
+	sockname = OSPFD_SOCKET;
+	while ((ch = getopt(argc, argv, "s:")) != -1) {
+		switch (ch) {
+		case 's':
+			sockname = optarg;
+			break;
+		default:
+			usage();
+			/* NOTREACHED */
+		}
+	}
+	argc -= optind;
+	argv += optind;
 
 	/* parse options */
-	if ((res = parse(argc - 1, argv + 1)) == NULL)
+	if ((res = parse(argc, argv)) == NULL)
 		exit(1);
 
 	/* connect to ospfd control socket */
@@ -108,13 +118,14 @@ main(int argc, char *argv[])
 
 	bzero(&sun, sizeof(sun));
 	sun.sun_family = AF_UNIX;
-	strlcpy(sun.sun_path, OSPFD_SOCKET, sizeof(sun.sun_path));
+
+	strlcpy(sun.sun_path, sockname, sizeof(sun.sun_path));
 	if (connect(ctl_sock, (struct sockaddr *)&sun, sizeof(sun)) == -1)
-		err(1, "connect: %s", OSPFD_SOCKET);
+		err(1, "connect: %s", sockname);
 
 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
-	imsg_init(ibuf, ctl_sock, NULL);
+	imsg_init(ibuf, ctl_sock);
 	done = 0;
 
 	/* process user request */
@@ -124,7 +135,7 @@ main(int argc, char *argv[])
 		/* not reached */
 	case SHOW:
 	case SHOW_SUM:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_IFACE:
 		printf("%-11s %-18s %-6s %-10s %-10s %-8s %3s %3s\n",
@@ -137,7 +148,7 @@ main(int argc, char *argv[])
 			if (ifidx == 0)
 				errx(1, "no such interface %s", res->ifname);
 		}
-		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
 		    &ifidx, sizeof(ifidx));
 		break;
 	case SHOW_NBR:
@@ -145,72 +156,89 @@ main(int argc, char *argv[])
 		    "State", "DeadTime", "Address", "Iface","Uptime");
 		/*FALLTHROUGH*/
 	case SHOW_NBR_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DB:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBBYAREA:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DATABASE, 0, 0, -1,
 		    &res->addr, sizeof(res->addr));
 		break;
 	case SHOW_DBEXT:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_EXT, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_EXT, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBNET:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_NET, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_NET, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBRTR:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_RTR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_RTR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBSELF:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SELF, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SELF, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBSUM:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SUM, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_SUM, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_DBASBR:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_ASBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_ASBR, 0, 0, -1, NULL, 0);
+		break;
+	case SHOW_DBOPAQ:
+		imsg_compose(ibuf, IMSG_CTL_SHOW_DB_OPAQ, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_RIB:
 		printf("%-20s %-17s %-12s %-9s %-7s %-8s\n", "Destination",
 		    "Nexthop", "Path Type", "Type", "Cost", "Uptime");
 		/*FALLTHROUGH*/
 	case SHOW_RIB_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_FIB:
 		if (!res->addr.s_addr)
-			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0, -1,
 			    &res->flags, sizeof(res->flags));
 		else
-			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0, -1,
 			    &res->addr, sizeof(res->addr));
 		show_fib_head();
 		break;
 	case SHOW_FIB_IFACE:
 		if (*res->ifname)
-			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, -1,
 			    res->ifname, sizeof(res->ifname));
 		else
-			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, NULL, 0);
+			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, -1, NULL, 0);
 		show_interface_head();
 		break;
 	case FIB:
 		errx(1, "fib couple|decouple");
 		break;
 	case FIB_COUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, -1, NULL, 0);
 		printf("couple request sent.\n");
 		done = 1;
 		break;
 	case FIB_DECOUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, -1, NULL, 0);
 		printf("decouple request sent.\n");
 		done = 1;
 		break;
+	case FIB_RELOAD:
+		imsg_compose(ibuf, IMSG_CTL_FIB_RELOAD, 0, 0, -1, NULL, 0);
+		printf("reload request sent.\n");
+		done = 1;
+		break;
+	case LOG_VERBOSE:
+		verbose = 1;
+		/* FALLTHROUGH */
+	case LOG_BRIEF:
+		imsg_compose(ibuf, IMSG_CTL_LOG_VERBOSE, 0, 0, -1,
+		    &verbose, sizeof(verbose));
+		printf("logging request sent.\n");
+		done = 1;
+		break;
 	case RELOAD:
-		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, -1, NULL, 0);
 		printf("reload request sent.\n");
 		done = 1;
 		break;
@@ -258,6 +286,7 @@ main(int argc, char *argv[])
 			case SHOW_DBRTR:
 			case SHOW_DBSUM:
 			case SHOW_DBASBR:
+			case SHOW_DBOPAQ:
 				done = show_db_msg_detail(&imsg);
 				break;
 			case SHOW_RIB:
@@ -276,6 +305,9 @@ main(int argc, char *argv[])
 			case FIB:
 			case FIB_COUPLE:
 			case FIB_DECOUPLE:
+			case FIB_RELOAD:
+			case LOG_VERBOSE:
+			case LOG_BRIEF:
 			case RELOAD:
 				break;
 			}
@@ -305,9 +337,10 @@ show_summary_msg(struct imsg *imsg)
 		else
 			printf("disabled\n");
 
-		printf("SPF delay is %d sec(s), hold time between two SPFs "
-		    "is %d sec(s)\n", sum->spf_delay, sum->spf_hold_time);
-		printf("Number of external LSA(s) %d\n", sum->num_ext_lsa);
+		printf("SPF delay is %d msec(s), hold time between two SPFs "
+		    "is %d msec(s)\n", sum->spf_delay, sum->spf_hold_time);
+		printf("Number of external LSA(s) %d (Checksum sum 0x%x)\n",
+		    sum->num_ext_lsa, sum->ext_lsa_cksum);
 		printf("Number of areas attached to this router: %d\n",
 		    sum->num_area);
 		break;
@@ -320,7 +353,8 @@ show_summary_msg(struct imsg *imsg)
 		    "area: %d\n", sumarea->num_adj_nbr);
 		printf("  SPF algorithm executed %d time(s)\n",
 		    sumarea->num_spf_calc);
-		printf("  Number LSA(s) %d\n", sumarea->num_lsa);
+		printf("  Number LSA(s) %d (Checksum sum 0x%x)\n",
+		    sumarea->num_lsa, sumarea->lsa_cksum);
 		break;
 	case IMSG_CTL_END:
 		printf("\n");
@@ -364,10 +398,10 @@ show_interface_msg(struct imsg *imsg)
 			err(1, NULL);
 		printf("%-11s %-18s %-6s %-10s %-10s %s %3d %3d\n",
 		    iface->name, netid, if_state_name(iface->state),
-		    iface->hello_timer < 0 ? "-" :
-		    fmt_timeframe_core(iface->hello_timer),
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate), fmt_timeframe_core(iface->uptime),
+		    iface->hello_timer.tv_sec < 0 ? "-" :
+		    fmt_timeframe_core(iface->hello_timer.tv_sec),
+		    get_linkstate(iface->mediatype, iface->linkstate),
+		    fmt_timeframe_core(iface->uptime),
 		    iface->nbr_cnt, iface->adj_cnt);
 		free(netid);
 		break;
@@ -397,8 +431,7 @@ show_interface_detail_msg(struct imsg *imsg)
 		    mask2prefixlen(iface->mask.s_addr));
 		printf("Area %s\n", inet_ntoa(iface->area));
 		printf("  Linkstate %s\n",
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate));
+		    get_linkstate(iface->mediatype, iface->linkstate));
 		printf("  Router ID %s, network type %s, cost: %d\n",
 		    inet_ntoa(iface->rtr_id),
 		    if_type_name(iface->type), iface->metric);
@@ -411,17 +444,26 @@ show_interface_detail_msg(struct imsg *imsg)
 		printf("  Backup Designated Router (ID) %s, ",
 		    inet_ntoa(iface->bdr_id));
 		printf("interface address %s\n", inet_ntoa(iface->bdr_addr));
-		printf("  Timer intervals configured, "
-		    "hello %d, dead %d, wait %d, retransmit %d\n",
-		     iface->hello_interval, iface->dead_interval,
-		     iface->dead_interval, iface->rxmt_interval);
+		if (iface->dead_interval == FAST_RTR_DEAD_TIME) {
+			printf("  Timer intervals configured, "
+			    "hello %d msec, dead %d, wait %d, retransmit %d\n",
+			     iface->fast_hello_interval, iface->dead_interval,
+			     iface->dead_interval, iface->rxmt_interval);
+
+		} else {
+			printf("  Timer intervals configured, "
+			    "hello %d, dead %d, wait %d, retransmit %d\n",
+			     iface->hello_interval, iface->dead_interval,
+			     iface->dead_interval, iface->rxmt_interval);
+		}
 		if (iface->passive)
 			printf("    Passive interface (No Hellos)\n");
-		else if (iface->hello_timer < 0)
+		else if (iface->hello_timer.tv_sec < 0)
 			printf("    Hello timer not running\n");
 		else
-			printf("    Hello timer due in %s\n",
-			    fmt_timeframe_core(iface->hello_timer));
+			printf("    Hello timer due in %s+%ldmsec\n",
+			    fmt_timeframe_core(iface->hello_timer.tv_sec),
+			    iface->hello_timer.tv_usec / 1000);
 		printf("    Uptime %s\n", fmt_timeframe_core(iface->uptime));
 		printf("  Neighbor count is %d, adjacent neighbor count is "
 		    "%d\n", iface->nbr_cnt, iface->adj_cnt);
@@ -548,9 +590,10 @@ mask2prefixlen(in_addr_t ina)
 }
 
 void
-show_database_head(struct in_addr aid, u_int8_t type)
+show_database_head(struct in_addr aid, char *ifname, u_int8_t type)
 {
 	char	*header, *format;
+	int	 cleanup = 0;
 
 	switch (type) {
 	case LSA_TYPE_ROUTER:
@@ -570,24 +613,47 @@ show_database_head(struct in_addr aid, u_int8_t type)
 		if ((header = strdup("Type-5 AS External Link States")) == NULL)
 			err(1, NULL);
 		break;
+	case LSA_TYPE_LINK_OPAQ:
+		format = "Type-9 Link Local Opaque Link States";
+		break;
+	case LSA_TYPE_AREA_OPAQ:
+		format = "Type-10 Area Local Opaque Link States";
+		break;
+	case LSA_TYPE_AS_OPAQ:
+		format = NULL;
+		if ((header = strdup("Type-11 AS Wide Opaque Link States")) ==
+		    NULL)
+			err(1, NULL);
+		break;
 	default:
-		errx(1, "unknown LSA type");
+		if (asprintf(&format, "LSA type %x", ntohs(type)) == -1)
+			err(1, NULL);
+		cleanup = 1;
+		break;
 	}
-	if (type != LSA_TYPE_EXTERNAL)
+	if (type == LSA_TYPE_LINK_OPAQ) {
+		if (asprintf(&header, "%s (Area %s Interface %s)", format,
+		    inet_ntoa(aid), ifname) == -1)
+			err(1, NULL);
+	} else if (type != LSA_TYPE_EXTERNAL && type != LSA_TYPE_AS_OPAQ)
 		if (asprintf(&header, "%s (Area %s)", format,
 		    inet_ntoa(aid)) == -1)
 			err(1, NULL);
 
 	printf("\n%-15s %s\n\n", "", header);
 	free(header);
+	if (cleanup)
+		free(format);
 }
 
 int
 show_database_msg(struct imsg *imsg)
 {
 	static struct in_addr	 area_id;
+	static char		 ifname[IF_NAMESIZE];
 	static u_int8_t		 lasttype;
 	struct area		*area;
+	struct iface		*iface;
 	struct lsa_hdr		*lsa;
 
 	switch (imsg->hdr.type) {
@@ -595,7 +661,7 @@ show_database_msg(struct imsg *imsg)
 	case IMSG_CTL_SHOW_DB_SELF:
 		lsa = imsg->data;
 		if (lsa->type != lasttype) {
-			show_database_head(area_id, lsa->type);
+			show_database_head(area_id, ifname, lsa->type);
 			printf("%-15s %-15s %-4s %-10s %-8s\n", "Link ID",
 			    "Adv Router", "Age", "Seq#", "Checksum");
 		}
@@ -608,6 +674,11 @@ show_database_msg(struct imsg *imsg)
 	case IMSG_CTL_AREA:
 		area = imsg->data;
 		area_id = area->id;
+		lasttype = 0;
+		break;
+	case IMSG_CTL_IFACE:
+		iface = imsg->data;
+		strlcpy(ifname, iface->name, sizeof(ifname));
 		lasttype = 0;
 		break;
 	case IMSG_CTL_END:
@@ -634,6 +705,12 @@ print_ls_type(u_int8_t type)
 		return ("Summary (Router)");
 	case LSA_TYPE_EXTERNAL:
 		return ("AS External");
+	case LSA_TYPE_LINK_OPAQ:
+		return ("Type-9 Opaque");
+	case LSA_TYPE_AREA_OPAQ:
+		return ("Type-10 Opaque");
+	case LSA_TYPE_AS_OPAQ:
+		return ("Type-11 Opaque");
 	default:
 		return ("Unknown");
 	}
@@ -664,6 +741,13 @@ show_db_hdr_msg_detail(struct lsa_hdr *lsa)
 	case LSA_TYPE_EXTERNAL:
 		printf("Link State ID: %s (External Network Number)\n",
 		     log_id(lsa->ls_id));
+		break;
+	case LSA_TYPE_LINK_OPAQ:
+	case LSA_TYPE_AREA_OPAQ:
+	case LSA_TYPE_AS_OPAQ:
+		printf("Link State ID: %s Type %d ID %d\n", log_id(lsa->ls_id),
+		    LSA_24_GETHI(ntohl(lsa->ls_id)),
+		    LSA_24_GETLO(ntohl(lsa->ls_id)));
 		break;
 	}
 
@@ -706,9 +790,11 @@ int
 show_db_msg_detail(struct imsg *imsg)
 {
 	static struct in_addr	 area_id;
+	static char		 ifname[IF_NAMESIZE];
 	static u_int8_t		 lasttype;
 	struct in_addr		 addr, data;
 	struct area		*area;
+	struct iface		*iface;
 	struct lsa		*lsa;
 	struct lsa_rtr_link	*rtr_link;
 	struct lsa_asext	*asext;
@@ -720,7 +806,7 @@ show_db_msg_detail(struct imsg *imsg)
 	case IMSG_CTL_SHOW_DB_EXT:
 		lsa = imsg->data;
 		if (lsa->hdr.type != lasttype)
-			show_database_head(area_id, lsa->hdr.type);
+			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
 		addr.s_addr = lsa->data.asext.mask;
 		printf("Network Mask: %s\n", inet_ntoa(addr));
@@ -743,7 +829,7 @@ show_db_msg_detail(struct imsg *imsg)
 	case IMSG_CTL_SHOW_DB_NET:
 		lsa = imsg->data;
 		if (lsa->hdr.type != lasttype)
-			show_database_head(area_id, lsa->hdr.type);
+			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
 		addr.s_addr = lsa->data.net.mask;
 		printf("Network Mask: %s\n", inet_ntoa(addr));
@@ -751,6 +837,7 @@ show_db_msg_detail(struct imsg *imsg)
 		nlinks = (ntohs(lsa->hdr.len) - sizeof(struct lsa_hdr)
 		    - sizeof(u_int32_t)) / sizeof(struct lsa_net_link);
 		off = sizeof(lsa->hdr) + sizeof(u_int32_t);
+		printf("Number of Routers: %d\n", nlinks);
 
 		for (i = 0; i < nlinks; i++) {
 			addr.s_addr = lsa->data.net.att_rtr[i];
@@ -763,7 +850,7 @@ show_db_msg_detail(struct imsg *imsg)
 	case IMSG_CTL_SHOW_DB_RTR:
 		lsa = imsg->data;
 		if (lsa->hdr.type != lasttype)
-			show_database_head(area_id, lsa->hdr.type);
+			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
 		printf("Flags: %s\n", print_ospf_flags(lsa->data.rtr.flags));
 		nlinks = ntohs(lsa->data.rtr.nlinks);
@@ -820,7 +907,7 @@ show_db_msg_detail(struct imsg *imsg)
 	case IMSG_CTL_SHOW_DB_ASBR:
 		lsa = imsg->data;
 		if (lsa->hdr.type != lasttype)
-			show_database_head(area_id, lsa->hdr.type);
+			show_database_head(area_id, ifname, lsa->hdr.type);
 		show_db_hdr_msg_detail(&lsa->hdr);
 		addr.s_addr = lsa->data.sum.mask;
 		printf("Network Mask: %s\n", inet_ntoa(addr));
@@ -828,9 +915,22 @@ show_db_msg_detail(struct imsg *imsg)
 		    LSA_METRIC_MASK);
 		lasttype = lsa->hdr.type;
 		break;
+	case IMSG_CTL_SHOW_DB_OPAQ:
+		lsa = imsg->data;
+		if (lsa->hdr.type != lasttype)
+			show_database_head(area_id, ifname, lsa->hdr.type);
+		show_db_hdr_msg_detail(&lsa->hdr);
+		/* XXX should we hexdump the data? */
+		lasttype = lsa->hdr.type;
+		break;
 	case IMSG_CTL_AREA:
 		area = imsg->data;
 		area_id = area->id;
+		lasttype = 0;
+		break;
+	case IMSG_CTL_IFACE:
+		iface = imsg->data;
+		strlcpy(ifname, iface->name, sizeof(ifname));
 		lasttype = 0;
 		break;
 	case IMSG_CTL_END:
@@ -875,12 +975,15 @@ print_ospf_options(u_int8_t opts)
 {
 	static char	optbuf[32];
 
-	snprintf(optbuf, sizeof(optbuf), "*|*|%s|%s|%s|%s|%s|*",
+	snprintf(optbuf, sizeof(optbuf), "%s|%s|%s|%s|%s|%s|%s|%s",
+	    opts & OSPF_OPTION_DN ? "DN" : "-",
+	    opts & OSPF_OPTION_O ? "O" : "-",
 	    opts & OSPF_OPTION_DC ? "DC" : "-",
 	    opts & OSPF_OPTION_EA ? "EA" : "-",
 	    opts & OSPF_OPTION_NP ? "N/P" : "-",
 	    opts & OSPF_OPTION_MC ? "MC" : "-",
-	    opts & OSPF_OPTION_E ? "E" : "-");
+	    opts & OSPF_OPTION_E ? "E" : "-",
+	    opts & OSPF_OPTION_MT ? "MT" : "-");
 	return (optbuf);
 }
 
@@ -1166,9 +1269,8 @@ show_interface_head(void)
 	    "Link state");
 }
 
-const int	ifm_status_valid_list[] = IFM_STATUS_VALID_LIST;
-const struct ifmedia_status_description
-		ifm_status_descriptions[] = IFM_STATUS_DESCRIPTIONS;
+const struct if_status_description
+		if_status_descriptions[] = LINK_STATE_DESCRIPTIONS;
 const struct ifmedia_description
 		ifm_type_descriptions[] = IFM_TYPE_DESCRIPTIONS;
 
@@ -1187,23 +1289,15 @@ get_media_descr(int media_type)
 const char *
 get_linkstate(int media_type, int link_state)
 {
-	const struct ifmedia_status_description	*p;
-	int					 i;
+	const struct if_status_description *p;
+	static char buf[8];
 
-	if (link_state == LINK_STATE_UNKNOWN)
-		return ("unknown");
-
-	for (i = 0; ifm_status_valid_list[i] != 0; i++)
-		for (p = ifm_status_descriptions; p->ifms_valid != 0; p++) {
-			if (p->ifms_type != media_type ||
-			    p->ifms_valid != ifm_status_valid_list[i])
-				continue;
-			if (LINK_STATE_IS_UP(link_state))
-				return (p->ifms_string[1]);
-			return (p->ifms_string[0]);
-		}
-
-	return ("unknown");
+	for (p = if_status_descriptions; p->ifs_string != NULL; p++) {
+		if (LINK_STATE_DESC_MATCH(p, media_type, link_state))
+			return (p->ifs_string);
+	}
+	snprintf(buf, sizeof(buf), "[#%d]", link_state);
+	return (buf);
 }
 
 void
@@ -1230,28 +1324,11 @@ show_fib_interface_msg(struct imsg *imsg)
 		k = imsg->data;
 		printf("%-15s", k->ifname);
 		printf("%-15s", k->flags & IFF_UP ? "UP" : "");
-		switch (k->media_type) {
-		case IFT_ETHER:
-			ifms_type = IFM_ETHER;
-			break;
-		case IFT_FDDI:
-			ifms_type = IFM_FDDI;
-			break;
-		case IFT_CARP:
-			ifms_type = IFM_CARP;
-			break;
-		default:
-			ifms_type = 0;
-			break;
-		}
-
+		ifms_type = get_ifms_type(k->media_type);
 		if (ifms_type)
-			printf("%s, %s", get_media_descr(ifms_type),
-			    get_linkstate(ifms_type, k->link_state));
-		else if (k->link_state == LINK_STATE_UNKNOWN)
-			printf("unknown");
-		else
-			printf("link state %u", k->link_state);
+			printf("%s, ", get_media_descr(ifms_type));
+
+		printf("%s", get_linkstate(k->media_type, k->link_state));
 
 		if (k->link_state != LINK_STATE_DOWN && k->baudrate > 0) {
 			printf(", ");

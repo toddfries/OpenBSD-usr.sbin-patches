@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.61 2009/01/01 22:50:13 claudio Exp $ */
+/*	$OpenBSD: interface.c,v 1.74 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -167,6 +167,7 @@ if_new(struct kif *kif, struct kif_addr *ka)
 	LIST_INIT(&iface->nbr_list);
 	TAILQ_INIT(&iface->ls_ack_list);
 	TAILQ_INIT(&iface->auth_md_list);
+	RB_INIT(&iface->lsa_tree);
 
 	iface->crypt_seq_num = arc4random() & 0x0fffffff;
 
@@ -189,7 +190,7 @@ if_new(struct kif *kif, struct kif_addr *ka)
 		iface->type = IF_TYPE_BROADCAST;
 	if (kif->flags & IFF_LOOPBACK) {
 		iface->type = IF_TYPE_POINTOPOINT;
-		iface->state = IF_STA_LOOPBACK;
+		iface->passive = 1;
 	}
 
 	/* get mtu, index and flags */
@@ -238,6 +239,9 @@ if_del(struct iface *iface)
 void
 if_init(struct ospfd_conf *xconf, struct iface *iface)
 {
+	struct ifreq	ifr;
+	u_int		rdomain;
+
 	/* init the dummy local neighbor */
 	iface->self = nbr_new(ospfe_router_id(), iface, 1);
 
@@ -247,6 +251,18 @@ if_init(struct ospfd_conf *xconf, struct iface *iface)
 	evtimer_set(&iface->wait_timer, if_wait_timer, iface);
 
 	iface->fd = xconf->ospf_socket;
+
+	strlcpy(ifr.ifr_name, iface->name, sizeof(ifr.ifr_name));
+	if (ioctl(iface->fd, SIOCGIFRDOMAIN, (caddr_t)&ifr) == -1)
+		rdomain = 0;
+	else {
+		rdomain = ifr.ifr_rdomainid;
+		if (setsockopt(iface->fd, SOL_SOCKET, SO_RTABLE,
+		    &rdomain, sizeof(rdomain)) == -1)
+			fatal("failed to set rdomain");
+	}
+	if (rdomain != xconf->rdomain)
+		fatalx("interface rdomain mismatch");
 
 	ospfe_demote_iface(iface, 0);
 }
@@ -263,7 +279,10 @@ if_hello_timer(int fd, short event, void *arg)
 
 	/* reschedule hello_timer */
 	timerclear(&tv);
-	tv.tv_sec = iface->hello_interval;
+	if (iface->dead_interval == FAST_RTR_DEAD_TIME)
+		tv.tv_usec = iface->fast_hello_interval * 1000;
+	else
+		tv.tv_sec = iface->hello_interval;
 	if (evtimer_add(&iface->hello_timer, &tv) == -1)
 		fatal("if_hello_timer");
 }
@@ -320,9 +339,7 @@ if_act_start(struct iface *iface)
 	struct timeval		 now;
 
 	if (!((iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP))))
+	    LINK_STATE_IS_UP(iface->linkstate)))
 		return (0);
 
 	if (iface->media_type == IFT_CARP && iface->passive == 0) {
@@ -332,14 +349,18 @@ if_act_start(struct iface *iface)
 		iface->passive = 1;
 	}
 
+	gettimeofday(&now, NULL);
+	iface->uptime = now.tv_sec;
+
+	/* loopback interfaces have a special state and are passive */
+	if (iface->flags & IFF_LOOPBACK)
+		iface->state = IF_STA_LOOPBACK;
+
 	if (iface->passive) {
 		/* for an update of stub network entries */
 		orig_rtr_lsa(iface->area);
 		return (0);
 	}
-
-	gettimeofday(&now, NULL);
-	iface->uptime = now.tv_sec;
 
 	switch (iface->type) {
 	case IF_TYPE_POINTOPOINT:
@@ -435,7 +456,7 @@ start:
 	}
 
 	if (dr == NULL) {
-		/* no designate router found use backup DR */
+		/* no designated router found use backup DR */
 		dr = bdr;
 		bdr = NULL;
 	}
@@ -533,18 +554,12 @@ if_act_reset(struct iface *iface)
 	switch (iface->type) {
 	case IF_TYPE_POINTOPOINT:
 	case IF_TYPE_BROADCAST:
+		/* try to cleanup */
 		inet_aton(AllSPFRouters, &addr);
-		if (if_leave_group(iface, &addr)) {
-			log_warnx("if_act_reset: error leaving group %s, "
-			    "interface %s", inet_ntoa(addr), iface->name);
-		}
+		if_leave_group(iface, &addr);
 		if (iface->state & IF_STA_DRORBDR) {
 			inet_aton(AllDRouters, &addr);
-			if (if_leave_group(iface, &addr)) {
-				log_warnx("if_act_reset: "
-				    "error leaving group %s, interface %s",
-				    inet_ntoa(addr), iface->name);
-			}
+			if_leave_group(iface, &addr);
 		}
 		break;
 	case IF_TYPE_VIRTUALLINK:
@@ -614,6 +629,7 @@ if_to_ctl(struct iface *iface)
 	ictl.adj_cnt = 0;
 	ictl.baudrate = iface->baudrate;
 	ictl.dead_interval = iface->dead_interval;
+	ictl.fast_hello_interval = iface->fast_hello_interval;
 	ictl.transmit_delay = iface->transmit_delay;
 	ictl.hello_interval = iface->hello_interval;
 	ictl.flags = iface->flags;
@@ -630,9 +646,10 @@ if_to_ctl(struct iface *iface)
 	gettimeofday(&now, NULL);
 	if (evtimer_pending(&iface->hello_timer, &tv)) {
 		timersub(&tv, &now, &res);
-		ictl.hello_timer = res.tv_sec;
-	} else
-		ictl.hello_timer = -1;
+		ictl.hello_timer = res;
+	} else {
+		ictl.hello_timer.tv_sec = -1;
+	}
 
 	if (iface->state != IF_STA_DOWN) {
 		ictl.uptime = now.tv_sec - iface->uptime;
@@ -663,7 +680,7 @@ if_set_recvif(int fd, int enable)
 }
 
 void
-if_set_recvbuf(int fd)
+if_set_sockbuf(int fd)
 {
 	int	bsize;
 
@@ -671,6 +688,17 @@ if_set_recvbuf(int fd)
 	while (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bsize,
 	    sizeof(bsize)) == -1)
 		bsize /= 2;
+
+	if (bsize != 65535)
+		log_warnx("if_set_sockbuf: recvbuf size only %d", bsize);
+
+	bsize = 65535;
+	while (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bsize,
+	    sizeof(bsize)) == -1)
+		bsize /= 2;
+
+	if (bsize != 65535)
+		log_warnx("if_set_sockbuf: sendbuf size only %d", bsize);
 }
 
 /*
@@ -750,9 +778,14 @@ if_leave_group(struct iface *iface, struct in_addr *addr)
 				break;
 
 		/* if interface is not found just try to drop membership */
-		if (ifg && --ifg->count != 0)
-			/* others still joined */
-			return (0);
+		if (ifg) {
+			if (--ifg->count != 0)
+				/* others still joined */
+				return (0);
+
+			LIST_REMOVE(ifg, entry);
+			free(ifg);
+		}
 
 		mreq.imr_multiaddr.s_addr = addr->s_addr;
 		mreq.imr_interface.s_addr = iface->addr.s_addr;
@@ -763,11 +796,6 @@ if_leave_group(struct iface *iface, struct in_addr *addr)
 			    "interface %s address %s", iface->name,
 			    inet_ntoa(*addr));
 			return (-1);
-		}
-
-		if (ifg) {
-			LIST_REMOVE(ifg, entry);
-			free(ifg);
 		}
 		break;
 	case IF_TYPE_POINTOMULTIPOINT:
@@ -791,7 +819,7 @@ if_set_mcast(struct iface *iface)
 	case IF_TYPE_BROADCAST:
 		if (setsockopt(iface->fd, IPPROTO_IP, IP_MULTICAST_IF,
 		    &iface->addr.s_addr, sizeof(iface->addr.s_addr)) < 0) {
-			log_debug("if_set_mcast: error setting "
+			log_warn("if_set_mcast: error setting "
 			    "IP_MULTICAST_IF, interface %s", iface->name);
 			return (-1);
 		}

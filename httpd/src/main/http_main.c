@@ -1,4 +1,4 @@
-/* $OpenBSD: http_main.c,v 1.53 2008/12/02 17:55:35 sthen Exp $ */
+/* $OpenBSD: http_main.c,v 1.55 2011/07/17 17:32:35 jcs Exp $ */
 
 /* ====================================================================
  * The Apache Software License, Version 1.1
@@ -701,7 +701,7 @@ static void usage(char *bin)
     fprintf(stderr, "  -c directive     : process directive after  reading config files\n");
     fprintf(stderr, "  -D parameter     : define a parameter for use in <IfDefine name> directives\n");
     fprintf(stderr, "  -d serverroot    : specify an alternate initial ServerRoot\n");
-    fprintf(stderr, "  -4               : assume IPv4 for ambiguous directirves (default)\n");
+    fprintf(stderr, "  -4               : assume IPv4 for ambiguous directives (default)\n");
     fprintf(stderr, "  -6               : assume IPv6 for ambiguous directives\n");
     fprintf(stderr, "  -F               : run main process in foreground, for process supervisors\n");
     fprintf(stderr, "  -f config        : specify an alternate ServerConfigFile\n");
@@ -1244,10 +1244,10 @@ API_EXPORT(int) ap_update_child_status(int child_num, int status, request_rec *r
 	     */
 	    if (status == SERVER_DEAD) {
 		ss->my_access_count = 0L;
-		ss->my_bytes_served = 0L;
+		ss->my_bytes_served = 0ULL;
 	    }
 	    ss->conn_count = (unsigned short) 0;
-	    ss->conn_bytes = (unsigned long) 0;
+	    ss->conn_bytes = 0ULL;
 	}
         else if (status == SERVER_STARTING) {
             /* clean out the start_time so that mod_status will print Req=0 */
@@ -1309,7 +1309,7 @@ void ap_time_process_request(int child_num, int status)
 
 static void increment_counts(int child_num, request_rec *r)
 {
-    long int bs = 0;
+    off_t bs = 0;
     short_score *ss;
 
     ss = &ap_scoreboard_image->servers[child_num];
@@ -1321,9 +1321,9 @@ static void increment_counts(int child_num, request_rec *r)
     ss->access_count++;
     ss->my_access_count++;
     ss->conn_count++;
-    ss->bytes_served += (unsigned long) bs;
-    ss->my_bytes_served += (unsigned long) bs;
-    ss->conn_bytes += (unsigned long) bs;
+    ss->bytes_served += bs;
+    ss->my_bytes_served += bs;
+    ss->conn_bytes += bs;
 }
 
 static int find_child_by_pid(int pid)

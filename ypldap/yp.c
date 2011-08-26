@@ -1,4 +1,4 @@
-/*	$OpenBSD: yp.c,v 1.1 2008/06/26 15:10:01 pyr Exp $ */
+/*	$OpenBSD: yp.c,v 1.10 2011/01/13 06:09:35 martinh Exp $ */
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
  *
@@ -91,6 +91,7 @@ yp_enable_events(void)
 				fatal(NULL);
 			event_set(&ye->ye_event, i, EV_READ, yp_fd_event, NULL);
 			event_add(&ye->ye_event, NULL);
+			TAILQ_INSERT_TAIL(&env->sc_yp->yd_events, ye, ye_entry);
 		}
 	}
 }
@@ -224,7 +225,7 @@ yp_dispatch(struct svc_req *req, SVCXPRT *trans)
 		if (yp_check(req) == -1)
 			return;
 		cb = (void *)ypproc_all_2_svc;
-		break;;
+		break;
 	case YPPROC_MASTER:
 		log_debug("ypproc_master");
 		if (yp_check(req) == -1)
@@ -321,7 +322,10 @@ ypproc_match_2_svc(ypreq_key *arg, struct svc_req *req)
 	struct groupent		*ge;
 	static struct ypresp_val res;
 	const char		*estr;
-	char			 key[_PW_NAME_LEN+1];
+	char			 key[YPMAXRECORD+1];
+
+	log_debug("matching '%.*s' in map %s", arg->key.keydat_len,
+	   arg->key.keydat_val, arg->map);
 
 	if (yp_valid_domain(arg->domain, (struct ypresp_val *)&res) == -1)
 		return (&res);
@@ -332,12 +336,16 @@ ypproc_match_2_svc(ypreq_key *arg, struct svc_req *req)
 		 */
 		return (NULL);
 	}
+
+	if (arg->key.keydat_len > YPMAXRECORD) {
+		log_debug("argument too long");
+		return (NULL);
+	}
+	bzero(key, sizeof(key));
+	(void)strncpy(key, arg->key.keydat_val, arg->key.keydat_len);
+
 	if (strcmp(arg->map, "passwd.byname") == 0 ||
 	    strcmp(arg->map, "master.passwd.byname") == 0) {
-		bzero(key, sizeof(key));
-		(void)strncpy(key, arg->key.keydat_val,
-		    arg->key.keydat_len);
-		
 		ukey.ue_line = key;
 		if ((ue = RB_FIND(user_name_tree, env->sc_user_names,
 		    &ukey)) == NULL) {
@@ -347,10 +355,8 @@ ypproc_match_2_svc(ypreq_key *arg, struct svc_req *req)
 
 		yp_make_val(&res, ue->ue_line);
 		return (&res);
-	} else if (strcmp(arg->map, "passwd.byuid") == 0) {
-		bzero(key, sizeof(key));
-		(void)strncpy(key, arg->key.keydat_val,
-		    arg->key.keydat_len);
+	} else if (strcmp(arg->map, "passwd.byuid") == 0 ||
+		   strcmp(arg->map, "master.passwd.byuid") == 0) {
 		ukey.ue_uid = strtonum(key, 0, UID_MAX, &estr); 
 		if (estr) {
 			res.stat = YP_BADARGS;
@@ -366,9 +372,6 @@ ypproc_match_2_svc(ypreq_key *arg, struct svc_req *req)
 		yp_make_val(&res, ue->ue_line);
 		return (&res);
 	} else if (strcmp(arg->map, "group.bygid") == 0) {
-		bzero(key, sizeof(key));
-		(void)strncpy(key, arg->key.keydat_val,
-		    arg->key.keydat_len);
 		gkey.ge_gid = strtonum(key, 0, GID_MAX, &estr); 
 		if (estr) {
 			res.stat = YP_BADARGS;
@@ -383,10 +386,6 @@ ypproc_match_2_svc(ypreq_key *arg, struct svc_req *req)
 		yp_make_val(&res, ge->ge_line);
 		return (&res);
 	} else if (strcmp(arg->map, "group.byname") == 0) {
-		bzero(key, sizeof(key));
-		(void)strncpy(key, arg->key.keydat_val,
-		    arg->key.keydat_len);
-		
 		gkey.ge_line = key;
 		if ((ge = RB_FIND(group_name_tree, env->sc_group_names,
 		    &gkey)) == NULL) {
@@ -417,19 +416,17 @@ ypproc_first_2_svc(ypreq_nokey *arg, struct svc_req *req)
 			return (NULL);
 
 		yp_make_keyval(&res, env->sc_user_lines, env->sc_user_lines);
-		return (&res);
 	} else if (strcmp(arg->map, "group.byname") == 0) {
 		if (env->sc_group_lines == NULL)
 			return (NULL);
 
 		yp_make_keyval(&res, env->sc_group_lines, env->sc_group_lines);
-		return (&res);
 	} else {
 		log_debug("unknown map %s", arg->map);
 		res.stat = YP_NOMAP;
-		return (&res);
 	}
-	return (NULL);
+
+	return (&res);
 }
 
 ypresp_key_val *
@@ -441,7 +438,7 @@ ypproc_next_2_svc(ypreq_key *arg, struct svc_req *req)
 	struct groupent			*ge;
 	char				*line;
 	static struct ypresp_key_val	 res;
-	char				 key[_PW_NAME_LEN+1];
+	char				 key[YPMAXRECORD+1];
 
 	if (yp_valid_domain(arg->domain, (struct ypresp_val *)&res) == -1)
 		return (&res);
@@ -456,7 +453,7 @@ ypproc_next_2_svc(ypreq_key *arg, struct svc_req *req)
 		    &ukey)) == NULL) {
 			/*
 			 * canacar's trick:
-			 * the user might have been deleted in between calls to
+			 * the user might have been deleted in between calls
 			 * to next since the tree may be modified by a reload.
 			 * next should still return the next user in
 			 * lexicographical order, hence insert the search key
@@ -589,7 +586,7 @@ yp_make_val(struct ypresp_val *res, char *line)
 void
 yp_make_keyval(struct ypresp_key_val *res, char *key, char *line)
 {
-	static char	keybuf[_PW_NAME_LEN+1];
+	static char	keybuf[YPMAXRECORD+1];
 	static char	buf[LINE_WIDTH];
 
 	bzero(keybuf, sizeof(keybuf));

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ripctl.c,v 1.6 2008/12/31 14:10:20 sobrado Exp $
+/*	$OpenBSD: ripctl.c,v 1.10 2009/11/02 20:29:17 claudio Exp $
  *
  * Copyright (c) 2006 Michele Marchetto <mydecay@openbeer.it>
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -62,12 +62,6 @@ usage(void)
 	exit(1);
 }
 
-/* dummy function to allow ripctl to run without libevent */
-void
-imsg_event_add(struct imsgbuf *i)
-{
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -76,7 +70,7 @@ main(int argc, char *argv[])
 	struct imsg		 imsg;
 	unsigned int		 ifidx = 0;
 	int			 ctl_sock;
-	int			 done = 0;
+	int			 done = 0, verbose = 0;
 	int			 n;
 
 	/* parse options */
@@ -95,7 +89,7 @@ main(int argc, char *argv[])
 
 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 		err(1, NULL);
-	imsg_init(ibuf, ctl_sock, NULL);
+	imsg_init(ibuf, ctl_sock);
 	done = 0;
 
 	/* process user request */
@@ -113,51 +107,60 @@ main(int argc, char *argv[])
 			if (ifidx == 0)
 				errx(1, "no such interface %s", res->ifname);
 		}
-		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
 		    &ifidx, sizeof(ifidx));
 		break;
 	case SHOW_NBR:
 		printf("%-15s %-15s %-15s %-9s %-10s\n", "ID",
 		    "State", "Address", "Iface", "Uptime");
-		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_RIB:
 		printf("%-20s %-17s %-7s\n", "Destination",
 		    "Nexthop", "Cost");
-		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_FIB:
 		if (!res->addr.s_addr)
-			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE, 0, 0, -1,
 			    &res->flags, sizeof(res->flags));
 		else
-			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_KROUTE_ADDR, 0, 0, -1,
 			    &res->addr, sizeof(res->addr));
 		show_fib_head();
 		break;
 	case SHOW_FIB_IFACE:
 		if (*res->ifname)
-			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0,
+			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, -1,
 			    res->ifname, sizeof(res->ifname));
 		else
-			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, NULL, 0);
+			imsg_compose(ibuf, IMSG_CTL_IFINFO, 0, 0, -1, NULL, 0);
 		show_interface_head();
 		break;
 	case FIB:
 		errx(1, "fib couple|decouple");
 		break;
 	case FIB_COUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_COUPLE, 0, 0, -1, NULL, 0);
 		printf("couple request sent.\n");
 		done = 1;
 		break;
 	case FIB_DECOUPLE:
-		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_FIB_DECOUPLE, 0, 0, -1, NULL, 0);
 		printf("decouple request sent.\n");
 		done = 1;
 		break;
+	case LOG_VERBOSE:
+		verbose = 1;
+		/* FALLTHROUGH */
+	case LOG_BRIEF:
+		imsg_compose(ibuf, IMSG_CTL_LOG_VERBOSE, 0, 0, -1,
+		    &verbose, sizeof(verbose));
+		printf("logging request sent.\n");
+		done = 1;
+		break;
 	case RELOAD:
-		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, -1, NULL, 0);
 		printf("reload request sent.\n");
 		done = 1;
 		break;
@@ -199,6 +202,8 @@ main(int argc, char *argv[])
 			case FIB:
 			case FIB_COUPLE:
 			case FIB_DECOUPLE:
+			case LOG_VERBOSE:
+			case LOG_BRIEF:
 			case RELOAD:
 				break;
 			}
@@ -294,8 +299,8 @@ show_interface_msg(struct imsg *imsg)
 			err(1, NULL);
 		printf("%-11s %-18s %-10s %-10s %-8s\n",
 		    iface->name, netid, if_state_name(iface->state),
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate), iface->uptime == 0 ? "00:00:00" :
+		    get_linkstate(iface->mediatype, iface->linkstate),
+		    iface->uptime == 0 ? "00:00:00" :
 		    fmt_timeframe_core(iface->uptime));
 		free(netid);
 		break;
@@ -391,7 +396,7 @@ show_fib_msg(struct imsg *imsg)
 		else
 			printf("*");
 
-		if (!(k->flags & F_KERNEL))
+		if (k->flags & F_RIPD_INSERTED)
 			printf("R");
 		else if (k->flags & F_CONNECTED)
 			printf("C");
@@ -442,28 +447,11 @@ show_fib_interface_msg(struct imsg *imsg)
 		k = imsg->data;
 		printf("%-15s", k->ifname);
 		printf("%-15s", k->flags & IFF_UP ? "UP" : "");
-		switch (k->media_type) {
-		case IFT_ETHER:
-			ifms_type = IFM_ETHER;
-			break;
-		case IFT_FDDI:
-			ifms_type = IFM_FDDI;
-			break;
-		case IFT_CARP:
-			ifms_type = IFM_CARP;
-			break;
-		default:
-			ifms_type = 0;
-			break;
-		}
-
+		ifms_type = get_ifms_type(k->media_type);
 		if (ifms_type)
-			printf("%s, %s", get_media_descr(ifms_type),
-			    get_linkstate(ifms_type, k->link_state));
-		else if (k->link_state == LINK_STATE_UNKNOWN)
-			printf("unknown");
-		else
-			printf("link state %u", k->link_state);
+			printf("%s, ", get_media_descr(ifms_type));
+
+		printf("%s", get_linkstate(k->media_type, k->link_state));
 
 		if (k->link_state != LINK_STATE_DOWN && k->baudrate > 0) {
 			printf(", ");
@@ -481,9 +469,8 @@ show_fib_interface_msg(struct imsg *imsg)
 	return (0);
 }
 
-const int	ifm_status_valid_list[] = IFM_STATUS_VALID_LIST;
-const struct ifmedia_status_description
-		ifm_status_descriptions[] = IFM_STATUS_DESCRIPTIONS;
+const struct if_status_description
+		if_status_descriptions[] = LINK_STATE_DESCRIPTIONS;
 const struct ifmedia_description
 		ifm_type_descriptions[] = IFM_TYPE_DESCRIPTIONS;
 
@@ -502,23 +489,15 @@ get_media_descr(int media_type)
 const char *
 get_linkstate(int media_type, int link_state)
 {
-	const struct ifmedia_status_description	*p;
-	int					 i;
+	const struct if_status_description *p;
+	static char buf[8];
 
-	if (link_state == LINK_STATE_UNKNOWN)
-		return ("unknown");
-
-	for (i = 0; ifm_status_valid_list[i] != 0; i++)
-		for (p = ifm_status_descriptions; p->ifms_valid != 0; p++) {
-			if (p->ifms_type != media_type ||
-			    p->ifms_valid != ifm_status_valid_list[i])
-				continue;
-			if (LINK_STATE_IS_UP(link_state))
-				return (p->ifms_string[1]);
-			return (p->ifms_string[0]);
-		}
-
-	return ("unknown link state");
+	for (p = if_status_descriptions; p->ifs_string != NULL; p++) {
+		if (LINK_STATE_DESC_MATCH(p, media_type, link_state))
+			return (p->ifs_string);
+	}
+	snprintf(buf, sizeof(buf), "[#%d]", link_state);
+	return (buf);
 }
 
 void

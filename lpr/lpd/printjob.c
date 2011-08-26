@@ -1,4 +1,4 @@
-/*	$OpenBSD: printjob.c,v 1.44 2007/09/10 14:29:53 tobias Exp $	*/
+/*	$OpenBSD: printjob.c,v 1.46 2010/03/22 16:50:38 deraadt Exp $	*/
 /*	$NetBSD: printjob.c,v 1.31 2002/01/21 14:42:30 wiz Exp $	*/
 
 /*
@@ -30,17 +30,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifndef lint
-static const char copyright[] =
-"@(#) Copyright (c) 1983, 1993\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
-
-#ifndef lint
-static const char sccsid[] = "@(#)printjob.c	8.7 (Berkeley) 5/10/95";
-#endif /* not lint */
-
 
 /*
  * printjob -- print jobs in the queue.
@@ -1638,8 +1627,10 @@ pstatus(const char *msg, ...)
 	ftruncate(fd, 0);
 	len = vsnprintf(buf, sizeof(buf), msg, ap);
 	va_end(ap);
-	if (len == -1)
+	if (len == -1) {
+		(void)close(fd);
 		return;
+	}
 	if (len >= sizeof(buf))
 		len = sizeof(buf) - 1;
 	buf[len++] = '\n';		/* replace NUL with newline */

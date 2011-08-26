@@ -1,4 +1,4 @@
-/*	$OpenBSD: misc.c,v 1.39 2008/01/05 16:59:06 chl Exp $	*/
+/*	$OpenBSD: misc.c,v 1.43 2011/07/09 14:49:14 dhill Exp $	*/
 
 /* Copyright 1988,1990,1993,1994 by Paul Vixie
  * All rights reserved
@@ -20,10 +20,6 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
  * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
-#if !defined(lint) && !defined(LINT)
-static char const rcsid[] = "$OpenBSD: misc.c,v 1.39 2008/01/05 16:59:06 chl Exp $";
-#endif
 
 /* vix 26jan87 [RCS has the rest of the log]
  * vix 30dec86 [written]
@@ -295,7 +291,7 @@ acquire_daemonlock(int closeflag) {
 			close(fd);
 			fd = STDERR + 1;
 		}
-		(void) fcntl(fd, F_SETFD, 1);
+		(void) fcntl(fd, F_SETFD, FD_CLOEXEC);
 	}
 
 	snprintf(buf, sizeof(buf), "%ld\n", (long)getpid());
@@ -450,6 +446,10 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 	TIME_T now = time((TIME_T) 0);
 	struct tm *t = localtime(&now);
 #endif /*LOG_FILE*/
+#if defined(SYSLOG)
+	char **info, *info_events[] = { "CMD", "ATJOB", "BEGIN EDIT", "DELETE",
+	    "END EDIT", "LIST", "MAIL", "RELOAD", "REPLACE", "STARTUP", NULL };
+#endif /*SYSLOG*/
 
 #if defined(LOG_FILE)
 	/* we assume that MAX_TEMPSTR will hold the date, time, &punctuation.
@@ -466,7 +466,7 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 				ProgramName);
 			perror(LOG_FILE);
 		} else {
-			(void) fcntl(LogFD, F_SETFD, 1);
+			(void) fcntl(LogFD, F_SETFD, FD_CLOEXEC);
 		}
 	}
 
@@ -499,7 +499,11 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 		syslog_open = TRUE;		/* assume openlog success */
 	}
 
-	syslog(LOG_INFO, "(%s) %s (%s)", username, event, detail);
+	for (info = info_events; *info; info++)
+		if (!strcmp(event, *info))
+			break;
+	syslog(*info ? LOG_INFO : LOG_WARNING, "(%s) %s (%s)", username, event,
+	    detail);
 
 #endif /*SYSLOG*/
 
@@ -677,7 +681,7 @@ long get_gmtoff(time_t *clock, struct tm *local)
 	if (local->tm_year < gmt.tm_year)
 		offset -= 24 * 3600;
 	else if (local->tm_year > gmt.tm_year)
-		offset -= 24 * 3600;
+		offset += 24 * 3600;
 	else if (local->tm_yday < gmt.tm_yday)
 		offset -= 24 * 3600;
 	else if (local->tm_yday > gmt.tm_yday)

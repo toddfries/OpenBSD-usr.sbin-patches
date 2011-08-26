@@ -1,4 +1,4 @@
-.\" $OpenBSD: relayctl.8,v 1.23 2008/12/31 15:22:27 sobrado Exp $
+.\" $OpenBSD: relayctl.8,v 1.27 2011/05/19 08:56:49 reyk Exp $
 .\"
 .\" Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: December 31 2008 $
+.Dd $Mdocdate: May 19 2011 $
 .Dt RELAYCTL 8
 .Os
 .Sh NAME
@@ -39,6 +39,8 @@ Treat it as though it were always down.
 .It Cm host enable Op Ar name | id
 Enable the host.
 Start checking its health again.
+.It Cm load Ar filename
+Reload the configuration from the specified file.
 .It Cm monitor
 Continuously report any changes in the host checking engine and the
 .Xr pf 4
@@ -76,10 +78,13 @@ not the total number of redirected connections.
 Show detailed status of relays including the current and average
 access statistics.
 The statistics will be updated every minute.
+.It Cm show routers
+Show detailed status of routers including the configured network
+routes.
 .It Cm show sessions
 Dump the complete list of running relay sessions.
 .It Cm show summary
-Display a list of all relays, redirections, tables, and hosts.
+Display a list of all relays, redirections, routers, tables, and hosts.
 .It Cm table disable Op Ar name | id
 Disable a table.
 Consider all hosts disabled.
@@ -95,7 +100,8 @@ again.
 .Sh FILES
 .Bl -tag -width "/var/run/relayd.sockXX" -compact
 .It /var/run/relayd.sock
-Unix-domain socket used for communication with
+.Ux Ns -domain
+socket used for communication with
 .Xr relayd 8 .
 .El
 .Sh ERRORS

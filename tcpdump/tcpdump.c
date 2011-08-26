@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcpdump.c,v 1.61 2009/02/14 11:18:56 sthen Exp $	*/
+/*	$OpenBSD: tcpdump.c,v 1.63 2010/06/26 16:47:07 henning Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997
@@ -20,14 +20,6 @@
  * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
-
-#ifndef lint
-static const char copyright[] =
-    "@(#) Copyright (c) 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997\n\
-The Regents of the University of California.  All rights reserved.\n";
-static const char rcsid[] =
-    "@(#) $Id: tcpdump.c,v 1.61 2009/02/14 11:18:56 sthen Exp $ (LBL)";
-#endif
 
 /*
  * tcpdump - monitor tcp/ip traffic on an ethernet.
@@ -129,7 +121,6 @@ static struct printer printers[] = {
 	{ loop_if_print,		DLT_LOOP },
 	{ enc_if_print,			DLT_ENC },
 	{ pflog_if_print,		DLT_PFLOG },
-	{ pflog_old_if_print,		DLT_OLD_PFLOG },
 	{ pfsync_if_print,		DLT_PFSYNC },
 	{ ppp_ether_if_print,		DLT_PPP_ETHER },
 	{ ieee802_11_if_print,		DLT_IEEE802_11 },

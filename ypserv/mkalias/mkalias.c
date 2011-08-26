@@ -1,4 +1,4 @@
-/*	$OpenBSD: mkalias.c,v 1.21 2007/09/04 14:37:53 fgsch Exp $ */
+/*	$OpenBSD: mkalias.c,v 1.24 2010/06/29 03:47:40 deraadt Exp $ */
 
 /*
  * Copyright (c) 1997 Mats O Jansson <moj@stacken.kth.se>
@@ -25,10 +25,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifndef lint
-static const char rcsid[] = "$OpenBSD: mkalias.c,v 1.21 2007/09/04 14:37:53 fgsch Exp $";
-#endif
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -84,7 +80,10 @@ split_address(char *address, size_t len, char *user, char *host)
 static int
 check_host(char *address, size_t len, char *host, int dflag, int uflag, int Eflag)
 {
-	u_char answer[PACKETSZ];
+	union {
+		HEADER hdr;
+		u_char buf[PACKETSZ];
+	} answer;
 	int  status;
 
 	if ((dflag && memchr(address, '@', len)) ||
@@ -94,13 +93,13 @@ check_host(char *address, size_t len, char *host, int dflag, int uflag, int Efla
 	if ((_res.options & RES_INIT) == 0)
 		res_init();
 
-	status = res_search(host, C_IN, T_AAAA, answer, sizeof(answer));
+	status = res_search(host, C_IN, T_AAAA, answer.buf, sizeof(answer.buf));
 
 	if (status == -1)
-		status = res_search(host, C_IN, T_A, answer, sizeof(answer));
+		status = res_search(host, C_IN, T_A, answer.buf, sizeof(answer.buf));
 
 	if (status == -1 && Eflag)
-		status = res_search(host, C_IN, T_MX, answer, sizeof(answer));
+		status = res_search(host, C_IN, T_MX, answer.buf, sizeof(answer.buf));
 
 	return(status == -1);
 }
@@ -132,7 +131,7 @@ static void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: mkalias [-v] [-e|-E [-d] [-u]] [-n] input [output]\n");
+	    "usage: mkalias [-nv] [-E | -e [-du]] input [output]\n");
 	exit(1);
 }
 

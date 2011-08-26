@@ -1,7 +1,8 @@
-/*	$OpenBSD: parse.y,v 1.127 2008/12/05 16:53:07 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.158 2011/05/26 14:48:20 reyk Exp $	*/
 
 /*
- * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
+ * Copyright (c) 2007-2011 Reyk Floeter <reyk@openbsd.org>
+ * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
  * Copyright (c) 2004 Ryan McBride <mcbride@openbsd.org>
@@ -28,12 +29,14 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/queue.h>
+#include <sys/ioctl.h>
 
 #include <net/if.h>
 #include <net/pfvar.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <net/route.h>
 
 #include <ctype.h>
 #include <unistd.h>
@@ -46,6 +49,7 @@
 #include <stdio.h>
 #include <netdb.h>
 #include <string.h>
+#include <ifaddrs.h>
 
 #include <openssl/ssl.h>
 
@@ -84,17 +88,23 @@ char		*symget(const char *);
 
 struct relayd		*conf = NULL;
 static int		 errors = 0;
+static int		 loadcfg = 0;
 objid_t			 last_rdr_id = 0;
 objid_t			 last_table_id = 0;
 objid_t			 last_host_id = 0;
 objid_t			 last_relay_id = 0;
 objid_t			 last_proto_id = 0;
+objid_t			 last_rt_id = 0;
+objid_t			 last_nr_id = 0;
 
 static struct rdr	*rdr = NULL;
 static struct table	*table = NULL;
 static struct relay	*rlay = NULL;
+static struct host	*hst = NULL;
+struct relaylist	 relays;
 static struct protocol	*proto = NULL;
 static struct protonode	 node;
+static struct router	*router = NULL;
 static u_int16_t	 label = 0;
 static in_port_t	 tableport = 0;
 static int		 nodedirection;
@@ -102,48 +112,60 @@ static int		 nodedirection;
 struct address	*host_v4(const char *);
 struct address	*host_v6(const char *);
 int		 host_dns(const char *, struct addresslist *,
-		    int, struct portrange *, const char *);
+		    int, struct portrange *, const char *, int);
+int		 host_if(const char *, struct addresslist *,
+		    int, struct portrange *, const char *, int);
 int		 host(const char *, struct addresslist *,
-		    int, struct portrange *, const char *);
+		    int, struct portrange *, const char *, int);
+void		 host_free(struct addresslist *);
 
 struct table	*table_inherit(struct table *);
+struct relay	*relay_inherit(struct relay *, struct relay *);
 int		 getservice(char *);
+int		 is_if_in_group(const char *, const char *);
 
 typedef struct {
 	union {
-		int64_t		 number;
-		char		*string;
-		struct host	*host;
-		struct timeval	 tv;
-		struct table	*table;
-		struct portrange port;
+		int64_t			 number;
+		char			*string;
+		struct host		*host;
+		struct timeval		 tv;
+		struct table		*table;
+		struct portrange	 port;
 		struct {
-			enum digest_type	 type;
-			char			*digest;
-		}		 digest;
+			struct sockaddr_storage	 ss;
+			char			 name[MAXHOSTNAMELEN];
+		}			 addr;
+		struct {
+			enum digest_type type;
+			char		*digest;
+		}			 digest;
 	} v;
 	int lineno;
 } YYSTYPE;
 
 %}
 
-%token	ALL APPEND BACKLOG BACKUP BUFFER CACHE CHANGE CHECK
+%token	ALL APPEND BACKLOG BACKUP BUFFER CA CACHE CHANGE CHECK
 %token	CIPHERS CODE COOKIE DEMOTE DIGEST DISABLE ERROR EXPECT
 %token	EXTERNAL FILENAME FILTER FORWARD FROM HASH HEADER HOST ICMP
 %token	INCLUDE INET INET6 INTERFACE INTERVAL IP LABEL LISTEN
-%token	LOADBALANCE LOG LOOKUP MARK MARKED MODE NAT NO
-%token	NODELAY NOTHING ON PARENT PATH PORT PREFORK PROTO
+%token	LOADBALANCE LOG LOOKUP MARK MARKED MODE NAT NO DESTINATION
+%token	NODELAY NOTHING ON PARENT PATH PORT PREFORK PRIORITY PROTO
 %token	QUERYSTR REAL REDIRECT RELAY REMOVE REQUEST RESPONSE RETRY
-%token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET
-%token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO
-%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH 
+%token	RETURN ROUNDROBIN ROUTE SACK SCRIPT SEND SESSION SOCKET SPLICE
+%token	SSL STICKYADDR STYLE TABLE TAG TCP TIMEOUT TO ROUTER RTLABEL
+%token	TRANSPARENT TRAP UPDATES URL VIRTUAL WITH TTL RTABLE MATCH
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.string>	hostname interface table
-%type	<v.number>	http_type loglevel mark optssl parent sslcache
-%type	<v.number>	direction dstmode flag forwardmode proto_type retry
+%type	<v.number>	http_type loglevel mark
+%type	<v.number>	direction dstmode flag forwardmode retry
+%type	<v.number>	optssl optsslclient sslcache
+%type	<v.number>	redirect_proto relay_proto match
 %type	<v.port>	port
 %type	<v.host>	host
+%type	<v.addr>	address
 %type	<v.tv>		timeout
 %type	<v.digest>	digest
 %type	<v.table>	tablespec
@@ -159,6 +181,7 @@ grammar		: /* empty */
 		| grammar tabledef '\n'
 		| grammar relay '\n'
 		| grammar proto '\n'
+		| grammar router '\n'
 		| grammar error '\n'		{ file->errors++; }
 		;
 
@@ -175,9 +198,14 @@ include		: INCLUDE STRING		{
 			file = nfile;
 			lungetc('\n');
 		}
+		;
 
 optssl		: /*empty*/	{ $$ = 0; }
 		| SSL		{ $$ = 1; }
+		;
+
+optsslclient	: /*empty*/	{ $$ = 0; }
+		| WITH SSL	{ $$ = 1; }
 		;
 
 http_type	: STRING	{
@@ -200,12 +228,13 @@ hostname	: /* empty */		{
 				fatal("calloc");
 		}
 		| HOST STRING	{
-			if (asprintf(&$$, "Host: %s\r\n", $2) == -1)
+			if (asprintf(&$$, "Host: %s\r\nConnection: close\r\n",
+			    $2) == -1)
 				fatal("asprintf");
 		}
 		;
 
-proto_type	: /* empty */			{ $$ = RELAY_PROTO_TCP; }
+relay_proto	: /* empty */			{ $$ = RELAY_PROTO_TCP; }
 		| TCP				{ $$ = RELAY_PROTO_TCP; }
 		| STRING			{
 			if (strcmp("http", $1) == 0) {
@@ -218,6 +247,22 @@ proto_type	: /* empty */			{ $$ = RELAY_PROTO_TCP; }
 				YYERROR;
 			}
 			free($1);
+		}
+		;
+
+redirect_proto	: /* empty */			{ $$ = IPPROTO_TCP; }
+		| TCP				{ $$ = IPPROTO_TCP; }
+		| STRING			{
+			struct protoent	*p;
+
+			if ((p = getprotobyname($1)) == NULL) {
+				yyerror("invalid protocol: %s", $1);
+				free($1);
+				YYERROR;
+			}
+			free($1);
+
+			$$ = p->p_proto;
 		}
 		;
 
@@ -283,28 +328,36 @@ varset		: STRING '=' STRING	{
 
 sendbuf		: NOTHING		{
 			table->sendbuf = NULL;
-			table->sendbuf_len = 0;
 		}
 		| STRING		{
 			table->sendbuf = strdup($1);
 			if (table->sendbuf == NULL)
 				fatal("out of memory");
-			table->sendbuf_len = strlen(table->sendbuf);
 			free($1);
 		}
 		;
 
 main		: INTERVAL NUMBER	{
+			if (loadcfg)
+				break;
 			if ((conf->sc_interval.tv_sec = $2) < 0) {
 				yyerror("invalid interval: %d", $2);
 				YYERROR;
 			}
 		}
-		| LOG loglevel		{ conf->sc_opts |= $2; }
+		| LOG loglevel		{
+			if (loadcfg)
+				break;
+			conf->sc_opts |= $2;
+		}
 		| TIMEOUT timeout	{
+			if (loadcfg)
+				break;
 			bcopy(&$2, &conf->sc_timeout, sizeof(struct timeval));
 		}
 		| PREFORK NUMBER	{
+			if (loadcfg)
+				break;
 			if ($2 <= 0 || $2 > RELAY_MAXPROC) {
 				yyerror("invalid number of preforked "
 				    "relays: %d", $2);
@@ -313,6 +366,8 @@ main		: INTERVAL NUMBER	{
 			conf->sc_prefork_relay = $2;
 		}
 		| DEMOTE STRING		{
+			if (loadcfg)
+				break;
 			conf->sc_flags |= F_DEMOTE;
 			if (strlcpy(conf->sc_demote_group, $2,
 			    sizeof(conf->sc_demote_group))
@@ -328,7 +383,11 @@ main		: INTERVAL NUMBER	{
 				YYERROR;
 			}
 		}
-		| SEND TRAP		{ conf->sc_flags |= F_TRAP; }
+		| SEND TRAP		{
+			if (loadcfg)
+				break;
+			conf->sc_flags |= F_TRAP;
+		}
 		;
 
 loglevel	: UPDATES		{ $$ = RELAYD_OPT_LOGUPDATE; }
@@ -339,6 +398,12 @@ rdr		: REDIRECT STRING	{
 			struct rdr *srv;
 
 			conf->sc_flags |= F_NEEDPF;
+
+			if (!loadcfg) {
+				free($2);
+				YYACCEPT;
+			}
+
 			TAILQ_FOREACH(srv, conf->sc_rdrs, entry)
 				if (!strcmp(srv->conf.name, $2))
 					break;
@@ -442,34 +507,36 @@ rdroptsl	: forwardmode TO tablespec interface	{
 			}
 			$3->conf.fwdmode = $1;
 			$3->conf.rdrid = rdr->conf.id;
-			$3->conf.flags |= F_USED | $1;
+			$3->conf.flags |= F_USED;
 		}
-		| LISTEN ON STRING port interface {
+		| LISTEN ON STRING redirect_proto port interface {
 			if (host($3, &rdr->virts,
-				 SRV_MAX_VIRTS, &$4, $5) <= 0) {
+			    SRV_MAX_VIRTS, &$5, $6, $4) <= 0) {
 				yyerror("invalid virtual ip: %s", $3);
 				free($3);
-				free($5);
+				free($6);
 				YYERROR;
 			}
 			free($3);
-			free($5);
+			free($6);
 			if (rdr->conf.port == 0)
-				rdr->conf.port = $4.val[0];
+				rdr->conf.port = $5.val[0];
 			tableport = rdr->conf.port;
 		}
 		| DISABLE		{ rdr->conf.flags |= F_DISABLE; }
 		| STICKYADDR		{ rdr->conf.flags |= F_STICKY; }
-		| TAG STRING {
+		| match TAG STRING {
 			conf->sc_flags |= F_NEEDPF;
-			if (strlcpy(rdr->conf.tag, $2,
+			if (strlcpy(rdr->conf.tag, $3,
 			    sizeof(rdr->conf.tag)) >=
 			    sizeof(rdr->conf.tag)) {
 				yyerror("redirection tag name truncated");
-				free($2);
+				free($3);
 				YYERROR;
 			}
-			free($2);
+			if ($1)
+				rdr->conf.flags |= F_MATCH;
+			free($3);
 		}
 		| SESSION TIMEOUT NUMBER		{
 			if ((rdr->conf.timeout.tv_sec = $3) < 0) {
@@ -480,13 +547,16 @@ rdroptsl	: forwardmode TO tablespec interface	{
 		| include
 		;
 
+match		: /* empty */		{ $$ = 0; }
+		| MATCH			{ $$ = 1; }
+		;
+
 forwardmode	: FORWARD		{ $$ = FWD_NORMAL; }
 		| ROUTE			{ $$ = FWD_ROUTE; }
 		| TRANSPARENT FORWARD	{ $$ = FWD_TRANS; }
 		;
 
 table		: '<' STRING '>'	{
-			conf->sc_flags |= F_NEEDPF;
 			if (strlen($2) >= TABLE_NAME_SIZE) {
 				yyerror("invalid table name");
 				free($2);
@@ -498,6 +568,11 @@ table		: '<' STRING '>'	{
 
 tabledef	: TABLE table		{
 			struct table *tb;
+
+			if (!loadcfg) {
+				free($2);
+				YYACCEPT;
+			}
 
 			TAILQ_FOREACH(tb, conf->sc_tables, entry)
 				if (!strcmp(tb->conf.name, $2))
@@ -656,7 +731,6 @@ tablecheck	: ICMP			{ table->conf.check = CHECK_ICMP; }
 			free($3);
 			if (table->sendbuf == NULL)
 				fatal("out of memory");
-			table->sendbuf_len = strlen(table->sendbuf);
 		}
 		| http_type STRING hostname digest {
 			if ($1) {
@@ -672,7 +746,6 @@ tablecheck	: ICMP			{ table->conf.check = CHECK_ICMP; }
 			free($3);
 			if (table->sendbuf == NULL)
 				fatal("out of memory");
-			table->sendbuf_len = strlen(table->sendbuf);
 			(void)strlcpy(table->conf.digest, $4.digest,
 			    sizeof(table->conf.digest));
 			table->conf.digest_type = $4.type;
@@ -703,6 +776,7 @@ tablecheck	: ICMP			{ table->conf.check = CHECK_ICMP; }
 				free($2);
 				YYERROR;
 			}
+			conf->sc_flags |= F_SCRIPT;
 			free($2);
 		}
 		;
@@ -725,8 +799,13 @@ digest		: DIGEST STRING
 		}
 		;
 
-proto		: proto_type PROTO STRING	{
+proto		: relay_proto PROTO STRING	{
 			struct protocol *p;
+
+			if (!loadcfg) {
+				free($3);
+				YYACCEPT;
+			}
 
 			if (strcmp($3, "default") == 0) {
 				p = &conf->sc_proto_default;
@@ -754,6 +833,13 @@ proto		: proto_type PROTO STRING	{
 			p->type = $1;
 			p->cache = RELAY_CACHESIZE;
 			p->tcpflags = TCPFLAG_DEFAULT;
+			if (p->type != RELAY_PROTO_TCP) {
+				/*
+				 * Splicing is currently only supported
+				 * for plain TCP relays.
+				 */
+				p->tcpflags |= TCPFLAG_NSPLICE;
+			}
 			p->sslflags = SSLFLAG_DEFAULT;
 			p->tcpbacklog = RELAY_BACKLOG;
 			(void)strlcpy(p->sslciphers, SSLCIPHERS_DEFAULT,
@@ -831,6 +917,8 @@ tcpflags	: SACK			{ proto->tcpflags |= TCPFLAG_SACK; }
 		| NO SACK		{ proto->tcpflags |= TCPFLAG_NSACK; }
 		| NODELAY		{ proto->tcpflags |= TCPFLAG_NODELAY; }
 		| NO NODELAY		{ proto->tcpflags |= TCPFLAG_NNODELAY; }
+		| SPLICE		{ /* default */ }
+		| NO SPLICE		{ proto->tcpflags |= TCPFLAG_NSPLICE; }
 		| BACKLOG NUMBER	{
 			if ($2 < 0 || $2 > RELAY_MAX_SESSIONS) {
 				yyerror("invalid backlog: %d", $2);
@@ -880,6 +968,16 @@ sslflags	: SESSION CACHE sslcache	{ proto->cache = $3; }
 				YYERROR;
 			}
 			free($2);
+		}
+		| CA FILENAME STRING		{
+			if (strlcpy(proto->sslca, $3,
+			    sizeof(proto->sslca)) >=
+			    sizeof(proto->sslca)) {
+				yyerror("sslca truncated");
+				free($3);
+				YYERROR;
+			}
+			free($3);
 		}
 		| NO flag			{ proto->sslflags &= ~($2); }
 		| flag				{ proto->sslflags |= $1; }
@@ -994,7 +1092,7 @@ protonode	: nodetype APPEND STRING TO STRING nodeopts		{
 				fatal("out of memory");
 			free($3);
 			proto->lateconnect++;
-		}		
+		}
 		| nodetype FILTER					{
 			node.action = NODE_ACTION_FILTER;
 			node.key = NULL;
@@ -1120,6 +1218,11 @@ sslcache	: NUMBER			{
 relay		: RELAY STRING	{
 			struct relay *r;
 
+			if (!loadcfg) {
+				free($2);
+				YYACCEPT;
+			}
+
 			TAILQ_FOREACH(r, conf->sc_relays, rl_entry)
 				if (!strcmp(r->rl_conf.name, $2))
 					break;
@@ -1128,6 +1231,8 @@ relay		: RELAY STRING	{
 				free($2);
 				YYERROR;
 			}
+			TAILQ_INIT(&relays);
+
 			if ((r = calloc(1, sizeof (*r))) == NULL)
 				fatal("out of memory");
 
@@ -1152,17 +1257,30 @@ relay		: RELAY STRING	{
 			}
 			rlay = r;
 		} '{' optnl relayopts_l '}'	{
+			struct relay	*r;
+
 			if (rlay->rl_conf.ss.ss_family == AF_UNSPEC) {
 				yyerror("relay %s has no listener",
 				    rlay->rl_conf.name);
 				YYERROR;
 			}
-			if ((rlay->rl_conf.flags & F_NATLOOK) == 0 &&
+			if ((rlay->rl_conf.flags & (F_NATLOOK|F_DIVERT)) ==
+			    (F_NATLOOK|F_DIVERT)) {
+				yyerror("relay %s with conflicting nat lookup "
+				    "and peer options", rlay->rl_conf.name);
+				YYERROR;
+			}
+			if ((rlay->rl_conf.flags & (F_NATLOOK|F_DIVERT)) == 0 &&
 			    rlay->rl_conf.dstss.ss_family == AF_UNSPEC &&
 			    rlay->rl_conf.dsttable == EMPTY_ID) {
 				yyerror("relay %s has no target, rdr, "
 				    "or table", rlay->rl_conf.name);
 				YYERROR;
+			}
+			if (rlay->rl_backuptable == NULL) {
+				rlay->rl_conf.backuptable =
+				    conf->sc_empty_table.conf.id;
+				rlay->rl_backuptable = &conf->sc_empty_table;
 			}
 			if (rlay->rl_conf.proto == EMPTY_ID) {
 				rlay->rl_proto = &conf->sc_proto_default;
@@ -1176,7 +1294,15 @@ relay		: RELAY STRING	{
 			conf->sc_relaycount++;
 			SPLAY_INIT(&rlay->rl_sessions);
 			TAILQ_INSERT_TAIL(conf->sc_relays, rlay, rl_entry);
+
 			tableport = 0;
+
+			while ((r = TAILQ_FIRST(&relays)) != NULL) {
+				TAILQ_REMOVE(&relays, r, rl_entry);
+				if (relay_inherit(rlay, r) == NULL) {
+					YYERROR;
+				}
+			}
 			rlay = NULL;
 		}
 		;
@@ -1188,13 +1314,14 @@ relayopts_l	: relayopts_l relayoptsl nl
 relayoptsl	: LISTEN ON STRING port optssl {
 			struct addresslist	 al;
 			struct address		*h;
+			struct relay		*r;
 
 			if (rlay->rl_conf.ss.ss_family != AF_UNSPEC) {
-				yyerror("relay %s listener already specified",
-				    rlay->rl_conf.name);
-				free($3);
-				YYERROR;
-			}
+				if ((r = calloc(1, sizeof (*r))) == NULL)
+					fatal("out of memory");
+				TAILQ_INSERT_TAIL(&relays, r, rl_entry);
+			} else
+				r = rlay;
 			if ($4.op != PF_OP_EQ) {
 				yyerror("invalid port");
 				free($3);
@@ -1202,26 +1329,27 @@ relayoptsl	: LISTEN ON STRING port optssl {
 			}
 
 			TAILQ_INIT(&al);
-			if (host($3, &al, 1, &$4, NULL) <= 0) {
+			if (host($3, &al, 1, &$4, NULL, -1) <= 0) {
 				yyerror("invalid listen ip: %s", $3);
 				free($3);
 				YYERROR;
 			}
 			free($3);
 			h = TAILQ_FIRST(&al);
-			bcopy(&h->ss, &rlay->rl_conf.ss, sizeof(rlay->rl_conf.ss));
-			rlay->rl_conf.port = h->port.val[0];
+			bcopy(&h->ss, &r->rl_conf.ss, sizeof(r->rl_conf.ss));
+			r->rl_conf.port = h->port.val[0];
 			if ($5) {
-				rlay->rl_conf.flags |= F_SSL;
+				r->rl_conf.flags |= F_SSL;
 				conf->sc_flags |= F_SSL;
 			}
 			tableport = h->port.val[0];
+			host_free(&al);
 		}
-		| forwardmode TO forwardspec interface dstaf	{
+		| forwardmode optsslclient TO forwardspec interface dstaf {
 			rlay->rl_conf.fwdmode = $1;
 			switch ($1) {
 			case FWD_NORMAL:
-				if ($4 == NULL)
+				if ($5 == NULL)
 					break;
 				yyerror("superfluous interface");
 				YYERROR;
@@ -1229,15 +1357,19 @@ relayoptsl	: LISTEN ON STRING port optssl {
 				yyerror("no route for redirections");
 				YYERROR;
 			case FWD_TRANS:
-				if ($4 != NULL)
+				if ($5 != NULL)
 					break;
 				yyerror("missing interface");
 				YYERROR;
 			}
-			if ($4 != NULL) {
-				strlcpy(rlay->rl_conf.ifname, $4,
+			if ($5 != NULL) {
+				strlcpy(rlay->rl_conf.ifname, $5,
 				    sizeof(rlay->rl_conf.ifname));
-				free($4);
+				free($5);
+			}
+			if ($2) {
+				rlay->rl_conf.flags |= F_SSLCLIENT;
+				conf->sc_flags |= F_SSLCLIENT;
 			}
 		}
 		| SESSION TIMEOUT NUMBER		{
@@ -1266,19 +1398,7 @@ relayoptsl	: LISTEN ON STRING port optssl {
 		| include
 		;
 
-forwardspec	: tablespec	{
-			if (rlay->rl_dsttable) {
-				yyerror("table already specified");
-				purge_table(conf->sc_tables, $1);
-				YYERROR;
-			}
-
-			rlay->rl_dsttable = $1;
-			rlay->rl_dsttable->conf.flags |= F_USED;
-			rlay->rl_conf.dsttable = $1->conf.id;
-			rlay->rl_conf.dstport = $1->conf.port;
-		}
-		| STRING port retry {
+forwardspec	: STRING port retry	{
 			struct addresslist	 al;
 			struct address		*h;
 
@@ -1295,7 +1415,7 @@ forwardspec	: tablespec	{
 			}
 
 			TAILQ_INIT(&al);
-			if (host($1, &al, 1, &$2, NULL) <= 0) {
+			if (host($1, &al, 1, &$2, NULL, -1) <= 0) {
 				yyerror("invalid listen ip: %s", $1);
 				free($1);
 				YYERROR;
@@ -1306,11 +1426,33 @@ forwardspec	: tablespec	{
 			    sizeof(rlay->rl_conf.dstss));
 			rlay->rl_conf.dstport = h->port.val[0];
 			rlay->rl_conf.dstretry = $3;
+			host_free(&al);
 		}
-		| NAT LOOKUP retry		{
+		| NAT LOOKUP retry	{
 			conf->sc_flags |= F_NEEDPF;
 			rlay->rl_conf.flags |= F_NATLOOK;
 			rlay->rl_conf.dstretry = $3;
+		}
+		| DESTINATION retry		{
+			conf->sc_flags |= F_NEEDPF;
+			rlay->rl_conf.flags |= F_DIVERT;
+			rlay->rl_conf.dstretry = $2;
+		}
+		| tablespec	{
+			if (rlay->rl_backuptable) {
+				yyerror("only one backup table is allowed");
+				YYERROR;
+			}
+			if (rlay->rl_dsttable) {
+				rlay->rl_backuptable = $1;
+				rlay->rl_backuptable->conf.flags |= F_USED;
+				rlay->rl_conf.backuptable = $1->conf.id;
+			} else {
+				rlay->rl_dsttable = $1;
+				rlay->rl_dsttable->conf.flags |= F_USED;
+				rlay->rl_conf.dsttable = $1->conf.id;
+				rlay->rl_conf.dstport = $1->conf.port;
+			}
 		}
 		;
 
@@ -1318,6 +1460,142 @@ dstmode		: /* empty */		{ $$ = RELAY_DSTMODE_DEFAULT; }
 		| LOADBALANCE		{ $$ = RELAY_DSTMODE_LOADBALANCE; }
 		| ROUNDROBIN		{ $$ = RELAY_DSTMODE_ROUNDROBIN; }
 		| HASH			{ $$ = RELAY_DSTMODE_HASH; }
+		;
+
+router		: ROUTER STRING		{
+			struct router *rt = NULL;
+
+			if (!loadcfg) {
+				free($2);
+				YYACCEPT;
+			}
+
+			conf->sc_flags |= F_NEEDRT;
+			TAILQ_FOREACH(rt, conf->sc_rts, rt_entry)
+				if (!strcmp(rt->rt_conf.name, $2))
+					break;
+			if (rt != NULL) {
+				yyerror("router %s defined twice", $2);
+				free($2);
+				YYERROR;
+			}
+
+			if ((rt = calloc(1, sizeof (*rt))) == NULL)
+				fatal("out of memory");
+
+			if (strlcpy(rt->rt_conf.name, $2,
+			    sizeof(rt->rt_conf.name)) >=
+			    sizeof(rt->rt_conf.name)) {
+				yyerror("router name truncated");
+				free(rt);
+				YYERROR;
+			}
+			free($2);
+			rt->rt_conf.id = ++last_rt_id;
+			if (last_rt_id == INT_MAX) {
+				yyerror("too many routers defined");
+				free(rt);
+				YYERROR;
+			}
+			TAILQ_INIT(&rt->rt_netroutes);
+			router = rt;
+
+			tableport = -1;
+		} '{' optnl routeopts_l '}'	{
+			if (!router->rt_conf.nroutes) {
+				yyerror("router %s without routes",
+				    router->rt_conf.name);
+				free(router);
+				router = NULL;
+				YYERROR;
+			}
+
+			conf->sc_routercount++;
+			TAILQ_INSERT_TAIL(conf->sc_rts, router, rt_entry);
+			router = NULL;
+
+			tableport = 0;
+		}
+		;
+
+routeopts_l	: routeopts_l routeoptsl nl
+		| routeoptsl optnl
+		;
+
+routeoptsl	: ROUTE address '/' NUMBER {
+			struct netroute	*nr;
+
+			if (router->rt_conf.af == AF_UNSPEC)
+				router->rt_conf.af = $2.ss.ss_family;
+			else if (router->rt_conf.af != $2.ss.ss_family) {
+				yyerror("router %s address family mismatch",
+				    router->rt_conf.name);
+				YYERROR;
+			}
+
+			if ((router->rt_conf.af == AF_INET &&
+			    ($4 > 32 || $4 < 0)) ||
+			    (router->rt_conf.af == AF_INET6 &&
+			    ($4 > 128 || $4 < 0))) {
+				yyerror("invalid prefixlen %d", $4);
+				YYERROR;
+			}
+
+			if ((nr = calloc(1, sizeof(*nr))) == NULL)
+				fatal("out of memory");
+
+			nr->nr_conf.id = ++last_nr_id;
+			if (last_nr_id == INT_MAX) {
+				yyerror("too many routes defined");
+				free(nr);
+				YYERROR;
+			}
+			nr->nr_conf.prefixlen = $4;
+			nr->nr_conf.routerid = router->rt_conf.id;
+			nr->nr_router = router;
+			bcopy(&$2.ss, &nr->nr_conf.ss, sizeof($2.ss));
+
+			router->rt_conf.nroutes++;
+			conf->sc_routecount++;
+			TAILQ_INSERT_TAIL(&router->rt_netroutes, nr, nr_entry);
+			TAILQ_INSERT_TAIL(conf->sc_routes, nr, nr_route);
+		}
+		| FORWARD TO tablespec {
+			if (router->rt_gwtable) {
+				yyerror("router %s table already specified",
+				    router->rt_conf.name);
+				purge_table(conf->sc_tables, $3);
+				YYERROR;
+			}
+			router->rt_gwtable = $3;
+			router->rt_gwtable->conf.flags |= F_USED;
+			router->rt_conf.gwtable = $3->conf.id;
+			router->rt_conf.gwport = $3->conf.port;
+		}
+		| RTABLE NUMBER {
+			if (router->rt_conf.rtable) {
+				yyerror("router %s rtable already specified",
+				    router->rt_conf.name);
+				YYERROR;
+			}
+			if ($2 < 0 || $2 > RT_TABLEID_MAX) {
+				yyerror("invalid rtable id %d", $2);
+				YYERROR;
+			}
+			router->rt_conf.rtable = $2;
+		}
+		| RTLABEL STRING {
+			if (strlcpy(router->rt_conf.label, $2,
+			    sizeof(router->rt_conf.label)) >=
+			    sizeof(router->rt_conf.label)) {
+				yyerror("route label truncated");
+				free($2);
+				YYERROR;
+			}
+			free($2);
+		}
+		| DISABLE		{ rlay->rl_conf.flags |= F_DISABLE; }
+		| include
 		;
 
 dstaf		: /* empty */		{
@@ -1346,52 +1624,107 @@ interface	: /*empty*/		{ $$ = NULL; }
 		| INTERFACE STRING	{ $$ = $2; }
 		;
 
-host		: STRING retry parent	{
-			struct address *a;
-			struct addresslist al;
-
-			if (($$ = calloc(1, sizeof(*($$)))) == NULL)
+host		: address	{
+			if ((hst = calloc(1, sizeof(*(hst)))) == NULL)
 				fatal("out of memory");
 
-			TAILQ_INIT(&al);
-			if (host($1, &al, 1, NULL, NULL) <= 0) {
-				yyerror("invalid host %s", $2);
-				free($1);
-				free($$);
-				YYERROR;
-			}
-			a = TAILQ_FIRST(&al);
-			memcpy(&$$->conf.ss, &a->ss, sizeof($$->conf.ss));
-			free(a);
-
-			if (strlcpy($$->conf.name, $1, sizeof($$->conf.name)) >=
-			    sizeof($$->conf.name)) {
+			if (strlcpy(hst->conf.name, $1.name,
+			    sizeof(hst->conf.name)) >= sizeof(hst->conf.name)) {
 				yyerror("host name truncated");
-				free($1);
-				free($$);
+				free(hst);
 				YYERROR;
 			}
-			free($1);
-			$$->conf.id = 0; /* will be set later */
-			$$->conf.retry = $2;
-			$$->conf.parentid = $3;
-			SLIST_INIT(&$$->children);
+			bcopy(&$1.ss, &hst->conf.ss, sizeof($1.ss));
+			hst->conf.id = 0; /* will be set later */
+			SLIST_INIT(&hst->children);
+		} opthostflags {
+			$$ = hst;
+			hst = NULL;
 		}
 		;
 
-retry		: /* nothing */		{ $$ = 0; }
-		| RETRY NUMBER		{
-			if (($$ = $2) < 0) {
+opthostflags	: /* empty */
+		| hostflags_l
+		;
+
+hostflags_l	: hostflags hostflags_l
+		| hostflags
+		;
+
+hostflags	: RETRY NUMBER		{
+			if (hst->conf.retry) {
+				yyerror("retry value already set");
+				YYERROR;
+			}
+			if ($2 < 0) {
 				yyerror("invalid retry value: %d\n", $2);
 				YYERROR;
 			}
+			hst->conf.retry = $2;
+		}
+		| PARENT NUMBER		{
+			if (hst->conf.parentid) {
+				yyerror("parent value already set");
+				YYERROR;
+			}
+			if ($2 < 0) {
+				yyerror("invalid parent value: %d\n", $2);
+				YYERROR;
+			}
+			hst->conf.parentid = $2;
+		}
+		| PRIORITY NUMBER		{
+			if (hst->conf.priority) {
+				yyerror("priority already set");
+				YYERROR;
+			}
+			if ($2 < 0 || $2 > RTP_MAX) {
+				yyerror("invalid priority value: %d\n", $2);
+				YYERROR;
+			}
+			hst->conf.priority = $2;
+		}
+		| IP TTL NUMBER		{
+			if (hst->conf.ttl) {
+				yyerror("ttl value already set");
+				YYERROR;
+			}
+			if ($3 < 0) {
+				yyerror("invalid ttl value: %d\n", $3);
+				YYERROR;
+			}
+			hst->conf.ttl = $3;
 		}
 		;
 
-parent		: /* nothing */		{ $$ = 0; }
-		| PARENT NUMBER		{
+address		: STRING	{
+			struct address *h;
+			struct addresslist al;
+
+			if (strlcpy($$.name, $1,
+			    sizeof($$.name)) >= sizeof($$.name)) {
+				yyerror("host name truncated");
+				free($1);
+				YYERROR;
+			}
+
+			TAILQ_INIT(&al);
+			if (host($1, &al, 1, NULL, NULL, -1) <= 0) {
+				yyerror("invalid host %s", $1);
+				free($1);
+				YYERROR;
+			}
+			free($1);
+			h = TAILQ_FIRST(&al);
+			memcpy(&$$.ss, &h->ss, sizeof($$.ss));
+			host_free(&al);
+		}
+		;
+
+retry		: /* empty */		{ $$ = 0; }
+		| RETRY NUMBER		{
 			if (($$ = $2) < 0) {
-				yyerror("invalid parent value: %d\n", $2);
+				yyerror("invalid retry value: %d\n", $2);
 				YYERROR;
 			}
 		}
@@ -1457,6 +1790,7 @@ lookup(char *s)
 		{ "backlog",		BACKLOG },
 		{ "backup",		BACKUP },
 		{ "buffer",		BUFFER },
+		{ "ca",			CA },
 		{ "cache",		CACHE },
 		{ "change",		CHANGE },
 		{ "check",		CHECK },
@@ -1464,6 +1798,7 @@ lookup(char *s)
 		{ "code",		CODE },
 		{ "cookie",		COOKIE },
 		{ "demote",		DEMOTE },
+		{ "destination",	DESTINATION },
 		{ "digest",		DIGEST },
 		{ "disable",		DISABLE },
 		{ "error",		ERROR },
@@ -1490,6 +1825,7 @@ lookup(char *s)
 		{ "lookup",		LOOKUP },
 		{ "mark",		MARK },
 		{ "marked",		MARKED },
+		{ "match",		MATCH },
 		{ "mode",		MODE },
 		{ "nat",		NAT },
 		{ "no",			NO },
@@ -1500,6 +1836,7 @@ lookup(char *s)
 		{ "path",		PATH },
 		{ "port",		PORT },
 		{ "prefork",		PREFORK },
+		{ "priority",		PRIORITY },
 		{ "protocol",		PROTO },
 		{ "query",		QUERYSTR },
 		{ "real",		REAL },
@@ -1512,11 +1849,15 @@ lookup(char *s)
 		{ "return",		RETURN },
 		{ "roundrobin",		ROUNDROBIN },
 		{ "route",		ROUTE },
+		{ "router",		ROUTER },
+		{ "rtable",		RTABLE },
+		{ "rtlabel",		RTLABEL },
 		{ "sack",		SACK },
 		{ "script",		SCRIPT },
 		{ "send",		SEND },
 		{ "session",		SESSION },
 		{ "socket",		SOCKET },
+		{ "splice",		SPLICE },
 		{ "ssl",		SSL },
 		{ "sticky-address",	STICKYADDR },
 		{ "style",		STYLE },
@@ -1527,6 +1868,7 @@ lookup(char *s)
 		{ "to",			TO },
 		{ "transparent",	TRANSPARENT },
 		{ "trap",		TRAP },
+		{ "ttl",		TTL },
 		{ "updates",		UPDATES },
 		{ "url",		URL },
 		{ "virtual",		VIRTUAL },
@@ -1696,9 +2038,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -1756,7 +2099,7 @@ nodigits:
 	(isalnum(x) || (ispunct(x) && x != '(' && x != ')' && \
 	x != '{' && x != '}' && x != '<' && x != '>' && \
 	x != '!' && x != '=' && x != '#' && \
-	x != ','))
+	x != ',' && x != '/'))
 
 	if (isalnum(c) || c == ':' || c == '_') {
 		do {
@@ -1807,13 +2150,17 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
-		log_warn("malloc");
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
+		log_warn("%s: malloc", __func__);
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("%s: malloc", __func__);
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {
-		log_warn("%s", nfile->name);
+		log_warn("%s: %s", __func__, nfile->name);
 		free(nfile->name);
 		free(nfile);
 		return (NULL);
@@ -1845,64 +2192,22 @@ popfile(void)
 	return (file ? 0 : EOF);
 }
 
-struct relayd *
-parse_config(const char *filename, int opts)
+int
+parse_config(const char *filename, struct relayd *x_conf)
 {
 	struct sym	*sym, *next;
-	struct table	*nexttb;
-	struct host	*h, *ph;
 
-	if ((conf = calloc(1, sizeof(*conf))) == NULL ||
-	    (conf->sc_tables = calloc(1, sizeof(*conf->sc_tables))) == NULL ||
-	    (conf->sc_relays = calloc(1, sizeof(*conf->sc_relays))) == NULL ||
-	    (conf->sc_protos = calloc(1, sizeof(*conf->sc_protos))) == NULL ||
-	    (conf->sc_rdrs = calloc(1, sizeof(*conf->sc_rdrs))) == NULL) {
-		log_warn("cannot allocate memory");
-		return (NULL);
+	conf = x_conf;
+	if (config_init(conf) == -1) {
+		log_warn("%s: cannot initialize configuration", __func__);
+		return (-1);
 	}
 
 	errors = 0;
-	last_host_id = last_table_id = last_rdr_id = last_proto_id =
-	    last_relay_id = 0;
 
-	rdr = NULL;
-	table = NULL;
-	rlay = NULL;
-	proto = NULL;
+	if ((file = pushfile(filename, 0)) == NULL)
+		return (-1);
 
-	TAILQ_INIT(conf->sc_rdrs);
-	TAILQ_INIT(conf->sc_tables);
-	TAILQ_INIT(conf->sc_protos);
-	TAILQ_INIT(conf->sc_relays);
-
-	memset(&conf->sc_empty_table, 0, sizeof(conf->sc_empty_table));
-	conf->sc_empty_table.conf.id = EMPTY_TABLE;
-	conf->sc_empty_table.conf.flags |= F_DISABLE;
-	(void)strlcpy(conf->sc_empty_table.conf.name, "empty",
-	    sizeof(conf->sc_empty_table.conf.name));
-
-	bzero(&conf->sc_proto_default, sizeof(conf->sc_proto_default));
-	conf->sc_proto_default.flags = F_USED;
-	conf->sc_proto_default.cache = RELAY_CACHESIZE;
-	conf->sc_proto_default.type = RELAY_PROTO_TCP;
-	(void)strlcpy(conf->sc_proto_default.name, "default",
-	    sizeof(conf->sc_proto_default.name));
-	RB_INIT(&conf->sc_proto_default.request_tree);
-	RB_INIT(&conf->sc_proto_default.response_tree);
-
-	conf->sc_timeout.tv_sec = CHECK_TIMEOUT / 1000;
-	conf->sc_timeout.tv_usec = (CHECK_TIMEOUT % 1000) * 1000;
-	conf->sc_interval.tv_sec = CHECK_INTERVAL;
-	conf->sc_interval.tv_usec = 0;
-	conf->sc_prefork_relay = RELAY_NUMPROC;
-	conf->sc_statinterval.tv_sec = RELAY_STATINTERVAL;
-	conf->sc_opts = opts;
-	conf->sc_confpath = filename;
-
-	if ((file = pushfile(filename, 0)) == NULL) {
-		free(conf);
-		return (NULL);
-	}
 	topfile = file;
 	setservent(1);
 
@@ -1911,6 +2216,55 @@ parse_config(const char *filename, int opts)
 	popfile();
 
 	endservent();
+	endprotoent();
+
+	/* Free macros */
+	for (sym = TAILQ_FIRST(&symhead); sym != NULL; sym = next) {
+		next = TAILQ_NEXT(sym, entry);
+		if (!sym->persist) {
+			free(sym->nam);
+			free(sym->val);
+			TAILQ_REMOVE(&symhead, sym, entry);
+			free(sym);
+		}
+	}
+
+	return (errors ? -1 : 0);
+}
+
+int
+load_config(const char *filename, struct relayd *x_conf)
+{
+	struct sym	*sym, *next;
+	struct table	*nexttb;
+	struct host	*h, *ph;
+
+	conf = x_conf;
+	conf->sc_flags = 0;
+
+	loadcfg = 1;
+	errors = 0;
+	last_host_id = last_table_id = last_rdr_id = last_proto_id =
+	    last_relay_id = last_rt_id = last_nr_id = 0;
+
+	rdr = NULL;
+	table = NULL;
+	rlay = NULL;
+	proto = NULL;
+	router = NULL;
+
+	if ((file = pushfile(filename, 0)) == NULL)
+		return (-1);
+
+	topfile = file;
+	setservent(1);
+
+	yyparse();
+	errors = file->errors;
+	popfile();
+
+	endservent();
+	endprotoent();
 
 	/* Free macros and check which have not been used. */
 	for (sym = TAILQ_FIRST(&symhead); sym != NULL; sym = next) {
@@ -1926,13 +2280,21 @@ parse_config(const char *filename, int opts)
 		}
 	}
 
-	if (TAILQ_EMPTY(conf->sc_rdrs) && TAILQ_EMPTY(conf->sc_relays)) {
-		log_warnx("no redirections, nothing to do");
+	if (TAILQ_EMPTY(conf->sc_rdrs) &&
+	    TAILQ_EMPTY(conf->sc_relays) &&
+	    TAILQ_EMPTY(conf->sc_rts)) {
+		log_warnx("no actions, nothing to do");
 		errors++;
 	}
 
 	if (TAILQ_EMPTY(conf->sc_relays))
 		conf->sc_prefork_relay = 0;
+
+	/* Cleanup relay list to inherit */
+	while ((rlay = TAILQ_FIRST(&relays)) != NULL) {
+		TAILQ_REMOVE(&relays, rlay, rl_entry);
+		free(rlay);
+	}
 
 	if (timercmp(&conf->sc_timeout, &conf->sc_interval, >=)) {
 		log_warnx("global timeout exceeds interval");
@@ -1992,12 +2354,7 @@ parse_config(const char *filename, int opts)
 		}
 	}
 
-	if (errors) {
-		free(conf);
-		return (NULL);
-	}
-
-	return (conf);
+	return (errors ? -1 : 0);
 }
 
 int
@@ -2126,13 +2483,16 @@ host_v6(const char *s)
 
 int
 host_dns(const char *s, struct addresslist *al, int max,
-    struct portrange *port, const char *ifname)
+    struct portrange *port, const char *ifname, int ipproto)
 {
 	struct addrinfo		 hints, *res0, *res;
 	int			 error, cnt = 0;
 	struct sockaddr_in	*sain;
 	struct sockaddr_in6	*sin6;
 	struct address		*h;
+
+	if ((cnt = host_if(s, al, max, port, ifname, ipproto)) != 0)
+		return (cnt);
 
 	bzero(&hints, sizeof(hints));
 	hints.ai_family = PF_UNSPEC;
@@ -2141,7 +2501,7 @@ host_dns(const char *s, struct addresslist *al, int max,
 	if (error == EAI_AGAIN || error == EAI_NODATA || error == EAI_NONAME)
 		return (0);
 	if (error) {
-		log_warnx("host_dns: could not parse \"%s\": %s", s,
+		log_warnx("%s: could not parse \"%s\": %s", __func__, s,
 		    gai_strerror(error));
 		return (-1);
 	}
@@ -2158,11 +2518,16 @@ host_dns(const char *s, struct addresslist *al, int max,
 		if (ifname != NULL) {
 			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
 			    sizeof(h->ifname))
-				log_warnx("host_dns: interface name truncated");
+				log_warnx("%s: interface name truncated",
+				    __func__);
 			freeaddrinfo(res0);
+			free(h);
 			return (-1);
 		}
+		if (ipproto != -1)
+			h->ipproto = ipproto;
 		h->ss.ss_family = res->ai_family;
+
 		if (res->ai_family == AF_INET) {
 			sain = (struct sockaddr_in *)&h->ss;
 			sain->sin_len = sizeof(struct sockaddr_in);
@@ -2179,7 +2544,7 @@ host_dns(const char *s, struct addresslist *al, int max,
 		cnt++;
 	}
 	if (cnt == max && res) {
-		log_warnx("host_dns: %s resolves to more than %d hosts",
+		log_warnx("%s: %s resolves to more than %d hosts", __func__,
 		    s, max);
 	}
 	freeaddrinfo(res0);
@@ -2187,8 +2552,78 @@ host_dns(const char *s, struct addresslist *al, int max,
 }
 
 int
+host_if(const char *s, struct addresslist *al, int max,
+    struct portrange *port, const char *ifname, int ipproto)
+{
+	struct ifaddrs		*ifap, *p;
+	struct sockaddr_in	*sain;
+	struct sockaddr_in6	*sin6;
+	struct address		*h;
+	int			 cnt = 0, af;
+
+	if (getifaddrs(&ifap) == -1)
+		fatal("getifaddrs");
+
+	/* First search for IPv4 addresses */
+	af = AF_INET;
+
+ nextaf:
+	for (p = ifap; p != NULL && cnt < max; p = p->ifa_next) {
+		if (p->ifa_addr->sa_family != af ||
+		    (strcmp(s, p->ifa_name) != 0 &&
+		    !is_if_in_group(p->ifa_name, s)))
+			continue;
+		if ((h = calloc(1, sizeof(*h))) == NULL)
+			fatal("calloc");
+
+		if (port != NULL)
+			bcopy(port, &h->port, sizeof(h->port));
+		if (ifname != NULL) {
+			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
+			    sizeof(h->ifname))
+				log_warnx("%s: interface name truncated",
+				    __func__);
+			freeifaddrs(ifap);
+			return (-1);
+		}
+		if (ipproto != -1)
+			h->ipproto = ipproto;
+		h->ss.ss_family = af;
+
+		if (af == AF_INET) {
+			sain = (struct sockaddr_in *)&h->ss;
+			sain->sin_len = sizeof(struct sockaddr_in);
+			sain->sin_addr.s_addr = ((struct sockaddr_in *)
+			    p->ifa_addr)->sin_addr.s_addr;
+		} else {
+			sin6 = (struct sockaddr_in6 *)&h->ss;
+			sin6->sin6_len = sizeof(struct sockaddr_in6);
+			memcpy(&sin6->sin6_addr, &((struct sockaddr_in6 *)
+			    p->ifa_addr)->sin6_addr, sizeof(struct in6_addr));
+			sin6->sin6_scope_id = ((struct sockaddr_in6 *)
+			    p->ifa_addr)->sin6_scope_id;
+		}
+
+		TAILQ_INSERT_HEAD(al, h, entry);
+		cnt++;
+	}
+	if (af == AF_INET) {
+		/* Next search for IPv6 addresses */
+		af = AF_INET6;
+		goto nextaf;
+	}
+
+	if (cnt > max) {
+		log_warnx("%s: %s resolves to more than %d hosts", __func__,
+		    s, max);
+	}
+	freeifaddrs(ifap);
+	return (cnt);
+}
+
+int
 host(const char *s, struct addresslist *al, int max,
-    struct portrange *port, const char *ifname)
+    struct portrange *port, const char *ifname, int ipproto)
 {
 	struct address *h;
 
@@ -2204,16 +2639,31 @@ host(const char *s, struct addresslist *al, int max,
 		if (ifname != NULL) {
 			if (strlcpy(h->ifname, ifname, sizeof(h->ifname)) >=
 			    sizeof(h->ifname)) {
-				log_warnx("host: interface name truncated");
+				log_warnx("%s: interface name truncated",
+				    __func__);
+				free(h);
 				return (-1);
 			}
 		}
+		if (ipproto != -1)
+			h->ipproto = ipproto;
 
 		TAILQ_INSERT_HEAD(al, h, entry);
 		return (1);
 	}
 
-	return (host_dns(s, al, max, port, ifname));
+	return (host_dns(s, al, max, port, ifname, ipproto));
+}
+
+void
+host_free(struct addresslist *al)
+{
+	struct address	 *h;
+
+	while ((h = TAILQ_FIRST(al)) != NULL) {
+		TAILQ_REMOVE(al, h, entry);
+		free(h);
+	}
 }
 
 struct table *
@@ -2226,42 +2676,38 @@ table_inherit(struct table *tb)
 	/* Get the table or table template */
 	if ((dsttb = table_findbyname(conf, tb->conf.name)) == NULL) {
 		yyerror("unknown table %s", tb->conf.name);
-		purge_table(NULL, tb);
-		return (NULL);
+		goto fail;
 	}
 	if (dsttb->conf.port != 0)
 		fatal("invalid table");	/* should not happen */
 
 	if (tb->conf.port == 0) {
 		yyerror("invalid port");
-		purge_table(NULL, tb);
-		return (NULL);
+		goto fail;
 	}
 
 	/* Check if a matching table already exists */
 	if (snprintf(pname, sizeof(pname), "%s:%u",
 	    tb->conf.name, ntohs(tb->conf.port)) >= (int)sizeof(pname)) {
 		yyerror("invalid table name");
-		return (NULL);
+		goto fail;
 	}
 	(void)strlcpy(tb->conf.name, pname, sizeof(tb->conf.name));
-	if ((oldtb = table_findbyconf(conf, tb)) != NULL)
+	if ((oldtb = table_findbyconf(conf, tb)) != NULL) {
+		purge_table(NULL, tb);
 		return (oldtb);
+	}
 
 	/* Create a new table */
 	tb->conf.id = ++last_table_id;
 	if (last_table_id == INT_MAX) {
 		yyerror("too many tables defined");
-		purge_table(NULL, tb);
-		return (NULL);
+		goto fail;
 	}
 	tb->conf.flags |= dsttb->conf.flags;
 
 	/* Inherit global table options */
 	bcopy(&dsttb->conf.timeout, &tb->conf.timeout, sizeof(struct timeval));
-	tb->conf.skip_cnt = dsttb->conf.skip_cnt;
-	strlcpy(tb->conf.demote_group, dsttb->conf.demote_group,
-	    sizeof(tb->conf.demote_group));
 
 	/* Copy the associated hosts */
 	TAILQ_INIT(&tb->hosts);
@@ -2273,8 +2719,7 @@ table_inherit(struct table *tb)
 		h->conf.id = ++last_host_id;
 		if (last_host_id == INT_MAX) {
 			yyerror("too many hosts defined");
-			purge_table(NULL, tb);
-			return (NULL);
+			goto fail;
 		}
 		h->conf.tableid = tb->conf.id;
 		h->tablename = tb->conf.name;
@@ -2286,6 +2731,58 @@ table_inherit(struct table *tb)
 	TAILQ_INSERT_TAIL(conf->sc_tables, tb, entry);
 
 	return (tb);
+
+ fail:
+	purge_table(NULL, tb);
+	return (NULL);
+}
+
+struct relay *
+relay_inherit(struct relay *ra, struct relay *rb)
+{
+	struct relay_config	 rc;
+
+	bcopy(&rb->rl_conf, &rc, sizeof(rc));
+	bcopy(ra, rb, sizeof(*rb));
+
+	bcopy(&rc.ss, &rb->rl_conf.ss, sizeof(rb->rl_conf.ss));
+	rb->rl_conf.port = rc.port;
+	rb->rl_conf.flags =
+	    (ra->rl_conf.flags & ~F_SSL) | (rc.flags & F_SSL);
+
+	rb->rl_conf.id = ++last_relay_id;
+	if (last_relay_id == INT_MAX) {
+		yyerror("too many relays defined");
+		goto err;
+	}
+
+	if (snprintf(rb->rl_conf.name, sizeof(rb->rl_conf.name), "%s%u:%u",
+	    ra->rl_conf.name, rb->rl_conf.id, ntohs(rc.port)) >=
+	    (int)sizeof(rb->rl_conf.name)) {
+		yyerror("invalid relay name");
+		goto err;
+	}
+
+	if (relay_findbyname(conf, rb->rl_conf.name) != NULL ||
+	    relay_findbyaddr(conf, &rb->rl_conf) != NULL) {
+		yyerror("relay %s defined twice", rb->rl_conf.name);
+		goto err;
+	}
+	if (relay_load_certfiles(rb) == -1) {
+		yyerror("cannot load certificates for relay %s",
+		    rb->rl_conf.name);
+		goto err;
+	}
+
+	conf->sc_relaycount++;
+	SPLAY_INIT(&rlay->rl_sessions);
+	TAILQ_INSERT_TAIL(conf->sc_relays, rb, rl_entry);
+
+	return (rb);
+
+ err:
+	free(rb);
+	return (NULL);
 }
 
 int
@@ -2308,4 +2805,48 @@ getservice(char *n)
 	}
 
 	return (htons((u_short)llval));
+}
+
+int
+is_if_in_group(const char *ifname, const char *groupname)
+{
+        unsigned int		 len;
+        struct ifgroupreq        ifgr;
+        struct ifg_req          *ifg;
+	int			 s;
+	int			 ret = 0;
+
+	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+		err(1, "socket");
+
+        memset(&ifgr, 0, sizeof(ifgr));
+        strlcpy(ifgr.ifgr_name, ifname, IFNAMSIZ);
+        if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1) {
+                if (errno == EINVAL || errno == ENOTTY)
+			goto end;
+		err(1, "SIOCGIFGROUP");
+        }
+
+        len = ifgr.ifgr_len;
+        ifgr.ifgr_groups =
+            (struct ifg_req *)calloc(len / sizeof(struct ifg_req),
+		sizeof(struct ifg_req));
+        if (ifgr.ifgr_groups == NULL)
+                err(1, "getifgroups");
+        if (ioctl(s, SIOCGIFGROUP, (caddr_t)&ifgr) == -1)
+                err(1, "SIOCGIFGROUP");
+
+        ifg = ifgr.ifgr_groups;
+        for (; ifg && len >= sizeof(struct ifg_req); ifg++) {
+                len -= sizeof(struct ifg_req);
+		if (strcmp(ifg->ifgrq_group, groupname) == 0) {
+			ret = 1;
+			break;
+		}
+        }
+        free(ifgr.ifgr_groups);
+
+end:
+	close(s);
+	return (ret);
 }

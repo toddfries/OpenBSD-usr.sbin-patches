@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCfl.pm,v 1.25 2007/12/28 12:55:03 espie Exp $
+# $OpenBSD: PkgCfl.pm,v 1.37 2011/07/02 12:12:58 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -25,13 +25,9 @@ use OpenBSD::PackageInfo;
 
 sub make_conflict_list
 {
-	my ($class, $plist, $pkg) = @_;
+	my ($class, $plist) = @_;
 	my $l = [];
 	my $pkgname = $plist->pkgname;
-	if (!defined $pkgname) {
-		print STDERR "No pkgname in packing-list for $pkg\n";
-		return;
-	}
 	my $stem = OpenBSD::PackageName::splitstem($pkgname);
 
 	unless (defined $plist->{'no-default-conflict'}) {
@@ -39,10 +35,9 @@ sub make_conflict_list
 	} else {
 		push(@$l, OpenBSD::Search::Exact->new("$pkgname|partial-$pkgname"));
 	}
-	push(@$l, OpenBSD::Search::PkgSpec->new(".libs-$stem-*"));
 	if (defined $plist->{conflict}) {
 		for my $cfl (@{$plist->{conflict}}) {
-		    push(@$l, OpenBSD::Search::PkgSpec->new($cfl->{name}));
+		    push(@$l, $cfl->spec);
 		}
 	}
 	bless $l, $class;
@@ -51,20 +46,33 @@ sub make_conflict_list
 sub conflicts_with
 {
 	my ($self, @pkgnames) = @_;
-	my @l = ();
-	for my $cfl (@$self) {
-		push(@l, $cfl->filter(@pkgnames));
+	my @libs = grep {/^\.libs\d*\-/} @pkgnames;
+	@pkgnames = grep {!/^\.libs\d*\-/} @pkgnames;
+	if (wantarray) {
+		my @l = ();
+		for my $cfl (@$self) {
+			push(@l, $cfl->filter(@pkgnames));
+			push(@l, $cfl->filter_libs(@libs));
+		}
+		return @l;
+	} else {
+		for my $cfl (@$self) {
+			if ($cfl->filter(@pkgnames)) {
+				return 1;
+			}
+			if ($cfl->filter_libs(@libs)) {
+				return 1;
+			}
+		}
+		return 0;
 	}
-	return @l;
 }
 
 sub register($$)
 {
 	my ($plist, $state) = @_;
-	if (!defined $plist->{conflicts}) {
-		$plist->{conflicts} = OpenBSD::PkgCfl->make_conflict_list($plist);
-	}
-	$state->{conflict_list}->{$plist->pkgname} = $plist->{conflicts};
+
+	$state->{conflict_list}->{$plist->pkgname} = $plist->conflict_list;
 }
 
 sub unregister($$)
@@ -77,10 +85,13 @@ sub fill_conflict_lists($)
 {
 	my $state = shift;
 	for my $pkg (installed_packages()) {
-		my $plist = OpenBSD::PackingList->from_installation($pkg, 
+		my $plist = OpenBSD::PackingList->from_installation($pkg,
 		    \&OpenBSD::PackingList::ConflictOnly);
 		next unless defined $plist;
-		$plist->{conflicts} = OpenBSD::PkgCfl->make_conflict_list($plist, $pkg);
+		if (!defined $plist->pkgname) {
+			print STDERR "No pkgname in packing-list for $pkg\n";
+			next;
+		}
 		register($plist, $state);
 	}
 }
@@ -93,7 +104,6 @@ sub find($$)
 		push(@bad, $pkgname);
 	}
 	if (!defined $state->{conflict_list}) {
-		$state->{conflict_list} = {};
 		fill_conflict_lists($state);
 	}
 	while (my ($name, $l) = each %{$state->{conflict_list}}) {
@@ -111,14 +121,15 @@ sub find($$)
 sub find_all
 {
 	my ($plist, $state) = @_;
-	my $pkgname = $plist->pkgname;
 
-	my $l = OpenBSD::PkgCfl->make_conflict_list($plist);
-	$plist->{conflicts} = $l;
+	my @first = $plist->conflict_list->conflicts_with(installed_packages());
+	# XXX optimization
+	if (@first > 0 && !$state->{allow_replacing}) {
+		return @first;
+	}
 
-	my @conflicts = find($pkgname, $state);
-	push(@conflicts, $l->conflicts_with(installed_packages()));
-	return @conflicts;
+	my @conflicts = find($plist->pkgname, $state);
+	return (@conflicts, @first);
 }
 
 1;

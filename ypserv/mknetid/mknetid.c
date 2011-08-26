@@ -1,4 +1,4 @@
-/*	$OpenBSD: mknetid.c,v 1.15 2008/02/23 22:21:17 deraadt Exp $ */
+/*	$OpenBSD: mknetid.c,v 1.18 2009/12/20 12:33:59 schwarze Exp $ */
 
 /*
  * Copyright (c) 1996 Mats O Jansson <moj@stacken.kth.se>
@@ -26,10 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#ifndef lint
-static const char rcsid[] = "$OpenBSD: mknetid.c,v 1.15 2008/02/23 22:21:17 deraadt Exp $";
-#endif
-
 #include <sys/param.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -53,29 +49,11 @@ struct user {
 	struct user *hprev, *hnext;	/* links in hash order */
 };
 
-#ifdef HOSTS
-char *HostFile = HOSTS;
-#else
 char *HostFile = _PATH_HOSTS;
-#endif
-
-#ifdef PASSWD
-char *PasswdFile = PASSWD;
-#else
 char *PasswdFile = _PATH_PASSWD;
-#endif
-
-#ifdef GROUP
-char *GroupFile = GROUP;
-#else
+char *MasterPasswdFile = _PATH_MASTERPASSWD;
 char *GroupFile = _PATH_GROUP;
-#endif
-
-#ifdef NETID
-char *NetidFile = NETID;
-#else
 char *NetidFile = "/etc/netid";
-#endif
 
 #define HASHMAX 55
 
@@ -493,9 +471,9 @@ print_netid(FILE *mfile, char *fname)
 static void
 usage(void)
 {
-	fprintf(stderr,
-	    "usage: mknetid [-d domain] [-q] [-p passwdfile] [-g groupfile]\n"
-	    "               [-h hostfile] [-m netidfile]\n");
+	fprintf(stderr, "usage: mknetid [-q] [-d domain] [-g groupfile] "
+	    "[-h hostfile] [-m netidfile]\n"
+	    "               [-P master.passwdfile] [-p passwdfile]\n");
 	exit(1);
 }
 
@@ -506,7 +484,7 @@ main(int argc, char *argv[])
 	int	qflag = 0, ch;
 	char   *domain = NULL;
 
-	while ((ch = getopt(argc, argv, "d:g:h:m:p:q")) != -1)
+	while ((ch = getopt(argc, argv, "d:g:h:m:p:P:q")) != -1)
 		switch (ch) {
 		case 'd':
 			domain = optarg;
@@ -523,6 +501,9 @@ main(int argc, char *argv[])
 		case 'p':
 			PasswdFile = optarg;
 			break;
+		case 'P':
+			MasterPasswdFile = optarg;
+			break;
 		case 'q':
 			qflag++;
 			break;
@@ -538,27 +519,19 @@ main(int argc, char *argv[])
 		yp_get_default_domain(&domain);
 
 	pfile = fopen(PasswdFile, "r");
-	if (pfile == NULL) {
-		fprintf(stderr,"mknetid: can't open file \"%s\"\n",
-		    PasswdFile);
-		goto bad;
-	}
+	if (pfile == NULL)
+		pfile = fopen(MasterPasswdFile, "r");
+	if (pfile == NULL)
+		err(1, MasterPasswdFile);
 
 	gfile = fopen(GroupFile, "r");
-	if (gfile == NULL) {
-		fprintf(stderr,"mknetid: can't open file \"%s\"\n",
-		    GroupFile);
-		goto bad;
-	}
+	if (gfile == NULL)
+		err(1, GroupFile);
 
 	hfile = fopen(HostFile, "r");
-	if (hfile == NULL) {
-		fprintf(stderr,"mknetid: can't open file \"%s\"\n",
-		    HostFile);
-		goto bad;
-	}
+	if (hfile == NULL)
+		err(1, HostFile);
 
-	printf("NetidFile: %s\n", NetidFile);
 	mfile = fopen(NetidFile, "r");
 
 	read_passwd(pfile, PasswdFile);
@@ -569,9 +542,6 @@ main(int argc, char *argv[])
 
 	if (mfile != NULL)
 		print_netid(mfile, NetidFile);
-	return (0);
 
-bad:
-	fprintf(stderr, "mknetid: passwd, group, host and netid maps not updated!\n");
-	exit(1);
+	return 0;
 }

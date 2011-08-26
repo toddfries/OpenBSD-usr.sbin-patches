@@ -1,4 +1,4 @@
-/*	$OpenBSD: mopa.out.c,v 1.8 2006/04/29 16:26:56 maja Exp $ */
+/*	$OpenBSD: mopa.out.c,v 1.11 2010/11/19 21:09:20 miod Exp $ */
 
 /* mopa.out - Convert a Unix format kernel into something that
  * can be transferred via MOP.
@@ -10,7 +10,7 @@
  * If necessary, the a.out header is stripped, and the program
  * segments are padded out. The BSS segment is zero filled.
  * A header is prepended that looks like an IHD header. In 
- * particular the Unix mahine ID is placed where mopd expects
+ * particular the Unix machine ID is placed where mopd expects
  * the image type to be (offset is IHD_W_ALIAS). If the machine
  * ID could be mistaken for a DEC image type, then the conversion 
  * is aborted. The original a.out header is copied into the front
@@ -47,10 +47,6 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef lint
-static const char rcsid[] = "$OpenBSD: mopa.out.c,v 1.8 2006/04/29 16:26:56 maja Exp $";
-#endif
-
 #include "os.h"
 #include "common/common.h"
 #include "common/mopdef.h"
@@ -85,7 +81,7 @@ main (int argc, char **argv)
 #endif	
 
 	if (argc != 3) {
-		fprintf (stderr, "usage: %s kernel-in sys-out\n", argv[0]);
+		fprintf (stderr, "usage: %s infile outfile\n", argv[0]);
 		return (1);
 	}
 	

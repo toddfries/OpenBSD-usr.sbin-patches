@@ -25,14 +25,14 @@ changecom(,)dnl
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.\" $OpenBSD: ppp.8.m4,v 1.41 2008/07/19 10:35:31 reyk Exp $
+.\" $OpenBSD: ppp.8.m4,v 1.44 2010/10/01 07:45:22 sobrado Exp $
 .\"
-.Dd $Mdocdate: July 19 2008 $
+.Dd $Mdocdate: October 1 2010 $
 .Dt PPP 8
 .Os
 .Sh NAME
 .Nm ppp
-.Nd Point to Point Protocol (a.k.a. user-ppp)
+.Nd Point-to-Point Protocol (a.k.a. user-ppp)
 .Sh SYNOPSIS
 .Nm ppp
 .Op Fl Va mode
@@ -358,7 +358,7 @@ It is possible to configure
 to open more than one physical connection to the peer, combining the
 bandwidth of all links for better throughput.
 .It Supports MPPE (draft-ietf-pppext-mppe).
-MPPE is Microsoft Point to Point Encryption scheme.
+MPPE is Microsoft Point-to-Point Encryption scheme.
 It is possible to configure
 .Nm
 to participate in Microsoft's Windows VPN.
@@ -367,7 +367,7 @@ For now,
 can only get encryption keys from CHAP 81 authentication.
 .Nm
 must be compiled with DES for MPPE to operate.
-.It Supports IPV6CP (RFC 2023).
+.It Supports IPV6CP (RFC 2472).
 An IPv6 connection can be made in addition to or instead of the normal
 IPv4 connection.
 .El
@@ -2838,7 +2838,7 @@ command description for differences in behaviour prior to
 version 3.4.2.
 .It mppe
 Default: Enabled and Accepted.
-This is Microsoft Point to Point Encryption scheme.
+This is Microsoft Point-to-Point Encryption scheme.
 MPPE key size can be
 40-, 56-, and 128-bits.
 Refer to the
@@ -3213,7 +3213,7 @@ Disabling this option will prevent the re-application of sticky routes,
 although the
 .Dq sticky route
 list will still be maintained.
-.It Op tcp Ns Xo
+.It Oo tcp Oc Ns Xo
 .No mssfixup
 .Xc
 Default: Enabled.
@@ -3416,7 +3416,7 @@ When running in multi-link mode, a section can be loaded if it allows
 .Em any
 of the currently existing line modes.
 .El
-.It Op !\& Ns Xo
+.It Oo !\& Oc Ns Xo
 .Ic bg Ar command
 .Xc
 The given
@@ -3768,7 +3768,7 @@ When invoked with
 .Ar sub-command ,
 only the synopsis for the given sub-command is shown.
 .El
-.It Op Ic data Ns Xo
+.It Oo Ic data Oc Ns Xo
 .Ic link
 .Ar name Ns Op , Ns Ar name Ns
 .No ... Ar command Op Ar args
@@ -3793,7 +3793,7 @@ is
 .Sq * ,
 .Ar command
 is executed on all links.
-.It Ic load Op Ar label Ns Xo
+.It Ic load Oo Ar label Oc Ns Xo
 .No ...
 .Xc
 Load the given
@@ -4200,7 +4200,7 @@ certain characters from end to end (such as XON/XOFF etc).
 .Pp
 For the XON/XOFF scenario, use
 .Dq set accmap 000a0000 .
-.It Ic set Op Ic auth Ns Xo
+.It Ic set Oo Ic auth Oc Ns Xo
 .Ic key Ar value
 .Xc
 This sets the authentication key (or password) used in client mode
@@ -4958,11 +4958,10 @@ If you wish to assign a dynamic IP number to the peer,
 .Ar hisaddr
 may also be specified as a range of IP numbers in the following format:
 .Bd -ragged -offset indent
-.Ar \&IP Ns Oo \&- Ns Ar \&IP Ns Xo
-.Oc Ns Oo , Ns Ar \&IP Ns
-.Op \&- Ns Ar \&IP Ns
-.Oc Ns ...
-.Xc
+.Sm off
+.Ar \&IP Oo \&- Ar \&IP Oc Oo ,
+.Ar \&IP Oo \&- Ar \&IP Oc Oc ...
+.Sm on
 .Ed
 .Pp
 For example:
@@ -5326,7 +5325,7 @@ below.
 In
 .Fl background
 mode, each number is attempted at most once.
-.It Ic set Op Ic proc Ns Xo
+.It Ic set Oo Ic proc Oc Ns Xo
 .Ic title Op Ar value
 .Xc
 The current process title as displayed by
@@ -5892,7 +5891,7 @@ Show the current IPCP statistics.
 Show the protocol layers currently in use.
 .It Ic show lcp
 Show the current LCP statistics.
-.It Ic show Op Ic data Ns Xo
+.It Ic show Oo Ic data Oc Ns Xo
 .Ic link
 .Xc
 Show high level link information.

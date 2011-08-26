@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.18 2008/12/07 16:37:04 michele Exp $ */
+/*	$OpenBSD: parse.y,v 1.22 2010/12/31 21:22:42 guenther Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -31,6 +31,7 @@
 #include <net/if.h>
 #include <ctype.h>
 #include <err.h>
+#include <limits.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -150,6 +151,8 @@ yesno		: STRING {
 			else if (!strcmp($1, "no"))
 				$$ = 0;
 			else {
+				yyerror("syntax error, "
+				    "either yes or no expected");
 				free($1);
 				YYERROR;
 			}
@@ -555,9 +558,10 @@ top:
 					return (0);
 				if (next == quotec || c == ' ' || c == '\t')
 					c = next;
-				else if (next == '\n')
+				else if (next == '\n') {
+					file->lineno++;
 					continue;
-				else
+				} else
 					lungetc(next);
 			} else if (c == quotec) {
 				*p = '\0';
@@ -666,9 +670,13 @@ pushfile(const char *name, int secret)
 {
 	struct file	*nfile;
 
-	if ((nfile = calloc(1, sizeof(struct file))) == NULL ||
-	    (nfile->name = strdup(name)) == NULL) {
+	if ((nfile = calloc(1, sizeof(struct file))) == NULL) {
 		log_warn("malloc");
+		return (NULL);
+	}
+	if ((nfile->name = strdup(name)) == NULL) {
+		log_warn("malloc");
+		free(nfile);
 		return (NULL);
 	}
 	if ((nfile->stream = fopen(nfile->name, "r")) == NULL) {

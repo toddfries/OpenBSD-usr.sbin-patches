@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: IdCache.pm,v 1.4 2007/06/04 14:40:39 espie Exp $
+# $OpenBSD: IdCache.pm,v 1.10 2010/12/24 09:04:14 espie Exp $
 #
 # Copyright (c) 2002-2005 Marc Espie <espie@openbsd.org>
 #
@@ -13,7 +13,6 @@
 # ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 # WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-#
 
 use strict;
 use warnings;
@@ -74,7 +73,7 @@ sub convert
 	my @entry = getgrnam($_[1]);
 	return @entry == 0 ? undef : $entry[2];
 }
-	
+
 package OpenBSD::UnameCache;
 our @ISA=qw(OpenBSD::SimpleIdCache);
 
@@ -90,5 +89,5 @@ sub convert
 {
 	return getgrgid($_[1]);
 }
-	
+
 1;

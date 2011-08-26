@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay_udp.c,v 1.18 2008/09/29 15:12:22 reyk Exp $	*/
+/*	$OpenBSD: relay_udp.c,v 1.24 2011/05/09 12:08:47 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -50,7 +50,6 @@
 extern volatile sig_atomic_t relay_sessions;
 extern objid_t relay_conid;
 extern int proc_id;
-extern struct imsgbuf *ibuf_pfe;
 extern int debug;
 
 struct relayd *env = NULL;
@@ -58,17 +57,17 @@ struct shuffle relay_shuffle;
 
 int		 relay_udp_socket(struct sockaddr_storage *, in_port_t,
 		    struct protocol *);
-void		 relay_udp_request(struct session *);
+void		 relay_udp_request(struct rsession *);
 void		 relay_udp_timeout(int, short, void *);
 
-void		 relay_dns_log(struct session *, u_int8_t *, size_t);
-void		*relay_dns_validate(struct session *,
+void		 relay_dns_log(struct rsession *, u_int8_t *, size_t);
+void		*relay_dns_validate(struct rsession *,
 		    struct relay *, struct sockaddr_storage *,
 		    u_int8_t *, size_t);
-int		 relay_dns_request(struct session *);
+int		 relay_dns_request(struct rsession *);
 void		 relay_udp_response(int, short, void *);
-void		 relay_dns_result(struct session *, u_int8_t *, size_t);
-int		 relay_dns_cmp(struct session *, struct session *);
+void		 relay_dns_result(struct rsession *, u_int8_t *, size_t);
+int		 relay_dns_cmp(struct rsession *, struct rsession *);
 
 void
 relay_udp_privinit(struct relayd *x_env, struct relay *rlay)
@@ -173,12 +172,12 @@ relay_udp_socket(struct sockaddr_storage *ss, in_port_t port,
 void
 relay_udp_response(int fd, short sig, void *arg)
 {
-	struct session		*con = (struct session *)arg;
+	struct rsession		*con = (struct rsession *)arg;
 	struct relay		*rlay = con->se_relay;
 	struct protocol		*proto = rlay->rl_proto;
 	void			*priv = NULL;
 	struct sockaddr_storage	 ss;
-	u_int8_t		 buf[READ_BUF_SIZE];
+	u_int8_t		 buf[IBUF_READ_SIZE];
 	ssize_t			 len;
 	socklen_t		 slen;
 
@@ -211,12 +210,12 @@ relay_udp_server(int fd, short sig, void *arg)
 {
 	struct relay *rlay = (struct relay *)arg;
 	struct protocol *proto = rlay->rl_proto;
-	struct session *con = NULL;
+	struct rsession *con = NULL;
 	struct ctl_natlook *cnl = NULL;
 	socklen_t slen;
 	struct timeval tv;
 	struct sockaddr_storage ss;
-	u_int8_t buf[READ_BUF_SIZE];
+	u_int8_t buf[IBUF_READ_SIZE];
 	void *priv = NULL;
 	ssize_t len;
 
@@ -233,8 +232,8 @@ relay_udp_server(int fd, short sig, void *arg)
 	    (priv = (*proto->validate)(NULL, rlay, &ss, buf, len)) == NULL)
 		return;
 
-	if ((con = (struct session *)
-	    calloc(1, sizeof(struct session))) == NULL) {
+	if ((con = (struct rsession *)
+	    calloc(1, sizeof(struct rsession))) == NULL) {
 		free(priv);
 		return;
 	}
@@ -321,8 +320,8 @@ relay_udp_server(int fd, short sig, void *arg)
 		cnl->proto = IPPROTO_UDP;
 		bcopy(&con->se_in.ss, &cnl->src, sizeof(cnl->src));
 		bcopy(&rlay->rl_conf.ss, &cnl->dst, sizeof(cnl->dst));
-		imsg_compose(ibuf_pfe, IMSG_NATLOOK, 0, 0, -1, cnl,
-		    sizeof(*cnl));
+		proc_compose_imsg(env->sc_ps, PROC_PFE, -1,
+		    IMSG_NATLOOK, -1, cnl, sizeof(*cnl));
 
 		/* Schedule timeout */
 		evtimer_set(&con->se_ev, relay_natlook, con);
@@ -337,7 +336,7 @@ relay_udp_server(int fd, short sig, void *arg)
 void
 relay_udp_timeout(int fd, short sig, void *arg)
 {
-	struct session		*con = (struct session *)arg;
+	struct rsession		*con = (struct rsession *)arg;
 
 	if (sig != EV_TIMEOUT)
 		fatalx("invalid timeout event");
@@ -378,19 +377,19 @@ struct relay_dnshdr {
 } __packed;
 
 void
-relay_dns_log(struct session *con, u_int8_t *buf, size_t len)
+relay_dns_log(struct rsession *con, u_int8_t *buf, size_t len)
 {
 	struct relay_dnshdr	*hdr = (struct relay_dnshdr *)buf;
 
 	/* Validate the header length */
 	if (len < sizeof(*hdr)) {
-		log_debug("relay_dns_log: session %d: short dns packet",
+		log_debug("%s: session %d: short dns packet", __func__,
 		    con->se_id);
 		return;
 	}
 
-	log_debug("relay_dns_log: session %d: %s id 0x%x "
-	    "flags 0x%x:0x%x qd %u an %u ns %u ar %u",
+	log_debug("%s: session %d: %s id 0x%x "
+	    "flags 0x%x:0x%x qd %u an %u ns %u ar %u", __func__,
 	    con->se_id,
 	    hdr->dns_flags0 & DNS_F0_QR ? "response" : "request",
 	    ntohs(hdr->dns_id),
@@ -403,11 +402,11 @@ relay_dns_log(struct session *con, u_int8_t *buf, size_t len)
 }
 
 void *
-relay_dns_validate(struct session *con, struct relay *rlay,
+relay_dns_validate(struct rsession *con, struct relay *rlay,
     struct sockaddr_storage *ss, u_int8_t *buf, size_t len)
 {
 	struct relay_dnshdr	*hdr = (struct relay_dnshdr *)buf;
-	struct session		 lookup;
+	struct rsession		 lookup;
 	u_int16_t		 key;
 	struct relay_dns_priv	*priv, lpriv;
 
@@ -458,7 +457,7 @@ relay_dns_validate(struct session *con, struct relay *rlay,
 }
 
 int
-relay_dns_request(struct session *con)
+relay_dns_request(struct rsession *con)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct relay_dns_priv	*priv = (struct relay_dns_priv *)con->se_priv;
@@ -497,13 +496,13 @@ relay_dns_request(struct session *con)
 	    (struct sockaddr *)&con->se_out.ss, slen) == -1) {
 		if (con->se_retry) {
 			con->se_retry--;
-			log_debug("relay_dns_request: session %d: "
-			    "forward failed: %s, %s",
+			log_debug("%s: session %d: "
+			    "forward failed: %s, %s", __func__,
 			    con->se_id, strerror(errno),
 			    con->se_retry ? "next retry" : "last retry");
 			goto retry;
 		}
-		log_debug("relay_dns_request: session %d: forward failed: %s",
+		log_debug("%s: session %d: forward failed: %s", __func__,
 		    con->se_id, strerror(errno));
 		return (-1);
 	}
@@ -515,7 +514,7 @@ relay_dns_request(struct session *con)
 }
 
 void
-relay_dns_result(struct session *con, u_int8_t *buf, size_t len)
+relay_dns_result(struct rsession *con, u_int8_t *buf, size_t len)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct relay_dns_priv	*priv = (struct relay_dns_priv *)con->se_priv;
@@ -545,7 +544,7 @@ relay_dns_result(struct session *con, u_int8_t *buf, size_t len)
 }
 
 int
-relay_dns_cmp(struct session *a, struct session *b)
+relay_dns_cmp(struct rsession *a, struct rsession *b)
 {
 	struct relay_dns_priv	*ap = (struct relay_dns_priv *)a->se_priv;
 	struct relay_dns_priv	*bp = (struct relay_dns_priv *)b->se_priv;

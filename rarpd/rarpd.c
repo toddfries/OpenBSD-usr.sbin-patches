@@ -1,4 +1,4 @@
-/*	$OpenBSD: rarpd.c,v 1.48 2008/05/17 23:31:52 sobrado Exp $ */
+/*	$OpenBSD: rarpd.c,v 1.52 2010/08/29 12:33:25 chl Exp $ */
 /*	$NetBSD: rarpd.c,v 1.25 1998/04/23 02:48:33 mrg Exp $	*/
 
 /*
@@ -21,21 +21,9 @@
  * WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
  * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
-#ifndef lint
-char    copyright[] =
-"@(#) Copyright (c) 1990 The Regents of the University of California.\n\
- All rights reserved.\n";
-#endif				/* not lint */
-
-#ifndef lint
-static char rcsid[] = "$OpenBSD: rarpd.c,v 1.48 2008/05/17 23:31:52 sobrado Exp $";
-#endif
-
 
 /*
  * rarpd - Reverse ARP Daemon
- *
- * usage:	rarpd [-adflt] interface
  */
 
 #include <stdio.h>
@@ -115,7 +103,6 @@ main(int argc, char *argv[])
 	extern char *__progname;
 	extern int optind, opterr;
 	int op, devnull, f;
-	char   *ifname;
 	pid_t pid;
 
 	/* All error reporting is done through syslogs. */
@@ -144,14 +131,20 @@ main(int argc, char *argv[])
 			/* NOTREACHED */
 		}
 	}
-	ifname = argv[optind++];
-	if ((aflag && ifname) || (!aflag && ifname == 0))
+	argc -= optind;
+	argv += optind;
+
+	if ((aflag && argc > 0) || (!aflag && argc == 0))
 		usage();
 
 	if (aflag)
 		init_all();
 	else
-		init_one(ifname);
+		while (argc > 0) {
+			init_one(argv[0]);
+			argc--;
+			argv++;
+		}
 
 	if ((!fflag) && (!dflag)) {
 		pid = fork();
@@ -257,7 +250,7 @@ init_all(void)
 void
 usage(void)
 {
-	(void) fprintf(stderr, "usage: rarpd [-adflt] interface\n");
+	(void) fprintf(stderr, "usage: rarpd [-adflt] if0 [... ifN]\n");
 	exit(1);
 }
 

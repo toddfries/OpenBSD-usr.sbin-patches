@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.10 2009/01/27 08:53:47 michele Exp $ */
+/*	$OpenBSD: rde.c,v 1.22 2009/11/02 20:31:50 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -39,21 +39,17 @@
 #include "log.h"
 #include "rde.h"
 
-void		 rde_nbr_init(u_int32_t);
-void		 rde_nbr_free(void);
-struct rde_nbr	*rde_nbr_find(u_int32_t);
-struct rde_nbr	*rde_nbr_new(u_int32_t, struct rde_nbr *);
-void		 rde_nbr_del(struct rde_nbr *);
-
 void		 rde_sig_handler(int sig, short, void *);
 void		 rde_shutdown(void);
 void		 rde_dispatch_imsg(int, short, void *);
 
+int		 rde_select_ds_ifs(struct mfc *, struct iface *);
+
 volatile sig_atomic_t	 rde_quit = 0;
 struct dvmrpd_conf	*rdeconf = NULL;
 struct rde_nbr		*nbrself;
-struct imsgbuf		*ibuf_dvmrpe;
-struct imsgbuf		*ibuf_main;
+struct imsgev		*iev_dvmrpe;
+struct imsgev		*iev_main;
 
 void
 rde_sig_handler(int sig, short event, void *arg)
@@ -108,10 +104,7 @@ rde(struct dvmrpd_conf *xconf, int pipe_parent2rde[2], int pipe_dvmrpe2rde[2],
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("can't drop privileges");
 
-	endpwent();
-
 	event_init();
-	rde_nbr_init(NBR_HASHSIZE);
 
 	/* setup signal handler */
 	signal_set(&ev_sigint, SIGINT, rde_sig_handler, NULL);
@@ -126,22 +119,26 @@ rde(struct dvmrpd_conf *xconf, int pipe_parent2rde[2], int pipe_dvmrpe2rde[2],
 	close(pipe_parent2dvmrpe[0]);
 	close(pipe_parent2dvmrpe[1]);
 
-	if ((ibuf_dvmrpe = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_dvmrpe = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_main = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_dvmrpe, pipe_dvmrpe2rde[1], rde_dispatch_imsg);
-	imsg_init(ibuf_main, pipe_parent2rde[1], rde_dispatch_imsg);
+
+	imsg_init(&iev_dvmrpe->ibuf, pipe_dvmrpe2rde[1]);
+	iev_dvmrpe->handler = rde_dispatch_imsg;
+
+	imsg_init(&iev_main->ibuf, pipe_parent2rde[1]);
+	iev_main->handler = rde_dispatch_imsg;
 
 	/* setup event handler */
-	ibuf_dvmrpe->events = EV_READ;
-	event_set(&ibuf_dvmrpe->ev, ibuf_dvmrpe->fd, ibuf_dvmrpe->events,
-	    ibuf_dvmrpe->handler, ibuf_dvmrpe);
-	event_add(&ibuf_dvmrpe->ev, NULL);
+	iev_dvmrpe->events = EV_READ;
+	event_set(&iev_dvmrpe->ev, iev_dvmrpe->ibuf.fd, iev_dvmrpe->events,
+	    iev_dvmrpe->handler, iev_dvmrpe);
+	event_add(&iev_dvmrpe->ev, NULL);
 
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
+	iev_main->events = EV_READ;
+	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
+	    iev_main->handler, iev_main);
+	event_add(&iev_main->ev, NULL);
 
 	rt_init();
 	mfc_init();
@@ -165,12 +162,11 @@ rde_shutdown(void)
 	LIST_FOREACH(iface, &rdeconf->iface_list, entry) {
 		if_del(iface);
 	}
-	rde_nbr_free();
 
-	msgbuf_clear(&ibuf_dvmrpe->w);
-	free(ibuf_dvmrpe);
-	msgbuf_clear(&ibuf_main->w);
-	free(ibuf_main);
+	msgbuf_clear(&iev_dvmrpe->ibuf.w);
+	free(iev_dvmrpe);
+	msgbuf_clear(&iev_main->ibuf.w);
+	free(iev_main);
 	free(rdeconf);
 
 	log_info("route decision engine exiting");
@@ -181,41 +177,40 @@ rde_shutdown(void)
 int
 rde_imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, 0, pid, data, datalen));
+	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
 }
 
 int
 rde_imsg_compose_dvmrpe(int type, u_int32_t peerid, pid_t pid, void *data,
     u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_dvmrpe, type, peerid, pid, data, datalen));
+	return (imsg_compose_event(iev_dvmrpe, type, peerid, pid, -1,
+	     data, datalen));
 }
 
 void
 rde_dispatch_imsg(int fd, short event, void *bula)
 {
 	struct mfc		 mfc;
-	struct imsgbuf		*ibuf = bula;
+	struct prune		 p;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct imsg		 imsg;
 	struct route_report	 rr;
-	struct rde_nbr		 rn;
-	int			 i, n, connected = 0;
+	struct nbr_msg		 nm;
+	int			 i, connected = 0, verbose;
+	ssize_t			 n;
 	struct iface		*iface;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			fatalx("pipe closed");
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -227,13 +222,13 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 		switch (imsg.hdr.type) {
 		case IMSG_CTL_SHOW_RIB:
 			rt_dump(imsg.hdr.pid);
-			imsg_compose(ibuf_dvmrpe, IMSG_CTL_END, 0, imsg.hdr.pid,
-			    NULL, 0);
+			imsg_compose_event(iev_dvmrpe, IMSG_CTL_END, 0,
+			    imsg.hdr.pid, -1, NULL, 0);
 			break;
 		case IMSG_CTL_SHOW_MFC:
 			mfc_dump(imsg.hdr.pid);
-			imsg_compose(ibuf_dvmrpe, IMSG_CTL_END, 0, imsg.hdr.pid,
-			    NULL, 0);
+			imsg_compose_event(iev_dvmrpe, IMSG_CTL_END, 0,
+			    imsg.hdr.pid, -1, NULL, 0);
 			break;
 		case IMSG_ROUTE_REPORT:
 			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(rr))
@@ -262,7 +257,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				mfc.ttls[i] = 0;
 
 			LIST_FOREACH(iface, &rdeconf->iface_list, entry) {
-				if (mfc.ifindex != iface->ifindex)
+				if (rde_select_ds_ifs(&mfc, iface))
 					mfc.ttls[iface->ifindex] = 1;
 			}
 
@@ -277,18 +272,51 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			mfc_delete(&mfc);
 #endif
 			break;
-		case IMSG_NEIGHBOR_UP:
-			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(rn))
-				fatalx("invalid size of OE request"); 
-			memcpy(&rn, imsg.data, sizeof(rn));
+		case IMSG_GROUP_ADD:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(mfc))
+				fatalx("invalid size of OE request");
+			memcpy(&mfc, imsg.data, sizeof(mfc));
 
-			if (rde_nbr_new(imsg.hdr.peerid, &rn) == NULL)
-				fatalx("rde_rispatch_imsg: "
-				    "neighbor already exists");
+			iface = if_find_index(mfc.ifindex);
+			if (iface == NULL) {
+				fatalx("rde_dispatch_imsg: "
+				    "cannot find matching interface");
+			}
+
+			rde_group_list_add(iface, mfc.group);
 			break;
-		case IMSG_NEIGHBOR_DOWN:
-			rde_nbr_del(rde_nbr_find(imsg.hdr.peerid));
+		case IMSG_GROUP_DEL:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(mfc))
+				fatalx("invalid size of OE request");
+			memcpy(&mfc, imsg.data, sizeof(mfc));
 
+			iface = if_find_index(mfc.ifindex);
+			if (iface == NULL) {
+				fatalx("rde_dispatch_imsg: "
+				    "cannot find matching interface");
+			}
+
+			rde_group_list_remove(iface, mfc.group);
+			break;
+		case IMSG_NBR_DEL:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(nm))
+				fatalx("invalid size of OE request");
+
+			memcpy(&nm, imsg.data, sizeof(nm));
+
+			srt_expire_nbr(nm.address, nm.ifindex);
+			break;
+		case IMSG_RECV_PRUNE:
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(p))
+				fatalx("invalid size of OE request");
+			memcpy(&p, imsg.data, sizeof(p));
+
+			mfc_recv_prune(&p);
+			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			/* already checked by dvmrpe */
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
 			break;
 		default:
 			log_debug("rde_dispatch_msg: unexpected imsg %d",
@@ -297,98 +325,107 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 		}
 		imsg_free(&imsg);
 	}
-	imsg_event_add(ibuf);
+	imsg_event_add(iev);
 }
 
-LIST_HEAD(rde_nbr_head, rde_nbr);
-
-struct nbr_table {
-	struct rde_nbr_head	*hashtbl;
-	u_int32_t		 hashmask;
-} rdenbrtable;
-
-#define RDE_NBR_HASH(x)		\
-	&rdenbrtable.hashtbl[(x) & rdenbrtable.hashmask]
-
-void
-rde_nbr_init(u_int32_t hashsize)
+int
+rde_select_ds_ifs(struct mfc *mfc, struct iface *iface)
 {
-	struct rde_nbr_head	*head;
-	u_int32_t		 hs, i;
+	struct rt_node	*rn;
 
-	for (hs = 1; hs < hashsize; hs <<= 1)
-		;
-	rdenbrtable.hashtbl = calloc(hs, sizeof(struct rde_nbr_head));
-	if (rdenbrtable.hashtbl == NULL)
-		fatal("rde_nbr_init");
+	if (mfc->ifindex == iface->ifindex)
+		return (0);
 
-	for (i = 0; i < hs; i++)
-		LIST_INIT(&rdenbrtable.hashtbl[i]);
+	if (rde_group_list_find(iface, mfc->group))
+		return (1);
 
-	rdenbrtable.hashmask = hs - 1;
-
-	if ((nbrself = calloc(1, sizeof(*nbrself))) == NULL)
-		fatal("rde_nbr_init");
-
-	nbrself->peerid = NBR_IDSELF;
-	head = RDE_NBR_HASH(NBR_IDSELF);
-	LIST_INSERT_HEAD(head, nbrself, hash);
-}
-
-void
-rde_nbr_free(void)
-{
-	free(nbrself);
-	free(rdenbrtable.hashtbl);
-}
-
-struct rde_nbr *
-rde_nbr_find(u_int32_t peerid)
-{
-	struct rde_nbr_head	*head;
-	struct rde_nbr		*nbr;
-
-	head = RDE_NBR_HASH(peerid);
-
-	LIST_FOREACH(nbr, head, hash) {
-		if (nbr->peerid == peerid)
-			return (nbr);
+	rn = rt_match_origin(mfc->origin.s_addr);
+	if (rn == NULL) {
+		log_debug("rde_selected_ds_iface: no informations about "
+		    "the origin %s", inet_ntoa(mfc->origin));
+		return (0);
 	}
 
-	return (NULL);
+	if (rn->ds_cnt[iface->ifindex] != 0)
+		return (1);
+
+	return (0);
 }
 
-struct rde_nbr *
-rde_nbr_new(u_int32_t peerid, struct rde_nbr *new)
+/* rde group functions */
+void
+rde_group_list_add(struct iface *iface, struct in_addr group)
 {
-	struct rde_nbr_head	*head;
-	struct rde_nbr		*nbr;
+	struct rde_group	*rdegrp;
 
-	if (rde_nbr_find(peerid))
-		return (NULL);
+	/* validate group id */
+	if (!IN_MULTICAST(htonl(group.s_addr))) {
+		log_debug("rde_group_list_add: interface %s, %s is not a "
+		    "multicast address", iface->name,
+		    inet_ntoa(group));
+		return;
+	}
 
-	if ((nbr = calloc(1, sizeof(*nbr))) == NULL)
-		fatal("rde_nbr_new");
+	if (rde_group_list_find(iface, group))
+		return;
 
-	memcpy(nbr, new, sizeof(*nbr));
-	nbr->peerid = peerid;
+	rdegrp = calloc(1, sizeof(*rdegrp));
+	if (rdegrp == NULL)
+		fatal("rde_group_list_add");
 
-	head = RDE_NBR_HASH(peerid);
-	LIST_INSERT_HEAD(head, nbr, hash);
+	rdegrp->rde_group.s_addr = group.s_addr;
 
-	return (nbr);
+	TAILQ_INSERT_TAIL(&iface->rde_group_list, rdegrp, entry);
+
+	log_debug("rde_group_list_add: interface %s, group %s", iface->name,
+	    inet_ntoa(rdegrp->rde_group));
+
+	return;
+}
+
+int
+rde_group_list_find(struct iface *iface, struct in_addr group)
+{
+	struct rde_group	*rdegrp = NULL;
+
+	/* validate group id */
+	if (!IN_MULTICAST(htonl(group.s_addr))) {
+		log_debug("rde_group_list_find: interface %s, %s is not a "
+		    "multicast address", iface->name,
+		    inet_ntoa(group));
+		return (0);
+	}
+
+	TAILQ_FOREACH(rdegrp, &iface->rde_group_list, entry) {
+		if (rdegrp->rde_group.s_addr == group.s_addr)
+			return (1);
+	}
+
+	return (0);
 }
 
 void
-rde_nbr_del(struct rde_nbr *nbr)
+rde_group_list_remove(struct iface *iface, struct in_addr group)
 {
-	if (nbr == NULL)
+	struct rde_group	*rg;
+	struct rt_node		*rn;
+
+	if (TAILQ_EMPTY(&iface->rde_group_list))
+		fatalx("rde_group_list_remove: group does not exist");
+
+	for (rg = TAILQ_FIRST(&iface->rde_group_list); rg != NULL;
+	    rg = TAILQ_NEXT(rg, entry)) {
+		if (rg->rde_group.s_addr == group.s_addr) {
+			log_debug("group_list_remove: interface %s, group %s",
+			    iface->name, inet_ntoa(rg->rde_group));
+			TAILQ_REMOVE(&iface->rde_group_list, rg, entry);
+			free(rg);
+		}
+	}
+
+	rn = mfc_find_origin(group);
+	if (rn == NULL)
 		return;
 
-	srt_expire_nbr(nbr->addr, nbr->iface);
-
-	LIST_REMOVE(nbr, entry);
-	LIST_REMOVE(nbr, hash);
-
-	free(nbr);
+	srt_check_downstream_ifaces(rn, iface);
 }

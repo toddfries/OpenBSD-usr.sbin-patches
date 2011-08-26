@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.6 2009/01/29 21:59:15 jacekm Exp $	*/
+/*	$OpenBSD: parser.c,v 1.21 2011/08/16 19:12:40 gilles Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -22,18 +22,10 @@
 #include <sys/socket.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
+#include <sys/param.h>
 
-#include <net/if.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
-#include <err.h>
-#include <errno.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <event.h>
+#include <imsg.h>
 
 #include <openssl/ssl.h>
 
@@ -44,7 +36,8 @@
 enum token_type {
 	NOTOKEN,
 	ENDTOKEN,
-	KEYWORD
+	KEYWORD,
+	VARIABLE
 };
 
 struct token {
@@ -55,17 +48,33 @@ struct token {
 };
 
 static const struct token t_main[];
+static const struct token t_schedule[];
 static const struct token t_show[];
 static const struct token t_pause[];
+static const struct token t_remove[];
 static const struct token t_resume[];
+static const struct token t_log[];
 
 static const struct token t_main[] = {
+	{KEYWORD,	"schedule",    	NONE,		t_schedule},
 	{KEYWORD,	"show",		NONE,		t_show},
 	{KEYWORD,	"monitor",	MONITOR,	NULL},
 	{KEYWORD,	"pause",	NONE,      	t_pause},
-	{KEYWORD,	"reload",	RELOAD,		NULL},
+/*	{KEYWORD,	"reload",	RELOAD,		NULL},*/
+	{KEYWORD,	"remove",	NONE,      	t_remove},
 	{KEYWORD,	"resume",	NONE,      	t_resume},
 	{KEYWORD,	"stop",		SHUTDOWN,      	NULL},
+	{KEYWORD,	"log",    	NONE,      	t_log},
+	{ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_remove[] = {
+	{VARIABLE,	"evpid",	REMOVE,		NULL},
+	{ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_schedule[] = {
+	{VARIABLE,	"msgid/evpid",	SCHEDULE,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -73,6 +82,7 @@ static const struct token t_show[] = {
 	{KEYWORD,	"queue",	SHOW_QUEUE,	NULL},
 	{KEYWORD,	"runqueue",	SHOW_RUNQUEUE,	NULL},
 	{KEYWORD,	"stats",	SHOW_STATS,	NULL},
+	{KEYWORD,	"sizes",	SHOW_SIZES,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -90,18 +100,27 @@ static const struct token t_resume[] = {
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 
-static struct parse_result	res;
+static const struct token t_log[] = {
+	{KEYWORD,	"verbose",      	LOG_VERBOSE,	NULL},
+	{KEYWORD,	"brief",	      	LOG_BRIEF,	NULL},
+	{ENDTOKEN,	"",			NONE,      	NULL}
+};
+
+static const struct token *match_token(const char *, const struct token [],
+    struct parse_result *);
+static void show_valid_args(const struct token []);
 
 struct parse_result *
 parse(int argc, char *argv[])
 {
+	static struct parse_result	res;
 	const struct token	*table = t_main;
 	const struct token	*match;
 
 	bzero(&res, sizeof(res));
 
 	while (argc >= 0) {
-		if ((match = match_token(argv[0], table)) == NULL) {
+		if ((match = match_token(argv[0], table, &res)) == NULL) {
 			fprintf(stderr, "valid commands/args:\n");
 			show_valid_args(table);
 			return (NULL);
@@ -125,7 +144,8 @@ parse(int argc, char *argv[])
 }
 
 const struct token *
-match_token(const char *word, const struct token table[])
+match_token(const char *word, const struct token table[],
+    struct parse_result *res)
 {
 	u_int			 i, match;
 	const struct token	*t = NULL;
@@ -146,7 +166,17 @@ match_token(const char *word, const struct token table[])
 				match++;
 				t = &table[i];
 				if (t->value)
-					res.action = t->value;
+					res->action = t->value;
+			}
+			break;
+		case VARIABLE:
+			if (word != NULL && strlen(word) != 0) {
+				match++;
+				t = &table[i];
+				if (t->value) {
+					res->action = t->value;
+					res->data = word;
+				}
 			}
 			break;
 		case ENDTOKEN:
@@ -167,7 +197,7 @@ match_token(const char *word, const struct token table[])
 	return (t);
 }
 
-void
+static void
 show_valid_args(const struct token table[])
 {
 	int	i;
@@ -178,6 +208,9 @@ show_valid_args(const struct token table[])
 			fprintf(stderr, "  <cr>\n");
 			break;
 		case KEYWORD:
+			fprintf(stderr, "  %s\n", table[i].keyword);
+			break;
+		case VARIABLE:
 			fprintf(stderr, "  %s\n", table[i].keyword);
 			break;
 		case ENDTOKEN:

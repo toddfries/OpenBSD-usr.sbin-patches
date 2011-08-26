@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.7 2009/01/20 01:35:34 todd Exp $ */
+/*	$OpenBSD: interface.c,v 1.10 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -26,6 +26,7 @@
 #include <netinet/ip_mroute.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <net/if_types.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -173,6 +174,7 @@ if_new(struct kif *kif)
 
 	LIST_INIT(&iface->nbr_list);
 	TAILQ_INIT(&iface->group_list);
+	TAILQ_INIT(&iface->rde_group_list);
 	strlcpy(iface->name, kif->ifname, sizeof(iface->name));
 
 	if ((ifr = calloc(1, sizeof(*ifr))) == NULL)
@@ -382,8 +384,7 @@ if_act_start(struct iface *iface)
 		return (-1);
 	}
 
-	if (!((iface->flags & IFF_UP) &&
-	    (iface->linkstate != LINK_STATE_DOWN))) {
+	if (!((iface->flags & IFF_UP) && LINK_STATE_IS_UP(iface->linkstate))) {
 		log_debug("if_act_start: interface %s link down",
 		    iface->name);
 		return (0);

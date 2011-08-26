@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: SCP.pm,v 1.17 2008/06/27 10:57:27 espie Exp $
+# $OpenBSD: SCP.pm,v 1.27 2011/07/19 17:30:05 espie Exp $
 #
 # Copyright (c) 2003-2006 Marc Espie <espie@openbsd.org>
 #
@@ -18,8 +18,10 @@
 use strict;
 use warnings;
 
+use OpenBSD::PackageRepository::Persistant;
+
 package OpenBSD::PackageRepository::SCP;
-our @ISA=qw(OpenBSD::PackageRepository::Distant);
+our @ISA=qw(OpenBSD::PackageRepository::Persistant);
 
 use IPC::Open2;
 use IO::Handle;
@@ -30,8 +32,6 @@ sub urlscheme
 	return 'scp';
 }
 
-our %distant = ();
-
 # Any SCP repository uses one single connection, reliant on a perl at end.
 # The connection starts by xfering and firing up the `distant' script.
 sub initiate
@@ -40,12 +40,12 @@ sub initiate
 
 	my ($rdfh, $wrfh);
 
-	$self->{controller} = open2($rdfh, $wrfh, OpenBSD::Paths->ssh, 
+	$self->{controller} = open2($rdfh, $wrfh, OpenBSD::Paths->ssh,
 	    $self->{host}, 'perl', '-x');
 	$self->{cmdfh} = $wrfh;
 	$self->{getfh} = $rdfh;
 	$wrfh->autoflush(1);
-	local $_;
+	my $_;
 
 	while(<DATA>) {
 		# compress script a bit
@@ -54,117 +54,7 @@ sub initiate
 		next if m/^$/o;
 		print $wrfh $_;
 	}
-}
-	
-	
-sub may_exist
-{
-	my ($self, $name) = @_;
-	my $l = $self->list;
-	return grep {$_ eq $name } @$l;
-}
-
-sub grab_object
-{
-	my ($self, $object) = @_;
-
-	my $cmdfh = $self->{cmdfh};
-	my $getfh = $self->{getfh};
-
-	print $cmdfh "ABORT\n";
-	local $_;
-	while (<$getfh>) {
-		last if m/^ABORTED/o;
-	}
-	print $cmdfh "GET ", $self->{path}.$object->{name}.".tgz", "\n";
-	close($cmdfh);
-	$_ = <$getfh>;
-	chomp;
-	if (m/^ERROR:/o) {
-		die "transfer error: $_";
-	}
-	if (m/^TRANSFER:\s+(\d+)/o) {
-		my $buffsize = 10 * 1024;
-		my $buffer;
-		my $size = $1;
-		my $remaining = $size;
-		my $n;
-
-		do {
-			$n = read($getfh, $buffer, 
-				$remaining < $buffsize ? $remaining :$buffsize);
-			if (!defined $n) {
-				die "Error reading\n";
-			}
-			$remaining -= $n;
-			if ($n > 0) {
-				syswrite STDOUT, $buffer;
-			}
-		} while ($n != 0 && $remaining != 0);
-		exit(0);
-	}
-}
-
-sub maxcount
-{
-	return 1;
-}
-
-sub opened
-{
-	my $self = $_[0];
-	my $k = $self->{host};
-	if (!defined $distant{$k}) {
-		$distant{$k} = [];
-	}
-	return $distant{$k};
-}
-
-sub list
-{
-	my ($self) = @_;
-	if (!defined $self->{list}) {
-		if (!defined $self->{controller}) {
-			$self->initiate;
-		}
-		my $cmdfh = $self->{cmdfh};
-		my $getfh = $self->{getfh};
-		my $path = $self->{path};
-		my $l = [];
-		print $cmdfh "LIST $path\n";
-		local $_;
-		$_ = <$getfh>;
-		if (!defined $_) {
-			die "Could not initiate SSH session\n";
-		}
-		chomp;
-		if (m/^ERROR:/o) {
-			die $_;
-		}
-		if (!m/^SUCCESS:/o) {
-			die "Synchronization error\n";
-		}
-		while (<$getfh>) {
-			chomp;
-			last if $_ eq '';
-			push(@$l, $_);
-		}
-		$self->{list} = $l;
-	}
-	return $self->{list};
-}
-
-sub cleanup
-{
-	my $self = shift;
-	if (defined $self->{controller}) {
-		my $cmdfh = $self->{cmdfh};
-		my $getfh = $self->{getfh};
-		print $cmdfh "ABORT\nBYE\nBYE\n";
-		CORE::close($cmdfh);
-		CORE::close($getfh);
-		waitpid($self->{controller}, 0);
-	}
+	seek(DATA, 0, 0);
 }
 
 1;
@@ -204,12 +94,21 @@ sub abort_batch()
 	print "\nABORTED $token\n";
 }
 
+my $dirs = {};
 
-local $_;
+sub expand_tilde
+{
+	my $arg = shift;
+
+	return $dirs->{$arg} //= (getpwnam($arg))[7]."/";
+}
+
+my $_;
 while (<STDIN>) {
 	chomp;
 	if (m/^LIST\s+(.*)$/o) {
 		my $dname = $1;
+		$dname =~ s/^\/\~(.*?)\//expand_tilde($1)/e;
 		batch(sub {
 			my $d;
 			if (opendir($d, $dname)) {
@@ -228,6 +127,7 @@ while (<STDIN>) {
 		});
 	} elsif (m/^GET\s+(.*)$/o) {
 		my $fname = $1;
+		$fname =~ s/^\/\~(.*?)\//expand_tilde($1)/e;
 		batch(sub {
 			if (open(my $fh, '<', $fname)) {
 				my $size = (stat $fh)[7];

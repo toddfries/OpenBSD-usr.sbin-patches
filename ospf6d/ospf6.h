@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6.h,v 1.13 2008/12/30 22:29:54 claudio Exp $ */
+/*	$OpenBSD: ospf6.h,v 1.18 2011/03/24 10:00:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2007 Esben Norby <norby@openbsd.org>
@@ -22,6 +22,7 @@
 #define _OSPF_H_
 
 #include <netinet/in.h>
+#include <stddef.h>
 
 /* misc */
 #define OSPF6_VERSION		3
@@ -99,9 +100,9 @@
 #define CHECK_AGE		300
 #define MAX_AGE_DIFF		900
 #define LS_INFINITY		0xffffff
-#define RESV_SEQ_NUM		0x80000000	/* reserved and "unused" */
-#define INIT_SEQ_NUM		0x80000001
-#define MAX_SEQ_NUM		0x7fffffff
+#define RESV_SEQ_NUM		0x80000000U	/* reserved and "unused" */
+#define INIT_SEQ_NUM		0x80000001U
+#define MAX_SEQ_NUM		0x7fffffffU
 
 /* OSPF header */
 struct ospf_hdr {
@@ -189,7 +190,9 @@ struct ls_upd_hdr {
 
 /* LSA headers */
 #define LSA_METRIC_MASK		0x00ffffff	/* only for sum & as-ext */
-#define LSA_ASEXT_E_FLAG	0x80000000
+#define LSA_ASEXT_E_FLAG	0x04000000
+#define LSA_ASEXT_F_FLAG	0x02000000
+#define LSA_ASEXT_T_FLAG	0x01000000
 
 #define OSPF_RTR_B		0x01
 #define OSPF_RTR_E		0x02
@@ -209,7 +212,7 @@ struct ls_upd_hdr {
 struct lsa_prefix {
 	u_int8_t		prefixlen;
 	u_int8_t		options;
-	u_int16_t		metric;
+	u_int16_t		metric;	/* Ref. LS type in AS-Ext-LSA */
 	/* + an IPv6 prefix encoded in (prefixlen + 31)/32 words */
 };
 
@@ -228,7 +231,6 @@ struct lsa_rtr_link {
 
 struct lsa_net {
 	u_int32_t		opts;	/* 24bits options */
-	u_int32_t		att_rtr[1];
 };
 
 struct lsa_net_link {
@@ -247,10 +249,12 @@ struct lsa_rtr_sum {
 };
 
 struct lsa_asext {
-	u_int32_t		mask;
-	u_int32_t		metric;		/* lower 24 bit plus E bit */
-	u_int32_t		fw_addr;
-	u_int32_t		ext_tag;
+	u_int32_t		metric;		/* lower 24 bit plus EFT bits */
+	struct lsa_prefix	prefix;
+	/* + if F bit is set, an optional forwarding address (128bit) */
+	/* + if T bit is set, an optional external route tag (32bit) */
+	/* + if referenced LS type (i.e. prefix.metric) is non-zero, an
+	 *   optional referenced LS ID (32bit) -- not used by OSPF itself */
 };
 
 struct lsa_link {
@@ -263,7 +267,7 @@ struct lsa_link {
 struct lsa_intra_prefix {
 	u_int16_t		numprefix;
 	u_int16_t		ref_type;
-	u_int32_t		ref_lsid;
+	u_int32_t		ref_ls_id;
 	u_int32_t		ref_adv_rtr;
 	/* + numprefix * lsa_prefix */
 };
@@ -278,7 +282,7 @@ struct lsa_hdr {
 	u_int16_t		len;
 };
 
-#define LS_CKSUM_OFFSET	((u_int16_t)(&((struct lsa_hdr *)0)->ls_chksum))
+#define LS_CKSUM_OFFSET	offsetof(struct lsa_hdr, ls_chksum)
 
 struct lsa {
 	struct lsa_hdr		hdr;

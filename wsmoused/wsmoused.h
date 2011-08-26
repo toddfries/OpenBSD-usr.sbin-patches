@@ -1,4 +1,4 @@
-/* $OpenBSD: wsmoused.h,v 1.6 2008/06/20 14:17:20 ragge Exp $ */
+/* $OpenBSD: wsmoused.h,v 1.8 2009/06/21 16:13:18 jacekm Exp $ */
 
 /*
  * Copyright (c) 2001 Jean-Baptiste Marchand, Julien Montagne and Jerome Verdon
@@ -62,7 +62,8 @@ extern char *pidfile;
 
 #define logerr(e, ...) 				\
 	do {							\
-		unlink(pidfile);				\
+		if (pidfile != NULL)				\
+			unlink(pidfile);			\
 		if (background) {				\
 			syslog(LOG_ERR, __VA_ARGS__);		\
 			exit(e);				\
@@ -73,9 +74,9 @@ extern char *pidfile;
 #define logwarn(...)						\
 	do {							\
 		if (background)					\
-		    syslog(LOG_WARNING, __VA_ARGS__);		\
+			syslog(LOG_WARNING, __VA_ARGS__);	\
 		else						\
-		    warnx(__VA_ARGS__);				\
+			warnx(__VA_ARGS__);			\
 	} while (0)
 
 /* Daemon flags */
@@ -90,26 +91,23 @@ extern char *pidfile;
 /* Devices corresponding to physical interfaces */
 
 #define WSMOUSE_DEV "/dev/wsmouse" /* can be /dev/wsmouse, /dev/wsmouse0, ...*/
-#define SERIAL_DEV "/dev/cua0" /* can be /dev/cua00, /dev/cua01, ... */
-
-#define IS_WSMOUSE_DEV(dev) (!(strncmp((dev), WSMOUSE_DEV,12)))
-#define IS_SERIAL_DEV(dev) (!(strncmp((dev), SERIAL_DEV, 9)))
 
 /* mouse structure : main structure */
 typedef struct mouse_s {
-    int flags;
-    char *portname;		/* /dev/XXX */
-    int proto;			/* MOUSE_PROTO_XXX */
-    int baudrate;
-    int old_baudrate;
-    unsigned char rate;			/* report rate */
-    unsigned int resolution;		/* MOUSE_RES_XXX or a positive number */
-    int zmap;			/* MOUSE_{X|Y}AXIS or a button number */
-    int wmode;			/* wheel mode button number */
-    int mfd;			/* mouse file descriptor */
-    int cfd;			/* console file descriptor */
-    long clickthreshold;	/* double click speed in msec */
-} mouse_t ;
+	int flags;
+	char *portname;		/* mouse device */
+	char *ttyname;		/* wsdisplay control tty device */
+	int proto;		/* MOUSE_PROTO_XXX */
+	int baudrate;
+	int old_baudrate;
+	unsigned char rate;	/* report rate */
+	unsigned int resolution;	/* MOUSE_RES_XXX or a positive number */
+	int zmap;		/* MOUSE_{X|Y}AXIS or a button number */
+	int wmode;		/* wheel mode button number */
+	int mfd;		/* mouse file descriptor */
+	int cfd;		/* console file descriptor */
+	long clickthreshold;	/* double click speed in msec */
+} mouse_t;
 
 /* Mouse buttons */
 
@@ -121,5 +119,12 @@ typedef struct mouse_s {
 #define MOUSE_BUTTON6	5
 #define MOUSE_BUTTON7	6
 #define MOUSE_BUTTON8	7
-#define MOUSE_MAXBUTTON	8
-
+#define MOUSE_BUTTON9	8
+#define MOUSE_BUTTON10	9
+#define MOUSE_BUTTON11	10
+#define MOUSE_BUTTON12	11
+#define MOUSE_BUTTON13	12
+#define MOUSE_BUTTON14	13
+#define MOUSE_BUTTON15	14
+#define MOUSE_BUTTON16	15
+#define MOUSE_MAXBUTTON	16

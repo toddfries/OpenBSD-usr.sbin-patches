@@ -74,14 +74,6 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef lint
-static char rcsid[] =
-    "@(#) $OpenBSD: mrinfo.c,v 1.22 2007/09/02 15:19:39 deraadt Exp $";
-/*  original rcsid:
-    "@(#) Header: mrinfo.c,v 1.6 93/04/08 15:14:16 van Exp (LBL)";
-*/
-#endif
-
 #include <string.h>
 #include <netdb.h>
 #include <sys/time.h>
@@ -427,7 +419,7 @@ main(int argc, char *argv[])
 				--tv.tv_sec;
 			}
 			if (tv.tv_sec < 0)
-				tv.tv_sec = tv.tv_usec = 0;
+				timerclear(&tv);
 
 			count = poll(pfd, 1, tv.tv_sec * 1000);
 

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: ospf6ctl.8,v 1.2 2008/12/28 22:05:04 sobrado Exp $
+.\"	$OpenBSD: ospf6ctl.8,v 1.7 2010/05/10 18:46:07 sthen Exp $
 .\"
 .\" Copyright (c) 2004, 2005, 2007 Esben Norby <norby@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: December 28 2008 $
+.Dd $Mdocdate: May 10 2010 $
 .Dt OSPF6CTL 8
 .Os
 .Sh NAME
@@ -30,6 +30,10 @@ The
 program controls the
 .Xr ospf6d 8
 daemon.
+Commands may be abbreviated to the minimum unambiguous prefix; for example,
+.Cm s s
+for
+.Cm show summary .
 .Pp
 The following commands are available:
 .Bl -tag -width Ds
@@ -41,6 +45,10 @@ Remove the learned routes from the FIB.
 Decoupling the FIB from an OSPF router may create routing loops and could cause
 major routing issues in the complete OSPF cloud.
 Only routers with just one link to the OSPF cloud can safely decouple the FIB.
+.It Cm log brief
+Disable verbose debug logging.
+.It Cm log verbose
+Enable verbose debug logging.
 .It Cm reload
 Reload the configuration file.
 .It Cm show database Op Ar filter
@@ -106,7 +114,8 @@ Show summary information.
 .Sh FILES
 .Bl -tag -width "/var/run/ospf6d.sockXX" -compact
 .It /var/run/ospf6d.sock
-Unix-domain socket used for communication with
+.Ux Ns -domain
+socket used for communication with
 .Xr ospf6d 8 .
 .El
 .Sh SEE ALSO

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntpd.c,v 1.64 2009/02/10 16:52:09 stevesk Exp $ */
+/*	$OpenBSD: ntpd.c,v 1.69 2011/03/19 23:40:11 okan Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -23,7 +23,6 @@
 #include <errno.h>
 #include <poll.h>
 #include <pwd.h>
-#include <resolv.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,7 +96,6 @@ main(int argc, char *argv[])
 	bzero(&lconf, sizeof(lconf));
 
 	log_init(1);		/* log to stderr until daemonized */
-	res_init();		/* XXX */
 
 	while ((ch = getopt(argc, argv, "df:nsSv")) != -1) {
 		switch (ch) {
@@ -143,8 +141,6 @@ main(int argc, char *argv[])
 
 	if ((pw = getpwnam(NTPD_USER)) == NULL)
 		errx(1, "unknown user %s", NTPD_USER);
-
-	endpwent();
 
 	reset_adjtime();
 	if (!lconf.settime) {
@@ -268,7 +264,7 @@ dispatch_imsg(struct ntpd_conf *lconf)
 	double			 d;
 	char			*name;
 	struct ntp_addr		*h, *hn;
-	struct buf		*buf;
+	struct ibuf		*buf;
 
 	if ((n = imsg_read(ibuf)) == -1)
 		return (-1);
@@ -291,7 +287,8 @@ dispatch_imsg(struct ntpd_conf *lconf)
 				fatalx("invalid IMSG_ADJTIME received");
 			memcpy(&d, imsg.data, sizeof(d));
 			n = ntpd_adjtime(d);
-			imsg_compose(ibuf, IMSG_ADJTIME, 0, 0, &n, sizeof(n));
+			imsg_compose(ibuf, IMSG_ADJTIME, 0, 0, -1,
+			     &n, sizeof(n));
 			break;
 		case IMSG_ADJFREQ:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE + sizeof(d))
@@ -348,8 +345,7 @@ reset_adjtime(void)
 {
 	struct timeval	tv;
 
-	tv.tv_sec = 0;
-	tv.tv_usec = 0;
+	timerclear(&tv);
 	if (adjtime(&tv, NULL) == -1)
 		log_warn("reset adjtime failed");
 }

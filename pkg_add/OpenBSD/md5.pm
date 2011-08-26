@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: md5.pm,v 1.7 2008/10/06 09:36:17 espie Exp $
+# $OpenBSD: md5.pm,v 1.15 2011/06/27 12:14:25 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -26,6 +26,12 @@ sub new
 	$class = ref($class) || $class;
 	my $digest = $class->digest_file($filename);
 	bless \$digest, $class;
+}
+
+sub key
+{
+	my $self = shift;
+	return $$self;
 }
 
 sub write
@@ -111,10 +117,12 @@ sub keyword
 package OpenBSD::sha;
 our @ISA=(qw(OpenBSD::digest));
 
+use Digest::SHA;
+use MIME::Base64;
+
 sub algo
 {
 	my $self = shift;
-	require Digest::SHA;
 
 	return Digest::SHA->new(256);
 }
@@ -122,17 +130,17 @@ sub algo
 sub stringize
 {
 	my $self = shift;
-	require MIME::Base64;
 
-	return MIME::Base64::encode_base64($$self, '');
+	return encode_base64($$self, '');
 }
 
 sub unstringize
 {
 	my ($class, $arg) = @_;
-	require MIME::Base64;
-
-	return MIME::Base64::decode_base64($arg);
+	if ($arg =~ /^[0-9a-f]{64}$/i) {
+		return pack('H*', $arg);
+	}
+	return decode_base64($arg);
 }
 
 sub keyword

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ftp-proxy.c,v 1.19 2008/06/13 07:25:26 claudio Exp $ */
+/*	$OpenBSD: ftp-proxy.c,v 1.23 2011/06/21 17:31:07 mikeb Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Camiel Dobbelaar, <cd@sentia.nl>
@@ -77,6 +77,7 @@ struct session {
 	char			 sbuf[MAX_LINE];
 	size_t			 sbuf_valid;
 	int			 cmd;
+	int			 client_rd;
 	u_int16_t		 port;
 	u_int16_t		 proxy_port;
 	LIST_ENTRY(session)	 entry;
@@ -373,7 +374,7 @@ handle_connection(const int listen_fd, short event, void *ev)
 {
 	struct sockaddr_storage tmp_ss;
 	struct sockaddr *client_sa, *server_sa, *fixed_server_sa;
-	struct sockaddr *client_to_proxy_sa, *proxy_to_server_sa;
+	struct sockaddr *proxy_to_server_sa;
 	struct session *s;
 	socklen_t len;
 	int client_fd, fc, on;
@@ -410,7 +411,6 @@ handle_connection(const int listen_fd, short event, void *ev)
 	/* Cast it once, and be done with it. */
 	client_sa = sstosa(&s->client_ss);
 	server_sa = sstosa(&s->server_ss);
-	client_to_proxy_sa = sstosa(&tmp_ss);
 	proxy_to_server_sa = sstosa(&s->proxy_ss);
 	fixed_server_sa = sstosa(&fixed_server_ss);
 
@@ -422,13 +422,16 @@ handle_connection(const int listen_fd, short event, void *ev)
 	 * Find out the real server and port that the client wanted.
 	 */
 	len = sizeof(struct sockaddr_storage);
-	if ((getsockname(s->client_fd, client_to_proxy_sa, &len)) < 0) {
+	if (getsockname(s->client_fd, server_sa, &len) < 0) {
 		logmsg(LOG_CRIT, "#%d getsockname failed: %s", s->id,
 		    strerror(errno));
 		goto fail;
 	}
-	if (server_lookup(client_sa, client_to_proxy_sa, server_sa) != 0) {
-	    	logmsg(LOG_CRIT, "#%d server lookup failed (no rdr?)", s->id);
+	len = sizeof(s->client_rd);
+	if (getsockopt(s->client_fd, SOL_SOCKET, SO_RTABLE, &s->client_rd,
+	    &len) && errno != ENOPROTOOPT) {
+		logmsg(LOG_CRIT, "#%d getsockopt failed: %s", s->id,
+		    strerror(errno));
 		goto fail;
 	}
 	if (fixed_server) {
@@ -477,7 +480,7 @@ handle_connection(const int listen_fd, short event, void *ev)
 	}
 
 	logmsg(LOG_INFO, "#%d FTP session %d/%d started: client %s to server "
-	    "%s via proxy %s ", s->id, session_count, max_sessions,
+	    "%s via proxy %s", s->id, session_count, max_sessions,
 	    sock_ntop(client_sa), sock_ntop(server_sa),
 	    sock_ntop(proxy_to_server_sa));
 
@@ -971,25 +974,16 @@ allow_data_connection(struct session *s)
 		proxy_reply(s->cmd, orig_sa, s->proxy_port);
 		logmsg(LOG_DEBUG, "#%d proxy: %s", s->id, linebuf);
 
-		/* rdr from $client to $orig_server port $proxy_port -> $server
-		    port $port */
-		if (add_rdr(s->id, client_sa, orig_sa, s->proxy_port,
-		    server_sa, s->port) == -1)
+		/* pass in from $client to $orig_server port $proxy_port
+		    rdr-to $server port $port */
+		if (add_rdr(s->id, client_sa, s->client_rd, orig_sa,
+		    s->proxy_port, server_sa, s->port, getrtable()) == -1)
 			goto fail;
 
-		/* nat from $client to $server port $port -> $proxy */
-		if (add_nat(s->id, client_sa, server_sa, s->port, proxy_sa,
-		    PF_NAT_PROXY_PORT_LOW, PF_NAT_PROXY_PORT_HIGH) == -1)
-			goto fail;
-
-		/* pass in from $client to $server port $port */
-		if (add_filter(s->id, PF_IN, client_sa, server_sa,
-		    s->port) == -1)
-			goto fail;
-
-		/* pass out from $proxy to $server port $port */
-		if (add_filter(s->id, PF_OUT, proxy_sa, server_sa,
-		    s->port) == -1)
+		/* pass out from $client to $server port $port nat-to $proxy */
+		if (add_nat(s->id, client_sa, getrtable(), server_sa,
+		    s->port, proxy_sa, PF_NAT_PROXY_PORT_LOW,
+		    PF_NAT_PROXY_PORT_HIGH) == -1)
 			goto fail;
 	}
 
@@ -1002,36 +996,26 @@ allow_data_connection(struct session *s)
 			goto fail;
 		prepared = 1;
 
-		/* rdr from $server to $proxy port $proxy_port -> $client port
-		    $port */
-		if (add_rdr(s->id, server_sa, proxy_sa, s->proxy_port,
-		    client_sa, s->port) == -1)
+		/* pass in from $server to $proxy port $proxy_port
+		    rdr-to $client port $port */
+		if (add_rdr(s->id, server_sa, getrtable(), proxy_sa,
+		    s->proxy_port, client_sa, s->port, s->client_rd) == -1)
 			goto fail;
 
-		/* nat from $server to $client port $port -> $orig_server port
-		    $natport */
+		/* pass out from $server to $client port $port
+		    nat-to $orig_server port $natport */
 		if (rfc_mode && s->cmd == CMD_PORT) {
 			/* Rewrite sourceport to RFC mandated 20. */
-			if (add_nat(s->id, server_sa, client_sa, s->port,
-			    orig_sa, 20, 20) == -1)
+			if (add_nat(s->id, server_sa, s->client_rd, client_sa,
+			    s->port, orig_sa, 20, 20) == -1)
 				goto fail;
 		} else {
 			/* Let pf pick a source port from the standard range. */
-			if (add_nat(s->id, server_sa, client_sa, s->port,
-			    orig_sa, PF_NAT_PROXY_PORT_LOW,
+			if (add_nat(s->id, server_sa, s->client_rd, client_sa,
+			    s->port, orig_sa, PF_NAT_PROXY_PORT_LOW,
 			    PF_NAT_PROXY_PORT_HIGH) == -1)
 			    	goto fail;
 		}
-
-		/* pass in from $server to $client port $port */
-		if (add_filter(s->id, PF_IN, server_sa, client_sa, s->port) ==
-		    -1)
-			goto fail;
-
-		/* pass out from $orig_server to $client port $port */
-		if (add_filter(s->id, PF_OUT, orig_sa, client_sa, s->port) ==
-		    -1)
-			goto fail;
 	}
 
 	/* Commit rules if they were prepared. */

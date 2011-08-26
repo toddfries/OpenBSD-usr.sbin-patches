@@ -30,16 +30,6 @@
  * SUCH DAMAGE.
  */
 
-#ifndef lint
-static char copyright[] =
-"@(#) Copyright (c) 1984, 1993\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
-
-#ifndef lint
-static char sccsid[] = "@(#)arp.c	8.2 (Berkeley) 1/2/94";
-#endif /* not lint */
-
 /*
  * set arp table entries
  */
@@ -125,7 +115,7 @@ tryagain:
 		s = -1;
 		return (1);
 	}
-	sin = (struct sockaddr_inarp *)(rtm + 1);
+	sin = (struct sockaddr_inarp *)((char *)rtm + rtm->rtm_hdrlen);
 	sdl = (struct sockaddr_dl *)(sin->sin_len + (char *)sin);
 	if (sin->sin_addr.s_addr == sin_m.sin_addr.s_addr) {
 		if (sdl->sdl_family == AF_LINK &&
@@ -236,7 +226,8 @@ doit:
 	}
 	do {
 		l = read(s, (char *)&m_rtmsg, sizeof(m_rtmsg));
-	} while (l > 0 && (rtm->rtm_seq != seq || rtm->rtm_pid != pid));
+	} while (l > 0 && (rtm->rtm_version != RTM_VERSION ||
+	    rtm->rtm_seq != seq || rtm->rtm_pid != pid));
 	if (l < 0)
 		syslog(LOG_ERR, "arptab_set: read from routing socket: %m");
 	return (0);

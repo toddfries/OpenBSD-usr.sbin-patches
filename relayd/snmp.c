@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmp.c,v 1.2 2008/05/05 15:07:12 henning Exp $	*/
+/*	$OpenBSD: snmp.c,v 1.11 2011/05/19 08:56:49 reyk Exp $	*/
 
 /*
  * Copyright (c) 2008 Reyk Floeter <reyk@openbsd.org>
@@ -21,6 +21,7 @@
 #include <sys/un.h>
 #include <sys/uio.h>
 
+#include <netinet/in.h>
 #include <net/if.h>
 #include <arpa/inet.h>
 
@@ -44,20 +45,15 @@
 		goto done;					\
 } while (0)
 
-static struct imsgbuf	*ibuf_snmp = NULL;
-static struct imsgbuf	*ibuf_main = NULL;
-static struct relayd	*env = NULL;
+static struct imsgev	*iev_snmp = NULL;
+enum privsep_procid	 snmp_procid;
 
 void	 snmp_sock(int, short, void *);
-int	 snmp_getsock(struct imsgbuf *);
 int	 snmp_element(const char *, enum snmp_type, void *, int64_t);
 
 void
-snmp_init(struct relayd *x_env, struct imsgbuf *ibuf)
+snmp_init(struct relayd *env, enum privsep_procid id)
 {
-	env = x_env;
-	ibuf_main = ibuf;
-
 	if (event_initialized(&env->sc_snmpev))
 		event_del(&env->sc_snmpev);
 	if (event_initialized(&env->sc_snmpto))
@@ -67,116 +63,90 @@ snmp_init(struct relayd *x_env, struct imsgbuf *ibuf)
 		env->sc_snmp = -1;
 	}
 
-	if ((env->sc_flags & F_TRAP) == 0) {
-		ibuf_main = NULL;
+	if ((env->sc_flags & F_TRAP) == 0)
 		return;
-	}
 
-	snmp_sock(-1, -1, ibuf);
+	snmp_procid = id;
+	snmp_sock(-1, -1, env);
 }
 
 int
-snmp_sendsock(struct imsgbuf *ibuf)
+snmp_setsock(struct relayd *env, enum privsep_procid id)
 {
-	struct imsgbuf		 tmpibuf;
+	struct imsgev		 tmpiev;
 	struct sockaddr_un	 sun;
 	int			 s = -1;
 
 	if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
-		goto fail;
+		goto done;
 
 	bzero(&sun, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	strlcpy(sun.sun_path, SNMP_SOCKET, sizeof(sun.sun_path));
-	if (connect(s, (struct sockaddr *)&sun, sizeof(sun)) == -1)
-		goto fail;
+
+	if (connect(s, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
+		close(s);
+		s = -1;
+		goto done;
+	}
 
 	/* enable restricted snmp socket mode */
-	bzero(&tmpibuf, sizeof(tmpibuf));
-	imsg_init(&tmpibuf, s, NULL);
-	imsg_compose(&tmpibuf, IMSG_SNMP_LOCK, 0, 0, -1, NULL, 0);
+	bzero(&tmpiev, sizeof(tmpiev));
+	imsg_init(&tmpiev.ibuf, s);
+	imsg_compose_event(&tmpiev, IMSG_SNMP_LOCK, 0, 0, -1, NULL, 0);
 
-	imsg_compose(ibuf, IMSG_SNMPSOCK, 0, 0, s, NULL, 0);
-	imsg_flush(ibuf);	/* need to send the socket now */
-	close(s);
-	return (0);
-
- fail:
-	if (s != -1)
-		close(s);
-	imsg_compose(ibuf, IMSG_NONE, 0, 0, -1, NULL, 0);
+ done:
+	proc_compose_imsg(env->sc_ps, id, -1, IMSG_SNMPSOCK, s, NULL, 0);
 	return (-1);
 }
 
 int
-snmp_getsock(struct imsgbuf *ibuf)
+snmp_getsock(struct relayd *env, struct imsg *imsg)
 {
-	struct imsg	 imsg;
-	int		 n, s = -1, done = 0;
+	struct timeval	 tv = SNMP_RECONNECT_TIMEOUT;
 
-	imsg_compose(ibuf, IMSG_SNMPSOCK, 0, 0, -1, NULL, 0);
-	imsg_flush(ibuf);
+	if (imsg->fd == -1)
+		goto retry;
 
-	while (!done) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("snmp_getsock: failed to read imsg");
-		if (n == 0)
-			fatal("snmp_getsock: pipe closed");
-		while (!done) {
-			if ((n = imsg_get(ibuf, &imsg)) == -1)
-				fatal("snmp_getsock: failed to get imsg");
-			if (n == 0)
-				break;
-			done = 1;
-			switch (imsg.hdr.type) {
-			case IMSG_SNMPSOCK:
-				if ((s = imsg_get_fd(ibuf)) <= 0)
-					s = -1;
-				break;
-			default:
-				break;
-			}
-			imsg_free(&imsg);
-		}
-	}
+	env->sc_snmp = imsg->fd;
 
-	if (s != -1) {
-		log_debug("snmp_getsock: got new snmp socket %d", s);
-		if (ibuf_snmp == NULL && (ibuf_snmp = (struct imsgbuf *)
-		    calloc(1, sizeof(struct imsgbuf))) == NULL)
-			fatal("snmp_getsock: calloc");
-		imsg_init(ibuf_snmp, s, NULL);
-	}
+	log_debug("%s: got new snmp socket %d", __func__, imsg->fd);
+	if (iev_snmp == NULL && (iev_snmp = (struct imsgev *)
+	    calloc(1, sizeof(struct imsgev))) == NULL)
+		fatal("snmp_getsock: calloc");
+	imsg_init(&iev_snmp->ibuf, env->sc_snmp);
 
-	return (s);
+	event_set(&env->sc_snmpev, env->sc_snmp,
+	    EV_READ|EV_TIMEOUT, snmp_sock, env);
+	event_add(&env->sc_snmpev, NULL);
+	return (0);
+ retry:
+	evtimer_set(&env->sc_snmpto, snmp_sock, env);
+	evtimer_add(&env->sc_snmpto, &tv);
+	return (0);
 }
 
 void
 snmp_sock(int fd, short event, void *arg)
 {
-	struct timeval	tv = SNMP_RECONNECT_TIMEOUT;
+	struct relayd	*env = arg;
+	struct timeval	 tv = SNMP_RECONNECT_TIMEOUT;
 
 	switch (event) {
 	case -1:
 		bzero(&tv, sizeof(tv));
 		goto retry;
 	case EV_READ:
-		log_debug("snmp_sock: snmp socket closed %d", env->sc_snmp);
+		log_debug("%s: snmp socket closed %d", __func__, env->sc_snmp);
 		(void)close(env->sc_snmp);
 		break;
 	}
 
-	if ((env->sc_snmp = snmp_getsock(ibuf_main)) == -1) {
-		DPRINTF("snmp_sock: failed to open snmp socket");
-		goto retry;
-	}
-
-	event_set(&env->sc_snmpev, env->sc_snmp,
-	    EV_READ|EV_TIMEOUT, snmp_sock, arg);
-	event_add(&env->sc_snmpev, NULL);
+	proc_compose_imsg(env->sc_ps, snmp_procid, -1,
+	    IMSG_SNMPSOCK, -1, NULL, 0);
 	return;
  retry:
-	evtimer_set(&env->sc_snmpto, snmp_sock, env);
+	evtimer_set(&env->sc_snmpto, snmp_sock, arg);
 	evtimer_add(&env->sc_snmpto, &tv);
 }
 
@@ -189,7 +159,7 @@ snmp_element(const char *oid, enum snmp_type type, void *buf, int64_t val)
 	u_int64_t		 l;
 	struct snmp_imsg	 sm;
 
-	DPRINTF("snmp_element: oid %s type %d buf %p val %lld",
+	DPRINTF("%s: oid %s type %d buf %p val %lld", __func__,
 	    oid, type, buf, val);
 
 	bzero(&iov, sizeof(iov));
@@ -235,9 +205,10 @@ snmp_element(const char *oid, enum snmp_type type, void *buf, int64_t val)
 	iov[0].iov_base = &sm;
 	iov[0].iov_len = sizeof(sm);
 
-	if (imsg_composev(ibuf_snmp, IMSG_SNMP_ELEMENT, 0, 0, -1,
+	if (imsg_composev(&iev_snmp->ibuf, IMSG_SNMP_ELEMENT, 0, 0, -1,
 	    iov, iovcnt) == -1)
 		return (-1);
+	imsg_event_add(iev_snmp);
 
 	return (0);
 }
@@ -247,9 +218,9 @@ snmp_element(const char *oid, enum snmp_type type, void *buf, int64_t val)
  */
 
 void
-snmp_hosttrap(struct table *table, struct host *host)
+snmp_hosttrap(struct relayd *env, struct table *table, struct host *host)
 {
-	if (ibuf_snmp == NULL || env->sc_snmp == -1)
+	if (iev_snmp == NULL || env->sc_snmp == -1)
 		return;
 
 	/*
@@ -257,7 +228,7 @@ snmp_hosttrap(struct table *table, struct host *host)
 	 * XXX The trap format needs some tweaks and other OIDs
 	 */
 
-	imsg_compose(ibuf_snmp, IMSG_SNMP_TRAP, 0, 0, -1, NULL, 0);
+	imsg_compose_event(iev_snmp, IMSG_SNMP_TRAP, 0, 0, -1, NULL, 0);
 
 	SNMP_ELEMENT(".1", SNMP_NULL, NULL, 0);
 	SNMP_ELEMENT(".1.1", SNMP_OCTETSTRING, host->conf.name, 0);
@@ -273,5 +244,5 @@ snmp_hosttrap(struct table *table, struct host *host)
 	SNMP_ELEMENT(".1.9", SNMP_INTEGER32, NULL, host->retry_cnt);
 
  done:
-	imsg_compose(ibuf_snmp, IMSG_SNMP_END, 0, 0, -1, NULL, 0);
+	imsg_compose_event(iev_snmp, IMSG_SNMP_END, 0, 0, -1, NULL, 0);
 }

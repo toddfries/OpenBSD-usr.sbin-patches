@@ -1,4 +1,4 @@
-/*	$OpenBSD: sensorsd.c,v 1.46 2008/06/14 00:16:10 cnst Exp $ */
+/*	$OpenBSD: sensorsd.c,v 1.49 2010/04/21 04:07:13 deraadt Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -172,12 +172,14 @@ create(void)
 	mib[0] = CTL_HW;
 	mib[1] = HW_SENSORS;
 
-	for (dev = 0; dev < MAXSENSORDEVICES; dev++) {
+	for (dev = 0; ; dev++) {
 		mib[2] = dev;
 		if (sysctl(mib, 3, &sensordev, &sdlen, NULL, 0) == -1) {
-			if (errno != ENOENT)
-				warn("sysctl");
-			continue;
+			if (errno == ENXIO)
+				continue;
+			if (errno == ENOENT)
+				break;
+			warn("sysctl");
 		}
 		sdlim = create_sdlim(&sensordev);
 		TAILQ_INSERT_TAIL(&sdlims, sdlim, entries);
@@ -624,6 +626,9 @@ print_sensor(enum sensor_type type, int64_t value)
 	case SENSOR_VOLTS_DC:
 		snprintf(fbuf, RFBUFSIZ, "%.2f V DC", value / 1000000.0);
 		break;
+	case SENSOR_WATTS:
+		snprintf(fbuf, RFBUFSIZ, "%.2f W", value / 1000000.0);
+		break;
 	case SENSOR_AMPS:
 		snprintf(fbuf, RFBUFSIZ, "%.2f A", value / 1000000.0);
 		break;
@@ -653,6 +658,9 @@ print_sensor(enum sensor_type type, int64_t value)
 		break;
 	case SENSOR_TIMEDELTA:
 		snprintf(fbuf, RFBUFSIZ, "%.6f secs", value / 1000000000.0);
+		break;
+	case SENSOR_ANGLE:
+		snprintf(fbuf, RFBUFSIZ, "%lld", value);
 		break;
 	default:
 		snprintf(fbuf, RFBUFSIZ, "%lld ???", value);
@@ -754,8 +762,10 @@ get_val(char *buf, int upper, enum sensor_type type)
 	case SENSOR_INDICATOR:
 	case SENSOR_INTEGER:
 	case SENSOR_DRIVE:
+	case SENSOR_ANGLE:
 		rval = val;
 		break;
+	case SENSOR_WATTS:
 	case SENSOR_AMPS:
 	case SENSOR_WATTHOUR:
 	case SENSOR_AMPHOUR:

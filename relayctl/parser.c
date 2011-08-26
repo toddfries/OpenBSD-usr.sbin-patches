@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.20 2007/12/20 20:15:43 reyk Exp $	*/
+/*	$OpenBSD: parser.c,v 1.25 2011/05/19 08:56:49 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -46,7 +46,8 @@ enum token_type {
 	HOSTID,
 	TABLEID,
 	RDRID,
-	KEYWORD
+	KEYWORD,
+	PATH
 };
 
 struct token {
@@ -64,16 +65,20 @@ static const struct token t_host[];
 static const struct token t_rdr_id[];
 static const struct token t_table_id[];
 static const struct token t_host_id[];
+static const struct token t_log[];
+static const struct token t_load[];
 
 static const struct token t_main[] = {
 	{KEYWORD,	"monitor",	MONITOR,	NULL},
 	{KEYWORD,	"show",		NONE,		t_show},
+	{KEYWORD,	"load",		LOAD,		t_load},
 	{KEYWORD,	"poll",		POLL,		NULL},
 	{KEYWORD,	"reload",	RELOAD,		NULL},
 	{KEYWORD,	"stop",		SHUTDOWN,	NULL},
 	{KEYWORD,	"redirect",	NONE,		t_rdr},
 	{KEYWORD,	"table",	NONE,		t_table},
 	{KEYWORD,	"host",		NONE,		t_host},
+	{KEYWORD,	"log",		NONE,		t_log},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -82,6 +87,7 @@ static const struct token t_show[] = {
 	{KEYWORD,	"hosts",	SHOW_HOSTS,	NULL},
 	{KEYWORD,	"redirects",	SHOW_RDRS,	NULL},
 	{KEYWORD,	"relays",	SHOW_RELAYS,	NULL},
+	{KEYWORD,	"routers",	SHOW_ROUTERS,	NULL},
 	{KEYWORD,	"sessions",	SHOW_SESSIONS,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
@@ -122,18 +128,32 @@ static const struct token t_host_id[] = {
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
-static struct parse_result	res;
+static const struct token t_log[] = {
+	{KEYWORD,	"verbose",	LOG_VERBOSE, 	NULL},
+	{KEYWORD,	"brief",	LOG_BRIEF, 	NULL},
+	{ENDTOKEN, 	"",		NONE,		NULL}
+};
+
+static const struct token t_load[] = {
+	{PATH,		"",		NONE,		NULL},
+	{ENDTOKEN, 	"",		NONE,		NULL}
+};
+
+static const struct token *match_token(const char *, const struct token *,
+    struct parse_result *);
+static void show_valid_args(const struct token *);
 
 struct parse_result *
 parse(int argc, char *argv[])
 {
+	static struct parse_result	res;
 	const struct token	*table = t_main;
 	const struct token	*match;
 
 	bzero(&res, sizeof(res));
 
 	while (argc >= 0) {
-		if ((match = match_token(argv[0], table)) == NULL) {
+		if ((match = match_token(argv[0], table, &res)) == NULL) {
 			fprintf(stderr, "valid commands/args:\n");
 			show_valid_args(table);
 			return (NULL);
@@ -156,8 +176,9 @@ parse(int argc, char *argv[])
 	return (&res);
 }
 
-const struct token *
-match_token(const char *word, const struct token table[])
+static const struct token *
+match_token(const char *word, const struct token *table,
+    struct parse_result *res)
 {
 	u_int			 i, match;
 	const struct token	*t = NULL;
@@ -179,16 +200,16 @@ match_token(const char *word, const struct token table[])
 				match++;
 				t = &table[i];
 				if (t->value)
-					res.action = t->value;
+					res->action = t->value;
 			}
 			break;
 		case HOSTID:
 			if (word == NULL)
 				break;
-			res.id.id = strtonum(word, 0, UINT_MAX, &errstr);
+			res->id.id = strtonum(word, 0, UINT_MAX, &errstr);
 			if (errstr) {
-				strlcpy(res.id.name, word, sizeof(res.id.name));
-				res.id.id = EMPTY_ID;
+				strlcpy(res->id.name, word, sizeof(res->id.name));
+				res->id.id = EMPTY_ID;
 			}
 			t = &table[i];
 			match++;
@@ -196,10 +217,10 @@ match_token(const char *word, const struct token table[])
 		case TABLEID:
 			if (word == NULL)
 				break;
-			res.id.id = strtonum(word, 0, UINT_MAX, &errstr);
+			res->id.id = strtonum(word, 0, UINT_MAX, &errstr);
 			if (errstr) {
-				strlcpy(res.id.name, word, sizeof(res.id.name));
-				res.id.id = EMPTY_ID;
+				strlcpy(res->id.name, word, sizeof(res->id.name));
+				res->id.id = EMPTY_ID;
 			}
 			t = &table[i];
 			match++;
@@ -207,13 +228,20 @@ match_token(const char *word, const struct token table[])
 		case RDRID:
 			if (word == NULL)
 				break;
-			res.id.id = strtonum(word, 0, UINT_MAX, &errstr);
+			res->id.id = strtonum(word, 0, UINT_MAX, &errstr);
 			if (errstr) {
-				strlcpy(res.id.name, word, sizeof(res.id.name));
-				res.id.id = EMPTY_ID;
+				strlcpy(res->id.name, word, sizeof(res->id.name));
+				res->id.id = EMPTY_ID;
 			}
 			t = &table[i];
 			match++;
+			break;
+		case PATH:
+			if (!match && word != NULL && strlen(word) > 0) {
+				res->path = strdup(word);
+				match++;
+				t = &table[i];
+			}
 			break;
 		case ENDTOKEN:
 			break;
@@ -233,8 +261,8 @@ match_token(const char *word, const struct token table[])
 	return (t);
 }
 
-void
-show_valid_args(const struct token table[])
+static void
+show_valid_args(const struct token *table)
 {
 	int	i;
 
@@ -254,6 +282,9 @@ show_valid_args(const struct token table[])
 			break;
 		case HOSTID:
 			fprintf(stderr, "  <hostid>\n");
+			break;
+		case PATH:
+			fprintf(stderr, "  <path>\n");
 			break;
 		case ENDTOKEN:
 			break;

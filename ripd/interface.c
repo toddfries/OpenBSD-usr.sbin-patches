@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.6 2008/12/17 14:19:39 michele Exp $ */
+/*	$OpenBSD: interface.c,v 1.11 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2006 Michele Marchetto <mydecay@openbeer.it>
@@ -72,8 +72,23 @@ static const char * const if_event_names[] = {
 void
 if_init(struct ripd_conf *xconf, struct iface *iface)
 {
+	struct ifreq	ifr;
+	u_int		rdomain;
+
 	/* XXX as in ospfd I would like to kill that. This is a design error */
 	iface->fd = xconf->rip_socket;
+
+	strlcpy(ifr.ifr_name, iface->name, sizeof(ifr.ifr_name));
+	if (ioctl(iface->fd, SIOCGIFRDOMAIN, (caddr_t)&ifr) == -1)
+		rdomain = 0;
+	else {
+		rdomain = ifr.ifr_rdomainid;
+		if (setsockopt(iface->fd, SOL_SOCKET, SO_RTABLE, &rdomain,
+		    sizeof(rdomain)) == -1)
+			fatal("failed to set rdomain");
+	}
+	if (rdomain != xconf->rdomain)
+		fatalx("interface rdomain mismatch");
 
 	ripe_demote_iface(iface, 0);
 }
@@ -165,9 +180,7 @@ if_act_start(struct iface *iface)
 	}
 
 	if (!((iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP)))) {
+	    LINK_STATE_IS_UP(iface->linkstate))) {
 		log_debug("if_act_start: interface %s link down",
 		    iface->name);
 		return (0);
@@ -449,7 +462,7 @@ if_del(struct iface *iface)
 
 	/* revert the demotion when the interface is deleted */
 	if (iface->state == IF_STA_DOWN)
-                ripe_demote_iface(iface, 1);
+		ripe_demote_iface(iface, 1);
 
 	/* clear lists etc */
 	while ((nbr = LIST_FIRST(&iface->nbr_list)) != NULL)

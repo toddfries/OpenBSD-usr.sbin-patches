@@ -1,4 +1,4 @@
-/*	$OpenBSD: database.c,v 1.26 2009/01/31 11:44:49 claudio Exp $ */
+/*	$OpenBSD: database.c,v 1.29 2011/05/09 12:24:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -43,11 +43,11 @@ send_db_description(struct nbr *nbr)
 	struct sockaddr_in	 dst;
 	struct db_dscrp_hdr	 dd_hdr;
 	struct lsa_entry	*le, *nle;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	int			 ret = 0;
 	u_int8_t		 bits = 0;
 
-	if ((buf = buf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
+	if ((buf = ibuf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
 		fatal("send_db_description");
 
 	/* OSPF header */
@@ -55,7 +55,7 @@ send_db_description(struct nbr *nbr)
 		goto fail;
 
 	/* reserve space for database description header */
-	if (buf_reserve(buf, sizeof(dd_hdr)) == NULL)
+	if (ibuf_reserve(buf, sizeof(dd_hdr)) == NULL)
 		goto fail;
 
 	switch (nbr->state) {
@@ -91,10 +91,10 @@ send_db_description(struct nbr *nbr)
 
 		/* build LSA list, keep space for a possible md5 sum */
 		for (le = TAILQ_FIRST(&nbr->db_sum_list); le != NULL &&
-		    buf_left(buf) >= MD5_DIGEST_LENGTH + sizeof(struct lsa_hdr);
+		    ibuf_left(buf) >= MD5_DIGEST_LENGTH + sizeof(struct lsa_hdr);
 		    le = nle) {
 			nbr->dd_end = nle = TAILQ_NEXT(le, entry);
-			if (buf_add(buf, le->le_lsa, sizeof(struct lsa_hdr)))
+			if (ibuf_add(buf, le->le_lsa, sizeof(struct lsa_hdr)))
 				goto fail;
 		}
 		break;
@@ -138,11 +138,12 @@ send_db_description(struct nbr *nbr)
 		fatalx("send_db_description: unknown interface type");
 	}
 
-	dd_hdr.opts = area_ospf_options(nbr->iface->area);
+	/* XXX button or not for opaque LSA? */
+	dd_hdr.opts = area_ospf_options(nbr->iface->area) | OSPF_OPTION_O;
 	dd_hdr.bits = bits;
 	dd_hdr.dd_seq_num = htonl(nbr->dd_seq_num);
 
-	memcpy(buf_seek(buf, sizeof(struct ospf_hdr), sizeof(dd_hdr)),
+	memcpy(ibuf_seek(buf, sizeof(struct ospf_hdr), sizeof(dd_hdr)),
 	    &dd_hdr, sizeof(dd_hdr));
 
 	/* update authentication and calculate checksum */
@@ -152,11 +153,11 @@ send_db_description(struct nbr *nbr)
 	/* transmit packet */
 	ret = send_packet(nbr->iface, buf, &dst);
 done:
-	buf_free(buf);
+	ibuf_free(buf);
 	return (ret);
 fail:
 	log_warn("send_db_description");
-	buf_free(buf);
+	ibuf_free(buf);
 	return (-1);
 }
 
@@ -187,9 +188,9 @@ recv_db_description(struct nbr *nbr, char *buf, u_int16_t len)
 	    nbr->last_rx_bits == dd_hdr.bits &&
 	    ntohl(dd_hdr.dd_seq_num) == nbr->dd_seq_num - nbr->dd_master ?
 	    1 : 0) {
-			log_debug("recv_db_description: dupe from ID %s",
-			    inet_ntoa(nbr->id));
-			dupe = 1;
+		log_debug("recv_db_description: dupe from ID %s",
+		    inet_ntoa(nbr->id));
+		dupe = 1;
 	}
 
 	switch (nbr->state) {
@@ -211,6 +212,13 @@ recv_db_description(struct nbr *nbr, char *buf, u_int16_t len)
 	case NBR_STA_XSTRT:
 		if (dupe)
 			return;
+		nbr->capa_options = dd_hdr.opts;
+		if ((nbr->capa_options & nbr->options) != nbr->options) {
+			log_warnx("recv_db_description: neighbor ID %s "
+			    "sent inconsistent options %x vs. %x",
+			    inet_ntoa(nbr->id), nbr->capa_options,
+			    nbr->options);
+		}
 		/*
 		 * check bits: either I,M,MS or only M
 		 */

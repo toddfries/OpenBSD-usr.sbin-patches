@@ -1,4 +1,4 @@
-/*	$OpenBSD: carp.c,v 1.8 2006/11/28 19:21:15 reyk Exp $	*/
+/*	$OpenBSD: carp.c,v 1.12 2010/06/29 21:25:37 kjell Exp $	*/
 
 /*
  * Copyright (c) 2005 Håkan Olsson.  All rights reserved.
@@ -46,6 +46,7 @@
 
 int carp_demoted = 0;
 
+/* Map CARP interface link state into RUNSTATE enum */
 static enum RUNSTATE
 carp_map_state(u_char link_state)
 {
@@ -68,7 +69,6 @@ carp_map_state(u_char link_state)
 	return state;
 }
 
-/* Returns 1 for the CARP MASTER, 0 for BACKUP/INIT, -1 on error.  */
 static enum RUNSTATE
 carp_get_state(char *ifname)
 {
@@ -173,7 +173,7 @@ carp_update_state(enum RUNSTATE current_state)
 		cfgstate.runstate = current_state;
 		if (current_state == MASTER)
 			pfkey_set_promisc();
-		isakmpd_setrun();
+		control_setrun();
 		net_ctl_update_state();
 	}
 }
@@ -224,8 +224,9 @@ carp_read_message(fd_set *fds)
 int
 carp_init(void)
 {
-	cfgstate.route_socket = -1;
+	unsigned int rtfilter;
 
+	cfgstate.route_socket = -1;
 	if (cfgstate.lockedstate != INIT) {
 		cfgstate.runstate = cfgstate.lockedstate;
 		log_msg(1, "carp_init: locking runstate to %s",
@@ -250,6 +251,11 @@ carp_init(void)
 		return -1;
 	}
 
+	rtfilter = ROUTE_FILTER(RTM_IFINFO);
+	if (setsockopt(cfgstate.route_socket, PF_ROUTE, ROUTE_MSGFILTER,
+	    &rtfilter, sizeof(rtfilter)) == -1)         /* not fatal */
+		log_msg(2, "carp_init: setsockopt");
+
 	cfgstate.runstate = carp_get_state(cfgstate.carp_ifname);
 	if (cfgstate.runstate == FAIL) {
 		fprintf(stderr, "Failed to check interface \"%s\".\n",
@@ -263,15 +269,15 @@ carp_init(void)
 	return 0;
 }
 
-/* Enable or disable isakmpd connection checker. */
+/* Enable or disable isakmpd/iked connection checker. */
 void
-isakmpd_setrun(void)
+control_setrun(void)
 {
 	if (cfgstate.runstate == MASTER) {
-		if (monitor_isakmpd_active(1))
-			log_msg(0, "failed to activate isakmpd");
+		if (monitor_control_active(1))
+			log_msg(0, "failed to activate controlled daemon");
 	} else {
-		if (monitor_isakmpd_active(0))
-			log_msg(0, "failed to passivate isakmpd");
+		if (monitor_control_active(0))
+			log_msg(0, "failed to passivate controlled daemon");
 	}
 }

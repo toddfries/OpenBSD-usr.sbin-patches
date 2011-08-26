@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtsold.c,v 1.45 2009/01/30 17:25:51 rainer Exp $	*/
+/*	$OpenBSD: rtsold.c,v 1.47 2011/03/23 00:59:49 bluhm Exp $	*/
 /*	$KAME: rtsold.c,v 1.75 2004/01/03 00:00:07 itojun Exp $	*/
 
 /*
@@ -186,14 +186,18 @@ main(int argc, char *argv[])
 #endif
 
 	if (Fflag) {
-		setinet6sysctl(IPV6CTL_ACCEPT_RTADV, 1);
-		setinet6sysctl(IPV6CTL_FORWARDING, 0);
+		setinet6sysctl(IPPROTO_IPV6, IPV6CTL_ACCEPT_RTADV, 1);
+		setinet6sysctl(IPPROTO_ICMPV6, ICMPV6CTL_REDIRACCEPT, 1);
+		setinet6sysctl(IPPROTO_IPV6, IPV6CTL_FORWARDING, 0);
 	} else {
 		/* warn if accept_rtadv is down */
-		if (!getinet6sysctl(IPV6CTL_ACCEPT_RTADV))
+		if (!getinet6sysctl(IPPROTO_IPV6, IPV6CTL_ACCEPT_RTADV))
 			warnx("kernel is configured not to accept RAs");
+		/* warn if accepting redirects is off */
+		if (!getinet6sysctl(IPPROTO_ICMPV6, ICMPV6CTL_REDIRACCEPT))
+			warnx("kernel is configured not to accept redirects");
 		/* warn if forwarding is up */
-		if (getinet6sysctl(IPV6CTL_FORWARDING))
+		if (getinet6sysctl(IPPROTO_IPV6, IPV6CTL_FORWARDING))
 			warnx("kernel is configured as a router, not a host");
 	}
 
@@ -549,7 +553,7 @@ rtsol_check_timer(void)
 		return(NULL);
 	} else if (timercmp(&rtsol_timer, &now, <))
 		/* this may occur when the interval is too small */
-		returnval.tv_sec = returnval.tv_usec = 0;
+		timerclear(&returnval);
 	else
 		timersub(&rtsol_timer, &now, &returnval);
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: route6d.c,v 1.51 2008/03/24 16:11:05 deraadt Exp $	*/
+/*	$OpenBSD: route6d.c,v 1.55 2009/10/27 23:59:54 deraadt Exp $	*/
 /*	$KAME: route6d.c,v 1.111 2006/10/25 06:38:13 jinmei Exp $	*/
 
 /*
@@ -30,10 +30,6 @@
  * SUCH DAMAGE.
  */
 
-#if 0
-static char _rcsid[] = "$OpenBSD: route6d.c,v 1.51 2008/03/24 16:11:05 deraadt Exp $";
-#endif
-
 #include <stdio.h>
 
 #include <time.h>
@@ -57,11 +53,7 @@ static char _rcsid[] = "$OpenBSD: route6d.c,v 1.51 2008/03/24 16:11:05 deraadt E
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 #include <net/if.h>
-#define	KERNEL	1
-#define	_KERNEL	1
 #include <net/route.h>
-#undef KERNEL
-#undef _KERNEL
 #include <netinet/in.h>
 #include <netinet/in_var.h>
 #include <netinet/ip6.h>
@@ -181,8 +173,6 @@ int	nfilter = 0;
 pid_t	pid;
 
 struct	sockaddr_storage ripsin;
-
-struct	rtentry rtentry;
 
 int	interval = 1;
 time_t	nextalarm = 0;
@@ -1585,6 +1575,9 @@ rtrecv(void)
 				((struct rt_msghdr *)p)->rtm_msglen);
 			break;
 		}
+		if (((struct rt_msghdr *)p)->rtm_version != RTM_VERSION)
+			continue;
+
 		rtm = NULL;
 		ifam = NULL;
 		ifm = NULL;
@@ -1603,13 +1596,7 @@ rtrecv(void)
 		default:
 			rtm = (struct rt_msghdr *)p;
 			addrs = rtm->rtm_addrs;
-			q = (char *)(rtm + 1);
-			if (rtm->rtm_version != RTM_VERSION) {
-				trace(1, "unexpected rtmsg version %d "
-					"(should be %d)\n",
-					rtm->rtm_version, RTM_VERSION);
-				continue;
-			}
+			q = (char *)(p + rtm->rtm_hdrlen);
 			if (rtm->rtm_pid == pid) {
 #if 0
 				trace(1, "rtmsg looped back to me, ignored\n");
@@ -2485,6 +2472,8 @@ krtread(int again)
 	lim = buf + msize;
 	for (p = buf; p < lim; p += rtm->rtm_msglen) {
 		rtm = (struct rt_msghdr *)p;
+		if (rtm->rtm_version != RTM_VERSION)
+			continue;
 		rt_entry(rtm, again);
 	}
 	free(buf);
@@ -2520,7 +2509,7 @@ rt_entry(struct rt_msghdr *rtm, int again)
 	 */
 	if (rtm->rtm_flags & RTF_DYNAMIC)
 		return;
-	rtmp = (char *)(rtm + 1);
+	rtmp = (char *)((char *)rtm + rtm->rtm_hdrlen);
 	/* Destination */
 	if ((rtm->rtm_addrs & RTA_DST) == 0)
 		return;		/* ignore routes without destination address */
@@ -2812,7 +2801,8 @@ getroute(struct netinfo6 *np, struct in6_addr *gw)
 			exit(1);
 		}
 		rtm = (struct rt_msghdr *)buf;
-	} while (rtm->rtm_seq != myseq || rtm->rtm_pid != pid);
+	} while (rtm->rtm_version != RTM_VERSION ||
+	    rtm->rtm_seq != myseq || rtm->rtm_pid != pid);
 	sin6 = (struct sockaddr_in6 *)&buf[sizeof(struct rt_msghdr)];
 	if (rtm->rtm_addrs & RTA_DST) {
 		sin6 = (struct sockaddr_in6 *)

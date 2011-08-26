@@ -1,4 +1,4 @@
-/*	$OpenBSD: mapc.c,v 1.12 2003/10/30 16:04:06 millert Exp $	*/
+/*	$OpenBSD: mapc.c,v 1.14 2010/07/05 21:54:11 tedu Exp $	*/
 
 /*-
  * Copyright (c) 1989 Jan-Simon Pendry
@@ -33,11 +33,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifndef lint
-/*static char sccsid[] = "from: @(#)mapc.c	8.1 (Berkeley) 6/6/93";*/
-static char *rcsid = "$Id: mapc.c,v 1.12 2003/10/30 16:04:06 millert Exp $";
-#endif /* not lint */
 
 /*
  * Mount map cache
@@ -280,13 +275,6 @@ mapc_showtypes(FILE *fp)
 	}
 }
 
-static const char *reg_error = "?";
-void
-regerror(const char *m)
-{
-	reg_error = m;
-}
-
 /*
  * Add key and val to the map m.
  * key and val are assumed to be safe copies
@@ -305,18 +293,19 @@ mapc_add_kv(mnt_map *m, char *key, char *val)
 #ifdef HAS_REGEXP
 	if (MAPC_ISRE(m)) {
 		char keyb[MAXPATHLEN];
-		regexp *re;
+		regex_t *re;
 		/*
 		 * Make sure the string is bound to the start and end
 		 */
 		snprintf(keyb, sizeof(keyb), "^%s$", key);
-		re = regcomp(keyb);
-		if (re == 0) {
-			plog(XLOG_USER, "error compiling RE \"%s\": %s", keyb, reg_error);
+		re = malloc(sizeof(*re));
+		if (!re || regcomp(re, keyb, 0)) {
+			free(re);
+			plog(XLOG_USER, "error compiling RE \"%s\": %s", keyb);
 			return;
 		} else {
 			free(key);
-			key = (char *) re;
+			key = (char *)re;
 		}
 	}
 #endif
@@ -629,7 +618,8 @@ mapc_meta_search(mnt_map *m, char *key, char **pval, int recurse)
 		for (i = 0; i < NKVHASH; i++) {
 			k = m->kvhash[i];
 			while (k) {
-				if (regexec((regexp *) k->key, key))
+				if (regexec((regex_t *)k->key, key,
+				    0, NULL, 0) == 0)
 					break;
 				k = k->next;
 			}

@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.4 2008/01/31 12:17:35 henning Exp $ */
+/*	$OpenBSD: control.c,v 1.14 2010/09/02 14:03:21 sobrado Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -34,8 +34,6 @@
 #include "control.h"
 
 #define	CONTROL_BACKLOG	5
-
-int control_imsg_relay(struct imsg *imsg);
 
 struct ctl_conn	*control_connbyfd(int);
 struct ctl_conn	*control_connbypid(pid_t);
@@ -121,23 +119,24 @@ control_accept(int listenfd, short event, void *bula)
 	if ((connfd = accept(listenfd,
 	    (struct sockaddr *)&sun, &len)) == -1) {
 		if (errno != EWOULDBLOCK && errno != EINTR)
-			log_warn("control_accept");
+			log_warn("control_accept: accept");
 		return;
 	}
 
 	session_socket_blockmode(connfd, BM_NONBLOCK);
 
-	if ((c = malloc(sizeof(struct ctl_conn))) == NULL) {
+	if ((c = calloc(1, sizeof(struct ctl_conn))) == NULL) {
 		log_warn("control_accept");
 		close(connfd);
 		return;
 	}
 
-	imsg_init(&c->ibuf, connfd, control_dispatch_imsg);
-	c->ibuf.events = EV_READ;
-	event_set(&c->ibuf.ev, c->ibuf.fd, c->ibuf.events,
-	    c->ibuf.handler, &c->ibuf);
-	event_add(&c->ibuf.ev, NULL);
+	imsg_init(&c->iev.ibuf, connfd);
+	c->iev.handler = control_dispatch_imsg;
+	c->iev.events = EV_READ;
+	event_set(&c->iev.ev, c->iev.ibuf.fd, c->iev.events,
+	    c->iev.handler, &c->iev);
+	event_add(&c->iev.ev, NULL);
 
 	TAILQ_INSERT_TAIL(&ctl_conns, c, entry);
 }
@@ -147,7 +146,7 @@ control_connbyfd(int fd)
 {
 	struct ctl_conn	*c;
 
-	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->ibuf.fd != fd;
+	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->iev.ibuf.fd != fd;
 	    c = TAILQ_NEXT(c, entry))
 		;	/* nothing */
 
@@ -159,7 +158,7 @@ control_connbypid(pid_t pid)
 {
 	struct ctl_conn	*c;
 
-	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->ibuf.pid != pid;
+	for (c = TAILQ_FIRST(&ctl_conns); c != NULL && c->iev.ibuf.pid != pid;
 	    c = TAILQ_NEXT(c, entry))
 		;	/* nothing */
 
@@ -171,14 +170,16 @@ control_close(int fd)
 {
 	struct ctl_conn	*c;
 
-	if ((c = control_connbyfd(fd)) == NULL)
+	if ((c = control_connbyfd(fd)) == NULL) {
 		log_warn("control_close: fd %d: not found", fd);
+		return;
+	}
 
-	msgbuf_clear(&c->ibuf.w);
+	msgbuf_clear(&c->iev.ibuf.w);
 	TAILQ_REMOVE(&ctl_conns, c, entry);
 
-	event_del(&c->ibuf.ev);
-	close(c->ibuf.fd);
+	event_del(&c->iev.ev);
+	close(c->iev.ibuf.fd);
 	free(c);
 }
 
@@ -190,32 +191,28 @@ control_dispatch_imsg(int fd, short event, void *bula)
 	struct imsg	 imsg;
 	int		 n;
 	unsigned int	 ifidx;
+	int		 verbose;
 
 	if ((c = control_connbyfd(fd)) == NULL) {
 		log_warn("control_dispatch_imsg: fd %d: not found", fd);
 		return;
 	}
 
-	switch (event) {
-	case EV_READ:
-		if ((n = imsg_read(&c->ibuf)) == -1 || n == 0) {
+	if (event & EV_READ) {
+		if ((n = imsg_read(&c->iev.ibuf)) == -1 || n == 0) {
 			control_close(fd);
 			return;
 		}
-		break;
-	case EV_WRITE:
-		if (msgbuf_write(&c->ibuf.w) < 0) {
+	}
+	if (event & EV_WRITE) {
+		if (msgbuf_write(&c->iev.ibuf.w) == -1) {
 			control_close(fd);
 			return;
 		}
-		imsg_event_add(&c->ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
-		if ((n = imsg_get(&c->ibuf, &imsg)) == -1) {
+		if ((n = imsg_get(&c->iev.ibuf, &imsg)) == -1) {
 			control_close(fd);
 			return;
 		}
@@ -234,8 +231,8 @@ control_dispatch_imsg(int fd, short event, void *bula)
 			    sizeof(ifidx)) {
 				memcpy(&ifidx, imsg.data, sizeof(ifidx));
 				dvmrpe_iface_ctl(c, ifidx);
-				imsg_compose(&c->ibuf, IMSG_CTL_END, 0,
-				    0, NULL, 0);
+				imsg_compose_event(&c->iev, IMSG_CTL_END, 0,
+				    0, -1, NULL, 0);
 			}
 			break;
 		case IMSG_CTL_SHOW_IGMP:
@@ -243,8 +240,8 @@ control_dispatch_imsg(int fd, short event, void *bula)
 			    sizeof(ifidx)) {
 				memcpy(&ifidx, imsg.data, sizeof(ifidx));
 				dvmrpe_iface_igmp_ctl(c, ifidx);
-				imsg_compose(&c->ibuf, IMSG_CTL_END, 0,
-				    0, NULL, 0);
+				imsg_compose_event(&c->iev, IMSG_CTL_END, 0,
+				    0, -1, NULL, 0);
 			}
 			break;
 		case IMSG_CTL_SHOW_NBR:
@@ -253,9 +250,23 @@ control_dispatch_imsg(int fd, short event, void *bula)
 		case IMSG_CTL_SHOW_RIB:
 		case IMSG_CTL_SHOW_MFC:
 		case IMSG_CTL_SHOW_SUM:
-			c->ibuf.pid = imsg.hdr.pid;
+			c->iev.ibuf.pid = imsg.hdr.pid;
 			dvmrpe_imsg_compose_rde(imsg.hdr.type, 0, imsg.hdr.pid,
 			    imsg.data, imsg.hdr.len - IMSG_HEADER_SIZE);
+			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(verbose))
+				break;
+
+			/* forward to other processes */
+			dvmrpe_imsg_compose_parent(imsg.hdr.type, imsg.hdr.pid,
+			    imsg.data, imsg.hdr.len - IMSG_HEADER_SIZE);
+			dvmrpe_imsg_compose_rde(imsg.hdr.type, 0, imsg.hdr.pid,
+			    imsg.data, imsg.hdr.len - IMSG_HEADER_SIZE);
+
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
 			break;
 		default:
 			log_debug("control_dispatch_imsg: "
@@ -265,7 +276,7 @@ control_dispatch_imsg(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 
-	imsg_event_add(&c->ibuf);
+	imsg_event_add(&c->iev);
 }
 
 int
@@ -276,8 +287,8 @@ control_imsg_relay(struct imsg *imsg)
 	if ((c = control_connbypid(imsg->hdr.pid)) == NULL)
 		return (0);
 
-	return (imsg_compose(&c->ibuf, imsg->hdr.type, 0, imsg->hdr.pid,
-	    imsg->data, imsg->hdr.len - IMSG_HEADER_SIZE));
+	return (imsg_compose_event(&c->iev, imsg->hdr.type, 0, imsg->hdr.pid,
+	    -1, imsg->data, imsg->hdr.len - IMSG_HEADER_SIZE));
 }
 
 void

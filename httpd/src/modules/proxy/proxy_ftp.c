@@ -1,4 +1,4 @@
-/*	$OpenBSD: proxy_ftp.c,v 1.16 2008/05/25 11:46:27 mbalmer Exp $ */
+/*	$OpenBSD: proxy_ftp.c,v 1.18 2011/04/06 11:35:33 miod Exp $ */
 
 /* ====================================================================
  * The Apache Software License, Version 1.1
@@ -588,7 +588,8 @@ int ap_proxy_ftp_handler(request_rec *r, cache_req *c, char *url)
     struct sockaddr_in *sin;
     int pasvmode = 0;
     char pasv[64];
-    char *pstr, *host, *port;
+    char *pstr, *host;
+    int port;
 
 /* stuff for LPSV/EPSV */
     unsigned int paf, holen, ho[16], polen, po[2];
@@ -1182,7 +1183,7 @@ lpsvagain:
                 len = 0;
             }
             else if (i == 213) {/* Size command ok */
-                for (j = 0; j < sizeof resp && ap_isdigit(resp[j]); j++);
+                for (j = 0; j < sizeof(resp)-1 && ap_isdigit(resp[j]); j++);
                 resp[j] = '\0';
                 if (resp[0] != '\0')
                     size = ap_pstrdup(p, resp);

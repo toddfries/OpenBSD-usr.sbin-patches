@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcidump.c,v 1.16 2008/10/07 09:23:32 dlg Exp $	*/
+/*	$OpenBSD: pcidump.c,v 1.29 2011/01/13 14:29:26 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 David Gwynne <loki@animata.net>
@@ -16,22 +16,28 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <string.h>
-#include <errno.h>
-#include <err.h>
-
 #include <sys/ioctl.h>
 #include <sys/param.h>
 #include <sys/pciio.h>
+
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcidevs.h>
 #include <dev/pci/pcidevs_data.h>
 
+#include <err.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <paths.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
 #define PCIDEV	"/dev/pci"
+
+#ifndef nitems
+#define nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
+#endif
 
 __dead void usage(void);
 void scanpcidomain(void);
@@ -41,21 +47,30 @@ void hexdump(int, int, int, int);
 const char *str2busdevfunc(const char *, int *, int *, int *);
 int pci_nfuncs(int, int);
 int pci_read(int, int, int, u_int32_t, u_int32_t *);
+int pci_readmask(int, int, int, u_int32_t, u_int32_t *);
 void dump_caplist(int, int, int, u_int8_t);
+void dump_pcie_linkspeed(int, int, int, uint8_t);
+void print_pcie_ls(uint8_t);
+int dump_rom(int, int, int);
+int dump_vga_bios(void);
 
 __dead void
 usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s [-v|-x|-xx] [-d pcidev] [bus:dev:func]\n",
-	    __progname);
+	fprintf(stderr,
+	    "usage: %s [-v] [-x | -xx | -xxx] [-d pcidev] [bus:dev:func]\n"
+	    "       %s -r file [-d pcidev] bus:dev:func\n",
+	    __progname, __progname);
 	exit(1);
 }
 
 int pcifd;
+int romfd;
 int verbose = 0;
 int hex = 0;
+int size = 64;
 
 const char *pci_capnames[] = {
 	"Reserved",
@@ -75,9 +90,10 @@ const char *pci_capnames[] = {
 	"AGP8",
 	"Secure",
 	"PCI Express",
-	"Extended Message Signaled Interrupts (MSI-X)"
+	"Extended Message Signaled Interrupts (MSI-X)",
+	"SATA",
+	"PCI Advanced Features"
 };
-#define PCI_CAPNAMES_MAX	PCI_CAP_MSIX
 
 int
 main(int argc, char *argv[])
@@ -85,13 +101,18 @@ main(int argc, char *argv[])
 	int nfuncs;
 	int bus, dev, func;
 	char pcidev[MAXPATHLEN] = PCIDEV;
+	char *romfile = NULL;
 	const char *errstr;
 	int c, error = 0, dumpall = 1, domid = 0;
 
-	while ((c = getopt(argc, argv, "d:vx")) != -1) {
+	while ((c = getopt(argc, argv, "d:r:vx")) != -1) {
 		switch (c) {
 		case 'd':
 			strlcpy(pcidev, optarg, sizeof(pcidev));
+			dumpall = 0;
+			break;
+		case 'r':
+			romfile = optarg;
 			dumpall = 0;
 			break;
 		case 'v':
@@ -107,8 +128,19 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
-	if (argc > 1 || (verbose && hex))
+	if (argc > 1 || (romfile && argc != 1))
 		usage();
+
+	if (romfile) {
+		romfd = open(romfile, O_WRONLY|O_CREAT|O_TRUNC, 0777);
+		if (romfd == -1)
+			err(1, "%s", romfile);
+	}
+
+	if (hex > 1)
+		size = 256;
+	if (hex > 2)
+		size = 4096;
 
 	if (argc == 1)
 		dumpall = 0;
@@ -117,7 +149,6 @@ main(int argc, char *argv[])
 		pcifd = open(pcidev, O_RDONLY, 0777);
 		if (pcifd == -1)
 			err(1, "%s", pcidev);
-		printf("Domain %s:\n", pcidev);
 	} else {
 		for (;;) {
 			snprintf(pcidev, 16, "/dev/pci%d", domid++);
@@ -143,12 +174,15 @@ main(int argc, char *argv[])
 		nfuncs = pci_nfuncs(bus, dev);
 		if (nfuncs == -1 || func > nfuncs)
 			error = ENXIO;
+		else if (romfile)
+			error = dump_rom(bus, dev, func);
 		else
 			error = probe(bus, dev, func);
 
 		if (error != 0)
 			errx(1, "\"%s\": %s", argv[0], strerror(error));
 	} else {
+		printf("Domain %s:\n", pcidev);
 		scanpcidomain();
 	}
 
@@ -240,9 +274,53 @@ probe(int bus, int dev, int func)
 	if (verbose)
 		dump(bus, dev, func);
 	if (hex > 0)
-		hexdump(bus, dev, func, hex > 1);
+		hexdump(bus, dev, func, size);
 
 	return (0);
+}
+
+void
+print_pcie_ls(uint8_t speed)
+{
+	switch (speed) {
+	case 1:
+		printf("2.5");
+		break;
+	case 2:
+		printf("5.0");
+		break;
+	default:
+		printf("unknown (%d)", speed);
+	}
+}
+
+void
+dump_pcie_linkspeed(int bus, int dev, int func, uint8_t ptr)
+{
+	u_int32_t creg, sreg;
+	u_int8_t cap, cwidth, cspeed, swidth, sspeed;
+
+	if (pci_read(bus, dev, func, ptr + PCI_PCIE_LCAP, &creg) != 0)
+		return;
+
+	if (pci_read(bus, dev, func, ptr + PCI_PCIE_LCSR, &sreg) != 0)
+		return;
+	sreg = sreg >> 16;
+
+	cwidth = (creg >> 4) & 0x3f;
+	swidth = (sreg >> 4) & 0x3f;
+	cspeed = creg & 0x0f;
+	sspeed = sreg & 0x0f;
+	
+	if (cwidth == 0)
+		return;
+
+	printf("\t        Link Speed: ");
+	print_pcie_ls(sspeed);
+	printf(" / ");
+	print_pcie_ls(cspeed);
+
+	printf(" Gb/s Link Width: x%d / x%d\n", swidth, cwidth);
 }
 
 void
@@ -264,9 +342,11 @@ dump_caplist(int bus, int dev, int func, u_int8_t ptr)
 			return;
 		cap = PCI_CAPLIST_CAP(reg);
 		printf("\t0x%04x: Capability 0x%02x: ", ptr, cap);
-		if (cap > PCI_CAPNAMES_MAX)
+		if (cap >= nitems(pci_capnames))
 			cap = 0;
 		printf("%s\n", pci_capnames[cap]);
+		if (cap == PCI_CAP_PCIEXPRESS)
+			dump_pcie_linkspeed(bus, dev, func, ptr);
 		ptr = PCI_CAPLIST_NEXT(reg);
 	}
 }
@@ -276,16 +356,18 @@ dump_type0(int bus, int dev, int func)
 {
 	const char *memtype;
 	u_int64_t mem;
-	u_int32_t reg;
+	u_int64_t mask;
+	u_int32_t reg, reg1;
 	int bar;
 
 	for (bar = PCI_MAPREG_START; bar < PCI_MAPREG_END; bar += 0x4) {
-		if (pci_read(bus, dev, func, bar, &reg) != 0)
+		if (pci_read(bus, dev, func, bar, &reg) != 0 ||
+		    pci_readmask(bus, dev, func, bar, &reg1) != 0)
 			warn("unable to read PCI_MAPREG 0x%02x", bar);
 
 		printf("\t0x%04x: BAR ", bar);
 
-		if (reg == 0x0) {
+		if (reg == 0 && reg1 == 0) {
 			printf("empty (%08x)\n", reg);
 			continue;
 		}
@@ -303,28 +385,34 @@ dump_type0(int bus, int dev, int func)
 			case PCI_MAPREG_MEM_TYPE_32BIT_1M:
 				printf("%s ", memtype);
 
-				printf("addr: 0x%08x\n",
-				    PCI_MAPREG_MEM_ADDR(reg));
+				printf("addr: 0x%08x/0x%08x\n",
+				    PCI_MAPREG_MEM_ADDR(reg),
+				    PCI_MAPREG_MEM_SIZE(reg1));
 
 				break;
 			case PCI_MAPREG_MEM_TYPE_64BIT:
 				mem = reg;
+				mask = reg1;
 				bar += 0x04;
-				if (pci_read(bus, dev, func, bar, &reg) != 0)
+				if (pci_read(bus, dev, func, bar, &reg) != 0 ||
+				    pci_readmask(bus, dev, func, bar, &reg1) != 0)
 					warn("unable to read 0x%02x", bar);
 
 				mem |= (u_int64_t)reg << 32;
+				mask |= (u_int64_t)reg1 << 32;
 
-				printf("64bit addr: 0x%016llx\n",
-				    PCI_MAPREG_MEM64_ADDR(mem));
+				printf("64bit addr: 0x%016llx/0x%08llx\n",
+				    PCI_MAPREG_MEM64_ADDR(mem),
+				    PCI_MAPREG_MEM64_SIZE(mask));
 
 				break;
 			}
 			break;
 
 		case PCI_MAPREG_TYPE_IO:
-			printf("io addr: 0x%08x\n",
-			    PCI_MAPREG_IO_ADDR(reg));
+			printf("io addr: 0x%08x/0x%04x\n",
+			    PCI_MAPREG_IO_ADDR(reg),
+			    PCI_MAPREG_IO_SIZE(reg1));
 			break;
 		}
 	}
@@ -539,17 +627,20 @@ dump(int bus, int dev, int func)
 }
 
 void
-hexdump(int bus, int dev, int func, int full)
+hexdump(int bus, int dev, int func, int size)
 {
 	u_int32_t reg;
 	int i;
 
-	for (i = 0; i < (full ? 256 : 64); i += 4) {
+	for (i = 0; i < size; i += 4) {
+		if (pci_read(bus, dev, func, i, &reg) != 0) {
+			if (errno == EINVAL)
+				return;
+			warn("unable to read 0x%02x", i);
+		}
+
 		if ((i % 16) == 0)
 			printf("\t0x%04x:", i);
-
-		if (pci_read(bus, dev, func, i, &reg) != 0)
-			warn("unable to read 0x%02x", i);
 		printf(" %08x", reg);
 
 		if ((i % 16) == 12)
@@ -588,4 +679,90 @@ pci_read(int bus, int dev, int func, u_int32_t reg, u_int32_t *val)
 	*val = io.pi_data;
 
 	return (0);
+}
+
+int
+pci_readmask(int bus, int dev, int func, u_int32_t reg, u_int32_t *val)
+{
+	struct pci_io io;
+	int rv;
+
+	bzero(&io, sizeof(io));
+	io.pi_sel.pc_bus = bus;
+	io.pi_sel.pc_dev = dev;
+	io.pi_sel.pc_func = func;
+	io.pi_reg = reg;
+	io.pi_width = 4;
+
+	rv = ioctl(pcifd, PCIOCREADMASK, &io);
+	if (rv != 0)
+		return (rv);
+
+	*val = io.pi_data;
+
+	return (0);
+}
+
+int
+dump_rom(int bus, int dev, int func)
+{
+	struct pci_rom rom;
+	u_int32_t cr, addr;
+
+	if (pci_read(bus, dev, func, PCI_ROM_REG, &addr) != 0 ||
+	    pci_read(bus, dev, func, PCI_CLASS_REG, &cr) != 0)
+		return (errno);
+
+	if (addr == 0 && PCI_CLASS(cr) == PCI_CLASS_DISPLAY &&
+	    PCI_SUBCLASS(cr) == PCI_SUBCLASS_DISPLAY_VGA)
+		return dump_vga_bios();
+
+	bzero(&rom, sizeof(rom));
+	rom.pr_sel.pc_bus = bus;
+	rom.pr_sel.pc_dev = dev;
+	rom.pr_sel.pc_func = func;
+	if (ioctl(pcifd, PCIOCGETROMLEN, &rom))
+		return (errno);
+
+	rom.pr_rom = malloc(rom.pr_romlen);
+	if (rom.pr_rom == NULL)
+		return (ENOMEM);
+
+	if (ioctl(pcifd, PCIOCGETROM, &rom))
+		return (errno);
+
+	if (write(romfd, rom.pr_rom, rom.pr_romlen) == -1)
+		return (errno);
+
+	return (0);
+}
+
+#define VGA_BIOS_ADDR	0xc0000
+#define VGA_BIOS_LEN	0x10000
+
+int
+dump_vga_bios(void)
+{
+#if defined(__amd64__) || defined(__i386__)
+	void *bios;
+	int fd;
+
+	fd = open(_PATH_MEM, O_RDONLY, 0777);
+	if (fd == -1)
+		err(1, "%s", _PATH_MEM);
+
+	bios = malloc(VGA_BIOS_LEN);
+	if (bios == NULL)
+		return (ENOMEM);
+
+	if (pread(fd, bios, VGA_BIOS_LEN, VGA_BIOS_ADDR) == -1)
+		err(1, "%s", _PATH_MEM);
+
+	if (write(romfd, bios, VGA_BIOS_LEN) == -1)
+		return (errno);
+
+	return (0);
+#else
+	return (ENODEV);
+#endif
 }

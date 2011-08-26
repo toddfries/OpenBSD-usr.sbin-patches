@@ -1,4 +1,4 @@
-/* $OpenBSD: http_core.c,v 1.25 2008/05/21 11:28:48 mbalmer Exp $ */
+/* $OpenBSD: http_core.c,v 1.27 2010/05/10 02:00:50 krw Exp $ */
 
 /* ====================================================================
  * The Apache Software License, Version 1.1
@@ -1934,7 +1934,7 @@ static const char *set_server_root(cmd_parms *cmd, void *dummy, char *arg)
      * On restarts (graceful or not) we are (unless we're in unsecure mode).
      * if we would strip off the chroot prefix, nothing (not even "/")
      * would last.
-     * it's pointless to test wether ServerRoot is a directory if we are
+     * it's pointless to test whether ServerRoot is a directory if we are
      * already chrooted into that. 
      * Of course it's impossible to change ServerRoot without a full restart.
      * should we abort with an error if ap_server_root != arg?
@@ -3459,15 +3459,15 @@ static int default_handler(request_rec *r)
 		ap_send_fd(f, r);
 	    }
 	    else {
-		long offset, length;
+		off_t offset, length;
 		while (ap_each_byterange(r, &offset, &length)) {
 		    /*
 		     * Non zero returns are more portable than checking
 		     * for a return of -1.
 		     */
-		    if (fseek(f, offset, SEEK_SET)) {
+		    if (fseeko(f, offset, SEEK_SET)) {
 			ap_log_error(APLOG_MARK, APLOG_ERR, r->server,
-			      "Failed to fseek for byterange (%ld, %ld): %s",
+			      "Failed to fseeko for byterange (%qd, %qd): %s",
 			      offset, length, r->filename);
 		    }
 		    else {
@@ -3504,7 +3504,7 @@ static int default_handler(request_rec *r)
 		ap_send_mmap(mm, r, 0, r->finfo.st_size);
 	    }
 	    else {
-		long offset, length;
+		off_t offset, length;
 		while (ap_each_byterange(r, &offset, &length)) {
 		    ap_send_mmap(mm, r, offset, length);
 		}

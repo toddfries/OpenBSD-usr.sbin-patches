@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpd.h,v 1.23 2008/12/23 08:06:10 reyk Exp $	*/
+/*	$OpenBSD: snmpd.h,v 1.31 2011/04/21 14:55:22 sthen Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -27,6 +27,8 @@
 #include <ber.h>
 #include <snmp.h>
 
+#include <imsg.h>
+
 /*
  * common definitions for snmpd
  */
@@ -47,69 +49,12 @@
 #define	RT_BUF_SIZE		16384
 #define	MAX_RTSOCK_BUF		(128 * 1024)
 
-/*
- * imsg framework and privsep
- */
-
-struct buf {
-	TAILQ_ENTRY(buf)	 entry;
-	u_char			*buf;
-	size_t			 size;
-	size_t			 max;
-	size_t			 wpos;
-	size_t			 rpos;
-	int			 fd;
-};
-
-struct msgbuf {
-	TAILQ_HEAD(, buf)	 bufs;
-	u_int32_t		 queued;
-	int			 fd;
-};
-
-#define IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
-#define MAX_IMSGSIZE		8192
-
-struct buf_read {
-	u_char			 buf[READ_BUF_SIZE];
-	u_char			*rptr;
-	size_t			 wpos;
-};
-
-struct imsg_fd {
-	TAILQ_ENTRY(imsg_fd)	entry;
-	int			fd;
-};
-
-struct imsgbuf {
-	TAILQ_HEAD(, imsg_fd)	 fds;
-	struct buf_read		 r;
-	struct msgbuf		 w;
-	struct event		 ev;
-	void			(*handler)(int, short, void *);
-	int			 fd;
-	pid_t			 pid;
-	short			 events;
-};
-
 enum imsg_type {
 	IMSG_NONE,
 	IMSG_CTL_OK,		/* answer to snmpctl requests */
 	IMSG_CTL_FAIL,
 	IMSG_CTL_END,
 	IMSG_CTL_NOTIFY
-};
-
-struct imsg_hdr {
-	u_int16_t	 type;
-	u_int16_t	 len;
-	u_int32_t	 peerid;
-	pid_t		 pid;
-};
-
-struct imsg {
-	struct imsg_hdr	 hdr;
-	void		*data;
 };
 
 enum {
@@ -130,12 +75,20 @@ enum blockmodes {
 	BM_NONBLOCK
 };
 
+struct imsgev {
+	struct imsgbuf		 ibuf;
+	void			(*handler)(int, short, void *);
+	struct event		 ev;
+	void			*data;
+	short			 events;
+};
+
 struct ctl_conn {
 	TAILQ_ENTRY(ctl_conn)	 entry;
 	u_int8_t		 flags;
 #define CTL_CONN_NOTIFY		 0x01
 #define CTL_CONN_LOCKED		 0x02	/* restricted mode */
-	struct imsgbuf		 ibuf;
+	struct imsgev		 iev;
 
 };
 TAILQ_HEAD(ctl_connlist, ctl_conn);
@@ -145,21 +98,38 @@ extern  struct ctl_connlist ctl_conns;
  * kroute
  */
 
+union kaddr {
+	struct sockaddr		sa;
+	struct sockaddr_in	sin;
+	struct sockaddr_in6	sin6;
+	char			pad[32];
+};
+
 struct kroute {
 	struct in_addr	prefix;
 	struct in_addr	nexthop;
+	u_long		ticks;
 	u_int16_t	flags;
-	u_int16_t	rtlabel;
 	u_short		if_index;
 	u_int8_t	prefixlen;
+	u_int8_t	priority;
+};
+
+struct kroute6 {
+	struct in6_addr	prefix;
+	struct in6_addr	nexthop;
 	u_long		ticks;
+	u_int16_t	flags;
+	u_short		if_index;
+	u_int8_t	prefixlen;
+	u_int8_t	priority;
 };
 
 struct kif_addr {
 	u_short			 if_index;
-	struct in_addr		 addr;
-	struct in_addr		 mask;
-	struct in_addr		 dstbrd;
+	union kaddr		 addr;
+	union kaddr		 mask;
+	union kaddr		 dstbrd;
 
 	TAILQ_ENTRY(kif_addr)	 entry;
 	RB_ENTRY(kif_addr)	 node;
@@ -169,21 +139,17 @@ struct kif {
 	char			 if_name[IF_NAMESIZE];
 	char			 if_descr[IFDESCRSIZE];
 	u_int8_t		 if_lladdr[ETHER_ADDR_LEN];
+	struct if_data		 if_data;
+	u_long			 if_ticks;
 	int			 if_flags;
 	u_short			 if_index;
-	u_int8_t		 if_nhreachable; /* for nexthop verification */
-	u_long			 if_ticks;
-	struct if_data		 if_data;
 };
 
-#define	F_OSPFD_INSERTED	0x0001
-#define	F_KERNEL		0x0002
-#define	F_BGPD_INSERTED		0x0004
-#define	F_CONNECTED		0x0008
-#define	F_DOWN			0x0010
-#define	F_STATIC		0x0020
-#define	F_DYNAMIC		0x0040
-#define	F_REDISTRIBUTED		0x0100
+#define F_CONNECTED		0x0001
+#define F_STATIC		0x0002
+#define F_BLACKHOLE		0x0004
+#define F_REJECT		0x0008
+#define F_DYNAMIC		0x0010
 
 /*
  * Message Processing Subsystem (mps)
@@ -337,6 +303,7 @@ struct snmpd {
 
 	int			 sc_ncpu;
 	int64_t			*sc_cpustates;
+	int			 sc_rtfilter;
 };
 
 /* control.c */
@@ -361,46 +328,29 @@ void		 log_info(const char *, ...);
 void		 log_debug(const char *, ...);
 __dead void	 fatal(const char *);
 __dead void	 fatalx(const char *);
+const char	*log_in6addr(const struct in6_addr *);
 const char	*print_host(struct sockaddr_storage *, char *, size_t);
 
-/* buffer.c */
-struct buf	*buf_open(size_t);
-struct buf	*buf_dynamic(size_t, size_t);
-int		 buf_add(struct buf *, void *, size_t);
-void		*buf_reserve(struct buf *, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
-void		 buf_free(struct buf *);
-void		 msgbuf_init(struct msgbuf *);
-void		 msgbuf_clear(struct msgbuf *);
-int		 msgbuf_write(struct msgbuf *);
-
-/* imsg.c */
-void		 imsg_init(struct imsgbuf *, int, void (*)(int, short, void *));
-ssize_t		 imsg_read(struct imsgbuf *);
-ssize_t		 imsg_get(struct imsgbuf *, struct imsg *);
-int		 imsg_compose(struct imsgbuf *, enum imsg_type, u_int32_t,
+void		 imsg_event_add(struct imsgev *);
+int		 imsg_compose_event(struct imsgev *, enum imsg_type, u_int32_t,
 		    pid_t, int, void *, u_int16_t);
-int		 imsg_composev(struct imsgbuf *, enum imsg_type , u_int32_t,
-		    pid_t, int, const struct iovec *, int);
-struct buf	*imsg_create(struct imsgbuf *, enum imsg_type, u_int32_t,
-		    pid_t, u_int16_t);
-int		 imsg_add(struct buf *, void *, u_int16_t);
-int		 imsg_close(struct imsgbuf *, struct buf *);
-void		 imsg_free(struct imsg *);
-void		 imsg_event_add(struct imsgbuf *); /* provided externally */
-int		 imsg_get_fd(struct imsgbuf *);
 
 /* kroute.c */
 int		 kr_init(void);
 void		 kr_shutdown(void);
 
-int		 kr_updateif(u_int);
 u_int		 kr_ifnumber(void);
 u_long		 kr_iflastchange(void);
+int		 kr_updateif(u_int);
+u_long		 kr_routenumber(void);
+
 struct kif	*kr_getif(u_short);
 struct kif	*kr_getnextif(u_short);
-struct kif_addr *kr_getaddr(struct in_addr *);
-struct kif_addr *kr_getnextaddr(struct in_addr *);
+struct kif_addr *kr_getaddr(struct sockaddr *);
+struct kif_addr *kr_getnextaddr(struct sockaddr *);
+
+struct kroute	*kroute_first(void);
+struct kroute	*kroute_getaddr(in_addr_t, u_int8_t, u_int8_t, int);
 
 /* snmpe.c */
 pid_t		 snmpe(struct snmpd *, int [2]);
@@ -408,12 +358,12 @@ void		 snmpe_debug_elements(struct ber_element *);
 
 /* trap.c */
 void		 trap_init(void);
-int		 trap_imsg(struct imsgbuf *, pid_t);
+int		 trap_imsg(struct imsgev *, pid_t);
 int		 trap_send(struct ber_oid *, struct ber_element *);
 
 /* mps.c */
 struct ber_element *
-		 mps_getreq(struct ber_element *, struct ber_oid *);
+		 mps_getreq(struct ber_element *, struct ber_oid *, u_int);
 struct ber_element *
 		 mps_getnextreq(struct ber_element *, struct ber_oid *);
 int		 mps_setreq(struct ber_element *, struct ber_oid *);

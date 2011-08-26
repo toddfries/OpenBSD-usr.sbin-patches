@@ -1,4 +1,4 @@
-/*	$OpenBSD: ripe.c,v 1.8 2008/12/17 14:19:39 michele Exp $ */
+/*	$OpenBSD: ripe.c,v 1.14 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2006 Michele Marchetto <mydecay@openbeer.it>
@@ -47,8 +47,8 @@ void		 ripe_sig_handler(int, short, void *);
 void		 ripe_shutdown(void);
 
 struct ripd_conf	*oeconf = NULL;
-struct imsgbuf		*ibuf_main;
-struct imsgbuf		*ibuf_rde;
+struct imsgev		*iev_main;
+struct imsgev		*iev_rde;
 
 /* ARGSUSED */
 void
@@ -151,22 +151,24 @@ ripe(struct ripd_conf *xconf, int pipe_parent2ripe[2], int pipe_ripe2rde[2],
 	close(pipe_parent2rde[0]);
 	close(pipe_parent2rde[1]);
 
-	if ((ibuf_rde = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_rde = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_main = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_rde, pipe_ripe2rde[0], ripe_dispatch_rde);
-	imsg_init(ibuf_main, pipe_parent2ripe[1], ripe_dispatch_main);
+	imsg_init(&iev_rde->ibuf, pipe_ripe2rde[0]);
+	iev_rde->handler = ripe_dispatch_rde;
+	imsg_init(&iev_main->ibuf, pipe_parent2ripe[1]);
+	iev_main->handler = ripe_dispatch_main;
 
 	/* setup event handler */
-	ibuf_rde->events = EV_READ;
-	event_set(&ibuf_rde->ev, ibuf_rde->fd, ibuf_rde->events,
-	    ibuf_rde->handler, ibuf_rde);
-	event_add(&ibuf_rde->ev, NULL);
+	iev_rde->events = EV_READ;
+	event_set(&iev_rde->ev, iev_rde->ibuf.fd, iev_rde->events,
+	    iev_rde->handler, iev_rde);
+	event_add(&iev_rde->ev, NULL);
 
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
+	iev_main->events = EV_READ;
+	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
+	    iev_main->handler, iev_main);
+	event_add(&iev_main->ev, NULL);
 
 	event_set(&oeconf->ev, oeconf->rip_socket, EV_READ|EV_PERSIST,
 	    recv_packet, oeconf);
@@ -182,7 +184,7 @@ ripe(struct ripd_conf *xconf, int pipe_parent2ripe[2], int pipe_ripe2rde[2],
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
 
-	if ((pkt_ptr = calloc(1, READ_BUF_SIZE)) == NULL)
+	if ((pkt_ptr = calloc(1, IBUF_READ_SIZE)) == NULL)
 		fatal("ripe");
 
 	/* start interfaces */
@@ -208,14 +210,15 @@ ripe(struct ripd_conf *xconf, int pipe_parent2ripe[2], int pipe_ripe2rde[2],
 int
 ripe_imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, 0, pid, data, datalen));
+	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
 }
 
 int
 ripe_imsg_compose_rde(int type, u_int32_t peerid, pid_t pid,
     void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_rde, type, peerid, pid, data, datalen));
+	return (imsg_compose_event(iev_rde, type, peerid, pid, -1,
+	    data, datalen));
 }
 
 /* ARGSUSED */
@@ -223,26 +226,22 @@ void
 ripe_dispatch_main(int fd, short event, void *bula)
 {
 	struct imsg	 imsg;
-	struct imsgbuf	*ibuf = bula;
+	struct imsgev	*iev = bula;
+	struct imsgbuf	*ibuf = &iev->ibuf;
 	struct kif	*kif;
 	struct iface	*iface;
 	ssize_t		 n;
 	int		 link_ok, shut = 0;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -258,9 +257,7 @@ ripe_dispatch_main(int fd, short event, void *bula)
 				fatalx("IFINFO imsg with wrong len");
 			kif = imsg.data;
 			link_ok = (kif->flags & IFF_UP) &&
-			    (LINK_STATE_IS_UP(kif->link_state) ||
-			    (kif->link_state == LINK_STATE_UNKNOWN &&
-			    kif->media_type != IFT_CARP));
+			    LINK_STATE_IS_UP(kif->link_state);
 
 			LIST_FOREACH(iface, &oeconf->iface_list, entry) {
 				if (kif->ifindex == iface->ifindex) {
@@ -293,10 +290,10 @@ ripe_dispatch_main(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */  
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -307,26 +304,22 @@ ripe_dispatch_rde(int fd, short event, void *bula)
 {
 	struct rip_route	*rr;
 	struct imsg		 imsg;
-	struct imsgbuf		*ibuf = bula;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct iface		*iface;
 	struct nbr		*nbr;
 	ssize_t			 n;
 	int			 shut = 0;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -386,16 +379,9 @@ ripe_dispatch_rde(int fd, short event, void *bula)
 			memcpy(rr, imsg.data, sizeof(*rr));
 
 			if (imsg.hdr.peerid == 0) {
-				LIST_FOREACH(iface, &oeconf->iface_list,
-				    entry) {
-					if ((iface->addr.s_addr &
-					    iface->mask.s_addr) !=
-					    rr->address.s_addr ||
-					    iface->mask.s_addr !=
-					    rr->mask.s_addr)
-						add_entry(&iface->rp_list,
-						    rr);
-				}
+				LIST_FOREACH(iface, &oeconf->iface_list, entry)
+					add_entry(&iface->rp_list, rr);
+
 				break;
 			}
 
@@ -405,10 +391,8 @@ ripe_dispatch_rde(int fd, short event, void *bula)
 				break;
 			}
 			iface = nbr->iface;
-			if ((iface->addr.s_addr & iface->mask.s_addr) !=
-			    rr->address.s_addr ||
-			    iface->mask.s_addr != rr->mask.s_addr)
-				add_entry(&nbr->rp_list, rr);
+			add_entry(&nbr->rp_list, rr);
+
 			break;
 		case IMSG_SEND_RESPONSE:
 			if (imsg.hdr.peerid == 0) {
@@ -453,10 +437,10 @@ ripe_dispatch_rde(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */  
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -480,12 +464,12 @@ ripe_shutdown(void)
 	close(oeconf->rip_socket);
 
 	/* clean up */
-	msgbuf_write(&ibuf_rde->w);
-	msgbuf_clear(&ibuf_rde->w);
-	free(ibuf_rde);
-	msgbuf_write(&ibuf_main->w);
-	msgbuf_clear(&ibuf_main->w);
-	free(ibuf_main);
+	msgbuf_write(&iev_rde->ibuf.w);
+	msgbuf_clear(&iev_rde->ibuf.w);
+	free(iev_rde);
+	msgbuf_write(&iev_main->ibuf.w);
+	msgbuf_clear(&iev_main->ibuf.w);
+	free(iev_main);
 	free(oeconf);
 	free(pkt_ptr);
 
@@ -502,8 +486,8 @@ ripe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 	LIST_FOREACH(iface, &oeconf->iface_list, entry) {
 		if (idx == 0 || idx == iface->ifindex) {
 			ictl = if_to_ctl(iface);
-			imsg_compose(&c->ibuf, IMSG_CTL_SHOW_IFACE,
-			    0, 0, ictl, sizeof(struct ctl_iface));
+			imsg_compose_event(&c->iev, IMSG_CTL_SHOW_IFACE,
+			    0, 0, -1, ictl, sizeof(struct ctl_iface));
 		}
 	}
 }
@@ -518,12 +502,12 @@ ripe_nbr_ctl(struct ctl_conn *c)
 	LIST_FOREACH(iface, &oeconf->iface_list, entry)
 		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 				nctl = nbr_to_ctl(nbr);
-				imsg_compose(&c->ibuf,
-				    IMSG_CTL_SHOW_NBR, 0, 0, nctl,
+				imsg_compose_event(&c->iev,
+				    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
 				    sizeof(struct ctl_nbr));
 		}
 
-	imsg_compose(&c->ibuf, IMSG_CTL_END, 0, 0, NULL, 0);
+	imsg_compose_event(&c->iev, IMSG_CTL_END, 0, 0, -1, NULL, 0);
 }
 
 void

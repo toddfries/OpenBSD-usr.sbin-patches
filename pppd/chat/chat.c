@@ -1,4 +1,4 @@
-/*	$OpenBSD: chat.c,v 1.23 2007/09/11 16:30:59 gilles Exp $	*/
+/*	$OpenBSD: chat.c,v 1.28 2010/08/12 02:00:28 kevlo Exp $	*/
 
 /*
  *	Chat -- a program for automatic session establishment (i.e. dial
@@ -78,14 +78,6 @@
  *
  *
  */
-
-#ifndef lint
-#if 0
-static char rcsid[] = "Id: chat.c,v 1.19 1998/03/24 23:57:48 paulus Exp $";
-#else
-static char rcsid[] = "$OpenBSD: chat.c,v 1.23 2007/09/11 16:30:59 gilles Exp $";
-#endif
-#endif
 
 #include <stdio.h>
 #include <ctype.h>
@@ -423,8 +415,8 @@ char *chat_file;
 void usage()
 {
     fprintf(stderr, "\
-Usage: %s [-e] [-s] [-S] [-v] [-V] [-t timeout] [-r report-file]\n\
-     [-T phone-number] [-U phone-number2] {-f chat-file | chat-script}\n",
+usage: %s [-eSsVv] [-f chat_file] [-r report_file] [-T phone_number]\n\
+            [-t timeout] [-U phone_number_2] script\n",
      __progname);
     exit(1);
 }
@@ -457,6 +449,7 @@ void fatal(int code, const char *fmt, ...)
 
     va_start(args, fmt);
     vfmtmsg(line, sizeof(line), fmt, args);
+    va_end(args);
     if (to_log)
 	syslog(LOG_ERR, "%s", line);
     if (to_stderr)
@@ -987,7 +980,7 @@ register char *s;
     if (say_next) {
 	say_next = 0;
 	s = clean(s,0);
-	write(2, s, strlen(s));
+	write(STDERR_FILENO, s, strlen(s));
         free(s);
 	return;
     }
@@ -1164,7 +1157,7 @@ int c;
 
     usleep(10000);		/* inter-character typing delay (?) */
 
-    status = write(1, &ch, 1);
+    status = write(STDOUT_FILENO, &ch, 1);
 
     switch (status) {
     case 1:
@@ -1271,12 +1264,12 @@ int n;
 	    break;
 	/* fall through */
     case '\n':
-	write(2, "\n", 1);
+	write(STDERR_FILENO, "\n", 1);
 	need_lf = 0;
 	break;
     default:
 	s = character(n);
-	write(2, s, strlen(s));
+	write(STDERR_FILENO, s, strlen(s));
 	need_lf = 1;
 	break;
     }

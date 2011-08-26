@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: RequiredBy.pm,v 1.17 2008/10/20 10:25:16 espie Exp $
+# $OpenBSD: RequiredBy.pm,v 1.25 2010/12/24 09:04:14 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -20,6 +20,7 @@ use warnings;
 
 package OpenBSD::RequirementList;
 use OpenBSD::PackageInfo;
+use Carp;
 
 sub fill_entries
 {
@@ -28,9 +29,9 @@ sub fill_entries
 		my $l = $self->{entries} = {};
 
 		if (-f $self->{filename}) {
-			open(my $fh, '<', $self->{filename}) or 
-			    die "Problem opening required list: ",
-				$self->{filename}, ": $!";
+			open(my $fh, '<', $self->{filename}) or
+			    croak ref($self),
+			    	": reading $self->{filename}: $!";
 			my $_;
 			while(<$fh>) {
 				s/\s+$//o;
@@ -49,26 +50,27 @@ sub fill_entries
 sub synch
 {
 	my $self = shift;
-	return if $main::not;
+	return $self if $main::not;
 
 	if (!unlink $self->{filename}) {
 		if ($self->{nonempty}) {
-		    die "Can't erase $self->{filename}: $!";
+		    croak ref($self), ": erasing $self->{filename}: $!";
 		}
 	}
 	if (%{$self->{entries}}) {
 		open(my $fh, '>', $self->{filename}) or
-		    die "Can't write $self->{filename}: $!";
+		    croak ref($self), ": writing $self->{filename}: $!";
 		while (my ($k, $v) = each %{$self->{entries}}) {
 			print $fh "$k\n";
 		}
 		close($fh) or
-		    die "Write to $self->{filename} didn't work: $!";
+		    croak ref($self), ": closing $self->{filename}: $!";
 		$self->{nonempty} = 1;
 	} else {
 		$self->{nonempty} = 0;
 	}
-} 
+	return $self;
+}
 
 sub list
 {
@@ -85,6 +87,13 @@ sub list
 		}
 		return $self->{nonempty};
 	}
+}
+
+sub erase
+{
+	my $self = shift;
+	$self->{entries} = {};
+	$self->synch;
 }
 
 sub delete

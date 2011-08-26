@@ -1,5 +1,9 @@
-.#*
-CVS
-.cvsignore
-obj
+*.log
+*.orig
+*.rej
 *diff
+.#*
+.cvsignore
+CVS
+obj
+.svn

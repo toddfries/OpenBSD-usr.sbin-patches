@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.24 2009/02/19 22:08:14 stsp Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.37 2011/07/07 17:10:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -50,8 +50,8 @@ void		 orig_rtr_lsa_area(struct area *);
 struct iface	*find_vlink(struct abr_rtr *);
 
 struct ospfd_conf	*oeconf = NULL, *nconf;
-struct imsgbuf		*ibuf_main;
-struct imsgbuf		*ibuf_rde;
+struct imsgev		*iev_main;
+struct imsgev		*iev_rde;
 int			 oe_nofib;
 
 /* ARGSUSED */
@@ -145,22 +145,24 @@ ospfe(struct ospfd_conf *xconf, int pipe_parent2ospfe[2], int pipe_ospfe2rde[2],
 	close(pipe_parent2rde[0]);
 	close(pipe_parent2rde[1]);
 
-	if ((ibuf_rde = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_rde = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_main = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_rde, pipe_ospfe2rde[0], ospfe_dispatch_rde);
-	imsg_init(ibuf_main, pipe_parent2ospfe[1], ospfe_dispatch_main);
+	imsg_init(&iev_rde->ibuf, pipe_ospfe2rde[0]);
+	iev_rde->handler = ospfe_dispatch_rde;
+	imsg_init(&iev_main->ibuf, pipe_parent2ospfe[1]);
+	iev_main->handler = ospfe_dispatch_main;
 
 	/* setup event handler */
-	ibuf_rde->events = EV_READ;
-	event_set(&ibuf_rde->ev, ibuf_rde->fd, ibuf_rde->events,
-	    ibuf_rde->handler, ibuf_rde);
-	event_add(&ibuf_rde->ev, NULL);
+	iev_rde->events = EV_READ;
+	event_set(&iev_rde->ev, iev_rde->ibuf.fd, iev_rde->events,
+	    iev_rde->handler, iev_rde);
+	event_add(&iev_rde->ev, NULL);
 
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
+	iev_main->events = EV_READ;
+	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
+	    iev_main->handler, iev_main);
+	event_add(&iev_main->ev, NULL);
 
 	event_set(&oeconf->ev, oeconf->ospf_socket, EV_READ|EV_PERSIST,
 	    recv_packet, oeconf);
@@ -214,12 +216,12 @@ ospfe_shutdown(void)
 	close(oeconf->ospf_socket);
 
 	/* clean up */
-	msgbuf_write(&ibuf_rde->w);
-	msgbuf_clear(&ibuf_rde->w);
-	free(ibuf_rde);
-	msgbuf_write(&ibuf_main->w);
-	msgbuf_clear(&ibuf_main->w);
-	free(ibuf_main);
+	msgbuf_write(&iev_rde->ibuf.w);
+	msgbuf_clear(&iev_rde->ibuf.w);
+	free(iev_rde);
+	msgbuf_write(&iev_main->ibuf.w);
+	msgbuf_clear(&iev_main->ibuf.w);
+	free(iev_main);
 	free(oeconf);
 	free(pkt_ptr);
 
@@ -231,14 +233,15 @@ ospfe_shutdown(void)
 int
 ospfe_imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_main, type, 0, pid, data, datalen));
+	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
 }
 
 int
 ospfe_imsg_compose_rde(int type, u_int32_t peerid, pid_t pid,
     void *data, u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_rde, type, peerid, pid, data, datalen));
+	return (imsg_compose_event(iev_rde, type, peerid, pid, -1,
+	    data, datalen));
 }
 
 /* ARGSUSED */
@@ -246,27 +249,25 @@ void
 ospfe_dispatch_main(int fd, short event, void *bula)
 {
 	static struct area	*narea;
-	static struct iface	*niface;
-	struct imsg	 imsg;
-	struct imsgbuf  *ibuf = bula;
-	struct iface	*iface, *ifp;
-	int		 n, stub_changed, shut = 0;
-	unsigned int	 ifindex;
+	struct area		*area;
+	struct iface		*iface, *ifp;
+	struct ifaddrchange	*ifc;
+	struct iface_addr	*ia, *nia;
+	struct imsg		 imsg;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
+	int			 n, stub_changed, shut = 0;
+	unsigned int		 ifindex;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -285,11 +286,12 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 			iface = if_find(ifp->ifindex);
 			if (iface == NULL)
 				fatalx("interface lost in ospfe");
-			iface->flags = ifp->flags;
-			iface->linkstate = ifp->linkstate;
-			iface->nh_reachable = ifp->nh_reachable;
 
-			if (iface->nh_reachable) {
+			if_update(iface, ifp->mtu, ifp->flags, ifp->media_type,
+			    ifp->linkstate, ifp->baudrate);
+			    
+			if ((iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate)) {
 				if_fsm(iface, IF_EVT_UP);
 				log_warnx("interface %s up", iface->name);
 			} else {
@@ -298,16 +300,16 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 			}
 			break;
 		case IMSG_IFADD:
-			if ((niface = malloc(sizeof(struct iface))) == NULL)
+			if ((iface = malloc(sizeof(struct iface))) == NULL)
 				fatal(NULL);
-			memcpy(niface, imsg.data, sizeof(struct iface));
+			memcpy(iface, imsg.data, sizeof(struct iface));
 
-			LIST_INIT(&niface->nbr_list);
-			TAILQ_INIT(&niface->ls_ack_list);
-			RB_INIT(&niface->lsa_tree);
+			LIST_INIT(&iface->nbr_list);
+			TAILQ_INIT(&iface->ls_ack_list);
+			RB_INIT(&iface->lsa_tree);
 
-			narea = area_find(oeconf, niface->area_id);
-			LIST_INSERT_HEAD(&narea->iface_list, niface, entry);
+			area = area_find(oeconf, iface->area_id);
+			LIST_INSERT_HEAD(&area->iface_list, iface, entry);
 			break;
 		case IMSG_IFDELETE:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE +
@@ -321,6 +323,50 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 
 			LIST_REMOVE(iface, entry);
 			if_del(iface);
+			break;
+		case IMSG_IFADDRNEW:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRNEW imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRNEW interface lost in ospfe");
+
+			if ((ia = calloc(1, sizeof(struct iface_addr))) ==
+			    NULL)
+				fatal("ospfe_dispatch_main IFADDRNEW");
+			ia->addr = ifc->addr;
+			ia->dstbrd = ifc->dstbrd;
+			ia->prefixlen = ifc->prefixlen;
+
+			TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
+			orig_link_lsa(iface);
+			break;
+		case IMSG_IFADDRDEL:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRDEL imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRDEL interface lost in ospfe");
+
+			for (ia = TAILQ_FIRST(&iface->ifa_list); ia != NULL;
+			    ia = nia) {
+				nia = TAILQ_NEXT(ia, entry);
+
+				if (IN6_ARE_ADDR_EQUAL(&ia->addr,
+				    &ifc->addr)) {
+					TAILQ_REMOVE(&iface->ifa_list, ia,
+					    entry);
+					free(ia);
+					break;
+				}
+			}
+			orig_link_lsa(iface);
 			break;
 		case IMSG_RECONF_CONF:
 			if ((nconf = malloc(sizeof(struct ospfd_conf))) ==
@@ -366,10 +412,10 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -379,7 +425,9 @@ void
 ospfe_dispatch_rde(int fd, short event, void *bula)
 {
 	struct lsa_hdr		 lsa_hdr;
-	struct imsgbuf		*ibuf = bula;
+	struct lsa_link		 lsa_link;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct nbr		*nbr;
 	struct lsa_hdr		*lhp;
 	struct lsa_ref		*ref;
@@ -391,20 +439,15 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 	int			 n, noack = 0, shut = 0;
 	u_int16_t		 l, age;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -474,15 +517,27 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				 * virtual links
 				 */
 				LIST_FOREACH(area, &oeconf->area_list, entry) {
-				    if (area->stub)
-					    continue;
-				    LIST_FOREACH(iface, &area->iface_list,
-					entry) {
-					    noack += lsa_flood(iface, nbr,
-						&lsa_hdr, imsg.data);
-				    }
+					if (area->stub)
+						continue;
+					LIST_FOREACH(iface, &area->iface_list,
+					    entry) {
+						noack += lsa_flood(iface, nbr,
+						    &lsa_hdr, imsg.data);
+					}
 				}
 			} else if (lsa_hdr.type == htons(LSA_TYPE_LINK)) {
+				/*
+				 * Save link-LSA options of neighbor.
+				 * This is needed to originate network-LSA.
+				 */
+				if (l - sizeof(lsa_hdr) < sizeof(lsa_link))
+					fatalx("ospfe_dispatch_rde: "
+					    "bad imsg link size");
+				memcpy(&lsa_link, (char *)imsg.data +
+				    sizeof(lsa_hdr), sizeof(lsa_link));
+				nbr->link_options = lsa_link.opts &
+				    htonl(LSA_24_MASK);
+
 				/*
 				 * flood on interface only
 				 */
@@ -646,10 +701,10 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -709,7 +764,7 @@ orig_rtr_lsa_area(struct area *area)
 	struct lsa_rtr		 lsa_rtr;
 	struct lsa_rtr_link	 rtr_link;
 	struct iface		*iface;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct nbr		*nbr, *self = NULL;
 	u_int32_t		 flags;
 	u_int16_t		 chksum;
@@ -717,16 +772,16 @@ orig_rtr_lsa_area(struct area *area)
 
 	log_debug("orig_rtr_lsa: area %s", inet_ntoa(area->id));
 
-	/* XXX READ_BUF_SIZE */
-	if ((buf = buf_dynamic(sizeof(lsa_hdr), READ_BUF_SIZE)) == NULL)
+	/* XXX IBUF_READ_SIZE */
+	if ((buf = ibuf_dynamic(sizeof(lsa_hdr), IBUF_READ_SIZE)) == NULL)
 		fatal("orig_rtr_lsa");
 
 	/* reserve space for LSA header and LSA Router header */
-	if (buf_reserve(buf, sizeof(lsa_hdr)) == NULL)
-		fatal("orig_rtr_lsa: buf_reserve failed");
+	if (ibuf_reserve(buf, sizeof(lsa_hdr)) == NULL)
+		fatal("orig_rtr_lsa: ibuf_reserve failed");
 
-	if (buf_reserve(buf, sizeof(lsa_rtr)) == NULL)
-		fatal("orig_rtr_lsa: buf_reserve failed");
+	if (ibuf_reserve(buf, sizeof(lsa_rtr)) == NULL)
+		fatal("orig_rtr_lsa: ibuf_reserve failed");
 
 	/* links */
 	LIST_FOREACH(iface, &area->iface_list, entry) {
@@ -749,8 +804,8 @@ orig_rtr_lsa_area(struct area *area)
 				rtr_link.iface_id = htonl(iface->ifindex);
 				rtr_link.nbr_iface_id = htonl(nbr->iface_id);
 				rtr_link.nbr_rtr_id = nbr->id.s_addr;
-				if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 			}
 			continue;
 		case IF_TYPE_BROADCAST:
@@ -774,10 +829,10 @@ orig_rtr_lsa_area(struct area *area)
 					rtr_link.iface_id = htonl(iface->ifindex);
 					rtr_link.nbr_iface_id = htonl(iface->dr->iface_id);
 					rtr_link.nbr_rtr_id = iface->dr->id.s_addr;
-					if (buf_add(buf, &rtr_link,
+					if (ibuf_add(buf, &rtr_link,
 					    sizeof(rtr_link)))
 						fatalx("orig_rtr_lsa: "
-						    "buf_add failed");
+						    "ibuf_add failed");
 					break;
 				}
 			}
@@ -800,8 +855,8 @@ orig_rtr_lsa_area(struct area *area)
 				else
 					rtr_link.metric = htons(iface->metric);
 				virtual = 1;
-				if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 
 				log_debug("orig_rtr_lsa: virtual link, "
 				    "interface %s", iface->name);
@@ -814,8 +869,8 @@ orig_rtr_lsa_area(struct area *area)
 			rtr_link.data = 0xffffffff;
 			rtr_link.type = LINK_TYPE_STUB_NET;
 			rtr_link.metric = htons(iface->metric);
-			if (buf_add(buf, &rtr_link, sizeof(rtr_link)))
-				fatalx("orig_rtr_lsa: buf_add failed");
+			if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
+				fatalx("orig_rtr_lsa: ibuf_add failed");
 
 			LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 				if (nbr != iface->self &&
@@ -834,10 +889,10 @@ orig_rtr_lsa_area(struct area *area)
 					else
 						rtr_link.metric =
 						    htons(iface->metric);
-					if (buf_add(buf, &rtr_link,
+					if (ibuf_add(buf, &rtr_link,
 					    sizeof(rtr_link)))
 						fatalx("orig_rtr_lsa: "
-						    "buf_add failed");
+						    "ibuf_add failed");
 				}
 			}
 			continue;
@@ -874,7 +929,7 @@ orig_rtr_lsa_area(struct area *area)
 	LSA_24_SETLO(lsa_rtr.opts, area_ospf_options(area));
 	LSA_24_SETHI(lsa_rtr.opts, flags);
 	lsa_rtr.opts = htonl(lsa_rtr.opts);
-	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_rtr)),
+	memcpy(ibuf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_rtr)),
 	    &lsa_rtr, sizeof(lsa_rtr));
 
 	/* LSA header */
@@ -886,20 +941,20 @@ orig_rtr_lsa_area(struct area *area)
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(buf->wpos);
 	lsa_hdr.ls_chksum = 0;		/* updated later */
-	memcpy(buf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+	memcpy(ibuf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
 
 	chksum = htons(iso_cksum(buf->buf, buf->wpos, LS_CKSUM_OFFSET));
-	memcpy(buf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
+	memcpy(ibuf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
 	    &chksum, sizeof(chksum));
 
 	if (self)
-		imsg_compose(ibuf_rde, IMSG_LS_UPD, self->peerid, 0,
-		    buf->buf, buf->wpos);
+		imsg_compose_event(iev_rde, IMSG_LS_UPD, self->peerid, 0,
+		    -1, buf->buf, buf->wpos);
 	else
 		log_warnx("orig_rtr_lsa: empty area %s",
 		    inet_ntoa(area->id));
 
-	buf_free(buf);
+	ibuf_free(buf);
 }
 
 void
@@ -907,32 +962,32 @@ orig_net_lsa(struct iface *iface)
 {
 	struct lsa_hdr		 lsa_hdr;
 	struct nbr		*nbr;
-	struct buf		*buf;
+	struct ibuf		*buf;
+	struct lsa_net		 lsa_net;
 	int			 num_rtr = 0;
-	u_int32_t		 opts;
 	u_int16_t		 chksum;
 
-	/* XXX READ_BUF_SIZE */
-	if ((buf = buf_dynamic(sizeof(lsa_hdr), READ_BUF_SIZE)) == NULL)
+	/* XXX IBUF_READ_SIZE */
+	if ((buf = ibuf_dynamic(sizeof(lsa_hdr), IBUF_READ_SIZE)) == NULL)
 		fatal("orig_net_lsa");
 
 	/* reserve space for LSA header and options field */
-	if (buf_reserve(buf, sizeof(lsa_hdr) + sizeof(opts)) == NULL)
-		fatal("orig_net_lsa: buf_reserve failed");
+	if (ibuf_reserve(buf, sizeof(lsa_hdr) + sizeof(lsa_net)) == NULL)
+		fatal("orig_net_lsa: ibuf_reserve failed");
 
-	opts = 0;
+	lsa_net.opts = 0;
 	/* fully adjacent neighbors + self */
 	LIST_FOREACH(nbr, &iface->nbr_list, entry)
 		if (nbr->state & NBR_STA_FULL) {
-			if (buf_add(buf, &nbr->id, sizeof(nbr->id)))
-				fatal("orig_net_lsa: buf_add failed");
-			opts |= nbr->options;
+			if (ibuf_add(buf, &nbr->id, sizeof(nbr->id)))
+				fatal("orig_net_lsa: ibuf_add failed");
+			lsa_net.opts |= nbr->link_options;
 			num_rtr++;
 		}
 
 	if (num_rtr == 1) {
-		/* non transit net therefor no need to generate a net lsa */
-		buf_free(buf);
+		/* non transit net therefore no need to generate a net lsa */
+		ibuf_free(buf);
 		return;
 	}
 
@@ -949,29 +1004,29 @@ orig_net_lsa(struct iface *iface)
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(buf->wpos);
 	lsa_hdr.ls_chksum = 0;		/* updated later */
-	memcpy(buf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+	memcpy(ibuf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
 
-	opts &= opts & htonl(LSA_24_MASK);
-	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(opts)), &opts,
-	    sizeof(opts));
+	lsa_net.opts &= lsa_net.opts & htonl(LSA_24_MASK);
+	memcpy(ibuf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_net)), &lsa_net,
+	    sizeof(lsa_net));
 
 	chksum = htons(iso_cksum(buf->buf, buf->wpos, LS_CKSUM_OFFSET));
-	memcpy(buf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
+	memcpy(ibuf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
 	    &chksum, sizeof(chksum));
 
-	imsg_compose(ibuf_rde, IMSG_LS_UPD, iface->self->peerid, 0,
-	    buf->buf, buf->wpos);
+	imsg_compose_event(iev_rde, IMSG_LS_UPD, iface->self->peerid, 0,
+	    -1, buf->buf, buf->wpos);
 
-	buf_free(buf);
+	ibuf_free(buf);
 }
 
 void
 orig_link_lsa(struct iface *iface)
 {
 	struct lsa_hdr		 lsa_hdr;
-	struct lsa_link	 	 lsa_link;
+	struct lsa_link		 lsa_link;
 	struct lsa_prefix	 lsa_prefix;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct iface_addr	*ia;
 	struct in6_addr		 prefix;
 	unsigned int		 num_prefix = 0;
@@ -997,15 +1052,15 @@ orig_link_lsa(struct iface *iface)
 		fatalx("orig_link_lsa: unknown interface type");
 	}
 
-	/* XXX READ_BUF_SIZE */
-	if ((buf = buf_dynamic(sizeof(lsa_hdr) + sizeof(lsa_link),
-	    READ_BUF_SIZE)) == NULL)
+	/* XXX IBUF_READ_SIZE */
+	if ((buf = ibuf_dynamic(sizeof(lsa_hdr) + sizeof(lsa_link),
+	    IBUF_READ_SIZE)) == NULL)
 		fatal("orig_link_lsa");
 
 	/* reserve space for LSA header and LSA link header */
-	if (buf_reserve(buf, sizeof(lsa_hdr) + sizeof(lsa_link)) == NULL)
-		fatal("orig_link_lsa: buf_reserve failed");
-	
+	if (ibuf_reserve(buf, sizeof(lsa_hdr) + sizeof(lsa_link)) == NULL)
+		fatal("orig_link_lsa: ibuf_reserve failed");
+
 	/* link-local address, and all prefixes configured on interface */
 	TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
 		if (IN6_IS_ADDR_LINKLOCAL(&ia->addr)) {
@@ -1020,11 +1075,11 @@ orig_link_lsa(struct iface *iface)
 		lsa_prefix.metric = 0;
 		inet6applymask(&prefix, &ia->addr, ia->prefixlen);
 		log_debug("orig_link_lsa: prefix %s", log_in6addr(&prefix));
-		if (buf_add(buf, &lsa_prefix, sizeof(lsa_prefix)))
-			fatal("orig_link_lsa: buf_add failed");
-		if (buf_add(buf, &prefix.s6_addr[0],
+		if (ibuf_add(buf, &lsa_prefix, sizeof(lsa_prefix)))
+			fatal("orig_link_lsa: ibuf_add failed");
+		if (ibuf_add(buf, &prefix.s6_addr[0],
 		    LSA_PREFIXSIZE(ia->prefixlen)))
-			fatal("orig_link_lsa: buf_add failed");
+			fatal("orig_link_lsa: ibuf_add failed");
 		num_prefix++;
 	}
 
@@ -1034,7 +1089,7 @@ orig_link_lsa(struct iface *iface)
 	LSA_24_SETLO(lsa_link.opts, options);
 	lsa_link.opts = htonl(lsa_link.opts);
 	lsa_link.numprefix = htonl(num_prefix);
-	memcpy(buf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_link)),
+	memcpy(ibuf_seek(buf, sizeof(lsa_hdr), sizeof(lsa_link)),
 	    &lsa_link, sizeof(lsa_link));
 
 	/* LSA header */
@@ -1046,16 +1101,16 @@ orig_link_lsa(struct iface *iface)
 	lsa_hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa_hdr.len = htons(buf->wpos);
 	lsa_hdr.ls_chksum = 0;		/* updated later */
-	memcpy(buf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
+	memcpy(ibuf_seek(buf, 0, sizeof(lsa_hdr)), &lsa_hdr, sizeof(lsa_hdr));
 
 	chksum = htons(iso_cksum(buf->buf, buf->wpos, LS_CKSUM_OFFSET));
-	memcpy(buf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
+	memcpy(ibuf_seek(buf, LS_CKSUM_OFFSET, sizeof(chksum)),
 	    &chksum, sizeof(chksum));
 
-	imsg_compose(ibuf_rde, IMSG_LS_UPD, iface->self->peerid, 0,
-	    buf->buf, buf->wpos);
+	imsg_compose_event(iev_rde, IMSG_LS_UPD, iface->self->peerid, 0,
+	    -1, buf->buf, buf->wpos);
 
-	buf_free(buf);
+	ibuf_free(buf);
 }
 
 u_int32_t
@@ -1088,8 +1143,9 @@ ospfe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 		LIST_FOREACH(iface, &area->iface_list, entry)
 			if (idx == 0 || idx == iface->ifindex) {
 				ictl = if_to_ctl(iface);
-				imsg_compose(&c->ibuf, IMSG_CTL_SHOW_INTERFACE,
-				    0, 0, ictl, sizeof(struct ctl_iface));
+				imsg_compose_event(&c->iev,
+				    IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
+				    ictl, sizeof(struct ctl_iface));
 			}
 }
 
@@ -1106,13 +1162,13 @@ ospfe_nbr_ctl(struct ctl_conn *c)
 			LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 				if (iface->self != nbr) {
 					nctl = nbr_to_ctl(nbr);
-					imsg_compose(&c->ibuf,
-					    IMSG_CTL_SHOW_NBR, 0, 0, nctl,
+					imsg_compose_event(&c->iev,
+					    IMSG_CTL_SHOW_NBR, 0, 0, -1, nctl,
 					    sizeof(struct ctl_nbr));
 				}
 			}
 
-	imsg_compose(&c->ibuf, IMSG_CTL_END, 0, 0, NULL, 0);
+	imsg_compose_event(&c->iev, IMSG_CTL_END, 0, 0, -1, NULL, 0);
 }
 
 void
@@ -1126,7 +1182,7 @@ ospfe_demote_area(struct area *area, int active)
 
 	bzero(&dmsg, sizeof(dmsg));
 	strlcpy(dmsg.demote_group, area->demote_group,
-	sizeof(dmsg.demote_group));
+	    sizeof(dmsg.demote_group));
 	dmsg.level = area->demote_level;
 	if (active)
 		dmsg.level = -dmsg.level;
@@ -1150,6 +1206,9 @@ ospfe_demote_iface(struct iface *iface, int active)
 		dmsg.level = -1;
 	else
 		dmsg.level = 1;
+
+	log_warnx("ospfe_demote_iface: group %s level %d", dmsg.demote_group,
+	    dmsg.level);
 
 	ospfe_imsg_compose_parent(IMSG_DEMOTE, 0, &dmsg, sizeof(dmsg));
 }

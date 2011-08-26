@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpd.h,v 1.13 2009/01/20 01:35:34 todd Exp $ */
+/*	$OpenBSD: dvmrpd.h,v 1.20 2009/11/02 20:31:50 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -28,6 +28,8 @@
 #include <netinet/in.h>
 #include <event.h>
 
+#include <imsg.h>
+
 #define CONF_FILE		"/etc/dvmrpd.conf"
 #define	DVMRPD_SOCKET		"/var/run/dvmrpd.sock"
 #define DVMRPD_USER		"_dvmrpd"
@@ -37,7 +39,6 @@
 #define NBR_IDSELF		1
 #define NBR_CNTSTART		(NBR_IDSELF + 1)
 
-#define	READ_BUF_SIZE		65535
 #define	RT_BUF_SIZE		16384
 
 #define	DVMRPD_FLAG_NO_FIB_UPDATE	0x0001
@@ -51,41 +52,12 @@
 
 #define MAXVIFS			32	/* XXX */
 
-/* buffer */
-struct buf {
-	TAILQ_ENTRY(buf)	 entry;
-	u_char			*buf;
-	size_t			 size;
-	size_t			 max;
-	size_t			 wpos;
-	size_t			 rpos;
-	int			 fd;
-};
-
-struct msgbuf {
-	u_int32_t		 queued;
-	int			 fd;
-	TAILQ_HEAD(, buf)	 bufs;
-};
-
-#define	IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
-#define	MAX_IMSGSIZE		8192
-
-struct buf_read {
-	u_char			 buf[READ_BUF_SIZE];
-	u_char			*rptr;
-	size_t			 wpos;
-};
-
-struct imsgbuf {
-	TAILQ_HEAD(, imsg_fd)	fds;
-	struct buf_read		r;
-	struct msgbuf		w;
-	struct event		ev;
+struct imsgev {
+	struct imsgbuf		 ibuf;
 	void			(*handler)(int, short, void *);
-	int			fd;
-	pid_t			pid;
-	short			events;
+	struct event		 ev;
+	void			*data;
+	short			 events;
 };
 
 enum imsg_type {
@@ -103,33 +75,20 @@ enum imsg_type {
 	IMSG_CTL_IFINFO,
 	IMSG_CTL_SHOW_SUM,
 	IMSG_CTL_END,
+	IMSG_CTL_LOG_VERBOSE,
 	IMSG_IFINFO,
 	IMSG_ROUTE_REPORT,
 	IMSG_FULL_ROUTE_REPORT,
 	IMSG_FULL_ROUTE_REPORT_END,
 	IMSG_MFC_ADD,
 	IMSG_MFC_DEL,
-	IMSG_NEIGHBOR_UP,
-	IMSG_NEIGHBOR_DOWN,
+	IMSG_GROUP_ADD,
+	IMSG_GROUP_DEL,
+	IMSG_NBR_DEL,
+	IMSG_SEND_PRUNE,
+	IMSG_RECV_PRUNE,
 	IMSG_FLASH_UPDATE,
 	IMSG_FLASH_UPDATE_DS
-};
-
-struct imsg_hdr {
-	enum imsg_type	type;
-	u_int16_t	len;
-	u_int32_t	peerid;
-	pid_t		pid;
-};
-
-struct imsg {
-	struct imsg_hdr	 hdr;
-	void		*data;
-};
-
-struct imsg_fd {
-	TAILQ_ENTRY(imsg_fd)	entry;
-	int			fd;
 };
 
 /* interface states */
@@ -184,11 +143,30 @@ struct group {
 	int			 state;
 };
 
+struct rde_group {
+	TAILQ_ENTRY(rde_group)	 entry;
+	struct in_addr		 rde_group;
+};
+
 struct mfc {
 	struct in_addr		 origin;
 	struct in_addr		 group;
 	u_short			 ifindex;
 	u_int8_t		 ttls[MAXVIFS];
+};
+
+struct prune {
+	struct in_addr		 origin;
+	struct in_addr		 netmask;
+	struct in_addr		 group;
+	struct in_addr		 nexthop;
+	u_short			 ifindex;
+	u_int32_t		 lifetime;
+};
+
+struct nbr_msg {
+	struct in_addr		 address;
+	unsigned int		 ifindex;
 };
 
 TAILQ_HEAD(rr_head, rr_entry);
@@ -202,6 +180,7 @@ struct iface {
 	time_t			 uptime;
 	LIST_HEAD(, nbr)	 nbr_list;
 	TAILQ_HEAD(, group)	 group_list;
+	TAILQ_HEAD(, rde_group)	 rde_group_list;
 	struct rr_head		 rr_list;
 
 	char			 name[IF_NAMESIZE];
@@ -380,18 +359,6 @@ struct ctl_sum {
 	u_int32_t		 hold_time;
 };
 
-/* buffer.c */
-struct buf	*buf_open(size_t);
-struct buf	*buf_dynamic(size_t, size_t);
-int		 buf_add(struct buf *, void *, size_t);
-void		*buf_reserve(struct buf *, size_t);
-void		*buf_seek(struct buf *, size_t, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
-void		 buf_free(struct buf *);
-void		 msgbuf_init(struct msgbuf *);
-void		 msgbuf_clear(struct msgbuf *);
-int		 msgbuf_write(struct msgbuf *);
-
 /* dvmrpd.c */
 void main_imsg_compose_dvmrpe(int, pid_t, void *, u_int16_t);
 
@@ -399,18 +366,9 @@ void main_imsg_compose_dvmrpe(int, pid_t, void *, u_int16_t);
 struct dvmrpd_conf	*parse_config(char *, int);
 int			 cmdline_symset(char *);
 
-/* imsg.c */
-void	 imsg_init(struct imsgbuf *, int, void (*)(int, short, void *));
-ssize_t	 imsg_read(struct imsgbuf *);
-ssize_t	 imsg_get(struct imsgbuf *, struct imsg *);
-int	 imsg_compose(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-	    void *, u_int16_t);
-struct buf	*imsg_create(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-		    u_int16_t);
-int	 imsg_add(struct buf *, void *, u_int16_t);
-int	 imsg_close(struct imsgbuf *, struct buf *);
-void	 imsg_free(struct imsg *);
-void	 imsg_event_add(struct imsgbuf *); /* needs to be provided externally */
+int	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t, pid_t,
+	    int, void *, u_int16_t);
+void	 imsg_event_add(struct imsgev *);
 
 /* in_cksum.c */
 u_int16_t	 in_cksum(void *, size_t);

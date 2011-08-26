@@ -1,4 +1,4 @@
-/*	$OpenBSD: syslogd.c,v 1.102 2008/09/29 18:42:54 deraadt Exp $	*/
+/*	$OpenBSD: syslogd.c,v 1.104 2011/07/12 11:28:31 sthen Exp $	*/
 
 /*
  * Copyright (c) 1983, 1988, 1993, 1994
@@ -28,20 +28,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifndef lint
-static const char copyright[] =
-"@(#) Copyright (c) 1983, 1988, 1993, 1994\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
-
-#ifndef lint
-#if 0
-static const char sccsid[] = "@(#)syslogd.c	8.3 (Berkeley) 4/4/94";
-#else
-static const char rcsid[] = "$OpenBSD: syslogd.c,v 1.102 2008/09/29 18:42:54 deraadt Exp $";
-#endif
-#endif /* not lint */
 
 /*
  *  syslogd -- log system messages
@@ -221,7 +207,7 @@ int	membuf_drop = 0;	/* logs were dropped in continuous membuf read */
 /*
  * Client protocol NB. all numeric fields in network byte order
  */
-#define CTL_VERSION		1
+#define CTL_VERSION		2
 
 /* Request */
 struct	{
@@ -233,6 +219,7 @@ struct	{
 #define CMD_FLAGS	5	/* Query flags only */
 #define CMD_READ_CONT	6	/* Read out log continuously */
 	u_int32_t	cmd;
+	u_int32_t	lines;
 	char		logname[MAX_MEMBUF_NAME];
 }	ctl_cmd;
 
@@ -1924,7 +1911,10 @@ ctlconn_read_handler(void)
 			}
 			if (ctl_cmd.cmd == CMD_READ_CONT) {
 				f->f_un.f_mb.f_attached = 1;
-				tailify_replytext(reply_text, 10);
+				tailify_replytext(reply_text,
+				    ctl_cmd.lines > 0 ? ctl_cmd.lines : 10);
+			} else if (ctl_cmd.lines > 0) {
+				tailify_replytext(reply_text, ctl_cmd.lines);
 			}
 		}
 		break;

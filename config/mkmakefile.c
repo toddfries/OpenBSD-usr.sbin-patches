@@ -1,4 +1,4 @@
-/*	$OpenBSD: mkmakefile.c,v 1.31 2008/08/14 10:18:34 espie Exp $	*/
+/*	$OpenBSD: mkmakefile.c,v 1.35 2010/06/02 20:42:17 chl Exp $	*/
 /*	$NetBSD: mkmakefile.c,v 1.34 1997/02/02 21:12:36 thorpej Exp $	*/
 
 /*
@@ -262,6 +262,10 @@ emitdefs(FILE *fp)
 		return (1);
 	if (fprintf(fp, "S=\t%s\n", srcdir) < 0)
 		return (1);
+	if (fprintf(fp, "_mach=%s\n", machine) < 0)
+		return (1);
+	if (fprintf(fp, "_arch=%s\n", machinearch ? machinearch : machine) < 0)
+		return (1);
 	for (nv = mkoptions; nv != NULL; nv = nv->nv_next)
 		if (fprintf(fp, "%s=%s\n", nv->nv_name, nv->nv_str) < 0)
 			return (1);
@@ -361,10 +365,8 @@ static int
 emitfiles(FILE *fp, int suffix)
 {
 	struct files *fi;
-	struct config *cf;
 	int lpos, len, sp;
 	const char *fpath;
-	char swapname[100];
 	int uppersuffix = toupper(suffix);
 
 	if (fprintf(fp, "%cFILES=", uppersuffix) < 0)
@@ -392,32 +394,6 @@ emitfiles(FILE *fp, int suffix)
 			return (1);
 		lpos += len + 1;
 		sp = ' ';
-	}
-	/*
-	 * The allfiles list does not include the configuration-specific
-	 * C source files.  These files should be eliminated someday, but
-	 * for now, we have to add them to ${CFILES} (and only ${CFILES}).
-	 */
-	if (suffix == 'c') {
-		for (cf = allcf; cf != NULL; cf = cf->cf_next) {
-			if (cf->cf_root == NULL)
-				(void)snprintf(swapname, sizeof swapname,
-				    "$S/conf/swapgeneric.c");
-			else
-				(void)snprintf(swapname, sizeof swapname,
-				    "./swap%s.c", cf->cf_name);
-			len = strlen(swapname);
-			if (lpos + len > 72) {
-				if (fputs(" \\\n", fp) < 0)
-					return (1);
-				sp = '\t';
-				lpos = 7;
-			}
-			if (fprintf(fp, "%c%s", sp, swapname) < 0)
-				return (1);
-			lpos += len + 1;
-			sp = ' ';
-		}
 	}
 	if (putc('\n', fp) < 0)
 		return (1);
@@ -521,7 +497,7 @@ emitload(FILE *fp)
 		if (fprintf(fp, "%s: ${SYSTEM_DEP} swap%s.o", nm, swname) < 0)
 			return (1);
 		if (first) {
-			if (fputs(" newvers", fp) < 0)
+			if (fputs(" vers.o", fp) < 0)
 				return (1);
 			first = 0;
 		}

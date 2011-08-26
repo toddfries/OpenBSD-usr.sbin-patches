@@ -1,4 +1,4 @@
-/*	$OpenBSD: dvmrpctl.c,v 1.6 2009/01/24 16:23:52 michele Exp $ */
+/*	$OpenBSD: dvmrpctl.c,v 1.9 2009/11/02 20:32:17 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -71,11 +71,6 @@ usage(void)
 	exit(1);
 }
 
-void
-imsg_event_add(struct imsgbuf *i)
-{
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -84,7 +79,7 @@ main(int argc, char *argv[])
 	struct imsg		 imsg;
 	unsigned int		 ifidx = 0;
 	int			 ctl_sock;
-	int			 done = 0;
+	int			 done = 0, verbose = 0;
 	int			 n;
 
 	/* parse options */
@@ -103,7 +98,7 @@ main(int argc, char *argv[])
 
 	if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf, ctl_sock, NULL);
+	imsg_init(ibuf, ctl_sock);
 	done = 0;
 
 	/* process user request */
@@ -113,7 +108,7 @@ main(int argc, char *argv[])
 		/* NOTREACHED */
 	case SHOW:
 	case SHOW_SUM:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_SUM, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_IFACE:
 		printf("%-11s %-18s %-10s %-10s %-10s %-8s %s\n",
@@ -126,7 +121,7 @@ main(int argc, char *argv[])
 			if (ifidx == 0)
 				errx(1, "no such interface %s", res->ifname);
 		}
-		imsg_compose(ibuf, IMSG_CTL_SHOW_IFACE, 0, 0, &ifidx,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_IFACE, 0, 0, -1, &ifidx,
 		    sizeof(ifidx));
 		break;
 	case SHOW_IGMP:
@@ -135,7 +130,7 @@ main(int argc, char *argv[])
 			if (ifidx == 0)
 				errx(1, "no such interface %s", res->ifname);
 		}
-		imsg_compose(ibuf, IMSG_CTL_SHOW_IGMP, 0, 0, &ifidx,
+		imsg_compose(ibuf, IMSG_CTL_SHOW_IGMP, 0, 0, -1, &ifidx,
 		    sizeof(ifidx));
 		break;
 	case SHOW_NBR:
@@ -143,14 +138,14 @@ main(int argc, char *argv[])
 		    "DeadTime", "Address", "Interface", "Uptime");
 		/* FALLTHROUGH */
 	case SHOW_NBR_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_NBR, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_RIB:
 		printf("%-20s %-17s %-7s %-10s %-s\n", "Destination", "Nexthop",
 		    "Cost", "Uptime", "Expire");
 		/* FALLTHROUGH */
 	case SHOW_RIB_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_RIB, 0, 0, -1, NULL, 0);
 		break;
 	case SHOW_MFC:
 		printf("%-16s %-16s %-9s %-9s %-4s %-10s %-10s\n", "Group",
@@ -158,10 +153,19 @@ main(int argc, char *argv[])
 		    "Expire");
 		/* FALLTHROUGH */
 	case SHOW_MFC_DTAIL:
-		imsg_compose(ibuf, IMSG_CTL_SHOW_MFC, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_SHOW_MFC, 0, 0, -1, NULL, 0);
+		break;
+	case LOG_VERBOSE:
+		verbose = 1;
+		/* FALLTHROUGH */
+	case LOG_BRIEF:
+		imsg_compose(ibuf, IMSG_CTL_LOG_VERBOSE, 0, 0, -1,
+		    &verbose, sizeof(verbose));
+		printf("logging request sent.\n");
+		done = 1;
 		break;
 	case RELOAD:
-		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, NULL, 0);
+		imsg_compose(ibuf, IMSG_CTL_RELOAD, 0, 0, -1, NULL, 0);
 		printf("reload request sent.\n");
 		done = 1;
 		break;
@@ -215,6 +219,8 @@ main(int argc, char *argv[])
 				done = show_mfc_detail_msg(&imsg);
 				break;
 			case NONE:
+			case LOG_VERBOSE:
+			case LOG_BRIEF:
 			case RELOAD:
 				break;
 			}
@@ -284,8 +290,8 @@ show_interface_msg(struct imsg *imsg)
 		    iface->name, netid, if_state_name(iface->state),
 		    iface->probe_timer == 0 ? "00:00:00" :
 		    fmt_timeframe_core(iface->probe_timer),
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate), iface->uptime == 0 ? "00:00:00" :
+		    get_linkstate(iface->mediatype, iface->linkstate),
+		    iface->uptime == 0 ? "00:00:00" :
 		    fmt_timeframe_core(iface->uptime), iface->group_cnt);
 		free(netid);
 		break;
@@ -315,8 +321,7 @@ show_interface_detail_msg(struct imsg *imsg)
 		    inet_ntoa(iface->addr),
 		    mask2prefixlen(iface->mask.s_addr));
 		printf("  Linkstate %s\n",
-		    get_linkstate(get_ifms_type(iface->mediatype),
-		    iface->linkstate));
+		    get_linkstate(iface->mediatype, iface->linkstate));
 		printf("  Network type %s, cost: %d\n",
 		    if_type_name(iface->type), iface->metric);
 		printf("  State %s, querier ", if_state_name(iface->state));
@@ -657,30 +662,19 @@ show_mfc_detail_msg(struct imsg *imsg)
 	return (0);
 }
 
-const int	ifm_status_valid_list[] = IFM_STATUS_VALID_LIST;
-const struct ifmedia_status_description
-		ifm_status_descriptions[] = IFM_STATUS_DESCRIPTIONS;
-const struct ifmedia_description
-		ifm_type_descriptions[] = IFM_TYPE_DESCRIPTIONS;
+const struct if_status_description
+		if_status_descriptions[] = LINK_STATE_DESCRIPTIONS;
 
 const char *
 get_linkstate(int media_type, int link_state)
 {
-	const struct ifmedia_status_description	*p;
-	int					 i;
+	const struct if_status_description *p;
+	static char buf[8];
 
-	if (link_state == LINK_STATE_UNKNOWN)
-		return ("unknown");
-
-	for (i = 0; ifm_status_valid_list[i] != 0; i++)
-		for (p = ifm_status_descriptions; p->ifms_valid != 0; p++) {
-			if (p->ifms_type != media_type ||
-			    p->ifms_valid != ifm_status_valid_list[i])
-				continue;
-			if (LINK_STATE_IS_UP(link_state))
-				return (p->ifms_string[1]);
-			return (p->ifms_string[0]);
-		}
-
-	return ("unknown link state");
+	for (p = if_status_descriptions; p->ifs_string != NULL; p++) {
+		if (LINK_STATE_DESC_MATCH(p, media_type, link_state))
+			return (p->ifs_string);
+	}
+	snprintf(buf, sizeof(buf), "[#%d]", link_state);
+	return (buf);
 }

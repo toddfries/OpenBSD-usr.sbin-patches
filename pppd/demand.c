@@ -1,4 +1,4 @@
-/*	$OpenBSD: demand.c,v 1.8 2002/09/13 00:12:10 deraadt Exp $	*/
+/*	$OpenBSD: demand.c,v 1.10 2011/04/30 18:49:38 nicm Exp $	*/
 
 /*
  * demand.c - Support routines for demand-dialling.
@@ -34,14 +34,6 @@
  * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
  * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-
-#ifndef lint
-#if 0
-static char rcsid[] = "Id: demand.c,v 1.7 1997/11/27 06:08:26 paulus Exp $";
-#else
-static char rcsid[] = "$OpenBSD: demand.c,v 1.8 2002/09/13 00:12:10 deraadt Exp $";
-#endif
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,50 +114,6 @@ demand_conf()
 	if (protp->enabled_flag && protp->demand_conf != NULL)
 	    if (!((*protp->demand_conf)(0)))
 		die(1);
-}
-
-
-/*
- * demand_block - set each network protocol to block further packets.
- */
-void
-demand_block()
-{
-    int i;
-    struct protent *protp;
-
-    for (i = 0; (protp = protocols[i]) != NULL; ++i)
-	if (protp->enabled_flag && protp->demand_conf != NULL)
-	    sifnpmode(0, protp->protocol & ~0x8000, NPMODE_QUEUE);
-    get_loop_output();
-}
-
-/*
- * demand_discard - set each network protocol to discard packets
- * with an error.
- */
-void
-demand_discard()
-{
-    struct packet *pkt, *nextpkt;
-    int i;
-    struct protent *protp;
-
-    for (i = 0; (protp = protocols[i]) != NULL; ++i)
-	if (protp->enabled_flag && protp->demand_conf != NULL)
-	    sifnpmode(0, protp->protocol & ~0x8000, NPMODE_ERROR);
-    get_loop_output();
-
-    /* discard all saved packets */
-    for (pkt = pend_q; pkt != NULL; pkt = nextpkt) {
-	nextpkt = pkt->next;
-	free(pkt);
-    }
-    pend_q = NULL;
-    framelen = 0;
-    flush_flag = 0;
-    escape_flag = 0;
-    fcs = PPP_INITFCS;
 }
 
 /*

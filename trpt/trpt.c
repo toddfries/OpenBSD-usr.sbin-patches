@@ -1,4 +1,4 @@
-/*	$OpenBSD: trpt.c,v 1.24 2008/06/26 05:42:21 ray Exp $	*/
+/*	$OpenBSD: trpt.c,v 1.28 2011/07/04 07:06:49 guenther Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -59,22 +59,14 @@
  * SUCH DAMAGE.
  */
 
-#ifndef lint
-char copyright[] =
-"@(#) Copyright (c) 1983, 1988, 1993\n\
-	The Regents of the University of California.  All rights reserved.\n";
-#endif /* not lint */
-
-#ifndef lint
-static char sccsid[] = "@(#)trpt.c	8.1 (Berkeley) 6/6/93";
-#endif /* not lint */
-
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
-#include <sys/socketvar.h>
 #define PRUREQUESTS
 #include <sys/protosw.h>
+#define _KERNEL
+#include <sys/timeout.h>		/* to get timeout_pending() and such */
+#undef _KERNEL
 #include <sys/file.h>
 
 #include <net/route.h>

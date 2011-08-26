@@ -1,4 +1,4 @@
-/*	$OpenBSD: ypldap_dns.c,v 1.1 2008/10/28 13:47:22 aschrijver Exp $ */
+/*	$OpenBSD: ypldap_dns.c,v 1.4 2010/05/26 13:56:08 nicm Exp $ */
 
 /*
  * Copyright (c) 2003-2008 Henning Brauer <henning@openbsd.org>
@@ -41,7 +41,7 @@
 #include "ypldap.h"
 
 volatile sig_atomic_t	 quit_dns = 0;
-struct imsgbuf		*ibuf_dns;
+struct imsgev		*iev_dns;
 
 void	dns_dispatch_imsg(int, short, void *);
 void	dns_sig_handler(int, short, void *);
@@ -104,15 +104,16 @@ ypldap_dns(int pipe_ntp[2], struct passwd *pw)
 	signal_add(&ev_sigterm, NULL);
 	signal_add(&ev_sighup, NULL);
 
-	if ((env.sc_ibuf = calloc(1, sizeof(*env.sc_ibuf))) == NULL)
+	if ((env.sc_iev = calloc(1, sizeof(*env.sc_iev))) == NULL)
 		fatal(NULL);
 
-	env.sc_ibuf->events = EV_READ;
-	env.sc_ibuf->data = &env;
-	imsg_init(env.sc_ibuf, pipe_ntp[1], dns_dispatch_imsg);
-	event_set(&env.sc_ibuf->ev, env.sc_ibuf->fd, env.sc_ibuf->events,
-	    env.sc_ibuf->handler, &env);
-	event_add(&env.sc_ibuf->ev, NULL);
+	env.sc_iev->events = EV_READ;
+	env.sc_iev->data = &env;
+	imsg_init(&env.sc_iev->ibuf, pipe_ntp[1]);
+	env.sc_iev->handler = dns_dispatch_imsg;
+	event_set(&env.sc_iev->ev, env.sc_iev->ibuf.fd, env.sc_iev->events,
+	    env.sc_iev->handler, &env);
+	event_add(&env.sc_iev->ev, NULL);
 
 	event_dispatch();
 	dns_shutdown();
@@ -127,9 +128,10 @@ dns_dispatch_imsg(int fd, short event, void *p)
 	int			 n, cnt;
 	char			*name;
 	struct ypldap_addr	*h, *hn;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct env		*env = p;
-	struct imsgbuf		*ibuf = env->sc_ibuf;
+	struct imsgev		*iev = env->sc_iev;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	int			 shut = 0;
 
 	switch (event) {
@@ -142,7 +144,7 @@ dns_dispatch_imsg(int fd, short event, void *p)
 	case EV_WRITE:
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 		return;
 	default:
 		fatalx("unknown event");
@@ -150,7 +152,7 @@ dns_dispatch_imsg(int fd, short event, void *p)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("client_dispatch_parent: imsg_read_error");
+			fatal("client_dispatch_imsg: imsg_get error");
 		if (n == 0)
 			break;
 
@@ -182,10 +184,10 @@ dns_dispatch_imsg(int fd, short event, void *p)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }

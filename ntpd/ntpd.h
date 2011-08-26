@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntpd.h,v 1.99 2009/02/11 01:00:10 stevesk Exp $ */
+/*	$OpenBSD: ntpd.h,v 1.103 2009/06/06 18:45:01 ckuethe Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -30,12 +30,11 @@
 #include <stdarg.h>
 
 #include "ntp.h"
+#include <imsg.h>
 
 #define	NTPD_USER	"_ntp"
 #define	CONFFILE	"/etc/ntpd.conf"
 #define DRIFTFILE	"/var/db/ntpd.drift"
-
-#define	READ_BUF_SIZE		8192
 
 #define	INTERVAL_QUERY_NORMAL		30	/* sync to peers every n secs */
 #define	INTERVAL_QUERY_PATHETIC		60
@@ -53,7 +52,7 @@
 
 #define	QUERYTIME_MAX		15	/* single query might take n secs max */
 #define	OFFSET_ARRAY_SIZE	8
-#define	SENSOR_OFFSETS		7
+#define	SENSOR_OFFSETS		6
 #define	SETTIME_TIMEOUT		15	/* max seconds to wait with -s */
 #define	LOG_NEGLIGIBLE_ADJTIME	32	/* negligible drift to not log (ms) */
 #define	LOG_NEGLIGIBLE_ADJFREQ	0.05	/* negligible rate to not log (ppm) */
@@ -62,10 +61,12 @@
 #define REPORT_INTERVAL		(24*60*60) /* interval between status reports */
 #define MAX_SEND_ERRORS		3	/* max send errors before reconnect */
 
+#define FILTER_ADJFREQ		0x01	/* set after doing adjfreq */
 
-#define	SENSOR_DATA_MAXAGE	(15*60)
-#define	SENSOR_QUERY_INTERVAL	30
-#define	SENSOR_SCAN_INTERVAL	(5*60)
+#define	SENSOR_DATA_MAXAGE		(15*60)
+#define	SENSOR_QUERY_INTERVAL		15
+#define	SENSOR_QUERY_INTERVAL_SETTIME	(SETTIME_TIMEOUT/3)
+#define	SENSOR_SCAN_INTERVAL		(5*60)
 
 enum client_state {
 	STATE_NONE,
@@ -170,43 +171,12 @@ struct ntpd_conf {
 	TAILQ_HEAD(ntp_conf_sensors, ntp_conf_sensor)	ntp_conf_sensors;
 	struct ntp_status				status;
 	struct ntp_freq					freq;
+	u_int32_t					scale;
 	u_int8_t					listen_all;
 	u_int8_t					settime;
 	u_int8_t					debug;
-	u_int32_t					scale;
 	u_int8_t					noaction;
-};
-
-struct buf {
-	TAILQ_ENTRY(buf)	 entry;
-	u_char			*buf;
-	size_t			 size;
-	size_t			 wpos;
-	size_t			 rpos;
-};
-
-struct msgbuf {
-	TAILQ_HEAD(, buf)	 bufs;
-	u_int32_t		 queued;
-	int			 fd;
-};
-
-struct buf_read {
-	size_t			 wpos;
-	u_char			 buf[READ_BUF_SIZE];
-	u_char			*rptr;
-};
-
-/* ipc messages */
-
-#define	IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
-#define	MAX_IMSGSIZE		8192
-
-struct imsgbuf {
-	int			fd;
-	pid_t			pid;
-	struct buf_read		r;
-	struct msgbuf		w;
+	u_int8_t					filters;
 };
 
 enum imsg_type {
@@ -215,18 +185,6 @@ enum imsg_type {
 	IMSG_ADJFREQ,
 	IMSG_SETTIME,
 	IMSG_HOST_DNS
-};
-
-struct imsg_hdr {
-	enum imsg_type	type;
-	u_int32_t	peerid;
-	pid_t		pid;
-	u_int16_t	len;
-};
-
-struct imsg {
-	struct imsg_hdr	 hdr;
-	void		*data;
 };
 
 /* prototypes */
@@ -240,27 +198,6 @@ void		 log_debug(const char *, ...);
 void		 fatal(const char *);
 void		 fatalx(const char *);
 const char *	 log_sockaddr(struct sockaddr *);
-
-/* buffer.c */
-struct buf	*buf_open(size_t);
-int		 buf_add(struct buf *, void *, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
-void		 buf_free(struct buf *);
-void		 msgbuf_init(struct msgbuf *);
-void		 msgbuf_clear(struct msgbuf *);
-int		 msgbuf_write(struct msgbuf *);
-
-/* imsg.c */
-void	 imsg_init(struct imsgbuf *, int);
-int	 imsg_read(struct imsgbuf *);
-int	 imsg_get(struct imsgbuf *, struct imsg *);
-int	 imsg_compose(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-	    void *, u_int16_t);
-struct buf	*imsg_create(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-		    u_int16_t);
-int	 imsg_add(struct buf *, void *, u_int16_t);
-int	 imsg_close(struct imsgbuf *, struct buf *);
-void	 imsg_free(struct imsg *);
 
 /* ntp.c */
 pid_t	 ntp_main(int[2], struct ntpd_conf *, struct passwd *);

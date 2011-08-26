@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6d.h,v 1.14 2009/01/28 22:47:36 stsp Exp $ */
+/*	$OpenBSD: ospf6d.h,v 1.23 2011/07/07 00:36:13 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2007 Esben Norby <norby@openbsd.org>
@@ -24,11 +24,11 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/tree.h>
-#include <md5.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <event.h>
 
+#include <imsg.h>
 #include "ospf6.h"
 
 #define CONF_FILE		"/etc/ospf6d.conf"
@@ -58,43 +58,12 @@
 #define	F_DYNAMIC		0x0040
 #define	F_REDISTRIBUTED		0x0100
 
-#define REDISTRIBUTE_ON		0x01
-#define REDISTRIBUTE_DEFAULT	0x02
-
-/* buffer */
-struct buf {
-	TAILQ_ENTRY(buf)	 entry;
-	u_char			*buf;
-	size_t			 size;
-	size_t			 max;
-	size_t			 wpos;
-	size_t			 rpos;
-};
-
-struct msgbuf {
-	TAILQ_HEAD(, buf)	 bufs;
-	u_int32_t		 queued;
-	int			 fd;
-};
-
-#define	IMSG_HEADER_SIZE	sizeof(struct imsg_hdr)
-#define	MAX_IMSGSIZE		8192
-
-struct buf_read {
-	u_char			 buf[READ_BUF_SIZE];
-	u_char			*rptr;
-	size_t			 wpos;
-};
-
-struct imsgbuf {
-	TAILQ_HEAD(, imsg_fd)	fds;
-	struct buf_read		r;
-	struct msgbuf		w;
-	struct event		ev;
+struct imsgev {
+	struct imsgbuf		 ibuf;
 	void			(*handler)(int, short, void *);
-	int			fd;
-	pid_t			pid;
-	short			events;
+	struct event		 ev;
+	void			*data;
+	short			 events;
 };
 
 enum imsg_type {
@@ -121,12 +90,15 @@ enum imsg_type {
 	IMSG_CTL_KROUTE,
 	IMSG_CTL_KROUTE_ADDR,
 	IMSG_CTL_END,
+	IMSG_CTL_LOG_VERBOSE,
 	IMSG_KROUTE_CHANGE,
 	IMSG_KROUTE_DELETE,
 	IMSG_KROUTE_GET,
 	IMSG_IFINFO,
 	IMSG_IFADD,
 	IMSG_IFDELETE,
+	IMSG_IFADDRNEW,
+	IMSG_IFADDRDEL,
 	IMSG_NEIGHBOR_UP,
 	IMSG_NEIGHBOR_DOWN,
 	IMSG_NEIGHBOR_CHANGE,
@@ -148,18 +120,6 @@ enum imsg_type {
 	IMSG_RECONF_AREA,
 	IMSG_RECONF_END,
 	IMSG_DEMOTE
-};
-
-struct imsg_hdr {
-	enum imsg_type	type;
-	u_int16_t	len;
-	u_int32_t	peerid;
-	pid_t		pid;
-};
-
-struct imsg {
-	struct imsg_hdr	 hdr;
-	void		*data;
 };
 
 /* area */
@@ -356,11 +316,17 @@ struct iface {
 	u_int8_t		 media_type;
 	u_int8_t		 linkstate;
 	u_int8_t		 priority;
-	u_int8_t		 nh_reachable;
 	u_int8_t		 cflags;
 #define F_IFACE_PASSIVE		0x01
 #define F_IFACE_CONFIGURED	0x02
 #define F_IFACE_AVAIL		0x04
+};
+
+struct ifaddrchange {
+	struct in6_addr		 addr;
+	struct in6_addr		 dstbrd;
+	unsigned int		 ifindex;
+	u_int8_t		 prefixlen;
 };
 
 /* ospf_conf */
@@ -375,6 +341,7 @@ enum {
 #define	REDIST_LABEL		0x04
 #define	REDIST_ADDR		0x08
 #define	REDIST_NO		0x10
+#define	REDIST_DEFAULT		0x20
 
 struct redistribute {
 	SIMPLEQ_ENTRY(redistribute)	entry;
@@ -392,7 +359,6 @@ struct ospfd_conf {
 	LIST_HEAD(, vertex)	cand_list;
 	SIMPLEQ_HEAD(, redistribute) redist_list;
 
-	u_int32_t		defaultmetric;
 	u_int32_t		opts;
 #define OSPFD_OPT_VERBOSE	0x00000001
 #define OSPFD_OPT_VERBOSE2	0x00000002
@@ -413,9 +379,10 @@ struct ospfd_conf {
 struct kroute {
 	struct in6_addr	prefix;
 	struct in6_addr	nexthop;
+	u_int32_t	ext_tag;
+	unsigned int	scope;		/* scope of nexthop */
 	u_int16_t	flags;
 	u_int16_t	rtlabel;
-	u_int32_t	ext_tag;
 	u_short		ifindex;
 	u_int8_t	prefixlen;
 };
@@ -496,6 +463,7 @@ struct ctl_rt {
 	time_t			 uptime;
 	u_int32_t		 cost;
 	u_int32_t		 cost2;
+	unsigned int		 ifindex;	/* scope of nexthop */
 	enum path_type		 p_type;
 	enum dst_type		 d_type;
 	u_int8_t		 flags;
@@ -532,18 +500,6 @@ void		 area_track(struct area *, int);
 int		 area_border_router(struct ospfd_conf *);
 u_int32_t	 area_ospf_options(struct area *);
 
-/* buffer.c */
-struct buf	*buf_open(size_t);
-struct buf	*buf_dynamic(size_t, size_t);
-int		 buf_add(struct buf *, void *, size_t);
-void		*buf_reserve(struct buf *, size_t);
-void		*buf_seek(struct buf *, size_t, size_t);
-int		 buf_close(struct msgbuf *, struct buf *);
-void		 buf_free(struct buf *);
-void		 msgbuf_init(struct msgbuf *);
-void		 msgbuf_clear(struct msgbuf *);
-int		 msgbuf_write(struct msgbuf *);
-
 /* carp.c */
 int		 carp_demote_init(char *, int);
 void		 carp_demote_shutdown(void);
@@ -553,19 +509,6 @@ int		 carp_demote_set(char *, int);
 /* parse.y */
 struct ospfd_conf	*parse_config(char *, int);
 int			 cmdline_symset(char *);
-
-/* imsg.c */
-void	 imsg_init(struct imsgbuf *, int, void (*)(int, short, void *));
-ssize_t	 imsg_read(struct imsgbuf *);
-ssize_t	 imsg_get(struct imsgbuf *, struct imsg *);
-int	 imsg_compose(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-	    void *, u_int16_t);
-struct buf	*imsg_create(struct imsgbuf *, enum imsg_type, u_int32_t, pid_t,
-		    u_int16_t);
-int	 imsg_add(struct buf *, void *, u_int16_t);
-int	 imsg_close(struct imsgbuf *, struct buf *);
-void	 imsg_free(struct imsg *);
-void	 imsg_event_add(struct imsgbuf *); /* needs to be provided externally */
 
 /* interface.c */
 int		 if_init(void);
@@ -613,11 +556,14 @@ u_int32_t	 rtlabel_id2tag(u_int16_t);
 u_int16_t	 rtlabel_tag2id(u_int32_t);
 void		 rtlabel_tag(u_int16_t, u_int32_t);
 
-/* ospfd.c */
+/* ospf6d.c */
 void	main_imsg_compose_ospfe(int, pid_t, void *, u_int16_t);
 void	main_imsg_compose_rde(int, pid_t, void *, u_int16_t);
 int	ospf_redistribute(struct kroute *, u_int32_t *);
 void	merge_config(struct ospfd_conf *, struct ospfd_conf *);
+void	imsg_event_add(struct imsgev *);
+int	imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+	    pid_t, int, void *, u_int16_t);
 
 /* printconf.c */
 void	print_config(struct ospfd_conf *);

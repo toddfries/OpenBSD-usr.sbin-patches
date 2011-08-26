@@ -1,4 +1,4 @@
-/*	$OpenBSD: if.c,v 1.18 2008/04/21 20:40:55 rainer Exp $	*/
+/*	$OpenBSD: if.c,v 1.24 2011/07/05 05:13:04 claudio Exp $	*/
 /*	$KAME: if.c,v 1.17 2001/01/21 15:27:30 itojun Exp $	*/
 
 /*
@@ -210,19 +210,6 @@ lladdropt_fill(struct sockaddr_dl *sdl, struct nd_opt_hdr *ndopt)
 	return;
 }
 
-int
-rtbuf_len()
-{
-	size_t len;
-
-	int mib[6] = {CTL_NET, AF_ROUTE, 0, AF_INET6, NET_RT_DUMP, 0};
-
-	if (sysctl(mib, 6, NULL, &len, NULL, 0) < 0)
-		return(-1);
-
-	return(len);
-}
-
 #define FILTER_MATCH(type, filter) ((0x1 << type) & filter)
 #define SIN6(s) ((struct sockaddr_in6 *)(s))
 #define SDL(s) ((struct sockaddr_dl *)(s))
@@ -236,16 +223,17 @@ get_next_msg(char *buf, char *lim, int ifindex, size_t *lenp, int filter)
 	*lenp = 0;
 	for (rtm = (struct rt_msghdr *)buf;
 	     rtm < (struct rt_msghdr *)lim;
-	     rtm = (struct rt_msghdr *)(((char *)rtm) + rtm->rtm_msglen)) {
+	     rtm = (struct rt_msghdr *)((char *)rtm + rtm->rtm_msglen)) {
 		/* just for safety */
 		if (!rtm->rtm_msglen) {
 			log_warnx("rtm_msglen is 0 (buf=%p lim=%p rtm=%p)",
 			    buf, lim, rtm);
 			break;
 		}
-		if (FILTER_MATCH(rtm->rtm_type, filter) == 0) {
+		if (rtm->rtm_version != RTM_VERSION)
 			continue;
-		}
+		if (FILTER_MATCH(rtm->rtm_type, filter) == 0)
+			continue;
 
 		switch (rtm->rtm_type) {
 		case RTM_GET:
@@ -255,7 +243,7 @@ get_next_msg(char *buf, char *lim, int ifindex, size_t *lenp, int filter)
 				continue;
 
 			/* address related checks */
-			sa = (struct sockaddr *)(rtm + 1);
+			sa = (struct sockaddr *)((char *)rtm + rtm->rtm_hdrlen);
 			get_rtaddrs(rtm->rtm_addrs, sa, rti_info);
 			if ((dst = rti_info[RTAX_DST]) == NULL ||
 			    dst->sa_family != AF_INET6)
@@ -281,9 +269,11 @@ get_next_msg(char *buf, char *lim, int ifindex, size_t *lenp, int filter)
 		case RTM_NEWADDR:
 		case RTM_DELADDR:
 			ifam = (struct ifa_msghdr *)rtm;
+			if (ifindex && ifam->ifam_index != ifindex)
+				continue;
 
 			/* address related checks */
-			sa = (struct sockaddr *)(ifam + 1);
+			sa = (struct sockaddr *)((char *)rtm + rtm->rtm_hdrlen);
 			get_rtaddrs(ifam->ifam_addrs, sa, rti_info);
 			if ((ifa = rti_info[RTAX_IFA]) == NULL ||
 			    (ifa->sa_family != AF_INET &&
@@ -295,11 +285,8 @@ get_next_msg(char *buf, char *lim, int ifindex, size_t *lenp, int filter)
 			     IN6_IS_ADDR_MULTICAST(&SIN6(ifa)->sin6_addr)))
 				continue;
 
-			if (ifindex && ifam->ifam_index != ifindex)
-				continue;
-
 			/* found */
-			*lenp = ifam->ifam_msglen;
+			*lenp = rtm->rtm_msglen;
 			return (char *)rtm;
 			/* NOTREACHED */
 		case RTM_IFINFO:
@@ -320,7 +307,7 @@ get_addr(char *buf)
 	struct rt_msghdr *rtm = (struct rt_msghdr *)buf;
 	struct sockaddr *sa, *rti_info[RTAX_MAX];
 
-	sa = (struct sockaddr *)(rtm + 1);
+	sa = (struct sockaddr *)(buf + rtm->rtm_hdrlen);
 	get_rtaddrs(rtm->rtm_addrs, sa, rti_info);
 
 	return(&SIN6(rti_info[RTAX_DST])->sin6_addr);
@@ -332,7 +319,7 @@ get_rtm_ifindex(char *buf)
 	struct rt_msghdr *rtm = (struct rt_msghdr *)buf;
 	struct sockaddr *sa, *rti_info[RTAX_MAX];
 
-	sa = (struct sockaddr *)(rtm + 1);
+	sa = (struct sockaddr *)(buf + rtm->rtm_hdrlen);
 	get_rtaddrs(rtm->rtm_addrs, sa, rti_info);
 
 	return(((struct sockaddr_dl *)rti_info[RTAX_GATEWAY])->sdl_index);
@@ -369,7 +356,7 @@ get_prefixlen(char *buf)
 	struct sockaddr *sa, *rti_info[RTAX_MAX];
 	u_char *p, *lim;
 	
-	sa = (struct sockaddr *)(rtm + 1);
+	sa = (struct sockaddr *)(buf + rtm->rtm_hdrlen);
 	get_rtaddrs(rtm->rtm_addrs, sa, rti_info);
 	sa = rti_info[RTAX_NETMASK];
 
@@ -435,14 +422,6 @@ rtmsg_len(char *buf)
 	return(rtm->rtm_msglen);
 }
 
-int
-ifmsg_len(char *buf)
-{
-	struct if_msghdr *ifm = (struct if_msghdr *)buf;
-
-	return(ifm->ifm_msglen);
-}
-
 /*
  * alloc buffer and get if_msghdrs block from kernel,
  * and put them into the buffer
@@ -497,9 +476,9 @@ parse_iflist(struct if_msghdr ***ifmlist_p, char *buf, size_t bufsize)
 			    buf, lim, ifm);
 			return;
 		}
-
 		if (ifm->ifm_type == RTM_IFINFO) {
-			(*ifmlist_p)[ifm->ifm_index] = ifm;
+			if (ifm->ifm_version == RTM_VERSION)
+				(*ifmlist_p)[ifm->ifm_index] = ifm;
 		} else {
 			log_warn("out of sync parsing NET_RT_IFLIST,"
 			    " expected %d, got %d, msglen = %d,"

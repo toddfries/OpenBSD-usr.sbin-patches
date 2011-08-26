@@ -1,4 +1,4 @@
-/*	$OpenBSD: lsreq.c,v 1.3 2007/10/16 20:26:04 claudio Exp $ */
+/*	$OpenBSD: lsreq.c,v 1.7 2011/05/02 08:56:44 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2007 Esben Norby <norby@openbsd.org>
@@ -27,7 +27,7 @@
 #include "log.h"
 #include "ospfe.h"
 
-extern struct imsgbuf		*ibuf_rde;
+extern struct imsgev		*iev_rde;
 
 /* link state request packet handling */
 int
@@ -36,10 +36,10 @@ send_ls_req(struct nbr *nbr)
 	struct in6_addr		 dst;
 	struct ls_req_hdr	 ls_req_hdr;
 	struct lsa_entry	*le, *nle;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	int			 ret;
 
-	if ((buf = buf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
+	if ((buf = ibuf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
 		fatal("send_ls_req");
 
 	switch (nbr->iface->type) {
@@ -60,16 +60,15 @@ send_ls_req(struct nbr *nbr)
 	if (gen_ospf_hdr(buf, nbr->iface, PACKET_TYPE_LS_REQUEST))
 		goto fail;
 
-	/* LSA header(s), keep space for a possible md5 sum */
+	/* LSA header(s) */
 	for (le = TAILQ_FIRST(&nbr->ls_req_list); le != NULL &&
-	    buf->wpos + sizeof(struct ls_req_hdr) < buf->max -
-	    MD5_DIGEST_LENGTH; le = nle) {
+	    buf->wpos + sizeof(struct ls_req_hdr) < buf->max; le = nle) {
 		nbr->ls_req = nle = TAILQ_NEXT(le, entry);
 		ls_req_hdr.zero = 0;
 		ls_req_hdr.type = le->le_lsa->type;
 		ls_req_hdr.ls_id = le->le_lsa->ls_id;
 		ls_req_hdr.adv_rtr = le->le_lsa->adv_rtr;
-		if (buf_add(buf, &ls_req_hdr, sizeof(ls_req_hdr)))
+		if (ibuf_add(buf, &ls_req_hdr, sizeof(ls_req_hdr)))
 			goto fail;
 	}
 
@@ -79,11 +78,11 @@ send_ls_req(struct nbr *nbr)
 
 	ret = send_packet(nbr->iface, buf->buf, buf->wpos, &dst);
 
-	buf_free(buf);
+	ibuf_free(buf);
 	return (ret);
 fail:
 	log_warn("send_ls_req");
-	buf_free(buf);
+	ibuf_free(buf);
 	return (-1);
 }
 
@@ -104,7 +103,8 @@ recv_ls_req(struct nbr *nbr, char *buf, u_int16_t len)
 	case NBR_STA_XCHNG:
 	case NBR_STA_LOAD:
 	case NBR_STA_FULL:
-		imsg_compose(ibuf_rde, IMSG_LS_REQ, nbr->peerid, 0, buf, len);
+		imsg_compose_event(iev_rde, IMSG_LS_REQ, nbr->peerid,
+		    0, -1, buf, len);
 		break;
 	default:
 		fatalx("recv_ls_req: unknown neighbor state");

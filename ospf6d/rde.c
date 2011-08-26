@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.24 2009/02/19 22:21:17 stsp Exp $ */
+/*	$OpenBSD: rde.c,v 1.58 2011/07/07 17:10:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -21,7 +21,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/queue.h>
-#include <sys/param.h>
+#include <net/if_types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <err.h>
@@ -49,7 +49,6 @@ void		 rde_send_summary(pid_t);
 void		 rde_send_summary_area(struct area *, pid_t);
 void		 rde_nbr_init(u_int32_t);
 void		 rde_nbr_free(void);
-struct rde_nbr	*rde_nbr_find(u_int32_t);
 struct rde_nbr	*rde_nbr_new(u_int32_t, struct rde_nbr *);
 void		 rde_nbr_del(struct rde_nbr *);
 
@@ -61,14 +60,14 @@ void		 rde_req_list_free(struct rde_nbr *);
 struct lsa	*rde_asext_get(struct rroute *);
 struct lsa	*rde_asext_put(struct rroute *);
 
+int		 comp_asext(struct lsa *, struct lsa *);
 struct lsa	*orig_asext_lsa(struct rroute *, u_int16_t);
 struct lsa	*orig_sum_lsa(struct rt_node *, struct area *, u_int8_t, int);
-struct lsa	*orig_intra_lsa_net(struct iface *, struct vertex *);
+struct lsa	*orig_intra_lsa_net(struct area *, struct iface *,
+		 struct vertex *);
 struct lsa	*orig_intra_lsa_rtr(struct area *, struct vertex *);
-void		 orig_intra_area_prefix_lsas(struct area *);
 void		 append_prefix_lsa(struct lsa **, u_int16_t *,
 		    struct lsa_prefix *);
-int		 link_lsa_from_full_nbr(struct lsa *, struct iface *);
 
 /* A 32-bit value != any ifindex.
  * We assume ifindex is bound by [1, USHRT_MAX] inclusive. */
@@ -86,8 +85,8 @@ int		 prefix_compare(struct prefix_node *, struct prefix_node *);
 void		 prefix_tree_add(struct prefix_tree *, struct lsa_link *);
 
 struct ospfd_conf	*rdeconf = NULL, *nconf = NULL;
-struct imsgbuf		*ibuf_ospfe;
-struct imsgbuf		*ibuf_main;
+struct imsgev		*iev_ospfe;
+struct imsgev		*iev_main;
 struct rde_nbr		*nbrself;
 struct lsa_tree		 asext_tree;
 
@@ -166,22 +165,24 @@ rde(struct ospfd_conf *xconf, int pipe_parent2rde[2], int pipe_ospfe2rde[2],
 	close(pipe_parent2ospfe[0]);
 	close(pipe_parent2ospfe[1]);
 
-	if ((ibuf_ospfe = malloc(sizeof(struct imsgbuf))) == NULL ||
-	    (ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
+	if ((iev_ospfe = malloc(sizeof(struct imsgev))) == NULL ||
+	    (iev_main = malloc(sizeof(struct imsgev))) == NULL)
 		fatal(NULL);
-	imsg_init(ibuf_ospfe, pipe_ospfe2rde[1], rde_dispatch_imsg);
-	imsg_init(ibuf_main, pipe_parent2rde[1], rde_dispatch_parent);
+	imsg_init(&iev_ospfe->ibuf, pipe_ospfe2rde[1]);
+	iev_ospfe->handler = rde_dispatch_imsg;
+	imsg_init(&iev_main->ibuf, pipe_parent2rde[1]);
+	iev_main->handler = rde_dispatch_parent;
 
 	/* setup event handler */
-	ibuf_ospfe->events = EV_READ;
-	event_set(&ibuf_ospfe->ev, ibuf_ospfe->fd, ibuf_ospfe->events,
-	    ibuf_ospfe->handler, ibuf_ospfe);
-	event_add(&ibuf_ospfe->ev, NULL);
+	iev_ospfe->events = EV_READ;
+	event_set(&iev_ospfe->ev, iev_ospfe->ibuf.fd, iev_ospfe->events,
+	    iev_ospfe->handler, iev_ospfe);
+	event_add(&iev_ospfe->ev, NULL);
 
-	ibuf_main->events = EV_READ;
-	event_set(&ibuf_main->ev, ibuf_main->fd, ibuf_main->events,
-	    ibuf_main->handler, ibuf_main);
-	event_add(&ibuf_main->ev, NULL);
+	iev_main->events = EV_READ;
+	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
+	    iev_main->handler, iev_main);
+	event_add(&iev_main->ev, NULL);
 
 	evtimer_set(&rdeconf->ev, spf_timer, rdeconf);
 	cand_list_init();
@@ -218,10 +219,10 @@ rde_shutdown(void)
 	}
 	rde_nbr_free();
 
-	msgbuf_clear(&ibuf_ospfe->w);
-	free(ibuf_ospfe);
-	msgbuf_clear(&ibuf_main->w);
-	free(ibuf_main);
+	msgbuf_clear(&iev_ospfe->ibuf.w);
+	free(iev_ospfe);
+	msgbuf_clear(&iev_main->ibuf.w);
+	free(iev_main);
 	free(rdeconf);
 
 	log_info("route decision engine exiting");
@@ -232,14 +233,16 @@ int
 rde_imsg_compose_ospfe(int type, u_int32_t peerid, pid_t pid, void *data,
     u_int16_t datalen)
 {
-	return (imsg_compose(ibuf_ospfe, type, peerid, pid, data, datalen));
+	return (imsg_compose_event(iev_ospfe, type, peerid, pid, -1,
+	    data, datalen));
 }
 
 /* ARGSUSED */
 void
 rde_dispatch_imsg(int fd, short event, void *bula)
 {
-	struct imsgbuf		*ibuf = bula;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct imsg		 imsg;
 	struct in_addr		 aid;
 	struct ls_req_hdr	 req_hdr;
@@ -249,27 +252,21 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 	struct lsa		*lsa;
 	struct area		*area;
 	struct vertex		*v;
-	struct iface		*iface, *ifp;
 	char			*buf;
 	ssize_t			 n;
 	time_t			 now;
-	int			 r, state, self, shut = 0;
+	int			 r, state, self, shut = 0, verbose;
 	u_int16_t		 l;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	clock_gettime(CLOCK_MONOTONIC, &tp);
@@ -322,8 +319,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 
 			lsa_snap(nbr, imsg.hdr.peerid);
 
-			imsg_compose(ibuf_ospfe, IMSG_DB_END, imsg.hdr.peerid,
-			    0, NULL, 0);
+			imsg_compose_event(iev_ospfe, IMSG_DB_END, imsg.hdr.peerid,
+			    0, -1, NULL, 0);
 			break;
 		case IMSG_DD:
 			nbr = rde_nbr_find(imsg.hdr.peerid);
@@ -349,8 +346,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 					 * newer or missing
 					 */
 					rde_req_list_add(nbr, &lsa_hdr);
-					imsg_compose(ibuf_ospfe, IMSG_DD,
-					    imsg.hdr.peerid, 0, &lsa_hdr,
+					imsg_compose_event(iev_ospfe, IMSG_DD,
+					    imsg.hdr.peerid, 0, -1, &lsa_hdr,
 					    sizeof(lsa_hdr));
 				}
 			}
@@ -359,8 +356,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				    "trailing garbage in Database Description "
 				    "packet", imsg.hdr.peerid);
 
-			imsg_compose(ibuf_ospfe, IMSG_DD_END, imsg.hdr.peerid,
-			    0, NULL, 0);
+			imsg_compose_event(iev_ospfe, IMSG_DD_END,
+			    imsg.hdr.peerid, 0, -1, NULL, 0);
 			break;
 		case IMSG_LS_REQ:
 			nbr = rde_nbr_find(imsg.hdr.peerid);
@@ -376,12 +373,13 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				if ((v = lsa_find(nbr->iface,
 				    req_hdr.type, req_hdr.ls_id,
 				    req_hdr.adv_rtr)) == NULL) {
-					imsg_compose(ibuf_ospfe, IMSG_LS_BADREQ,
-					    imsg.hdr.peerid, 0, NULL, 0);
+					imsg_compose_event(iev_ospfe,
+					    IMSG_LS_BADREQ, imsg.hdr.peerid,
+					    0, -1, NULL, 0);
 					continue;
 				}
-				imsg_compose(ibuf_ospfe, IMSG_LS_UPD,
-				    imsg.hdr.peerid, 0, v->lsa,
+				imsg_compose_event(iev_ospfe, IMSG_LS_UPD,
+				    imsg.hdr.peerid, 0, -1, v->lsa,
 				    ntohs(v->lsa->hdr.len));
 			}
 			if (l != 0)
@@ -406,7 +404,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			}
 
 			v = lsa_find(nbr->iface, lsa->hdr.type, lsa->hdr.ls_id,
-				    lsa->hdr.adv_rtr);
+			    lsa->hdr.adv_rtr);
 			if (v == NULL)
 				db_hdr = NULL;
 			else
@@ -429,28 +427,32 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 
 				rde_req_list_del(nbr, &lsa->hdr);
 
-				if (!(self = lsa_self(nbr, lsa, v)))
-					if (lsa_add(nbr, lsa))
-						/* delayed lsa */
-						break;
+				self = lsa_self(lsa);
+				if (self) {
+					if (v == NULL)
+						/* LSA is no longer announced,
+						 * remove by premature aging. */
+						lsa_flush(nbr, lsa);
+					else
+						lsa_reflood(v, lsa);
+				} else if (lsa_add(nbr, lsa))
+					/* delayed lsa, don't flood yet */
+					break;
 
 				/* flood and perhaps ack LSA */
-				imsg_compose(ibuf_ospfe, IMSG_LS_FLOOD,
-				    imsg.hdr.peerid, 0, lsa,
+				imsg_compose_event(iev_ospfe, IMSG_LS_FLOOD,
+				    imsg.hdr.peerid, 0, -1, lsa,
 				    ntohs(lsa->hdr.len));
 
 				/* reflood self originated LSA */
 				if (self && v)
-					imsg_compose(ibuf_ospfe, IMSG_LS_FLOOD,
-					    v->peerid, 0, v->lsa,
-					    ntohs(v->lsa->hdr.len));
-				/* lsa not added so free it */
+					imsg_compose_event(iev_ospfe,
+					    IMSG_LS_FLOOD, v->peerid, 0, -1,
+					    v->lsa, ntohs(v->lsa->hdr.len));
+				/* new LSA was not added so free it */
 				if (self)
 					free(lsa);
 			} else if (r < 0) {
-				/* lsa no longer needed */
-				free(lsa);
-
 				/*
 				 * point 6 of "The Flooding Procedure"
 				 * We are violating the RFC here because
@@ -460,10 +462,15 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				 * in the table we should reset the session.
 				 */
 				if (rde_req_list_exists(nbr, &lsa->hdr)) {
-					imsg_compose(ibuf_ospfe, IMSG_LS_BADREQ,
-					    imsg.hdr.peerid, 0, NULL, 0);
+					imsg_compose_event(iev_ospfe,
+					    IMSG_LS_BADREQ, imsg.hdr.peerid,
+					    0, -1, NULL, 0);
+					free(lsa);
 					break;
 				}
+
+				/* lsa no longer needed */
+				free(lsa);
 
 				/* new LSA older than DB */
 				if (ntohl(db_hdr->seq_num) == MAX_SEQ_NUM &&
@@ -475,13 +482,13 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 					break;
 
 				/* directly send current LSA, no ack */
-				imsg_compose(ibuf_ospfe, IMSG_LS_UPD,
-				    imsg.hdr.peerid, 0, v->lsa,
+				imsg_compose_event(iev_ospfe, IMSG_LS_UPD,
+				    imsg.hdr.peerid, 0, -1, v->lsa,
 				    ntohs(v->lsa->hdr.len));
 			} else {
 				/* LSA equal send direct ack */
-				imsg_compose(ibuf_ospfe, IMSG_LS_ACK,
-				    imsg.hdr.peerid, 0, &lsa->hdr,
+				imsg_compose_event(iev_ospfe, IMSG_LS_ACK,
+				    imsg.hdr.peerid, 0, -1, &lsa->hdr,
 				    sizeof(lsa->hdr));
 				free(lsa);
 			}
@@ -500,7 +507,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				break;
 
 			v = lsa_find(nbr->iface, lsa_hdr.type, lsa_hdr.ls_id,
-				    lsa_hdr.adv_rtr);
+			    lsa_hdr.adv_rtr);
 			if (v == NULL)
 				db_hdr = NULL;
 			else
@@ -544,13 +551,13 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 						    imsg.hdr.pid);
 				}
 			}
-			imsg_compose(ibuf_ospfe, IMSG_CTL_END, 0, imsg.hdr.pid,
-			    NULL, 0);
+			imsg_compose_event(iev_ospfe, IMSG_CTL_END, 0,
+			    imsg.hdr.pid, -1, NULL, 0);
 			break;
 		case IMSG_CTL_SHOW_RIB:
 			LIST_FOREACH(area, &rdeconf->area_list, entry) {
-				imsg_compose(ibuf_ospfe, IMSG_CTL_AREA,
-				    0, imsg.hdr.pid, area, sizeof(*area));
+				imsg_compose_event(iev_ospfe, IMSG_CTL_AREA,
+				    0, imsg.hdr.pid, -1, area, sizeof(*area));
 
 				rt_dump(area->id, imsg.hdr.pid, RIB_RTR);
 				rt_dump(area->id, imsg.hdr.pid, RIB_NET);
@@ -558,36 +565,33 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			aid.s_addr = 0;
 			rt_dump(aid, imsg.hdr.pid, RIB_EXT);
 
-			imsg_compose(ibuf_ospfe, IMSG_CTL_END, 0, imsg.hdr.pid,
-			    NULL, 0);
+			imsg_compose_event(iev_ospfe, IMSG_CTL_END, 0,
+			    imsg.hdr.pid, -1, NULL, 0);
 			break;
 		case IMSG_CTL_SHOW_SUM:
 			rde_send_summary(imsg.hdr.pid);
 			LIST_FOREACH(area, &rdeconf->area_list, entry)
 				rde_send_summary_area(area, imsg.hdr.pid);
-			imsg_compose(ibuf_ospfe, IMSG_CTL_END, 0, imsg.hdr.pid,
-			    NULL, 0);
+			imsg_compose_event(iev_ospfe, IMSG_CTL_END, 0,
+			    imsg.hdr.pid, -1, NULL, 0);
 			break;
 		case IMSG_IFINFO:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE +
-			    sizeof(struct iface))
+			    sizeof(int))
 				fatalx("IFINFO imsg with wrong len");
 
-			ifp = imsg.data;
+			nbr = rde_nbr_find(imsg.hdr.peerid);
+			if (nbr == NULL)
+				fatalx("IFINFO imsg with bad peerid");
+			memcpy(&nbr->iface->state, imsg.data, sizeof(int));
 
-			iface = if_find(ifp->ifindex);
-			if (iface == NULL)
-				fatalx("interface lost in rde");
-			iface->flags = ifp->flags;
-			iface->linkstate = ifp->linkstate;
-			iface->nh_reachable = ifp->nh_reachable;
-			if (iface->state != ifp->state) {
-				iface->state = ifp->state;
-				area = area_find(rdeconf, iface->area_id);
-				if (!area)
-					fatalx("interface lost area");
-				orig_intra_area_prefix_lsas(area);
-			}
+			/* Resend LSAs if interface state changes. */
+			orig_intra_area_prefix_lsas(nbr->area);
+			break;
+		case IMSG_CTL_LOG_VERBOSE:
+			/* already checked by ospfe */
+			memcpy(&verbose, imsg.data, sizeof(verbose));
+			log_verbose(verbose);
 			break;
 		default:
 			log_debug("rde_dispatch_imsg: unexpected imsg %d",
@@ -597,10 +601,10 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -610,32 +614,31 @@ void
 rde_dispatch_parent(int fd, short event, void *bula)
 {
 	static struct area	*narea;
-	struct iface		*niface, *iface;
+	struct area		*area;
+	struct iface		*iface, *ifp;
+	struct ifaddrchange	*ifc;
+	struct iface_addr	*ia, *nia;
 	struct imsg		 imsg;
 	struct kroute		 kr;
 	struct rroute		 rr;
-	struct imsgbuf		*ibuf = bula;
+	struct imsgev		*iev = bula;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct lsa		*lsa;
 	struct vertex		*v;
 	struct rt_node		*rn;
 	ssize_t			 n;
-	int			 shut = 0;
+	int			 shut = 0, wasvalid;
 	unsigned int		 ifindex;
 
-	switch (event) {
-	case EV_READ:
+	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
 			fatal("imsg_read error");
 		if (n == 0)	/* connection closed */
 			shut = 1;
-		break;
-	case EV_WRITE:
+	}
+	if (event & EV_WRITE) {
 		if (msgbuf_write(&ibuf->w) == -1)
 			fatal("msgbuf_write");
-		imsg_event_add(ibuf);
-		return;
-	default:
-		fatalx("unknown event");
 	}
 
 	for (;;) {
@@ -678,6 +681,8 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				 */
 				if (v)
 					lsa_merge(nbrself, lsa, v);
+				else
+					free(lsa);
 			}
 			break;
 		case IMSG_KROUTE_GET:
@@ -693,20 +698,45 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				rde_send_change_kroute(rn);
 			else
 				/* should not happen */
-				imsg_compose(ibuf_main, IMSG_KROUTE_DELETE, 0,
-				    0, &kr, sizeof(kr));
+				imsg_compose_event(iev_main, IMSG_KROUTE_DELETE,
+				    0, 0, -1, &kr, sizeof(kr));
+			break;
+		case IMSG_IFINFO:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct iface))
+				fatalx("IFINFO imsg with wrong len");
+
+			ifp = imsg.data;
+			iface = if_find(ifp->ifindex);
+			if (iface == NULL)
+				fatalx("interface lost in rde");
+
+			wasvalid = (iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate);
+
+			if_update(iface, ifp->mtu, ifp->flags, ifp->media_type,
+			    ifp->linkstate, ifp->baudrate);
+
+			/* Resend LSAs if interface state changes. */
+			if (wasvalid != (iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate)) {
+				area = area_find(rdeconf, iface->area_id);
+				if (!area)
+					fatalx("interface lost area");
+				orig_intra_area_prefix_lsas(area);
+			}
 			break;
 		case IMSG_IFADD:
-			if ((niface = malloc(sizeof(struct iface))) == NULL)
+			if ((iface = malloc(sizeof(struct iface))) == NULL)
 				fatal(NULL);
-			memcpy(niface, imsg.data, sizeof(struct iface));
+			memcpy(iface, imsg.data, sizeof(struct iface));
 
-			LIST_INIT(&niface->nbr_list);
-			TAILQ_INIT(&niface->ls_ack_list);
-			RB_INIT(&niface->lsa_tree);
+			LIST_INIT(&iface->nbr_list);
+			TAILQ_INIT(&iface->ls_ack_list);
+			RB_INIT(&iface->lsa_tree);
 
-			narea = area_find(rdeconf, niface->area_id);
-			LIST_INSERT_HEAD(&narea->iface_list, niface, entry);
+			area = area_find(rdeconf, iface->area_id);
+			LIST_INSERT_HEAD(&area->iface_list, iface, entry);
 			break;
 		case IMSG_IFDELETE:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE +
@@ -716,10 +746,58 @@ rde_dispatch_parent(int fd, short event, void *bula)
 			memcpy(&ifindex, imsg.data, sizeof(ifindex));
 			iface = if_find(ifindex);
 			if (iface == NULL)
-				fatalx("interface lost in ospfe");
+				fatalx("interface lost in rde");
 
 			LIST_REMOVE(iface, entry);
 			if_del(iface);
+			break;
+		case IMSG_IFADDRNEW:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRNEW imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRNEW interface lost in rde");
+
+			if ((ia = calloc(1, sizeof(struct iface_addr))) ==
+			    NULL)
+				fatal("rde_dispatch_parent IFADDRNEW");
+			ia->addr = ifc->addr;
+			ia->dstbrd = ifc->dstbrd;
+			ia->prefixlen = ifc->prefixlen;
+
+			TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
+			area = area_find(rdeconf, iface->area_id);
+			if (area)
+				orig_intra_area_prefix_lsas(area);
+			break;
+		case IMSG_IFADDRDEL:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct ifaddrchange))
+				fatalx("IFADDRDEL imsg with wrong len");
+			ifc = imsg.data;
+
+			iface = if_find(ifc->ifindex);
+			if (iface == NULL)
+				fatalx("IFADDRDEL interface lost in rde");
+
+			for (ia = TAILQ_FIRST(&iface->ifa_list); ia != NULL;
+			    ia = nia) {
+				nia = TAILQ_NEXT(ia, entry);
+
+				if (IN6_ARE_ADDR_EQUAL(&ia->addr,
+				    &ifc->addr)) {
+					TAILQ_REMOVE(&iface->ifa_list, ia,
+					    entry);
+					free(ia);
+					break;
+				}
+			}
+			area = area_find(rdeconf, iface->area_id);
+			if (area)
+				orig_intra_area_prefix_lsas(area);
 			break;
 		case IMSG_RECONF_CONF:
 			if ((nconf = malloc(sizeof(struct ospfd_conf))) ==
@@ -753,10 +831,10 @@ rde_dispatch_parent(int fd, short event, void *bula)
 		imsg_free(&imsg);
 	}
 	if (!shut)
-		imsg_event_add(ibuf);
+		imsg_event_add(iev);
 	else {
 		/* this pipe is dead, so remove the event handler */
-		event_del(&ibuf->ev);
+		event_del(&iev->ev);
 		event_loopexit(NULL);
 	}
 }
@@ -767,12 +845,13 @@ rde_dump_area(struct area *area, int imsg_type, pid_t pid)
 	struct iface	*iface;
 
 	/* dump header */
-	imsg_compose(ibuf_ospfe, IMSG_CTL_AREA, 0, pid, area, sizeof(*area));
+	imsg_compose_event(iev_ospfe, IMSG_CTL_AREA, 0, pid, -1,
+	    area, sizeof(*area));
 
 	/* dump link local lsa */
 	LIST_FOREACH(iface, &area->iface_list, entry) {
-		imsg_compose(ibuf_ospfe, IMSG_CTL_IFACE,
-		    0, pid, iface, sizeof(*iface));
+		imsg_compose_event(iev_ospfe, IMSG_CTL_IFACE,
+		    0, pid, -1, iface, sizeof(*iface));
 		lsa_dump(&iface->lsa_tree, imsg_type, pid);
 	}
 
@@ -802,10 +881,15 @@ rde_send_change_kroute(struct rt_node *r)
 	bzero(&kr, sizeof(kr));
 	kr.prefix = r->prefix;
 	kr.nexthop = rn->nexthop;
+	if (IN6_IS_ADDR_LINKLOCAL(&rn->nexthop) ||
+	    IN6_IS_ADDR_MC_LINKLOCAL(&rn->nexthop))
+		kr.scope = rn->ifindex;
+	kr.ifindex = rn->ifindex;
 	kr.prefixlen = r->prefixlen;
 	kr.ext_tag = r->ext_tag;
 
-	imsg_compose(ibuf_main, IMSG_KROUTE_CHANGE, 0, 0, &kr, sizeof(kr));
+	imsg_compose_event(iev_main, IMSG_KROUTE_CHANGE, 0, 0, -1,
+	    &kr, sizeof(kr));
 }
 
 void
@@ -817,7 +901,8 @@ rde_send_delete_kroute(struct rt_node *r)
 	kr.prefix = r->prefix;
 	kr.prefixlen = r->prefixlen;
 
-	imsg_compose(ibuf_main, IMSG_KROUTE_DELETE, 0, 0, &kr, sizeof(kr));
+	imsg_compose_event(iev_main, IMSG_KROUTE_DELETE, 0, 0, -1,
+	    &kr, sizeof(kr));
 }
 
 void
@@ -952,11 +1037,7 @@ rde_nbr_new(u_int32_t peerid, struct rde_nbr *new)
 	if ((area = area_find(rdeconf, new->area_id)) == NULL)
 		fatalx("rde_nbr_new: unknown area");
 
-	LIST_FOREACH(iface, &area->iface_list, entry) {
-		if (iface->ifindex == new->ifindex)
-			break;
-	}
-	if (iface == NULL)
+	if ((iface = if_find(new->ifindex)) == NULL)
 		fatalx("rde_nbr_new: unknown interface");
 
 	if ((nbr = calloc(1, sizeof(*nbr))) == NULL)
@@ -1095,22 +1176,31 @@ rde_req_list_free(struct rde_nbr *nbr)
 struct lsa *
 rde_asext_get(struct rroute *rr)
 {
-#if 0
-	struct area	*area;
-	struct iface	*iface;
-XXX
+	struct area		*area;
+	struct iface		*iface;
+	struct iface_addr	*ia;
+	struct in6_addr		 addr;
+
 	LIST_FOREACH(area, &rdeconf->area_list, entry)
-		LIST_FOREACH(iface, &area->iface_list, entry) {
-			if ((iface->addr.s_addr & iface->mask.s_addr) ==
-			    rr->kr.prefix.s_addr && iface->mask.s_addr ==
-			    prefixlen2mask(rr->kr.prefixlen)) {
-				/* already announced as (stub) net LSA */
-				log_debug("rde_asext_get: %s/%d is net LSA",
-				    inet_ntoa(rr->kr.prefix), rr->kr.prefixlen);
-				return (NULL);
+		LIST_FOREACH(iface, &area->iface_list, entry)
+			TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
+				if (IN6_IS_ADDR_LINKLOCAL(&ia->addr))
+					continue;
+
+				inet6applymask(&addr, &ia->addr,
+				    rr->kr.prefixlen);
+				if (!memcmp(&addr, &rr->kr.prefix,
+				    sizeof(addr)) && rr->kr.prefixlen ==
+				    ia->prefixlen) {
+					/* already announced as Prefix LSA */
+					log_debug("rde_asext_get: %s/%d is "
+					    "part of prefix LSA",
+					    log_in6addr(&rr->kr.prefix),
+					    rr->kr.prefixlen);
+					return (NULL);
+				}
 			}
-		}
-#endif
+
 	/* update of seqnum is done by lsa_merge */
 	return (orig_asext_lsa(rr, DEFAULT_AGE));
 }
@@ -1181,84 +1271,6 @@ rde_summary_update(struct rt_node *rte, struct area *area)
  * Functions for self-originated LSAs
  */
 
-struct lsa *
-orig_intra_lsa_net(struct iface *iface, struct vertex *old)
-{
-	struct lsa		*lsa;
-	struct vertex		*v;
-	struct area		*area;
-	struct prefix_node	*node;
-	struct prefix_tree	 tree;
-	u_int16_t		 len;
-	u_int16_t		 numprefix;
-
-	if ((area = area_find(rdeconf, iface->area_id)) == NULL)
-		fatalx("interface lost area");
-
-	log_debug("orig_intra_lsa_net: area %s, interface %s",
-	    inet_ntoa(area->id), iface->name);
-
-	RB_INIT(&tree);
-
-	if (iface->state & IF_STA_DR) {
-		RB_FOREACH(v, lsa_tree, &iface->lsa_tree) {
-			if (v->type != LSA_TYPE_LINK)
-				continue;
-			if (link_lsa_from_full_nbr(v->lsa, iface))
-				prefix_tree_add(&tree, &v->lsa->data.link);
-		}
-		if (RB_EMPTY(&tree)) {
-			/* There are no adjacent neighbors on link.
-			 * If a copy of this LSA already exists in DB,
-			 * it needs to be flushed. orig_intra_lsa_rtr()
-			 * will take care of prefixes configured on
-			 * this interface. */
-			if (!old)
-				return NULL;
-		} else {
-			/* Add our own prefixes configured for this link. */
-			v = lsa_find(iface, htons(LSA_TYPE_LINK),
-			    htonl(iface->ifindex), rde_router_id());
-			if (v)
-				prefix_tree_add(&tree, &v->lsa->data.link);
-		}
-	/* Continue only if a copy of this LSA already exists in DB.
-	 * It needs to be flushed. */
-	} else if (!old)
-		return NULL;
-
-	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_intra_prefix);
-	if ((lsa = calloc(1, len)) == NULL)
-		fatal("orig_intra_lsa_net");
-
-	lsa->data.pref_intra.ref_type = htons(LSA_TYPE_NETWORK);
-	lsa->data.pref_intra.ref_lsid = htonl(iface->ifindex);
-	lsa->data.pref_intra.ref_adv_rtr = rde_router_id();
-
-	numprefix = 0;
-	RB_FOREACH(node, prefix_tree, &tree) {
-		append_prefix_lsa(&lsa, &len, node->prefix);
-		numprefix++;
-	}
-
-	lsa->data.pref_intra.numprefix = htons(numprefix);
-
-	while (!RB_EMPTY(&tree))
-		free(RB_REMOVE(prefix_tree, &tree, RB_ROOT(&tree)));
-
-	/* LSA header */
-	/* If numprefix is zero, originate with MAX_AGE to flush LSA. */
-	lsa->hdr.age = numprefix == 0 ? htons(MAX_AGE) : htons(DEFAULT_AGE);
-	lsa->hdr.type = htons(LSA_TYPE_INTRA_A_PREFIX);
-	lsa->hdr.ls_id = htonl(iface->ifindex);
-	lsa->hdr.adv_rtr = rde_router_id();
-	lsa->hdr.seq_num = htonl(INIT_SEQ_NUM);
-	lsa->hdr.len = htons(len);
-	lsa->hdr.ls_chksum = htons(iso_cksum(lsa, len, LS_CKSUM_OFFSET));
-
-	return lsa;
-}
-
 /* Prefix LSAs have variable size. We have to be careful to copy the right
  * amount of bytes, and to realloc() the right amount of memory. */
 void
@@ -1267,7 +1279,7 @@ append_prefix_lsa(struct lsa **lsa, u_int16_t *len, struct lsa_prefix *prefix)
 	struct lsa_prefix	*copy;
 	unsigned int		 lsa_prefix_len;
 	unsigned int		 new_len;
-	char  			*new_lsa;
+	char			*new_lsa;
 
 	lsa_prefix_len = sizeof(struct lsa_prefix)
 	    + LSA_PREFIXSIZE(prefix->prefixlen);
@@ -1292,7 +1304,7 @@ prefix_compare(struct prefix_node *a, struct prefix_node *b)
 {
 	struct lsa_prefix	*p;
 	struct lsa_prefix	*q;
-	int		 	 i;
+	int			 i;
 	int			 len;
 
 	p = a->prefix;
@@ -1323,10 +1335,11 @@ prefix_tree_add(struct prefix_tree *tree, struct lsa_link *lsa)
 	cur_prefix = (char *)(lsa + 1);
 
 	for (i = 0; i < ntohl(lsa->numprefix); i++) {
-		new = calloc(sizeof(*new), 1);
+		if ((new = calloc(1, sizeof(*new))) == NULL)
+			fatal("prefix_tree_add");
 		new->prefix = (struct lsa_prefix *)cur_prefix;
 
-		len = sizeof(*new->prefix) 
+		len = sizeof(*new->prefix)
 		    + LSA_PREFIXSIZE(new->prefix->prefixlen);
 
 		bzero(&addr, sizeof(addr));
@@ -1349,35 +1362,93 @@ prefix_tree_add(struct prefix_tree *tree, struct lsa_link *lsa)
 
 RB_GENERATE(prefix_tree, prefix_node, entry, prefix_compare)
 
-/* Return non-zero if Link LSA was originated from an adjacent neighbor. */
-int
-link_lsa_from_full_nbr(struct lsa *lsa, struct iface *iface)
+struct lsa *
+orig_intra_lsa_net(struct area *area, struct iface *iface, struct vertex *old)
 {
-	struct rde_nbr	*nbr;
-	struct area	*area;
+	struct lsa		*lsa;
+	struct vertex		*v;
+	struct rde_nbr		*nbr;
+	struct prefix_node	*node;
+	struct prefix_tree	 tree;
+	int			 num_full_nbr;
+	u_int16_t		 len;
+	u_int16_t		 numprefix;
 
-	if ((area = area_find(rdeconf, iface->area_id)) == NULL)
-		fatalx("interface lost area");
+	log_debug("orig_intra_lsa_net: area %s, interface %s",
+	    inet_ntoa(area->id), iface->name);
 
-	LIST_FOREACH(nbr, &area->nbr_list, entry) {
-		if (nbr->self || nbr->iface->ifindex != iface->ifindex)
-			continue;
-		if (lsa->hdr.adv_rtr == nbr->id.s_addr)
-			break;
+	RB_INIT(&tree);
+
+	if (iface->state & IF_STA_DR) {
+		num_full_nbr = 0;
+		LIST_FOREACH(nbr, &area->nbr_list, entry) {
+			if (nbr->self ||
+			    nbr->iface->ifindex != iface->ifindex ||
+			    (nbr->state & NBR_STA_FULL) == 0)
+				continue;
+			num_full_nbr++;
+			v = lsa_find(iface, htons(LSA_TYPE_LINK),
+			    htonl(nbr->iface_id), nbr->id.s_addr);
+			if (v)
+				prefix_tree_add(&tree, &v->lsa->data.link);
+		}
+		if (num_full_nbr == 0) {
+			/* There are no adjacent neighbors on link.
+			 * If a copy of this LSA already exists in DB,
+			 * it needs to be flushed. orig_intra_lsa_rtr()
+			 * will take care of prefixes configured on
+			 * this interface. */
+			if (!old)
+				return NULL;
+		} else {
+			/* Add our own prefixes configured for this link. */
+			v = lsa_find(iface, htons(LSA_TYPE_LINK),
+			    htonl(iface->ifindex), rde_router_id());
+			if (v)
+				prefix_tree_add(&tree, &v->lsa->data.link);
+		}
+	/* Continue only if a copy of this LSA already exists in DB.
+	 * It needs to be flushed. */
+	} else if (!old)
+		return NULL;
+
+	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_intra_prefix);
+	if ((lsa = calloc(1, len)) == NULL)
+		fatal("orig_intra_lsa_net");
+
+	lsa->data.pref_intra.ref_type = htons(LSA_TYPE_NETWORK);
+	lsa->data.pref_intra.ref_ls_id = htonl(iface->ifindex);
+	lsa->data.pref_intra.ref_adv_rtr = rde_router_id();
+
+	numprefix = 0;
+	RB_FOREACH(node, prefix_tree, &tree) {
+		append_prefix_lsa(&lsa, &len, node->prefix);
+		numprefix++;
 	}
-	if (!nbr)
-		return 0;
 
-	if (nbr->state & NBR_STA_FULL &&
-	    ntohl(lsa->hdr.ls_id) == nbr->iface_id)
-		return 1;
-	
-	return 0;
+	lsa->data.pref_intra.numprefix = htons(numprefix);
+
+	while (!RB_EMPTY(&tree))
+		free(RB_REMOVE(prefix_tree, &tree, RB_ROOT(&tree)));
+
+	/* LSA header */
+	/* If numprefix is zero, originate with MAX_AGE to flush LSA. */
+	lsa->hdr.age = numprefix == 0 ? htons(MAX_AGE) : htons(DEFAULT_AGE);
+	lsa->hdr.type = htons(LSA_TYPE_INTRA_A_PREFIX);
+	lsa->hdr.ls_id = htonl(iface->ifindex);
+	lsa->hdr.adv_rtr = rde_router_id();
+	lsa->hdr.seq_num = htonl(INIT_SEQ_NUM);
+	lsa->hdr.len = htons(len);
+	lsa->hdr.ls_chksum = htons(iso_cksum(lsa, len, LS_CKSUM_OFFSET));
+
+	return lsa;
 }
 
 struct lsa *
 orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 {
+	char			lsa_prefix_buf[sizeof(struct lsa_prefix)
+				    + sizeof(struct in6_addr)];
 	struct lsa		*lsa;
 	struct lsa_prefix	*lsa_prefix;
 	struct in6_addr		*prefix;
@@ -1389,17 +1460,21 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 
 	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_intra_prefix);
 	if ((lsa = calloc(1, len)) == NULL)
-		fatal("orig_intra_lsa_net");
+		fatal("orig_intra_lsa_rtr");
 
 	lsa->data.pref_intra.ref_type = htons(LSA_TYPE_ROUTER);
-	lsa->data.pref_intra.ref_lsid = 0;
+	lsa->data.pref_intra.ref_ls_id = 0;
 	lsa->data.pref_intra.ref_adv_rtr = rde_router_id();
-
-	log_debug("orig_intra_lsa_rtr: area %s", inet_ntoa(area->id));
 
 	numprefix = 0;
 	LIST_FOREACH(iface, &area->iface_list, entry) {
-		if (iface->state & IF_STA_DOWN)
+		if (!((iface->flags & IFF_UP) &&
+		    LINK_STATE_IS_UP(iface->linkstate)))
+			/* interface or link state down */
+			continue;
+		if ((iface->state & IF_STA_DOWN) && 
+		    !(iface->cflags & F_IFACE_PASSIVE)) 
+			/* passive interfaces stay in state DOWN */
 			continue;
 
 		/* Broadcast links with adjacencies are handled
@@ -1420,16 +1495,13 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 				continue;
 		}
 
-		if ((lsa_prefix = calloc(sizeof(*lsa_prefix)
-		    + sizeof(struct in6_addr), 1)) == NULL)
-			fatal("orig_intra_lsa_rtr");
+		lsa_prefix = (struct lsa_prefix *)lsa_prefix_buf;
 
 		TAILQ_FOREACH(ia, &iface->ifa_list, entry) {
 			if (IN6_IS_ADDR_LINKLOCAL(&ia->addr))
 				continue;
-			
-			bzero(lsa_prefix, sizeof(*lsa_prefix)
-			    + sizeof(struct in6_addr));
+
+			bzero(lsa_prefix_buf, sizeof(lsa_prefix_buf));
 
 			if (iface->type == IF_TYPE_POINTOMULTIPOINT ||
 			    iface->state & IF_STA_LOOPBACK) {
@@ -1442,14 +1514,17 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 			if (lsa_prefix->prefixlen == 128)
 				lsa_prefix->options |= OSPF_PREFIX_LA;
 
+			log_debug("orig_intra_lsa_rtr: area %s, interface %s: "
+			    "%s/%d", inet_ntoa(area->id),
+			    iface->name, log_in6addr(&ia->addr),
+			    lsa_prefix->prefixlen);
+
 			prefix = (struct in6_addr *)(lsa_prefix + 1);
 			inet6applymask(prefix, &ia->addr,
 			    lsa_prefix->prefixlen);
 			append_prefix_lsa(&lsa, &len, lsa_prefix);
 			numprefix++;
 		}
-
-		free(lsa_prefix);
 
 		/* TOD: Add prefixes of directly attached hosts, too */
 		/* TOD: Add prefixes for virtual links */
@@ -1483,42 +1558,58 @@ orig_intra_area_prefix_lsas(struct area *area)
 	struct lsa	*lsa;
 	struct vertex	*old;
 	struct iface	*iface;
-	struct vertex	 key;
 
 	LIST_FOREACH(iface, &area->iface_list, entry) {
 		if (iface->type == IF_TYPE_BROADCAST ||
 		    iface->type == IF_TYPE_NBMA) {
 			old = lsa_find(iface, htons(LSA_TYPE_INTRA_A_PREFIX),
 			    htonl(iface->ifindex), rde_router_id());
-			lsa = orig_intra_lsa_net(iface, old);
+			lsa = orig_intra_lsa_net(area, iface, old);
 			if (lsa)
 				lsa_merge(rde_nbr_self(area), lsa, old);
 		}
 	}
 
-	/* XXX: lsa_find() should take an LSA tree as argument,
-	 * if you have no iface at hand you cannot use it... */
-	bzero(&key, sizeof(key));
-	key.type = LSA_TYPE_INTRA_A_PREFIX;
-	key.ls_id = LS_ID_INTRA_RTR;
-	key.adv_rtr = ntohl(rde_router_id());
-	old = RB_FIND(lsa_tree, &area->lsa_tree, &key);
-	if (old && old->deleted)
-		old = NULL;
-
+	old = lsa_find_tree(&area->lsa_tree, htons(LSA_TYPE_INTRA_A_PREFIX),
+		htonl(LS_ID_INTRA_RTR), rde_router_id());
 	lsa = orig_intra_lsa_rtr(area, old);
 	if (lsa)
 		lsa_merge(rde_nbr_self(area), lsa, old);
 }
 
+int
+comp_asext(struct lsa *a, struct lsa *b)
+{
+	/* compare prefixes, if they are equal or not */
+	if (a->data.asext.prefix.prefixlen != b->data.asext.prefix.prefixlen)
+		return (-1);
+	return (memcmp(
+	    (char *)a + sizeof(struct lsa_hdr) + sizeof(struct lsa_asext),
+	    (char *)b + sizeof(struct lsa_hdr) + sizeof(struct lsa_asext),
+	    LSA_PREFIXSIZE(a->data.asext.prefix.prefixlen)));
+}
+
 struct lsa *
 orig_asext_lsa(struct rroute *rr, u_int16_t age)
 {
-#if 0 /* XXX a lot todo */
 	struct lsa	*lsa;
-	u_int16_t	 len;
+	u_int32_t	 ext_tag;
+	u_int16_t	 len, ext_off;
 
-	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_asext);
+	len = sizeof(struct lsa_hdr) + sizeof(struct lsa_asext) +
+	    LSA_PREFIXSIZE(rr->kr.prefixlen);
+
+	/*
+	 * nexthop -- on connected routes we are the nexthop,
+	 * on all other cases we should announce the true nexthop
+	 * unless that nexthop is outside of the ospf cloud.
+	 * XXX for now we don't do this.
+	 */
+
+	ext_off = len;
+	if (rr->kr.ext_tag) {
+		len += sizeof(ext_tag);
+	}
 	if ((lsa = calloc(1, len)) == NULL)
 		fatal("orig_asext_lsa");
 
@@ -1527,39 +1618,50 @@ orig_asext_lsa(struct rroute *rr, u_int16_t age)
 
 	/* LSA header */
 	lsa->hdr.age = htons(age);
-	lsa->hdr.type = LSA_TYPE_EXTERNAL;
+	lsa->hdr.type = htons(LSA_TYPE_EXTERNAL);
 	lsa->hdr.adv_rtr = rdeconf->rtr_id.s_addr;
 	lsa->hdr.seq_num = htonl(INIT_SEQ_NUM);
 	lsa->hdr.len = htons(len);
 
-	/* prefix and mask */
-	/*
-	 * TODO ls_id must be unique, for overlapping routes this may
-	 * not be true. In this case a hack needs to be done to
-	 * make the ls_id unique.
-	 */
-	lsa->hdr.ls_id = rr->kr.prefix.s_addr;
-	lsa->data.asext.mask = prefixlen2mask(rr->kr.prefixlen);
+	lsa->data.asext.prefix.prefixlen = rr->kr.prefixlen;
+	memcpy((char *)lsa + sizeof(struct lsa_hdr) + sizeof(struct lsa_asext),
+	    &rr->kr.prefix, LSA_PREFIXSIZE(rr->kr.prefixlen));
 
-	/*
-	 * nexthop -- on connected routes we are the nexthop,
-	 * on all other cases we announce the true nexthop.
-	 * XXX this is wrong as the true nexthop may be outside
-	 * of the ospf cloud and so unreachable. For now we force
-	 * all traffic to be directed to us.
-	 */
-	lsa->data.asext.fw_addr = 0;
+	lsa->hdr.ls_id = lsa_find_lsid(&asext_tree, lsa->hdr.type,
+	    lsa->hdr.adv_rtr, comp_asext, lsa);
 
-	lsa->data.asext.metric = htonl(rr->metric);
-	lsa->data.asext.ext_tag = htonl(rr->kr.ext_tag);
+	if (age == MAX_AGE) {
+		/* inherit metric and ext_tag from the current LSA,
+		 * some routers don't like to get withdraws that are
+		 * different from what they have in their table.
+		 */
+		struct vertex *v;
+		v = lsa_find(NULL, lsa->hdr.type, lsa->hdr.ls_id,
+		    lsa->hdr.adv_rtr);
+		if (v != NULL) {
+			rr->metric = ntohl(v->lsa->data.asext.metric);
+			if (rr->metric & LSA_ASEXT_T_FLAG) {
+				memcpy(&ext_tag, (char *)v->lsa + ext_off,
+				    sizeof(ext_tag));
+				rr->kr.ext_tag = ntohl(ext_tag);
+			}
+			rr->metric &= LSA_METRIC_MASK;
+		}
+	}
+
+	if (rr->kr.ext_tag) {
+		lsa->data.asext.metric = htonl(rr->metric | LSA_ASEXT_T_FLAG);
+		ext_tag = htonl(rr->kr.ext_tag);
+		memcpy((char *)lsa + ext_off, &ext_tag, sizeof(ext_tag));
+	} else {
+		lsa->data.asext.metric = htonl(rr->metric);
+	}
 
 	lsa->hdr.ls_chksum = 0;
 	lsa->hdr.ls_chksum =
 	    htons(iso_cksum(lsa, len, LS_CKSUM_OFFSET));
 
 	return (lsa);
-#endif
-	return NULL;
 }
 
 struct lsa *

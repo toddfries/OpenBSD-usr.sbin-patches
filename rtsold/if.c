@@ -1,4 +1,4 @@
-/*	$OpenBSD: if.c,v 1.22 2009/02/02 22:06:00 chl Exp $	*/
+/*	$OpenBSD: if.c,v 1.25 2011/03/23 00:59:49 bluhm Exp $	*/
 /*	$KAME: if.c,v 1.18 2002/05/31 10:10:03 itojun Exp $	*/
 
 /*
@@ -48,6 +48,7 @@
 
 #include <netinet6/in6_var.h>
 
+#include <err.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -80,8 +81,14 @@ interface_up(char *name)
 	struct ifreq ifr;
 	int llflag;
 
-	strncpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
+	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
+	if (ioctl(ifsock, SIOCGIFXFLAGS, (caddr_t)&ifr) < 0)
+		warn("SIOCGIFXFLAGS");
+	ifr.ifr_flags &= ~IFXF_NOINET6;
+	if (ioctl(ifsock, SIOCSIFXFLAGS, (caddr_t)&ifr) < 0)
+		warn("SIOCSIFXFLAGS");
 
+	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
 	if (ioctl(ifsock, SIOCGIFFLAGS, (caddr_t)&ifr) < 0) {
 		warnmsg(LOG_WARNING, __func__, "ioctl(SIOCGIFFLAGS): %s",
 		    strerror(errno));
@@ -255,9 +262,9 @@ if_nametosdl(char *name)
 }
 
 int
-getinet6sysctl(int code)
+getinet6sysctl(int proto, int code)
 {
-	int mib[] = { CTL_NET, PF_INET6, IPPROTO_IPV6, 0 };
+	int mib[] = { CTL_NET, PF_INET6, proto, 0 };
 	int value;
 	size_t size;
 
@@ -270,9 +277,9 @@ getinet6sysctl(int code)
 }
 
 int
-setinet6sysctl(int code, int newval)
+setinet6sysctl(int proto, int code, int newval)
 {
-	int mib[] = { CTL_NET, PF_INET6, IPPROTO_IPV6, 0 };
+	int mib[] = { CTL_NET, PF_INET6, proto, 0 };
 	int value;
 	size_t size;
 

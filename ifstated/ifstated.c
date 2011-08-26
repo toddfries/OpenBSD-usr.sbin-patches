@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifstated.c,v 1.33 2008/05/12 19:15:02 pyr Exp $	*/
+/*	$OpenBSD: ifstated.c,v 1.40 2011/07/04 04:34:14 claudio Exp $	*/
 
 /*
  * Copyright (c) 2004 Marco Pfatschbacher <mpf@openbsd.org>
@@ -134,10 +134,8 @@ main(int argc, char *argv[])
 		exit(0);
 	}
 
-	if (!debug) {
+	if (!debug)
 		daemon(1, 0);
-		setproctitle(NULL);
-	}
 
 	event_init();
 	log_init(debug);
@@ -146,8 +144,7 @@ main(int argc, char *argv[])
 	signal_add(&sigchld_ev, NULL);
 
 	/* Loading the config needs to happen in the event loop */
-	tv.tv_usec = 0;
-	tv.tv_sec = 0;
+	timerclear(&tv);
 	evtimer_set(&startup_ev, startup_handler, NULL);
 	evtimer_add(&startup_ev, &tv);
 
@@ -159,6 +156,7 @@ void
 startup_handler(int fd, short event, void *arg)
 {
 	int rt_fd;
+	unsigned int rtfilter;
 
 	if ((rt_fd = socket(PF_ROUTE, SOCK_RAW, 0)) < 0)
 		err(1, "no routing socket");
@@ -168,6 +166,11 @@ startup_handler(int fd, short event, void *arg)
 		exit(1);
 	}
 
+	rtfilter = ROUTE_FILTER(RTM_IFINFO);
+	if (setsockopt(rt_fd, PF_ROUTE, ROUTE_MSGFILTER,
+	    &rtfilter, sizeof(rtfilter)) == -1)         /* not fatal */
+		log_warn("startup_handler: setsockopt");
+	
 	event_set(&rt_msg_ev, rt_fd, EV_READ|EV_PERSIST, rt_msg_handler, NULL);
 	event_add(&rt_msg_ev, NULL);
 
@@ -248,7 +251,7 @@ external_handler(int fd, short event, void *arg)
 	struct timeval tv;
 
 	/* re-schedule */
-	tv.tv_usec = 0;
+	timerclear(&tv);
 	tv.tv_sec = external->frequency;
 	evtimer_set(&external->ev, external_handler, external);
 	evtimer_add(&external->ev, &tv);
@@ -265,7 +268,7 @@ external_exec(struct ifsd_external *external, int async)
 	int s;
 
 	if (external->pid > 0) {
-		log_info("previous command %s [%d] still running, killing it",
+		log_debug("previous command %s [%d] still running, killing it",
 		    external->command, external->pid);
 		kill(external->pid, SIGKILL);
 		waitpid(external->pid, &s, 0);
@@ -378,7 +381,7 @@ external_evtimer_setup(struct ifsd_state *state, int action)
 				external_exec(external, 0);
 
 				/* schedule it for later */
-				tv.tv_usec = 0;
+				timerclear(&tv);
 				tv.tv_sec = external->frequency;
 				evtimer_set(&external->ev, external_handler,
 				    external);
@@ -400,6 +403,8 @@ external_evtimer_setup(struct ifsd_state *state, int action)
 	}
 }
 
+#define	LINK_STATE_IS_DOWN(_s)		(!LINK_STATE_IS_UP((_s)))
+
 int
 scan_ifstate_single(int ifindex, int s, struct ifsd_state *state)
 {
@@ -416,7 +421,11 @@ scan_ifstate_single(int ifindex, int s, struct ifsd_state *state)
 				struct ifsd_expression *expression;
 				int truth;
 
-				truth = (ifstate->ifstate == s) ||
+				truth =
+				    (ifstate->ifstate == IFSD_LINKUNKNOWN &&
+				    s == LINK_STATE_UNKNOWN) ||
+				    (ifstate->ifstate == IFSD_LINKDOWN &&
+				    LINK_STATE_IS_DOWN(s)) ||
 				    (ifstate->ifstate == IFSD_LINKUP &&
 				    LINK_STATE_IS_UP(s));
 
@@ -550,7 +559,7 @@ do_action(struct ifsd_action *action)
 
 	switch (action->type) {
 	case IFSD_ACTION_COMMAND:
-		log_info("running %s", action->act.command);
+		log_debug("running %s", action->act.command);
 		system(action->act.command);
 		break;
 	case IFSD_ACTION_CHANGESTATE:

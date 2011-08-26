@@ -1,4 +1,4 @@
-/*	$OpenBSD: procmap.c,v 1.31 2008/09/18 08:02:53 otto Exp $ */
+/*	$OpenBSD: procmap.c,v 1.40 2011/06/06 17:18:26 ariane Exp $ */
 /*	$NetBSD: pmap.c,v 1.1 2002/09/01 20:32:44 atatat Exp $ */
 
 /*
@@ -71,9 +71,6 @@
 #define UVM_OBJ_IS_VNODE(uobj)	((uobj)->pgops == uvm_vnodeops)
 #define UVM_OBJ_IS_AOBJ(uobj)	((uobj)->pgops == aobj_pager)
 #define UVM_OBJ_IS_DEVICE(uobj)	((uobj)->pgops == uvm_deviceops)
-#if 0
-#define UVM_OBJ_IS_UBCPAGER(uobj) ((uobj)->pgops == ubc_pager)
-#endif
 
 #define PRINT_VMSPACE		0x00000001
 #define PRINT_VM_MAP		0x00000002
@@ -90,13 +87,8 @@ struct cache_entry {
 };
 
 LIST_HEAD(cache_head, cache_entry) lcache;
-LIST_HEAD(nchashhead, namecache) *nchashtbl = NULL;
 void *uvm_vnodeops, *uvm_deviceops, *aobj_pager;
-#if 0
-void *ubc_pager;
-#endif
-void *kernel_floor;
-u_long nchash_addr, nchashtbl_addr, kernel_map_addr;
+u_long kernel_map_addr;
 int debug, verbose;
 int print_all, print_map, print_maps, print_solaris, print_ddb, print_amap;
 int rwx = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE;
@@ -172,28 +164,20 @@ struct nlist nl[] = {
 #define NL_AOBJ_PAGER		3
 	{ "_kernel_map" },
 #define NL_KERNEL_MAP		4
-	{ "_nchashtbl" },
-#define NL_NCHASHTBL		5
-	{ "_nchash" },
-#define NL_NCHASH		6
-	{ "_kernel_text" },
-#define NL_KENTER		7
-#if 0
-	{ "_ubc_pager" },
-#define NL_UBC_PAGER		8
-#endif
 	{ NULL }
 };
 
 void load_symbols(kvm_t *);
-void process_map(kvm_t *, pid_t, struct kinfo_proc2 *, struct sum *);
+void process_map(kvm_t *, pid_t, struct kinfo_proc *, struct sum *);
 size_t dump_vm_map_entry(kvm_t *, struct kbit *, struct kbit *, int,
     struct sum *);
 char *findname(kvm_t *, struct kbit *, struct kbit *, struct kbit *,
 	    struct kbit *, struct kbit *);
 int search_cache(kvm_t *, struct kbit *, char **, char *, size_t);
+#if 0
 void load_name_cache(kvm_t *);
 void cache_enter(struct namecache *);
+#endif
 static void __dead usage(void);
 static pid_t strtopid(const char *);
 void print_sum(struct sum *, struct sum *);
@@ -202,7 +186,7 @@ int
 main(int argc, char *argv[])
 {
 	char errbuf[_POSIX2_LINE_MAX], *kmem = NULL, *kernel = NULL;
-	struct kinfo_proc2 *kproc;
+	struct kinfo_proc *kproc;
 	struct sum total_sum;
 	int many, ch, rc;
 	kvm_t *kd;
@@ -310,8 +294,8 @@ main(int argc, char *argv[])
 		if (pid == 0)
 			kproc = NULL;
 		else {
-			kproc = kvm_getproc2(kd, KERN_PROC_PID, pid,
-			    sizeof(struct kinfo_proc2), &rc);
+			kproc = kvm_getprocs(kd, KERN_PROC_PID, pid,
+			    sizeof(struct kinfo_proc), &rc);
 			if (kproc == NULL || rc == 0) {
 				errno = ESRCH;
 				warn("%d", pid);
@@ -361,7 +345,7 @@ print_sum(struct sum *sum, struct sum *total_sum)
 }
 
 void
-process_map(kvm_t *kd, pid_t pid, struct kinfo_proc2 *proc, struct sum *sum)
+process_map(kvm_t *kd, pid_t pid, struct kinfo_proc *proc, struct sum *sum)
 {
 	struct kbit kbit[4], *vmspace, *vm_map, *header, *vm_map_entry;
 	struct vm_map_entry *last;
@@ -531,25 +515,14 @@ load_symbols(kvm_t *kd)
 		errx(1, "%s == %d", kvm_geterr(kd), rc);
 	for (i = 0; i < sizeof(nl)/sizeof(nl[0]); i++)
 		if (nl[i].n_value == 0 && nl[i].n_name)
-#if defined(__m68k__)
-			if (i != NL_KENTER)
-#endif
 			printf("%s not found\n", nl[i].n_name);
 
 	uvm_vnodeops =	(void*)nl[NL_UVM_VNODEOPS].n_value;
 	uvm_deviceops =	(void*)nl[NL_UVM_DEVICEOPS].n_value;
 	aobj_pager =	(void*)nl[NL_AOBJ_PAGER].n_value;
-#if 0
-	ubc_pager =	(void*)nl[NL_UBC_PAGER].n_value;
-#endif
-
-	kernel_floor =	(void*)nl[NL_KENTER].n_value;
-	nchash_addr =	nl[NL_NCHASH].n_value;
 
 	_KDEREF(kd, nl[NL_MAXSSIZ].n_value, &maxssiz,
 	    sizeof(maxssiz));
-	_KDEREF(kd, nl[NL_NCHASHTBL].n_value, &nchashtbl_addr,
-	    sizeof(nchashtbl_addr));
 	_KDEREF(kd, nl[NL_KERNEL_MAP].n_value, &kernel_map_addr,
 	    sizeof(kernel_map_addr));
 }
@@ -627,7 +600,7 @@ dump_vm_map_entry(kvm_t *kd, struct kbit *vmspace,
 		KDEREF(kd, amap);
 	}
 
-	A(vfs) = NULL;
+	A(vfs) = 0;
 
 	if (P(vp) != NULL && D(vp, vnode)->v_mount != NULL) {
 		P(vfs) = D(vp, vnode)->v_mount;
@@ -664,10 +637,7 @@ dump_vm_map_entry(kvm_t *kd, struct kbit *vmspace,
 		case VT_NFS:
 		case VT_MFS:
 		case VT_MSDOSFS:
-		case VT_PORTAL:
 		case VT_PROCFS:
-		case VT_AFS:
-		case VT_ADOSFS:
 		default:
 			break;
 		}
@@ -846,10 +816,6 @@ findname(kvm_t *kd, struct kbit *vmspace,
 			name = buf;
 		} else if (UVM_OBJ_IS_AOBJ(D(uvm_obj, uvm_object)))
 			name = "  [ uvm_aobj ]";
-#if 0
-		else if (UVM_OBJ_IS_UBCPAGER(D(uvm_obj, uvm_object)))
-			name = "  [ ubc_pager ]";
-#endif
 		else if (UVM_OBJ_IS_VNODE(D(uvm_obj, uvm_object)))
 			name = "  [ ?VNODE? ]";
 		else {
@@ -862,7 +828,7 @@ findname(kvm_t *kd, struct kbit *vmspace,
 	    (caddr_t)vme->end) {
 		name = "  [ stack ]";
 	} else if (D(vmspace, vmspace)->vm_daddr <= (caddr_t)vme->start &&
-	    D(vmspace, vmspace)->vm_daddr + MAXDSIZ >= (caddr_t)vme->end &&
+	    D(vmspace, vmspace)->vm_daddr + BRKSIZ >= (caddr_t)vme->end &&
 	    D(vmspace, vmspace)->vm_dsize * getpagesize() / 2 <
 	    (vme->end - vme->start)) {
 		name = "  [ heap ]";
@@ -882,8 +848,10 @@ search_cache(kvm_t *kd, struct kbit *vp, char **name, char *buf, size_t blen)
 	char *o, *e;
 	u_long cid;
 
+#if 0
 	if (nchashtbl == NULL)
 		load_name_cache(kd);
+#endif
 
 	P(&svp) = P(vp);
 	S(&svp) = sizeof(struct vnode);
@@ -917,6 +885,7 @@ search_cache(kvm_t *kd, struct kbit *vp, char **name, char *buf, size_t blen)
 	return (D(&svp, vnode)->v_flag & VROOT);
 }
 
+#if 0
 void
 load_name_cache(kvm_t *kd)
 {
@@ -941,14 +910,12 @@ load_name_cache(kvm_t *kd)
 		oncp = NULL;
 		LIST_FOREACH(ncp, ncpp, nc_hash) {
 			if (ncp == oncp ||
-			    (void*)ncp < kernel_floor ||
 			    ncp == (void*)0xdeadbeef)
 				break;
 			oncp = ncp;
 			_KDEREF(kd, (u_long)ncp, &_ncp, sizeof(*ncp));
 			ncp = &_ncp;
-			if ((void*)ncp->nc_vp > kernel_floor &&
-			    ncp->nc_nlen > 0) {
+			if (ncp->nc_nlen > 0) {
 				if (ncp->nc_nlen > 2 ||
 				    ncp->nc_name[0] != '.' ||
 				    (ncp->nc_name[1] != '.' &&
@@ -984,6 +951,7 @@ cache_enter(struct namecache *ncp)
 
 	LIST_INSERT_HEAD(&lcache, ce, ce_next);
 }
+#endif
 
 static void __dead
 usage(void)

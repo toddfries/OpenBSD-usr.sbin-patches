@@ -25,7 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $OpenBSD: route.c,v 1.35 2007/09/02 15:19:39 deraadt Exp $
+ * $OpenBSD: route.c,v 1.38 2009/07/02 16:08:29 claudio Exp $
  */
 
 #include <sys/param.h>
@@ -204,111 +204,15 @@ static int route_nifs = -1;
 const char *
 Index2Nam(int idx)
 {
-  /*
-   * XXX: Maybe we should select() on the routing socket so that we can
-   *      notice interfaces that come & go (PCCARD support).
-   *      Or we could even support a signal that resets these so that
-   *      the PCCARD insert/remove events can signal ppp.
-   */
-  static char **ifs;		/* Figure these out once */
-  static int debug_done;	/* Debug once */
+  static char ifname[IF_NAMESIZE];
+  char *ifn;
 
-  if (idx > route_nifs || (idx > 0 && ifs[idx-1] == NULL)) {
-    int mib[6], have, had;
-    size_t needed;
-    char *buf, *ptr, *end;
-    struct sockaddr_dl *dl;
-    struct if_msghdr *ifm;
+  ifn = if_indextoname(idx, ifname);
 
-    if (ifs) {
-      free(ifs);
-      ifs = NULL;
-      route_nifs = 0;
-    }
-    debug_done = 0;
-
-    mib[0] = CTL_NET;
-    mib[1] = PF_ROUTE;
-    mib[2] = 0;
-    mib[3] = 0;
-    mib[4] = NET_RT_IFLIST;
-    mib[5] = 0;
-
-    if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0) {
-      log_Printf(LogERROR, "Index2Nam: sysctl: estimate: %s\n",
-                 strerror(errno));
-      return NumStr(idx, NULL, 0);
-    }
-    if ((buf = malloc(needed)) == NULL)
-      return NumStr(idx, NULL, 0);
-    if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0) {
-      free(buf);
-      return NumStr(idx, NULL, 0);
-    }
-    end = buf + needed;
-
-    have = 0;
-    for (ptr = buf; ptr < end; ptr += ifm->ifm_msglen) {
-      ifm = (struct if_msghdr *)ptr;
-      if (ifm->ifm_type != RTM_IFINFO)
-        continue;
-      dl = (struct sockaddr_dl *)(ifm + 1);
-      if (ifm->ifm_index > 0) {
-        if (ifm->ifm_index > have) {
-          char **newifs;
-
-          had = have;
-          have = ifm->ifm_index + 5;
-          if (had)
-            newifs = (char **)realloc(ifs, sizeof(char *) * have);
-          else
-            newifs = (char **)calloc(sizeof(char *), have);
-          if (!newifs) {
-            log_Printf(LogDEBUG, "Index2Nam: %s\n", strerror(errno));
-            route_nifs = 0;
-            if (ifs) {
-              free(ifs);
-              ifs = NULL;
-            }
-            free(buf);
-            return NumStr(idx, NULL, 0);
-          }
-          ifs = newifs;
-          memset(ifs + had, '\0', sizeof(char *) * (have - had));
-        }
-        if (ifs[ifm->ifm_index-1] == NULL) {
-          ifs[ifm->ifm_index-1] = (char *)malloc(dl->sdl_nlen+1);
-          if (ifs[ifm->ifm_index-1] == NULL)
-	    log_Printf(LogDEBUG, "Skipping interface %d: Out of memory\n",
-                  ifm->ifm_index);
-	  else {
-	    memcpy(ifs[ifm->ifm_index-1], dl->sdl_data, dl->sdl_nlen);
-	    ifs[ifm->ifm_index-1][dl->sdl_nlen] = '\0';
-	    if (route_nifs < ifm->ifm_index)
-	      route_nifs = ifm->ifm_index;
-	  }
-        }
-      } else if (log_IsKept(LogDEBUG))
-        log_Printf(LogDEBUG, "Skipping out-of-range interface %d!\n",
-                  ifm->ifm_index);
-    }
-    free(buf);
-  }
-
-  if (log_IsKept(LogDEBUG) && !debug_done) {
-    int f;
-
-    log_Printf(LogDEBUG, "Found the following interfaces:\n");
-    for (f = 0; f < route_nifs; f++)
-      if (ifs[f] != NULL)
-        log_Printf(LogDEBUG, " Index %d, name \"%s\"\n", f+1, ifs[f]);
-    debug_done = 1;
-  }
-
-  if (idx < 1 || idx > route_nifs || ifs[idx-1] == NULL)
+  if (idx < 1 || ifn == NULL)
     return NumStr(idx, NULL, 0);
 
-  return ifs[idx-1];
+  return ifn;
 }
 
 void
@@ -317,7 +221,7 @@ route_ParseHdr(struct rt_msghdr *rtm, struct sockaddr *sa[RTAX_MAX])
   char *wp;
   int rtax;
 
-  wp = (char *)(rtm + 1);
+  wp = (char *)((char *)rtm + rtm->rtm_hdrlen);
 
   for (rtax = 0; rtax < RTAX_MAX; rtax++)
     if (rtm->rtm_addrs & (1 << rtax)) {
@@ -362,6 +266,9 @@ route_Show(struct cmdargs const *arg)
                 "Destination", "Gateway");
   for (cp = sp; cp < ep; cp += rtm->rtm_msglen) {
     rtm = (struct rt_msghdr *)cp;
+
+    if (rtm->rtm_version != RTM_VERSION)
+      continue;
 
     route_ParseHdr(rtm, sa);
 
@@ -431,6 +338,9 @@ route_IfDelete(struct bundle *bundle, int all)
       continue;
     for (cp = sp; cp < ep; cp += rtm->rtm_msglen) {
       rtm = (struct rt_msghdr *)cp;
+      if (rtm->rtm_version != RTM_VERSION)
+        continue;
+
       route_ParseHdr(rtm, sa);
       if (rtm->rtm_index == bundle->iface->index &&
           sa[RTAX_DST] && sa[RTAX_GATEWAY] &&
@@ -511,6 +421,8 @@ route_UpdateMTU(struct bundle *bundle)
 
   for (cp = sp; cp < ep; cp += rtm->rtm_msglen) {
     rtm = (struct rt_msghdr *)cp;
+    if (rtm->rtm_version != RTM_VERSION)
+      continue;
     route_ParseHdr(rtm, sa);
     if (sa[RTAX_DST] && (sa[RTAX_DST]->sa_family == AF_INET
 #ifndef NOINET6

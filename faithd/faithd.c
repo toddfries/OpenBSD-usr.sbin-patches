@@ -1,4 +1,4 @@
-/*	$OpenBSD: faithd.c,v 1.29 2008/05/17 23:31:52 sobrado Exp $	*/
+/*	$OpenBSD: faithd.c,v 1.31 2011/03/02 04:56:59 deraadt Exp $	*/
 /*	$KAME: faithd.c,v 1.58 2002/09/08 01:12:30 itojun Exp $	*/
 
 /*
@@ -346,7 +346,7 @@ daemon_main(int argc, char **argv)
 	snprintf(logname, sizeof(logname), "faithd %s", service);
 	snprintf(procname, sizeof(procname), "accepting port %s", service);
 	openlog(logname, LOG_PID | LOG_NOWAIT, LOG_DAEMON);
-	syslog(LOG_INFO, "Staring faith daemon for %s port", service);
+	syslog(LOG_INFO, "Starting faith daemon for %s port", service);
 
 	play_service(s_wld);
 	/* NOTREACHED */
@@ -857,12 +857,8 @@ update_myaddrs()
 		syslog(LOG_ERR, "read(PF_ROUTE) short read");
 		return;
 	}
-	if (rtm->rtm_version != RTM_VERSION) {
-		syslog(LOG_ERR, "routing socket version mismatch");
-		close(sockfd);
-		sockfd = 0;
+	if (rtm->rtm_version != RTM_VERSION)
 		return;
-	}
 	switch (rtm->rtm_type) {
 	case RTM_NEWADDR:
 	case RTM_DELADDR:

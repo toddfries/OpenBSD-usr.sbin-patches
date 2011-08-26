@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-ospf.c,v 1.13 2007/10/07 16:41:05 deraadt Exp $	*/
+/*	$OpenBSD: print-ospf.c,v 1.16 2011/03/22 17:31:18 claudio Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993, 1994, 1995, 1996, 1997
@@ -22,11 +22,6 @@
  *
  * OSPF support contributed by Jeffrey Honig (jch@mitchell.cit.cornell.edu)
  */
-
-#ifndef lint
-static const char rcsid[] =
-    "@(#) $Id: print-ospf.c,v 1.13 2007/10/07 16:41:05 deraadt Exp $ (LBL)";
-#endif
 
 #include <sys/param.h>
 #include <sys/time.h>
@@ -430,7 +425,8 @@ ospf_decode_v2(register const struct ospfhdr *op,
 			sep = '/';
 		}
 		TCHECK(op->ospf_db.db_seq);
-		printf(" S %X", (u_int32_t)ntohl(op->ospf_db.db_seq));
+		printf(" mtu %u S %X", ntohs(op->ospf_db.db_mtu),
+		    (u_int32_t)ntohl(op->ospf_db.db_seq));
 
 		if (vflag) {
 			/* Print all the LS adv's */
@@ -524,15 +520,19 @@ ospf_print(register const u_char *bp, register u_int length,
 	/* value.  If it's not valid, say so and return */
 	TCHECK(op->ospf_type);
 	cp = tok2str(type2str, "type%d", op->ospf_type);
-	printf(" OSPFv%d-%s %d:", op->ospf_version, cp, length);
+	printf(" OSPFv%d-%s ", op->ospf_version, cp);
 	if (*cp == 't')
 		return;
 
 	TCHECK(op->ospf_len);
-	if (length != ntohs(op->ospf_len)) {
+	if (length < ntohs(op->ospf_len)) {
 		printf(" [len %d]", ntohs(op->ospf_len));
 		return;
-	}
+	} else if (length > ntohs(op->ospf_len)) {
+		printf(" %d[%d]:", ntohs(op->ospf_len), length);
+		length = ntohs(op->ospf_len);
+	} else
+		printf(" %d:", length);
 	dataend = bp + length;
 
 	/* Print the routerid if it is not the same as the source */

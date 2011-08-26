@@ -1,17 +1,23 @@
-#	$OpenBSD: Makefile,v 1.6 2009/01/27 22:54:01 gilles Exp $
+#	$OpenBSD: Makefile,v 1.28 2011/05/21 18:43:08 gilles Exp $
 
 PROG=		smtpd
-SRCS=		parse.y log.c config.c buffer.c imsg.c			\
-		smtpd.c lka.c mfa.c queue.c mta.c mda.c control.c	\
-		smtp.c	smtp_session.c store.c				\
-		ssl.c ssl_privsep.c dns.c aliases.c forward.c		\
-		map.c runner.c util.c queue_shared.c
+SRCS=		aliases.c auth_backend.c bounce.c client.c		\
+		config.c control.c dns.c expand.c forward.c		\
+		lka.c lka_session.c log.c map.c map_backend.c		\
+		map_backend_db.c map_backend_stdio.c			\
+		mda.c mfa.c mta.c parse.y 				\
+		queue.c queue_shared.c ruleset.c runner.c smtp.c 	\
+		smtp_session.c smtpd.c ssl.c ssl_privsep.c util.c asr.c \
+		print.c pack.c dname.c res_random.c sockaddr.c 		\
+		ramqueue.c queue_backend.c queue_fsqueue.c		\
+		user_backend.c
+
 MAN=		smtpd.8 smtpd.conf.5
 BINDIR=		/usr/sbin
 
-LDADD=		-levent -lutil -lssl -lcrypto -lkeynote -lm
-DPADD=		${LIBEVENT} ${LIBSSL} ${LIBCRYPTO}
-CFLAGS=		-g3 -ggdb -I${.CURDIR}/..
+LDADD+=		-levent -lutil -lssl -lcrypto -lm
+DPADD+=		${LIBEVENT} ${LIBUTIL} ${LIBSSL} ${LIBCRYPTO} ${LIBM}
+CFLAGS+=	-g3 -ggdb -I${.CURDIR}/..
 CFLAGS+=	-Wall -Wstrict-prototypes -Wmissing-prototypes
 CFLAGS+=	-Wmissing-declarations
 CFLAGS+=	-Wshadow -Wpointer-arith -Wcast-qual

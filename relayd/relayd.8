@@ -1,4 +1,4 @@
-.\"	$OpenBSD: relayd.8,v 1.17 2008/05/07 01:49:29 reyk Exp $
+.\"	$OpenBSD: relayd.8,v 1.23 2010/05/24 19:44:23 jmc Exp $
 .\"
 .\" Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: May 7 2008 $
+.Dd $Mdocdate: May 24 2010 $
 .Dt RELAYD 8
 .Os
 .Sh NAME
@@ -23,9 +23,7 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl dnv
-.Oo Xo
-.Fl D Ar macro Ns = Ns Ar value Oc
-.Xc
+.Op Fl D Ar macro Ns = Ns Ar value
 .Op Fl f Ar file
 .Sh DESCRIPTION
 .Nm
@@ -37,7 +35,7 @@ The daemon is able to monitor groups of hosts for availability, which
 is determined by checking for a specific service common to a host
 group.
 When availability is confirmed,
-Layer 3 and/or layer 7 forwarding services are set up by
+layer 3 and/or layer 7 forwarding services are set up by
 .Nm .
 .Pp
 Layer 3 redirection happens at the packet level; to configure
@@ -49,10 +47,9 @@ To allow
 .Nm
 to properly set up
 .Xr pf 4
-rules, the following lines are required in the NAT and filter sections of
+rules, the following line is required in the filter section of
 .Xr pf.conf 5 :
 .Bd -literal -offset indent
-rdr-anchor "relayd/*"
 anchor "relayd/*"
 .Ed
 .Pp
@@ -80,7 +77,7 @@ A
 represents a layer 3 load-balancing instance.
 Each instance translates to a
 .Xr pf 4
-rdr rule being added.
+rdr-to rule being added.
 A
 .Em table
 represents a group of hosts which can be checked for
@@ -129,7 +126,8 @@ Produce more verbose output.
 .It /etc/relayd.conf
 Default configuration file.
 .It /var/run/relayd.sock
-Unix-domain socket used for communication with
+.Ux Ns -domain
+socket used for communication with
 .Xr relayctl 8 .
 .El
 .Sh SEE ALSO

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.h,v 1.14 2009/02/19 22:08:14 stsp Exp $ */
+/*	$OpenBSD: ospfe.h,v 1.17 2010/08/22 20:27:52 bluhm Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -85,6 +85,7 @@ struct nbr {
 	u_int32_t		 ls_ret_cnt;
 	u_int32_t		 options;
 	u_int32_t		 last_rx_options;
+	u_int32_t		 link_options;	/* options from link-LSA */
 
 	time_t			 uptime;
 	int			 state;
@@ -192,7 +193,8 @@ void		 lsa_cache_put(struct lsa_ref *, struct nbr *);
 
 /* neighbor.c */
 void		 nbr_init(u_int32_t);
-struct nbr	*nbr_new(u_int32_t, struct iface *, u_int32_t, int);
+struct nbr	*nbr_new(u_int32_t, struct iface *, u_int32_t, int,
+		     struct in6_addr *);
 void		 nbr_del(struct nbr *);
 
 struct nbr	*nbr_find_id(struct iface *, u_int32_t);
@@ -224,8 +226,8 @@ struct ctl_nbr	*nbr_to_ctl(struct nbr *);
 struct lsa_hdr	*lsa_hdr_new(void);
 
 /* packet.c */
-int	 gen_ospf_hdr(struct buf *, struct iface *, u_int8_t);
-int	 upd_ospf_hdr(struct buf *, struct iface *);
+int	 gen_ospf_hdr(struct ibuf *, struct iface *, u_int8_t);
+int	 upd_ospf_hdr(struct ibuf *, struct iface *);
 int	 send_packet(struct iface *, void *, size_t, struct in6_addr *);
 void	 recv_packet(int, short, void *);
 

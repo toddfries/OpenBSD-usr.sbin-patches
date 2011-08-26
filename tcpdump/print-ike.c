@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-ike.c,v 1.31 2008/12/18 16:18:49 hshoexer Exp $	*/
+/*	$OpenBSD: print-ike.c,v 1.35 2010/06/07 16:20:58 jsg Exp $	*/
 
 /*
  * Copyright (c) 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999
@@ -26,11 +26,6 @@
  *         Tatu Ylonen <ylo@ssh.fi> and Timo J. Rinne <tri@ssh.fi>
  *         in co-operation with SSH Communications Security, Espoo, Finland
  */
-
-#ifndef lint
-static const char rcsid[] =
-    "@(#) $Id: print-ike.c,v 1.31 2008/12/18 16:18:49 hshoexer Exp $ (XXX)";
-#endif
 
 #include <sys/param.h>
 #include <sys/time.h>
@@ -238,7 +233,7 @@ ike_print (const u_int8_t *cp, u_int length)
 	TCHECK(ih->length, sizeof(ih->length));
 	printf(" len: %d", ntohl(ih->length));
 
-	if (ih->version > 16) {
+	if (ih->version > IKE_VERSION_2) {
 		printf(" new version");
 		return;
 	}
@@ -841,6 +836,7 @@ ike_pl_print (u_int8_t type, u_int8_t *buf, u_int8_t doi)
 	static const char *pltypes[] = IKE_PAYLOAD_TYPES_INITIALIZER;
 	static const char *plprivtypes[] = 
 	    IKE_PRIVATE_PAYLOAD_TYPES_INITIALIZER;
+	static const char *plv2types[] = IKEV2_PAYLOAD_TYPES_INITIALIZER;
 	u_int8_t next_type;
 	u_int16_t this_len;
 
@@ -851,7 +847,10 @@ ike_pl_print (u_int8_t type, u_int8_t *buf, u_int8_t doi)
 	next_type = buf[0];
 	this_len = buf[2]<<8 | buf[3];
 
-	if (type < PAYLOAD_PRIVATE_MIN || type >= PAYLOAD_PRIVATE_MAX)
+	if (type < PAYLOAD_PRIVATE_MIN && type >= PAYLOAD_IKEV2_SA)
+		printf("\n\t%spayload: %s len: %hu", ike_tab_offset(),
+		    plv2types[type - PAYLOAD_IKEV2_SA], this_len);
+	else if (type < PAYLOAD_PRIVATE_MIN || type >= PAYLOAD_PRIVATE_MAX)
 		printf("\n\t%spayload: %s len: %hu", ike_tab_offset(),
 		    (type < (sizeof pltypes/sizeof pltypes[0]) ?
 			pltypes[type] : "<unknown>"), this_len);
@@ -860,7 +859,9 @@ ike_pl_print (u_int8_t type, u_int8_t *buf, u_int8_t doi)
 		    plprivtypes[type - PAYLOAD_PRIVATE_MIN], this_len);
 
 	if ((type < PAYLOAD_RESERVED_MIN &&
-	    this_len < min_payload_lengths[type]) || this_len == 0)
+	    (type < sizeof(min_payload_lengths)/sizeof(min_payload_lengths[0]) &&
+	    this_len < min_payload_lengths[type])) ||
+	    this_len == 0)
 		goto pltrunc;
 
 	if ((type > PAYLOAD_PRIVATE_MIN && type < PAYLOAD_PRIVATE_MAX &&
@@ -926,9 +927,18 @@ ike_pl_print (u_int8_t type, u_int8_t *buf, u_int8_t doi)
 	case PAYLOAD_SEQ:
 	case PAYLOAD_POP:
 	case PAYLOAD_NAT_D:
+		break;
+
 	case PAYLOAD_NAT_OA:
+		/* RFC3947 NAT-OA uses a subset of the ID payload */
+		ipsec_id_print(buf, this_len, doi);
+		break;
+
 	case PAYLOAD_NAT_D_DRAFT:
+		break;
+
 	case PAYLOAD_NAT_OA_DRAFT:
+		ipsec_id_print(buf, this_len, doi);
 		break;
 
 	default:

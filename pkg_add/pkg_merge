@@ -1,11 +1,11 @@
 #! /usr/bin/perl
 # Copyright (c) 2005-2007 Marc Espie <espie@openbsd.org>
-# $OpenBSD: pkg_merge,v 1.12 2008/10/10 04:35:31 steven Exp $
-# 
+# $OpenBSD: pkg_merge,v 1.21 2010/07/28 12:19:54 espie Exp $
+#
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
 # copyright notice and this permission notice appear in all copies.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
 # WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
 # MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
@@ -16,6 +16,7 @@
 
 use strict;
 use warnings;
+
 use OpenBSD::PackageLocator;
 use OpenBSD::PackageInfo;
 use OpenBSD::PackingList;
@@ -24,6 +25,7 @@ use OpenBSD::Error;
 use OpenBSD::Ustar;
 use OpenBSD::ArcCheck;
 use OpenBSD::Paths;
+use OpenBSD::State;
 use File::Copy;
 use File::Path;
 
@@ -42,10 +44,11 @@ sub mark_tocopy
 
 sub copy_over
 {
-	my ($self, $wrarc, $prefix, $pkg) = @_;
+	my ($self, $wrarc, $prefix, $pkg, $state) = @_;
 	my $e = $pkg->{pkg}->next;
 	if (!$e->check_name($self)) {
-		die "Names don't match: ", $e->{name}, " ", $self->{name};
+		$state->fatal("Names don't match: #1 vs #2", 
+		    $e->{name}, $self->{name});
 	}
 	$e->{name} = $prefix."/".$e->{name};
 	$e->copy_long($wrarc);
@@ -53,10 +56,11 @@ sub copy_over
 
 sub make_alias
 {
-	my ($self, $wrarc, $prefix, $pkg, $alias) = @_;
+	my ($self, $wrarc, $prefix, $pkg, $alias, $state) = @_;
 	my $e = $pkg->{pkg}->next;
 	if (!$e->check_name($self)) {
-		die "Names don't match: ", $e->{name}, " ", $self->{name};
+		$state->fatal("Names don't match: #1 vs #2", 
+		    $e->{name}, $self->{name});
 	}
 	$e->{name} = $prefix."/".$e->{name};
 	$e->alias($wrarc, "$prefix/$alias");
@@ -72,7 +76,7 @@ sub mark_tocopy
 }
 sub copy_over
 {
-	my ($self, $wrarc, $prefix, $pkg) = @_;
+	my ($self, $wrarc, $prefix, $pkg, $state) = @_;
 	if (defined $wrarc) {
 		$wrarc->destdir($pkg->{dir});
 		my $e = $wrarc->prepare($self->{name});
@@ -126,33 +130,32 @@ sub occurs_first
 }
 
 
-set_usage('pkg_merge [-v] -o result pkg pkg2 ...');
-
-our ($opt_o, $opt_v);
-
-try {
-	getopts('o:v');
-} catchall {
-	Usage($_);
-};
-
-if (!defined $opt_o) {
-	Usage "Missing -o result";
+my $ui = OpenBSD::State->new("pkg_merge");
+$ui->{no_exports} = 1;
+$ui->handle_options('o:v', '[-v] -o result pkg pkg2 ...');
+my $out = $ui->opt('o');
+my $verbose = $ui->opt('v');
+if (!$out) {
+	$ui->usage("Missing -o result");
+}
+if (-e $out) {
+	$ui->unlink($verbose, $out);
 }
 
-if (@ARGV<2) {
-	Usage "Can't merge less than two packages";
+
+if (@ARGV < 2) {
+	$ui->usage("Can't merge less than two packages");
 }
 my @tomerge;
 
 my $prefix = 'a';
 my $allprefix = '';
-open( my $outfh, "|-", OpenBSD::Paths->gzip, "-o", $opt_o);
+open(my $outfh, "|-", OpenBSD::Paths->gzip, "-o", $out);
 
-my $wrarc = OpenBSD::Ustar->new($outfh, ".");
+my $wrarc = OpenBSD::Ustar->new($outfh, $ui, ".");
 for my $pkgname (@ARGV) {
-	my $true_package = OpenBSD::PackageLocator->find($pkgname);
-	die "No such package $pkgname" unless $true_package;
+	my $true_package = $ui->repo->find($pkgname);
+	$ui->fatal("No such package #1", $pkgname) unless $true_package;
 	my $dir = $true_package->info;
 	my $plist = OpenBSD::PackingList->fromfile($dir.CONTENTS);
 
@@ -164,7 +167,7 @@ for my $pkgname (@ARGV) {
 			pkg => $true_package
 		};
 	my $e = OpenBSD::PackingElement::FCONTENTS->new(CONTENTS);
-	$e->copy_over($wrarc, $prefix, $true_package);
+	$e->copy_over($wrarc, $prefix, $true_package, $ui);
 	$plist->mark_tocopy($in->{tocopy});
 	push(@tomerge, $in);
 	$prefix++;
@@ -231,22 +234,24 @@ while(1) {
 		    }
 		}
 		$total_files += $copies;
-		$total_size += $ref->{size} * $copies;
+		if (defined $ref->{size}) {
+			$total_size += $ref->{size} * $copies;
+		}
 		$ref->copy_over($wrarc, $currentprefix, $pkg);
 		@mergeable = @todo;
 		$all_copies += $copies;
 		for my $pkg2 (@merged) {
 			my $i = shift @{$pkg2->{tocopy}};
-			$i->make_alias($wrarc, $currentprefix, $pkg2, $name);
+			$i->make_alias($wrarc, $currentprefix, $pkg2, $name, $ui);
 		}
 	}
-	if ($opt_v) {
+	if ($verbose) {
 		if ($all_copies) {
-			print "$name (shared: $all_copies)\n";
+			$ui->say("#1 (shared: #2)", $name, $all_copies);
 		} else {
-			print $name, "\n";
+			$ui->say("#1", $name);
 		}
 	}
 }
 $wrarc->close;
-print "Shared $total_files files for $total_size bytes\n" if $opt_v;
+$ui->say("Shared #1 files for #2 bytes", $total_files, $total_size) if $verbose;

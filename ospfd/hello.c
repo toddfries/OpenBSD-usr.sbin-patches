@@ -1,4 +1,4 @@
-/*	$OpenBSD: hello.c,v 1.15 2009/01/31 08:55:00 claudio Exp $ */
+/*	$OpenBSD: hello.c,v 1.20 2011/03/08 10:56:02 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -41,7 +41,7 @@ send_hello(struct iface *iface)
 	struct sockaddr_in	 dst;
 	struct hello_hdr	 hello;
 	struct nbr		*nbr;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	int			 ret;
 
 	dst.sin_family = AF_INET;
@@ -64,8 +64,8 @@ send_hello(struct iface *iface)
 		fatalx("send_hello: unknown interface type");
 	}
 
-	/* XXX READ_BUF_SIZE */
-	if ((buf = buf_dynamic(PKG_DEF_SIZE, READ_BUF_SIZE)) == NULL)
+	if ((buf = ibuf_dynamic(PKG_DEF_SIZE,
+	    IP_MAXPACKET - sizeof(struct ip))) == NULL)
 		fatal("send_hello");
 
 	/* OSPF header */
@@ -90,13 +90,13 @@ send_hello(struct iface *iface)
 	} else
 		hello.bd_rtr = 0;
 
-	if (buf_add(buf, &hello, sizeof(hello)))
+	if (ibuf_add(buf, &hello, sizeof(hello)))
 		goto fail;
 
 	/* active neighbor(s) */
 	LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 		if ((nbr->state >= NBR_STA_INIT) && (nbr != iface->self))
-			if (buf_add(buf, &nbr->id, sizeof(nbr->id)))
+			if (ibuf_add(buf, &nbr->id, sizeof(nbr->id)))
 				goto fail;
 	}
 
@@ -105,11 +105,11 @@ send_hello(struct iface *iface)
 		goto fail;
 
 	ret = send_packet(iface, buf, &dst);
-	buf_free(buf);
+	ibuf_free(buf);
 	return (ret);
 fail:
 	log_warn("send_hello");
-	buf_free(buf);
+	ibuf_free(buf);
 	return (-1);
 }
 
@@ -122,7 +122,7 @@ recv_hello(struct iface *iface, struct in_addr src, u_int32_t rtr_id, char *buf,
 	u_int32_t		 nbr_id;
 	int			 nbr_change = 0;
 
-	if (len < sizeof(hello) && (len & 0x03)) {
+	if (len < sizeof(hello) || (len & 0x03)) {
 		log_warnx("recv_hello: bad packet size, interface %s",
 		    iface->name);
 		return;
@@ -161,30 +161,26 @@ recv_hello(struct iface *iface, struct in_addr src, u_int32_t rtr_id, char *buf,
 		return;
 	}
 
-	switch (iface->type) {
-	case IF_TYPE_POINTOPOINT:
-	case IF_TYPE_VIRTUALLINK:
-		/* match router-id */
-		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (nbr == iface->self)
-				continue;
-			if (nbr->id.s_addr == rtr_id)
-				break;
+	/*
+	 * Match router-id, in case of conflict moan and ignore hello.
+	 * Only the router-id is compared since the source IP on NBMA,
+	 * broadcast and point-to-multipoint interfaces was already
+	 * compared in find_iface() and only IPs in the same subnet
+	 * are accepted. This is not excatly what the RFC specifies
+	 * but works far better.
+	 */
+	LIST_FOREACH(nbr, &iface->nbr_list, entry) {
+		if (nbr == iface->self) {
+			if (nbr->id.s_addr == rtr_id) {
+				log_warnx("recv_hello: Router-ID collision on "
+				    "interface %s neighbor IP %s", iface->name,
+				    inet_ntoa(src));
+				return;
+			}
+			continue;
 		}
-		break;
-	case IF_TYPE_BROADCAST:
-	case IF_TYPE_NBMA:
-	case IF_TYPE_POINTOMULTIPOINT:
-		/* match src IP */
-		LIST_FOREACH(nbr, &iface->nbr_list, entry) {
-			if (nbr == iface->self)
-				continue;
-			if (nbr->addr.s_addr == src.s_addr)
-				break;
-		}
-		break;
-	default:
-		fatalx("recv_hello: unknown interface type");
+		if (nbr->id.s_addr == rtr_id)
+			break;
 	}
 
 	if (!nbr) {

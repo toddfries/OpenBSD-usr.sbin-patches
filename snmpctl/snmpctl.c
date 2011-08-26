@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpctl.c,v 1.10 2008/09/26 19:26:24 jmc Exp $	*/
+/*	$OpenBSD: snmpctl.c,v 1.13 2011/03/16 15:30:35 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -54,7 +54,6 @@ struct imsgname {
 
 void		 show_mib(void);
 struct imsgname *monitor_lookup(u_int8_t);
-void		 monitor_host_status(struct imsg *);
 void		 monitor_id(struct imsg *);
 int		 monitor(struct imsg *);
 
@@ -76,13 +75,6 @@ usage(void)
 
 	fprintf(stderr, "usage: %s [-n] [-s socket] command [arg ...]\n", __progname);
 	exit(1);
-}
-
-/* dummy function so that snmpctl does not need libevent */
-void
-imsg_event_add(struct imsgbuf *i)
-{
-	/* nothing */
 }
 
 int
@@ -156,12 +148,14 @@ main(int argc, char *argv[])
 		err(1, "connect: %s", sock);
 	}
 
-	if (res->ibuf != NULL)
+	if (res->ibuf != NULL) {
 		ibuf = res->ibuf;
-	else
+		ibuf->fd = ibuf->w.fd = ctl_sock;
+	} else {
 		if ((ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
 			err(1, "malloc");
-	imsg_init(ibuf, ctl_sock, NULL);
+		imsg_init(ibuf, ctl_sock);
+	}
 	done = 0;
 
 	/* process user request */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: trap.c,v 1.13 2008/10/09 14:14:40 reyk Exp $	*/
+/*	$OpenBSD: trap.c,v 1.15 2011/03/16 15:30:35 reyk Exp $	*/
 
 /*
  * Copyright (c) 2008 Reyk Floeter <reyk@vantronix.net>
@@ -55,8 +55,9 @@ trap_init(void)
 }
 
 int
-trap_imsg(struct imsgbuf *ibuf, pid_t pid)
+trap_imsg(struct imsgev *iev, pid_t pid)
 {
+	struct imsgbuf		*ibuf;
 	struct imsg		 imsg;
 	int			 ret = -1, n, x = 0, state = 0;
 	int			 done = 0;
@@ -69,6 +70,7 @@ trap_imsg(struct imsgbuf *ibuf, pid_t pid)
 	size_t			 len = 0;
 	struct			 ber_oid o;
 
+	ibuf = &iev->ibuf;
 	while (!done) {
 		while (!done) {
 			if ((n = imsg_get(ibuf, &imsg)) == -1)
@@ -183,11 +185,10 @@ trap_imsg(struct imsgbuf *ibuf, pid_t pid)
 	log_debug("trap_imsg: from pid %u len %d elements %d",
 	    pid, len, x);
 	trap_send(&o, varbind);
+	return (0);
 
-	ret = 0;
  imsgdone:
-	if (ret != 0)
-		imsg_free(&imsg);
+	imsg_free(&imsg);
  done:
 	if (varbind != NULL)
 		ber_free_elements(varbind);
@@ -281,8 +282,6 @@ trap_send(struct ber_oid *oid, struct ber_element *elm)
 	}
 
  done:
-	if (elm != NULL)
-		ber_unlink_elements(c);
 	ber_free_elements(trap);
 	ber_free(&ber);
 

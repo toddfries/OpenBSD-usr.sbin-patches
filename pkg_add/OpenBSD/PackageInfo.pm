@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageInfo.pm,v 1.38 2008/06/15 08:23:50 espie Exp $
+# $OpenBSD: PackageInfo.pm,v 1.54 2011/07/12 10:30:29 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -17,7 +17,9 @@
 
 use strict;
 use warnings;
+
 package OpenBSD::PackageInfo;
+require Exporter;
 our @ISA=qw(Exporter);
 our @EXPORT=qw(installed_packages installed_info installed_name info_names is_info_name installed_stems
     lock_db unlock_db
@@ -167,7 +169,8 @@ sub is_installed
 
 sub installed_name
 {
-	my $name = shift;
+	require File::Spec;
+	my $name = File::Spec->canonpath(shift);
 	$name =~ s|/$||o;
 	# XXX remove the o if we allow pkg_db to change dynamically
 	$name =~ s|^\Q$pkg_db\E/?||o;
@@ -190,17 +193,17 @@ my $dlock;
 
 sub lock_db($;$)
 {
-	my ($shared, $quiet) = @_;
+	my ($shared, $state) = @_;
 	my $mode = $shared ? LOCK_SH : LOCK_EX;
 	open($dlock, '<', $pkg_db) or return;
 	if (flock($dlock, $mode | LOCK_NB)) {
 		return;
 	}
-	print STDERR "Package database already locked... awaiting release... "
-		unless $quiet;
+	$state->errprint("Package database already locked... awaiting release... ")
+		if defined $state;
 	while (!flock($dlock, $mode)) {
 	}
-	print STDERR "done!\n" unless $quiet;
+	$state->errsay("done!") if defined $state;
 	return;
 }
 
@@ -210,70 +213,6 @@ sub unlock_db()
 		flock($dlock, LOCK_UN);
 		close($dlock);
 	}
-}
-
-
-sub solve_installed_names
-{
-	my ($old, $new, $msg, $state) = @_;
-
-	my $bad = 0;
-	my $seen = {};
-
-	for my $pkgname (@$old) {
-	    $pkgname =~ s/\.tgz$//o;
-	    if (is_installed($pkgname)) {
-	    	if (!$seen->{$pkgname}) {
-		    $seen->{$pkgname} = 1;
-		    push(@$new, installed_name($pkgname));
-		}
-	    } else {
-		if (OpenBSD::PackageName::is_stem($pkgname)) {
-		    require OpenBSD::PackageRepository::Installed;
-		    require OpenBSD::Search;
-
-		    my @l = OpenBSD::PackageRepository::Installed->new->match(OpenBSD::Search::Stem->new($pkgname));
-		    if (@l == 0) {
-			print "Can't resolve $pkgname to an installed package name\n";
-			$bad = 1;
-		    } elsif (@l == 1) {
-			if (!$seen->{$l[0]}) {
-			    $seen->{$l[0]} = 1;
-			    push(@$new, $l[0]);
-			}
-		    } elsif (@l != 0) {
-		    	# try to see if we already solved the ambiguity
-			my $found = 0;
-			for my $p (@l) {
-			    if ($seen->{$p}) {
-				$found = 1;
-				last;
-			    }
-			}
-			next if $found;
-
-			print "Ambiguous: $pkgname could be ", join(' ', @l),"\n";
-			if ($state->{defines}->{ambiguous}) {
-			    print "$msg\n";
-			    push(@$new, @l);
-			    for my $p (@l) {
-			    	$seen->{$p} = 1;
-			    }
-			} else {
-			    if ($state->{interactive}) {
-			    	require OpenBSD::Interactive;
-				my $result = OpenBSD::Interactive::ask_list('Choose one package', 1, ("<None>", sort @l));
-				push(@$new, $result) if $result ne '<None>';
-				$seen->{$result} = 1;
-			    } else {
-				$bad = 1;
-			    }
-			}
-		    }
-		}
-	    }
-    	}
-	return $bad;
 }
 
 1;

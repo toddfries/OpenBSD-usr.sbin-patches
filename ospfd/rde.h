@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.h,v 1.35 2009/01/07 21:16:36 claudio Exp $ */
+/*	$OpenBSD: rde.h,v 1.38 2011/05/09 12:24:41 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -41,6 +41,7 @@ struct vertex {
 	struct event		 ev;
 	struct area		*area;
 	struct lsa		*lsa;
+	struct lsa_tree		*lsa_tree;
 	time_t			 changed;
 	time_t			 stamp;
 	u_int32_t		 cost;
@@ -67,9 +68,12 @@ struct rde_nbr {
 	struct in_addr			 area_id;
 	TAILQ_HEAD(, rde_req_entry)	 req_list;
 	struct area			*area;
+	struct iface			*iface;
 	u_int32_t			 peerid;	/* unique ID in DB */
 	int				 state;
-	int				 self;
+	unsigned int			 ifindex;
+	u_int8_t			 self;
+	u_int8_t			 capa_options;
 };
 
 struct rt_nexthop {
@@ -124,16 +128,20 @@ struct lsa	*orig_sum_lsa(struct rt_node *, struct area *, u_int8_t, int);
 void		 lsa_init(struct lsa_tree *);
 int		 lsa_compare(struct vertex *, struct vertex *);
 void		 vertex_free(struct vertex *);
+void		 vertex_nexthop_clear(struct vertex *);
+void		 vertex_nexthop_add(struct vertex *, struct vertex *,
+		    u_int32_t);
 int		 lsa_newer(struct lsa_hdr *, struct lsa_hdr *);
 int		 lsa_check(struct rde_nbr *, struct lsa *, u_int16_t);
 int		 lsa_self(struct rde_nbr *, struct lsa *, struct vertex *);
 int		 lsa_add(struct rde_nbr *, struct lsa *);
 void		 lsa_del(struct rde_nbr *, struct lsa_hdr *);
 void		 lsa_age(struct vertex *);
-struct vertex	*lsa_find(struct area *, u_int8_t, u_int32_t, u_int32_t);
+struct vertex	*lsa_find(struct iface *, u_int8_t, u_int32_t, u_int32_t);
+struct vertex	*lsa_find_area(struct area *, u_int8_t, u_int32_t, u_int32_t);
 struct vertex	*lsa_find_net(struct area *area, u_int32_t);
 u_int16_t	 lsa_num_links(struct vertex *);
-void		 lsa_snap(struct area *, u_int32_t);
+void		 lsa_snap(struct rde_nbr *);
 void		 lsa_dump(struct lsa_tree *, int, pid_t);
 void		 lsa_merge(struct rde_nbr *, struct lsa *, struct vertex *);
 void		 lsa_remove_invalid_sums(struct area *);
@@ -164,9 +172,6 @@ int		 rt_remove(struct rt_node *);
 void		 rt_clear(void);
 void		 rt_dump(struct in_addr, pid_t, u_int8_t);
 struct rt_node	*rt_lookup(enum dst_type, in_addr_t);
-
-struct lsa_rtr_link	*get_rtr_link(struct vertex *, int);
-struct lsa_net_link	*get_net_link(struct vertex *, int);
 
 RB_PROTOTYPE(lsa_tree, vertex, entry, lsa_compare)
 

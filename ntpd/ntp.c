@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntp.c,v 1.110 2009/01/26 11:51:50 henning Exp $ */
+/*	$OpenBSD: ntp.c,v 1.116 2011/06/17 18:12:05 henning Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -110,6 +110,7 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 		fatal(NULL);
 	hotplugfd = sensor_hotplugfd();
 
+	close(pipe_prnt[0]);
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pipe_dns) == -1)
 		fatal("socketpair");
 	dns_pid = ntp_dns(pipe_dns, nconf, pw);
@@ -150,7 +151,6 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 	signal(SIGHUP, SIG_IGN);
 	signal(SIGCHLD, SIG_DFL);
 
-	close(pipe_prnt[0]);
 	if ((ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
 		fatal(NULL);
 	imsg_init(ibuf_main, pipe_prnt[1]);
@@ -527,8 +527,10 @@ priv_adjfreq(double offset)
 {
 	double curtime, freq;
 
-	if (!conf->status.synced)
+	if (!conf->status.synced){
+		conf->freq.samples = 0;
 		return;
+	}
 
 	conf->freq.samples++;
 
@@ -557,7 +559,8 @@ priv_adjfreq(double offset)
 	else if (freq < -MAX_FREQUENCY_ADJUST)
 		freq = -MAX_FREQUENCY_ADJUST;
 
-	imsg_compose(ibuf_main, IMSG_ADJFREQ, 0, 0, &freq, sizeof(freq));
+	imsg_compose(ibuf_main, IMSG_ADJFREQ, 0, 0, -1, &freq, sizeof(freq));
+	conf->filters |= FILTER_ADJFREQ;
 	conf->freq.xy = 0.0;
 	conf->freq.x = 0.0;
 	conf->freq.y = 0.0;
@@ -627,13 +630,15 @@ priv_adjtime(void)
 	}
 	conf->status.leap = offsets[i]->status.leap;
 
-	imsg_compose(ibuf_main, IMSG_ADJTIME, 0, 0,
+	imsg_compose(ibuf_main, IMSG_ADJTIME, 0, 0, -1,
 	    &offset_median, sizeof(offset_median));
 
 	priv_adjfreq(offset_median);
 
 	conf->status.reftime = gettime();
 	conf->status.stratum++;	/* one more than selected peer */
+	if (conf->status.stratum > NTP_MAXSTRATUM)
+		conf->status.stratum = NTP_MAXSTRATUM;
 	update_scale(offset_median);
 
 	conf->status.refid = offsets[i]->status.send_refid;
@@ -674,7 +679,8 @@ offset_compare(const void *aa, const void *bb)
 void
 priv_settime(double offset)
 {
-	imsg_compose(ibuf_main, IMSG_SETTIME, 0, 0, &offset, sizeof(offset));
+	imsg_compose(ibuf_main, IMSG_SETTIME, 0, 0, -1,
+	    &offset, sizeof(offset));
 	conf->settime = 0;
 }
 
@@ -684,7 +690,7 @@ priv_host_dns(char *name, u_int32_t peerid)
 	u_int16_t	dlen;
 
 	dlen = strlen(name) + 1;
-	imsg_compose(ibuf_dns, IMSG_HOST_DNS, peerid, 0, name, dlen);
+	imsg_compose(ibuf_dns, IMSG_HOST_DNS, peerid, 0, -1, name, dlen);
 }
 
 void

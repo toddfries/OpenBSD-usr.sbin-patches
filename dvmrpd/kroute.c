@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.4 2006/11/28 19:21:15 reyk Exp $ */
+/*	$OpenBSD: kroute.c,v 1.7 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -241,7 +241,7 @@ if_change(u_short ifindex, int flags, struct if_data *ifd)
 	kif->k.baudrate = ifd->ifi_baudrate;
 
 	if ((reachable = (flags & IFF_UP) &&
-	    (ifd->ifi_link_state != LINK_STATE_DOWN)) == kif->k.nh_reachable)
+	    LINK_STATE_IS_UP(ifd->ifi_link_state)) == kif->k.nh_reachable)
 		return;		/* nothing changed wrt nexthop validity */
 
 	kif->k.nh_reachable = reachable;
@@ -331,6 +331,8 @@ fetchifs(int ifindex)
 		sa = (struct sockaddr *)(next + sizeof(ifm));
 		get_rtaddrs(ifm.ifm_addrs, sa, rti_info);
 
+		if (ifm.ifm_version != RTM_VERSION)
+			continue;
 		if (ifm.ifm_type != RTM_IFINFO)
 			continue;
 
@@ -347,9 +349,7 @@ fetchifs(int ifindex)
 		kif->k.baudrate = ifm.ifm_data.ifi_baudrate;
 		kif->k.mtu = ifm.ifm_data.ifi_mtu;
 		kif->k.nh_reachable = (kif->k.flags & IFF_UP) &&
-		    (LINK_STATE_IS_UP(ifm.ifm_data.ifi_link_state) ||
-		    (ifm.ifm_data.ifi_link_state == LINK_STATE_UNKNOWN &&
-		    ifm.ifm_data.ifi_type != IFT_CARP));
+		    LINK_STATE_IS_UP(ifm.ifm_data.ifi_link_state);
 		if ((sa = rti_info[RTAX_IFP]) != NULL)
 			if (sa->sa_family == AF_LINK) {
 				sdl = (struct sockaddr_dl *)sa;
@@ -386,6 +386,8 @@ kr_dispatch_msg(int fd, short event, void *bula)
 	lim = buf + n;
 	for (next = buf; next < lim; next += rtm->rtm_msglen) {
 		rtm = (struct rt_msghdr *)next;
+		if (rtm->rtm_version != RTM_VERSION)
+			continue;
 
 		switch (rtm->rtm_type) {
 		case RTM_IFINFO:
@@ -402,4 +404,3 @@ kr_dispatch_msg(int fd, short event, void *bula)
 		}
 	}
 }
-

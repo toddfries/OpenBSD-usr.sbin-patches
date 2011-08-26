@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-tftp.c,v 1.8 2007/10/07 16:41:05 deraadt Exp $	*/
+/*	$OpenBSD: print-tftp.c,v 1.10 2009/10/27 23:59:57 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1990, 1991, 1993, 1994, 1995, 1996, 1997
@@ -22,11 +22,6 @@
  *
  * Format and print trivial file transfer protocol packets.
  */
-
-#ifndef lint
-static const char rcsid[] =
-    "@(#) $Id: print-tftp.c,v 1.8 2007/10/07 16:41:05 deraadt Exp $ (LBL)";
-#endif
 
 #include <sys/param.h>
 #include <sys/time.h>
@@ -126,6 +121,7 @@ tftp_print(register const u_char *bp, u_int length)
 		printf(" %s ", tok2str(err2str, "tftp-err-#%d \"",
 				       ntohs(tp->th_code)));
 		/* Print error message string */
+		putchar('"');
 		i = fn_print((const u_char *)tp->th_data, snapend);
 		putchar('"');
 		if (i)

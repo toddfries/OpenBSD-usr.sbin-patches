@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_spf.c,v 1.6 2008/02/11 13:48:39 norby Exp $ */
+/*	$OpenBSD: rde_spf.c,v 1.23 2010/07/01 19:47:04 bluhm Exp $ */
 
 /*
  * Copyright (c) 2005 Esben Norby <norby@openbsd.org>
@@ -37,8 +37,14 @@ RB_GENERATE(rt_tree, rt_node, entry, rt_compare)
 struct vertex			*spf_root = NULL;
 
 void		 calc_nexthop_clear(struct vertex *);
-void		 calc_nexthop_add(struct vertex *, struct vertex *, u_int32_t);
-void		 calc_nexthop(struct vertex *, struct vertex *);
+void		 calc_nexthop_add(struct vertex *, struct vertex *,
+		     const struct in6_addr *, u_int32_t);
+struct in6_addr	*calc_nexthop_lladdr(struct vertex *, struct lsa_rtr_link *,
+		     unsigned int);
+void		 calc_nexthop_transit_nbr(struct vertex *, struct vertex *,
+		     unsigned int);
+void		 calc_nexthop(struct vertex *, struct vertex *,
+		     struct area *, struct lsa_rtr_link *);
 void		 rt_nexthop_clear(struct rt_node *);
 void		 rt_nexthop_add(struct rt_node *, struct v_nexthead *,
 		     struct in_addr);
@@ -56,17 +62,14 @@ spf_calc(struct area *area)
 	struct lsa_rtr_link	*rtr_link = NULL;
 	struct lsa_net_link	*net_link;
 	u_int32_t		 d;
-	int			 i;
-	struct in_addr		 addr;
+	unsigned int		 i;
 
 	/* clear SPF tree */
 	spf_tree_clr(area);
 	cand_list_clr();
 
 	/* initialize SPF tree */
-	if ((v = spf_root = lsa_find(LIST_FIRST(&area->iface_list), /* XXX */
-	    LSA_TYPE_ROUTER, rde_router_id(),
-	    rde_router_id())) == NULL)
+	if ((v = spf_root = lsa_find_rtr(area, rde_router_id())) == NULL)
 		/* empty area because no interface is active */
 		return;
 
@@ -85,17 +88,16 @@ spf_calc(struct area *area)
 				case LINK_TYPE_POINTTOPOINT:
 				case LINK_TYPE_VIRTUAL:
 					/* find router LSA */
-#if 0
-					w = lsa_find(area, LSA_TYPE_ROUTER,
-					    rtr_link->id, rtr_link->id);
+					w = lsa_find_rtr(area,
+					    rtr_link->nbr_rtr_id);
 					break;
-#endif
 				case LINK_TYPE_TRANSIT_NET:
 					/* find network LSA */
-#if 0
-					w = lsa_find_net(area, rtr_link->id);
+					w = lsa_find_tree(&area->lsa_tree,
+					    htons(LSA_TYPE_NETWORK),
+					    rtr_link->nbr_iface_id,
+					    rtr_link->nbr_rtr_id);
 					break;
-#endif
 				default:
 					fatalx("spf_calc: invalid link type");
 				}
@@ -103,9 +105,7 @@ spf_calc(struct area *area)
 			case LSA_TYPE_NETWORK:
 				net_link = get_net_link(v, i);
 				/* find router LSA */
-				w = lsa_find(LIST_FIRST(&area->iface_list), /* XXX */
-				    LSA_TYPE_ROUTER,
-				    net_link->att_rtr, net_link->att_rtr);
+				w = lsa_find_rtr(area, net_link->att_rtr);
 				break;
 			default:
 				fatalx("spf_calc: invalid LSA type");
@@ -114,16 +114,21 @@ spf_calc(struct area *area)
 			if (w == NULL)
 				continue;
 
-			if (w->lsa->hdr.age == MAX_AGE)
+			if (ntohs(w->lsa->hdr.age) == MAX_AGE)
+				continue;
+
+			if (lsa_num_links(w) == 0)
 				continue;
 
 			if (!linked(w, v)) {
-				addr.s_addr = htonl(w->ls_id);
-				log_debug("spf_calc: w id %s type %d has ",
-				    inet_ntoa(addr), w->type);
-				addr.s_addr = htonl(v->ls_id);
-				log_debug("    no link to v id %s type %d",
-				    inet_ntoa(addr), v->type);
+				log_debug("spf_calc: w adv_rtr %s ls_id %s "
+				    "type 0x%x numlinks %hu has no link to "
+				    "v adv_rtr %s ls_id %s type 0x%x",
+				    log_rtr_id(htonl(w->adv_rtr)),
+				    log_rtr_id(htonl(w->ls_id)), w->type,
+				    lsa_num_links(w),
+				    log_rtr_id(htonl(v->adv_rtr)),
+				    log_rtr_id(htonl(v->ls_id)), v->type);
 				continue;
 			}
 
@@ -138,7 +143,7 @@ spf_calc(struct area *area)
 				if (d < w->cost) {
 					w->cost = d;
 					calc_nexthop_clear(w);
-					calc_nexthop(w, v);
+					calc_nexthop(w, v, area, rtr_link);
 					/*
 					 * need to readd to candidate list
 					 * because the list is sorted
@@ -147,12 +152,12 @@ spf_calc(struct area *area)
 					cand_list_add(w);
 				} else
 					/* equal cost path */
-					calc_nexthop(w, v);
+					calc_nexthop(w, v, area, rtr_link);
 			} else if (w->cost == LS_INFINITY && d < LS_INFINITY) {
 				w->cost = d;
 
 				calc_nexthop_clear(w);
-				calc_nexthop(w, v);
+				calc_nexthop(w, v, area, rtr_link);
 				cand_list_add(w);
 			}
 		}
@@ -163,8 +168,32 @@ spf_calc(struct area *area)
 	} while (v != NULL);
 
 	/* spf_dump(area); */
-	log_debug("spf_calc: area %s calculated",
-	    inet_ntoa(area->id));
+	log_debug("spf_calc: area %s calculated", inet_ntoa(area->id));
+
+	/* Dump SPF tree to log */
+	RB_FOREACH(v, lsa_tree, &area->lsa_tree) {
+		struct v_nexthop *vn;
+		char hops[4096];
+		struct iface *iface;
+
+		bzero(hops, sizeof(hops));
+
+		if (v->type != LSA_TYPE_ROUTER && v->type != LSA_TYPE_NETWORK)
+			continue;
+
+		TAILQ_FOREACH(vn, &v->nexthop, entry) {
+			strlcat(hops, log_in6addr(&vn->nexthop), sizeof(hops));
+			strlcat(hops, "%", sizeof(hops));
+			if ((iface = if_find(vn->ifindex)) == NULL)
+				fatalx("spf_calc: lost iface");
+			strlcat(hops, iface->name, sizeof(hops));
+			if (vn != TAILQ_LAST(&v->nexthop, v_nexthead))
+				strlcat(hops, ", ", sizeof(hops));
+		}
+		log_debug("%s(%s, 0x%x, %s) cost %u has nexthops [%s]",
+		    v == spf_root ? "*" : " ", log_rtr_id(htonl(v->adv_rtr)),
+		    v->type, log_rtr_id(htonl(v->ls_id)), v->cost, hops);
+	}
 
 	area->num_spf_calc++;
 	start_spf_timer();
@@ -173,12 +202,13 @@ spf_calc(struct area *area)
 void
 rt_calc(struct vertex *v, struct area *area, struct ospfd_conf *conf)
 {
-#if 0 /* XXX needs a lot of work */
 	struct vertex		*w;
-	struct v_nexthop	*vn;
-	struct lsa_rtr_link	*rtr_link = NULL;
-	int			 i;
-	struct in_addr		 addr, adv_rtr;
+	struct lsa_intra_prefix	*iap;
+	struct lsa_prefix	*prefix;
+	struct in_addr		 adv_rtr;
+	struct in6_addr		 ia6;
+	u_int16_t		 i, off;
+	u_int8_t		 flags;
 
 	lsa_age(v);
 	if (ntohs(v->lsa->hdr.age) == MAX_AGE)
@@ -186,100 +216,156 @@ rt_calc(struct vertex *v, struct area *area, struct ospfd_conf *conf)
 
 	switch (v->type) {
 	case LSA_TYPE_ROUTER:
-		/* stub networks */
 		if (v->cost >= LS_INFINITY || TAILQ_EMPTY(&v->nexthop))
 			return;
-
-		for (i = 0; i < lsa_num_links(v); i++) {
-			rtr_link = get_rtr_link(v, i);
-			addr.s_addr = rtr_link->id;
-			adv_rtr.s_addr = htonl(v->adv_rtr);
-
-			rt_update(addr, mask2prefixlen(rtr_link->data),
-			    &v->nexthop, v->cost + ntohs(rtr_link->metric), 0,
-			    area->id, adv_rtr, PT_INTRA_AREA, DT_NET,
-			    v->lsa->data.rtr.flags, 0);
-		}
 
 		/* router, only add border and as-external routers */
-		if ((v->lsa->data.rtr.flags & (OSPF_RTR_B | OSPF_RTR_E)) == 0)
+		flags = LSA_24_GETHI(ntohl(v->lsa->data.rtr.opts));
+		if ((flags & (OSPF_RTR_B | OSPF_RTR_E)) == 0)
 			return;
 
-		addr.s_addr = htonl(v->ls_id);
+		bzero(&ia6, sizeof(ia6));
 		adv_rtr.s_addr = htonl(v->adv_rtr);
+		bcopy(&adv_rtr, &ia6.s6_addr[12], sizeof(adv_rtr));
 
-		rt_update(addr, 32, &v->nexthop, v->cost, 0, area->id,
-		    adv_rtr, PT_INTRA_AREA, DT_RTR, v->lsa->data.rtr.flags, 0);
+		rt_update(&ia6, 128, &v->nexthop, v->cost, 0, area->id,
+		    adv_rtr, PT_INTER_AREA, DT_RTR, flags, 0);
 		break;
-	case LSA_TYPE_NETWORK:
-		if (v->cost >= LS_INFINITY || TAILQ_EMPTY(&v->nexthop))
+	case LSA_TYPE_INTRA_A_PREFIX:
+		/* Find referenced LSA */
+		iap = &v->lsa->data.pref_intra;
+		switch (ntohs(iap->ref_type)) {
+		case LSA_TYPE_ROUTER:
+			w = lsa_find_rtr(area, iap->ref_adv_rtr);
+			if (w == NULL) {
+				warnx("rt_calc: Intra-Area-Prefix LSA (%s, %u) "
+				    "references non-existent router %s",
+				    log_rtr_id(htonl(v->adv_rtr)),
+				    v->ls_id, log_rtr_id(iap->ref_adv_rtr));
+				return;
+			}
+			flags = LSA_24_GETHI(ntohl(w->lsa->data.rtr.opts));
+			break;
+		case LSA_TYPE_NETWORK:
+			w = lsa_find_tree(&area->lsa_tree, iap->ref_type,
+			    iap->ref_ls_id, iap->ref_adv_rtr);
+			if (w == NULL) {
+				warnx("rt_calc: Intra-Area-Prefix LSA (%s, %u) "
+				    "references non-existent Network LSA (%s, "
+				    "%u)", log_rtr_id(htonl(v->adv_rtr)),
+				    v->ls_id, log_rtr_id(iap->ref_adv_rtr),
+				    ntohl(iap->ref_ls_id));
+				return;
+			}
+			flags = 0;
+			break;
+		default:
+			warnx("rt_calc: Intra-Area-Prefix LSA (%s, %u) has "
+			    "invalid ref_type 0x%hx", log_rtr_id(v->adv_rtr),
+			    v->ls_id, ntohs(iap->ref_type));
+			return;
+		}
+
+		if (w->cost >= LS_INFINITY || TAILQ_EMPTY(&w->nexthop))
 			return;
 
-		addr.s_addr = htonl(v->ls_id) & v->lsa->data.net.mask;
-		adv_rtr.s_addr = htonl(v->adv_rtr);
-		rt_update(addr, mask2prefixlen(v->lsa->data.net.mask),
-		    &v->nexthop, v->cost, 0, area->id, adv_rtr, PT_INTRA_AREA,
-		    DT_NET, 0, 0);
-		break;
-	case LSA_TYPE_SUM_NETWORK:
-	case LSA_TYPE_SUM_ROUTER:
-		/* if ABR only look at area 0.0.0.0 LSA */
-		if (area_border_router(conf) && area->id.s_addr != INADDR_ANY)
-			return;
+		/* Add prefixes listed in Intra-Area-Prefix LSA to routing
+		 * table, using w as destination. */
+		off = sizeof(v->lsa->hdr) + sizeof(struct lsa_intra_prefix);
+		for (i = 0; i < ntohs(v->lsa->data.pref_intra.numprefix); i++) {
+			prefix = (struct lsa_prefix *)((char *)(v->lsa) + off);
+			if (!(prefix->options & OSPF_PREFIX_NU)) {
+				bzero(&ia6, sizeof(ia6));
+				bcopy(prefix + 1, &ia6,
+				    LSA_PREFIXSIZE(prefix->prefixlen));
 
+				adv_rtr.s_addr = htonl(w->adv_rtr);
+
+				rt_update(&ia6, prefix->prefixlen, &w->nexthop,
+				    w->cost + ntohs(prefix->metric), 0,
+				    area->id, adv_rtr, PT_INTRA_AREA, DT_NET,
+				    flags, 0);
+			}
+			off += sizeof(struct lsa_prefix)
+			    + LSA_PREFIXSIZE(prefix->prefixlen);
+		}
+		break;
+	case LSA_TYPE_INTER_A_PREFIX:
+		/* XXX if ABR only look at area 0.0.0.0 LSA */
 		/* ignore self-originated stuff */
 		if (v->self)
 			return;
 
-		/* TODO type 3 area address range check */
-
-		if ((w = lsa_find(area, LSA_TYPE_ROUTER,
-		    htonl(v->adv_rtr),
-		    htonl(v->adv_rtr))) == NULL)
+		adv_rtr.s_addr = htonl(v->adv_rtr);
+		w = lsa_find_rtr(area, adv_rtr.s_addr);
+		if (w == NULL) {
+			warnx("rt_calc: Inter-Area-Router LSA (%s, %u) "
+			    "originated from non-existent router",
+			    log_rtr_id(htonl(v->adv_rtr)),
+			    v->ls_id);
+			return;
+		}
+		if (w->cost >= LS_INFINITY || TAILQ_EMPTY(&w->nexthop))
 			return;
 
-		/* copy nexthops */
-		calc_nexthop_clear(v);	/* XXX needed ??? */
-		TAILQ_FOREACH(vn, &w->nexthop, entry)
-			calc_nexthop_add(v, w, vn->nexthop.s_addr);
+		/* Add prefix listed in Inter-Area-Prefix LSA to routing
+		 * table, using w as destination. */
+		off = sizeof(v->lsa->hdr) + sizeof(struct lsa_prefix_sum);
+		prefix = (struct lsa_prefix *)((char *)(v->lsa) + off);
+		if (prefix->options & OSPF_PREFIX_NU)
+			return;
 
-		v->cost = w->cost +
-		    (ntohl(v->lsa->data.sum.metric) & LSA_METRIC_MASK);
+		bzero(&ia6, sizeof(ia6));
+		bcopy(prefix + 1, &ia6, LSA_PREFIXSIZE(prefix->prefixlen));
 
-		if (v->cost >= LS_INFINITY || TAILQ_EMPTY(&v->nexthop))
+		rt_update(&ia6, prefix->prefixlen, &w->nexthop, w->cost +
+		    (ntohs(v->lsa->data.rtr_sum.metric) & LSA_METRIC_MASK), 0,
+		    area->id, adv_rtr, PT_INTER_AREA, DT_NET, 0, 0);
+		break;
+	case LSA_TYPE_INTER_A_ROUTER:
+		/* XXX if ABR only look at area 0.0.0.0 LSA */
+		/* ignore self-originated stuff */
+		if (v->self)
 			return;
 
 		adv_rtr.s_addr = htonl(v->adv_rtr);
-		if (v->type == LSA_TYPE_SUM_NETWORK) {
-			addr.s_addr = htonl(v->ls_id) & v->lsa->data.sum.mask;
-			rt_update(addr, mask2prefixlen(v->lsa->data.sum.mask),
-			    &v->nexthop, v->cost, 0, area->id, adv_rtr,
-			    PT_INTER_AREA, DT_NET, 0, 0);
-		} else {
-			addr.s_addr = htonl(v->ls_id);
-			rt_update(addr, 32, &v->nexthop, v->cost, 0, area->id,
-			    adv_rtr, PT_INTER_AREA, DT_RTR,
-			    v->lsa->data.rtr.flags, 0);
+		w = lsa_find_rtr(area, adv_rtr.s_addr);
+		if (w == NULL) {
+			warnx("rt_calc: Inter-Area-Router LSA (%s, %u) "
+			    "originated from non-existent router",
+			    log_rtr_id(htonl(v->adv_rtr)),
+			    v->ls_id);
+			return;
 		}
+		if (w->cost >= LS_INFINITY || TAILQ_EMPTY(&w->nexthop))
+			return;
 
+		/* Add router listed in Inter-Area-Router LSA to routing
+		 * table, using w as destination. */
+		bzero(&ia6, sizeof(ia6));
+		bcopy(&v->lsa->data.rtr_sum.dest_rtr_id, &ia6.s6_addr[12],
+		    4);
+
+		rt_update(&ia6, 128, &w->nexthop, w->cost +
+		    (ntohs(v->lsa->data.rtr_sum.metric) & LSA_METRIC_MASK), 0,
+		    area->id, adv_rtr, PT_INTER_AREA, DT_RTR, 0, 0);
 		break;
 	default:
-		/* as-external LSA are stored in a different tree */
-		fatalx("rt_calc: invalid LSA type");
+		break;
 	}
-#endif
 }
 
 void
 asext_calc(struct vertex *v)
 {
-#if 0
+	struct in6_addr		 addr, fw_addr;
 	struct rt_node		*r;
 	struct rt_nexthop	*rn;
-	u_int32_t		 cost2;
-	struct in_addr		 addr, adv_rtr, a;
+	struct lsa_prefix	*prefix;
+	struct in_addr		 adv_rtr, area;
+	char			*p;
+	u_int32_t		 metric, cost2, ext_tag = 0;
 	enum path_type		 type;
-#endif
 
 	lsa_age(v);
 	if (ntohs(v->lsa->hdr.age) == MAX_AGE ||
@@ -293,57 +379,67 @@ asext_calc(struct vertex *v)
 		if (v->self)
 			return;
 
-#if 0 /* XXX this will be different for sure */
-		if ((r = rt_lookup(DT_RTR, htonl(v->adv_rtr))) == NULL)
+		adv_rtr.s_addr = htonl(v->adv_rtr);
+		bzero(&addr, sizeof(addr));
+		bcopy(&adv_rtr, &addr.s6_addr[12], sizeof(adv_rtr));
+		if ((r = rt_lookup(DT_RTR, &addr)) == NULL)
 			return;
 
-		/* XXX RFC1583Compatibility */
-		if (v->lsa->data.asext.fw_addr != 0 &&
-		    (r = rt_lookup(DT_NET, v->lsa->data.asext.fw_addr)) == NULL)
-			return;
+		prefix = &v->lsa->data.asext.prefix;
+		if (prefix->options & OSPF_PREFIX_NU)
+			break;
+		bzero(&addr, sizeof(addr));
+		bcopy(prefix + 1, &addr,
+		    LSA_PREFIXSIZE(prefix->prefixlen));
 
-		if (v->lsa->data.asext.fw_addr != 0 &&
-		    r->p_type != PT_INTRA_AREA &&
-		    r->p_type != PT_INTER_AREA)
-			return;
+		p = (char *)(prefix + 1) + LSA_PREFIXSIZE(prefix->prefixlen);
+		metric = ntohl(v->lsa->data.asext.metric);
 
-		if (ntohl(v->lsa->data.asext.metric) & LSA_ASEXT_E_FLAG) {
+		if (metric & LSA_ASEXT_F_FLAG) {
+			bcopy(p, &fw_addr, sizeof(fw_addr));
+			p += sizeof(fw_addr);
+
+			/* lookup forwarding address */
+			if ((r = rt_lookup(DT_NET, &fw_addr)) == NULL ||
+			    (r->p_type != PT_INTRA_AREA &&
+			    r->p_type != PT_INTER_AREA))
+				return;
+		}
+		if (metric & LSA_ASEXT_T_FLAG) {
+			bcopy(p, &ext_tag, sizeof(ext_tag));
+			p += sizeof(ext_tag);
+		}
+		if (metric & LSA_ASEXT_E_FLAG) {
 			v->cost = r->cost;
-			cost2 = ntohl(v->lsa->data.asext.metric) &
-			    LSA_METRIC_MASK;
+			cost2 = metric & LSA_METRIC_MASK;
 			type = PT_TYPE2_EXT;
 		} else {
-			v->cost = r->cost + (ntohl(v->lsa->data.asext.metric) &
-			     LSA_METRIC_MASK);
+			v->cost = r->cost + (metric & LSA_METRIC_MASK);
 			cost2 = 0;
 			type = PT_TYPE1_EXT;
 		}
 
-		a.s_addr = 0;
-		adv_rtr.s_addr = htonl(v->adv_rtr);
-		addr.s_addr = htonl(v->ls_id) & v->lsa->data.asext.mask;
-
+		area.s_addr = 0;
 		calc_nexthop_clear(v);
 		TAILQ_FOREACH(rn, &r->nexthop, entry) {
 			if (rn->invalid)
 				continue;
 
 			if (rn->connected && r->d_type == DT_NET) {
-				if (v->lsa->data.asext.fw_addr != 0)
-					calc_nexthop_add(v, NULL,
-					    v->lsa->data.asext.fw_addr);
+				if (metric & LSA_ASEXT_F_FLAG)
+					calc_nexthop_add(v, NULL, &fw_addr,
+					    rn->ifindex);
 				else
-					calc_nexthop_add(v, NULL,
-					    htonl(v->adv_rtr));
+					fatalx("asext_calc: I'm sorry Dave, "
+					    "I'm afraid I can't do that.");
 			} else
-				calc_nexthop_add(v, NULL, 0
-				    /* XXX rn->nexthop.s_addri */);
+				calc_nexthop_add(v, NULL, &rn->nexthop,
+				    rn->ifindex);
 		}
 
-		rt_update(addr, mask2prefixlen(v->lsa->data.asext.mask),
-		    &v->nexthop, v->cost, cost2, a, adv_rtr, type,
-		    DT_NET, 0, ntohl(v->lsa->data.asext.ext_tag));
-#endif
+		rt_update(&addr, prefix->prefixlen,
+		    &v->nexthop, v->cost, cost2, area, adv_rtr, type,
+		    DT_NET, 0, ext_tag);
 		break;
 	default:
 		fatalx("asext_calc: invalid LSA type");
@@ -374,99 +470,132 @@ calc_nexthop_clear(struct vertex *v)
 }
 
 void
-calc_nexthop_add(struct vertex *dst, struct vertex *parent, u_int32_t nexthop)
+calc_nexthop_add(struct vertex *dst, struct vertex *parent,
+	const struct in6_addr *nexthop, u_int32_t ifindex)
 {
 	struct v_nexthop	*vn;
-
-	if (nexthop == 0)
-		/* invalid nexthop, skip it */
-		return;
 
 	if ((vn = calloc(1, sizeof(*vn))) == NULL)
 		fatal("calc_nexthop_add");
 
 	vn->prev = parent;
-	/* XXX  vn->nexthop.s_addr = nexthop; */
+	if (nexthop)
+		vn->nexthop = *nexthop;
+	vn->ifindex = ifindex;
 
 	TAILQ_INSERT_TAIL(&dst->nexthop, vn, entry);
 }
 
-void
-calc_nexthop(struct vertex *dst, struct vertex *parent)
+struct in6_addr *
+calc_nexthop_lladdr(struct vertex *dst, struct lsa_rtr_link *rtr_link,
+    unsigned int ifindex)
 {
-#if 0
-	struct lsa_rtr_link	*rtr_link = NULL;
+	struct iface		*iface;
+	struct vertex		*link;
+	struct rde_nbr		*nbr;
+
+	/* Find outgoing interface, we need its LSA tree */
+	LIST_FOREACH(iface, &dst->area->iface_list, entry) {
+		if (ifindex == iface->ifindex)
+			break;
+	}
+	if (!iface) {
+		log_warnx("calc_nexthop_lladdr: no interface found for "
+		    "ifindex %d", ntohl(rtr_link->iface_id));
+		return (NULL);
+	}
+
+	/* Determine neighbor's link-local address.
+	 * Try to get it from link LSA first. */
+	link = lsa_find_tree(&iface->lsa_tree,
+		htons(LSA_TYPE_LINK), rtr_link->iface_id,
+		htonl(dst->adv_rtr));
+	if (link)
+		return &link->lsa->data.link.lladdr;
+
+	/* Not found, so fall back to source address
+	 * advertised in hello packet. */
+	if ((nbr = rde_nbr_find(dst->peerid)) == NULL)
+		fatalx("next hop is not a neighbor");
+	return &nbr->addr;
+}
+
+void
+calc_nexthop_transit_nbr(struct vertex *dst, struct vertex *parent,
+    unsigned int ifindex)
+{
+	struct lsa_rtr_link	*rtr_link;
+	unsigned int		 i;
+	struct in6_addr		*lladdr;
+
+	if (dst->type != LSA_TYPE_ROUTER)
+		fatalx("calc_nexthop_transit_nbr: dst is not a router");
+	if (parent->type != LSA_TYPE_NETWORK)
+		fatalx("calc_nexthop_transit_nbr: parent is not a network");
+
+	/* dst is a neighbor on a directly attached transit network.
+	 * Figure out dst's link local address and add it as nexthop. */
+	for (i = 0; i < lsa_num_links(dst); i++) {
+		rtr_link = get_rtr_link(dst, i);
+		if (rtr_link->type == LINK_TYPE_TRANSIT_NET &&
+		    rtr_link->nbr_rtr_id == parent->lsa->hdr.adv_rtr &&
+		    rtr_link->nbr_iface_id == parent->lsa->hdr.ls_id) {
+			lladdr = calc_nexthop_lladdr(dst, rtr_link, ifindex);
+			calc_nexthop_add(dst, parent, lladdr, ifindex);
+		}
+	}
+}
+
+void
+calc_nexthop(struct vertex *dst, struct vertex *parent,
+    struct area *area, struct lsa_rtr_link *rtr_link)
+{
 	struct v_nexthop	*vn;
-	int			 i;
+	struct in6_addr		*nexthop;
 
 	/* case 1 */
 	if (parent == spf_root) {
 		switch (dst->type) {
 		case LSA_TYPE_ROUTER:
-			for (i = 0; i < lsa_num_links(dst); i++) {
-				rtr_link = get_rtr_link(dst, i);
-				if (rtr_link->type == LINK_TYPE_POINTTOPOINT &&
-				    ntohl(rtr_link->id) == parent->ls_id) {
-					calc_nexthop_add(dst, parent,
-					    rtr_link->data);
-					break;
-				}
-			}
-			return;
+			if (rtr_link->type != LINK_TYPE_POINTTOPOINT)
+				fatalx("inconsistent SPF tree");
+			nexthop = calc_nexthop_lladdr(dst, rtr_link,
+			    ntohl(rtr_link->iface_id));
+			break;
 		case LSA_TYPE_NETWORK:
-			for (i = 0; i < lsa_num_links(parent); i++) {
-				rtr_link = get_rtr_link(parent, i);
-				switch (rtr_link->type) {
-				case LINK_TYPE_POINTTOPOINT:
-					/* ignore */
-					break;
-				case LINK_TYPE_TRANSIT_NET:
-					if ((htonl(dst->ls_id) &
-					    dst->lsa->data.net.mask) ==
-					    (rtr_link->data &
-					     dst->lsa->data.net.mask)) {
-						calc_nexthop_add(dst, parent,
-						    rtr_link->data);
-					}
-					break;
-				default:
-					fatalx("calc_nexthop: invalid link "
-					    "type");
-				}
-			}
-			return;
+			if (rtr_link->type != LINK_TYPE_TRANSIT_NET)
+				fatalx("inconsistent SPF tree");
+
+			/* Next hop address cannot be determined yet,
+			 * we only know the outgoing interface. */
+			nexthop = NULL;
+			break;
 		default:
 			fatalx("calc_nexthop: invalid dst type");
 		}
+
+		calc_nexthop_add(dst, spf_root, nexthop,
+		    ntohl(rtr_link->iface_id));
+		return;
 	}
 
 	/* case 2 */
 	if (parent->type == LSA_TYPE_NETWORK && dst->type == LSA_TYPE_ROUTER) {
 		TAILQ_FOREACH(vn, &parent->nexthop, entry) {
-			if (vn->prev == spf_root) {
-				for (i = 0; i < lsa_num_links(dst); i++) {
-					rtr_link = get_rtr_link(dst, i);
-					if ((rtr_link->type ==
-					    LINK_TYPE_TRANSIT_NET) &&
-					    (rtr_link->data &
-					    parent->lsa->data.net.mask) ==
-					    (htonl(parent->ls_id) &
-					    parent->lsa->data.net.mask))
-						calc_nexthop_add(dst, parent,
-						    rtr_link->data);
-				}
-			} else {
-				calc_nexthop_add(dst, parent, 0
-				    /* XXX vn->nexthop.s_addr */);
-			}
+			if (vn->prev == spf_root)
+				calc_nexthop_transit_nbr(dst, parent,
+				    vn->ifindex);
+			else
+				/* dst is more than one transit net away */
+				calc_nexthop_add(dst, parent, &vn->nexthop,
+				    vn->ifindex);
 		}
 		return;
 	}
 
 	/* case 3 */
 	TAILQ_FOREACH(vn, &parent->nexthop, entry)
-	    calc_nexthop_add(dst, parent, 0 /* XXX vn->nexthop.s_addr */);
-#endif
+	    calc_nexthop_add(dst, parent, &vn->nexthop, vn->ifindex);
 }
 
 /* candidate list */
@@ -793,6 +922,7 @@ rt_nexthop_add(struct rt_node *r, struct v_nexthead *vnh,
 
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		rn->nexthop = vn->nexthop;
+		rn->ifindex = vn->ifindex;
 		rn->adv_rtr.s_addr = adv_rtr.s_addr;
 		rn->uptime = now.tv_sec;
 		rn->connected = vn->prev == spf_root;
@@ -856,6 +986,7 @@ rt_dump(struct in_addr area, pid_t pid, u_int8_t r_type)
 
 			rtctl.prefix = r->prefix;
 			rtctl.nexthop = rn->nexthop;
+			rtctl.ifindex = rn->ifindex;
 			rtctl.area.s_addr = r->area.s_addr;
 			rtctl.adv_rtr.s_addr = rn->adv_rtr.s_addr;
 			rtctl.cost = r->cost;
@@ -970,7 +1101,7 @@ rt_lookup(enum dst_type type, struct in6_addr *addr)
 	u_int8_t	 i = 128;
 
 	if (type == DT_RTR) {
-		rn = rt_find(addr, 32, type);
+		rn = rt_find(addr, 128, type);
 		if (rn && rn->invalid == 0)
 			return (rn);
 		return (NULL);
@@ -988,49 +1119,58 @@ rt_lookup(enum dst_type type, struct in6_addr *addr)
 
 /* router LSA links */
 struct lsa_rtr_link *
-get_rtr_link(struct vertex *v, int idx)
+get_rtr_link(struct vertex *v, unsigned int idx)
 {
 	struct lsa_rtr_link	*rtr_link = NULL;
-	char			*buf = (char *)v->lsa;
-	u_int16_t		 i, off, nlinks;
+	unsigned int		 frag = 1;
+	unsigned int		 frag_nlinks;
+	unsigned int		 nlinks = 0;
+	unsigned int		 i;
 
 	if (v->type != LSA_TYPE_ROUTER)
 		fatalx("get_rtr_link: invalid LSA type");
 
-	off = sizeof(v->lsa->hdr) + sizeof(struct lsa_rtr);
-
-	/* nlinks validated earlier by lsa_check() */
-	nlinks = lsa_num_links(v);
-	for (i = 0; i < nlinks; i++) {
-		rtr_link = (struct lsa_rtr_link *)(buf + off);
-		if (i == idx)
-			return (rtr_link);
-	}
+	/* Treat multiple Router-LSAs originated by the same router
+	 * as an aggregate. */
+	do {
+		/* number of links validated earlier by lsa_check() */
+		rtr_link = (struct lsa_rtr_link *)((char *)v->lsa +
+		    sizeof(v->lsa->hdr) + sizeof(struct lsa_rtr));
+		frag_nlinks = ((ntohs(v->lsa->hdr.len) -
+		    sizeof(struct lsa_hdr) - sizeof(struct lsa_rtr)) /
+		    sizeof(struct lsa_rtr_link));
+		if (nlinks + frag_nlinks > idx) {
+			for (i = 0; i < frag_nlinks; i++) {
+				if (i + nlinks == idx)
+					return (rtr_link);
+				rtr_link++;
+			}
+		}
+		nlinks += frag_nlinks;
+		v = lsa_find_rtr_frag(v->area, htonl(v->adv_rtr), frag++);
+	} while (v);
 
 	return (NULL);
 }
 
 /* network LSA links */
 struct lsa_net_link *
-get_net_link(struct vertex *v, int idx)
+get_net_link(struct vertex *v, unsigned int idx)
 {
 	struct lsa_net_link	*net_link = NULL;
 	char			*buf = (char *)v->lsa;
-	u_int16_t		 i, off, nlinks;
+	unsigned int		 i;
 
 	if (v->type != LSA_TYPE_NETWORK)
 		fatalx("get_net_link: invalid LSA type");
 
-	off = sizeof(v->lsa->hdr) + sizeof(u_int32_t);
-
-	/* nlinks validated earlier by lsa_check() */
-	nlinks = lsa_num_links(v);
-	for (i = 0; i < nlinks; i++) {
-		net_link = (struct lsa_net_link *)(buf + off);
+	/* number of links validated earlier by lsa_check() */
+	net_link = (struct lsa_net_link *)(buf + sizeof(v->lsa->hdr) +
+	    sizeof(struct lsa_net));
+	for (i = 0; i < lsa_num_links(v); i++) {
 		if (i == idx)
 			return (net_link);
-
-		off += sizeof(struct lsa_net_link);
+		net_link++;
 	}
 
 	return (NULL);
@@ -1042,7 +1182,7 @@ linked(struct vertex *w, struct vertex *v)
 {
 	struct lsa_rtr_link	*rtr_link = NULL;
 	struct lsa_net_link	*net_link = NULL;
-	int			 i;
+	unsigned int		 i;
 
 	switch (w->type) {
 	case LSA_TYPE_ROUTER:
@@ -1050,20 +1190,18 @@ linked(struct vertex *w, struct vertex *v)
 			rtr_link = get_rtr_link(w, i);
 			switch (v->type) {
 			case LSA_TYPE_ROUTER:
-#if 0
 				if (rtr_link->type == LINK_TYPE_POINTTOPOINT &&
-				    rtr_link->id == htonl(v->ls_id))
+				    rtr_link->nbr_rtr_id == htonl(v->adv_rtr))
 					return (1);
 				break;
-#endif
 			case LSA_TYPE_NETWORK:
-#if 0
-				if (rtr_link->id == htonl(v->ls_id))
+				if (rtr_link->type == LINK_TYPE_TRANSIT_NET &&
+				    rtr_link->nbr_rtr_id == htonl(v->adv_rtr) &&
+				    rtr_link->nbr_iface_id == htonl(v->ls_id))
 					return (1);
 				break;
-#endif
 			default:
-				fatalx("spf_calc: invalid type");
+				fatalx("linked: invalid type");
 			}
 		}
 		return (0);
@@ -1072,16 +1210,16 @@ linked(struct vertex *w, struct vertex *v)
 			net_link = get_net_link(w, i);
 			switch (v->type) {
 			case LSA_TYPE_ROUTER:
-				if (net_link->att_rtr == htonl(v->ls_id))
+				if (net_link->att_rtr == htonl(v->adv_rtr))
 					return (1);
 				break;
 			default:
-				fatalx("spf_calc: invalid type");
+				fatalx("linked: invalid type");
 			}
 		}
 		return (0);
 	default:
-		fatalx("spf_calc: invalid LSA type");
+		fatalx("linked: invalid LSA type");
 	}
 
 	return (0);

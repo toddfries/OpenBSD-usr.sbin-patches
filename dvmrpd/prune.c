@@ -1,4 +1,4 @@
-/*	$OpenBSD: prune.c,v 1.1 2006/06/01 14:12:20 norby Exp $ */
+/*	$OpenBSD: prune.c,v 1.3 2010/05/26 13:56:07 nicm Exp $ */
 
 /*
  * Copyright (c) 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -34,11 +34,12 @@
 
 /* DVMRP prune packet handling */
 int
-send_prune(struct nbr *nbr, void *data, int len)
+send_prune(struct nbr *nbr, struct prune *p)
 {
 	struct sockaddr_in	 dst;
-	struct buf		*buf;
+	struct ibuf		*buf;
 	struct dvmrp_hdr	*dvmrp_hdr;
+	struct prune_hdr	 prune;
 	int			 ret = 0;
 
 	log_debug("send_prune: interface %s nbr %s", nbr->iface->name,
@@ -47,34 +48,70 @@ send_prune(struct nbr *nbr, void *data, int len)
 	if (nbr->iface->passive)
 		return (0);
 
-	if ((buf = buf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
+	bzero(&prune, sizeof(prune));
+
+	dst.sin_family = AF_INET;
+	dst.sin_len = sizeof(struct sockaddr_in);
+	dst.sin_addr = nbr->addr;
+
+	if ((buf = ibuf_open(nbr->iface->mtu - sizeof(struct ip))) == NULL)
 		fatal("send_prune");
 
 	/* DVMRP header */
 	if (gen_dvmrp_hdr(buf, nbr->iface, DVMRP_CODE_PRUNE))
 		goto fail;
 
-	dst.sin_family = AF_INET;
-	dst.sin_len = sizeof(struct sockaddr_in);
-	dst.sin_addr = nbr->addr;
+	prune.src_host_addr = p->origin.s_addr;
+	prune.group_addr = p->group.s_addr;
+
+	/* XXX */
+	prune.lifetime = htonl(MAX_PRUNE_LIFETIME);
+	prune.src_netmask = p->netmask.s_addr;
+
+	ibuf_add(buf, &prune, sizeof(prune));
 
 	/* update chksum */
-	dvmrp_hdr = buf_seek(buf, 0, sizeof(dvmrp_hdr));
+	dvmrp_hdr = ibuf_seek(buf, 0, sizeof(dvmrp_hdr));
 	dvmrp_hdr->chksum = in_cksum(buf->buf, buf->wpos);
 
 	ret = send_packet(nbr->iface, buf->buf, buf->wpos, &dst);
-	buf_free(buf);
+	ibuf_free(buf);
+
 	return (ret);
 fail:
 	log_warn("send_prune");
-	buf_free(buf);
+	ibuf_free(buf);
 	return (-1);
 }
 
 void
 recv_prune(struct nbr *nbr, char *buf, u_int16_t len)
 {
+	struct prune		 p;
+	struct prune_hdr	*prune;
+
 	log_debug("recv_prune: neighbor ID %s", inet_ntoa(nbr->id));
+
+	if (len < PRUNE_MIN_LEN) {
+		log_debug("recv_prune: packet malformed from %s",
+		    inet_ntoa(nbr->id));
+		return;
+	}
+
+	bzero(&p, sizeof(p));
+
+	prune = (struct prune_hdr *)buf;
+
+	p.origin.s_addr = prune->src_host_addr;
+	p.group.s_addr = prune->group_addr;
+	p.lifetime = prune->lifetime;
+
+	if (len >= sizeof(*prune))
+		p.netmask.s_addr = prune->src_netmask;
+
+	p.ifindex = nbr->iface->ifindex;
+
+	dvmrpe_imsg_compose_rde(IMSG_RECV_PRUNE, nbr->peerid, 0, &p, sizeof(p));
 
 	return;
 }

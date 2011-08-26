@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcp.c,v 1.27 2008/07/21 16:51:18 millert Exp $ */
+/*	$OpenBSD: dhcp.c,v 1.32 2010/03/29 22:22:28 krw Exp $ */
 
 /*
  * Copyright (c) 1995, 1996, 1997, 1998, 1999
@@ -552,7 +552,7 @@ nak_lease(struct packet *packet, struct iaddr *cip)
 	struct dhcp_packet raw;
 	unsigned char nak = DHCPNAK;
 	struct packet outgoing;
-	struct tree_cache *options[256], dhcpnak_tree, dhcpmsg_tree;
+	struct tree_cache *options[256], dhcpnak_tree, dhcpmsg_tree, server_tree;
 
 	memset(options, 0, sizeof options);
 	memset(&outgoing, 0, sizeof outgoing);
@@ -566,6 +566,7 @@ nak_lease(struct packet *packet, struct iaddr *cip)
 	options[DHO_DHCP_MESSAGE_TYPE]->buf_size = sizeof nak;
 	options[DHO_DHCP_MESSAGE_TYPE]->timeout = -1;
 	options[DHO_DHCP_MESSAGE_TYPE]->tree = NULL;
+	options[DHO_DHCP_MESSAGE_TYPE]->flags = 0;
 
 	/* Set DHCP_MESSAGE to whatever the message is */
 	options[DHO_DHCP_MESSAGE] = &dhcpmsg_tree;
@@ -574,12 +575,29 @@ nak_lease(struct packet *packet, struct iaddr *cip)
 	options[DHO_DHCP_MESSAGE]->buf_size = strlen(dhcp_message);
 	options[DHO_DHCP_MESSAGE]->timeout = -1;
 	options[DHO_DHCP_MESSAGE]->tree = NULL;
+	options[DHO_DHCP_MESSAGE]->flags = 0;
+
+	/* Include server identifier in the NAK. At least one
+	 * router vendor depends on it when using dhcp relay proxy mode.
+	 */
+	if (packet->options[DHO_DHCP_SERVER_IDENTIFIER].len) {
+		options[DHO_DHCP_SERVER_IDENTIFIER] = &server_tree;
+		options[DHO_DHCP_SERVER_IDENTIFIER]->value =
+		    packet->options[DHO_DHCP_SERVER_IDENTIFIER].data,
+		options[DHO_DHCP_SERVER_IDENTIFIER]->len =
+		    packet->options[DHO_DHCP_SERVER_IDENTIFIER].len;
+		options[DHO_DHCP_SERVER_IDENTIFIER]->buf_size =
+		    packet->options[DHO_DHCP_SERVER_IDENTIFIER].len;
+		options[DHO_DHCP_SERVER_IDENTIFIER]->timeout = -1;
+		options[DHO_DHCP_SERVER_IDENTIFIER]->tree = NULL;
+		options[DHO_DHCP_SERVER_IDENTIFIER]->flags = 0;
+	}
 
 	/* Do not use the client's requested parameter list. */
 	i = DHO_DHCP_PARAMETER_REQUEST_LIST;
 	if (packet->options[i].data) {
 		packet->options[i].len = 0;
-		dfree(packet->options[i].data, "nak_lease");
+		free(packet->options[i].data);
 		packet->options[i].data = NULL;
 	}
 
@@ -951,7 +969,7 @@ ack_lease(struct packet *packet, struct lease *lease, unsigned int offer,
 	/* Save the parameter request list if there is one. */
 	i = DHO_DHCP_PARAMETER_REQUEST_LIST;
 	if (packet->options[i].data) {
-		state->prl = dmalloc(packet->options[i].len, "ack_lease: prl");
+		state->prl = calloc(1, packet->options[i].len);
 		if (!state->prl)
 			warning("no memory for parameter request list");
 		else {
@@ -1141,6 +1159,19 @@ ack_lease(struct packet *packet, struct lease *lease, unsigned int offer,
 		state->options[i]->value = lease->ip_addr.iabuf;
 		state->options[i]->len = lease->ip_addr.len;
 		state->options[i]->buf_size = lease->ip_addr.len;
+		state->options[i]->timeout = -1;
+		state->options[i]->tree = NULL;
+	}
+
+	/* Echo back the relay agent information, if present */
+	i = DHO_RELAY_AGENT_INFORMATION;
+	if (state->giaddr.s_addr && !state->options[i] &&
+	    packet->options[i].data && packet->options[i].len) {
+		state->options[i] = new_tree_cache("relay-agent-information");
+		state->options[i]->flags = TC_TEMPORARY;
+		state->options[i]->value = packet->options[i].data;
+		state->options[i]->len = packet->options[i].len;
+		state->options[i]->buf_size = packet->options[i].len;
 		state->options[i]->timeout = -1;
 		state->options[i]->tree = NULL;
 	}

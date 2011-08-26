@@ -1,4 +1,4 @@
-/*	$OpenBSD: printconf.c,v 1.4 2007/10/18 09:42:47 claudio Exp $ */
+/*	$OpenBSD: printconf.c,v 1.6 2009/07/31 16:04:34 michele Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2006 Esben Norby <norby@openbsd.org>
@@ -44,7 +44,7 @@ print_mainconf(struct ripd_conf *conf)
 	print_redistribute(conf);
 
 	if (conf->options & OPT_SPLIT_HORIZON)
-		printf("split-horizon default\n");
+		printf("split-horizon simple\n");
 	else if (conf->options & OPT_SPLIT_POISONED)
 		printf("split-horizon poisoned\n");
 	else
@@ -70,9 +70,6 @@ print_redistribute(struct ripd_conf *conf)
 {
 	struct redistribute	*r;
 
-	if (conf->redistribute & REDISTRIBUTE_DEFAULT)
-		printf("redistribute default\n");
-
 	SIMPLEQ_FOREACH(r, &conf->redist_list, entry) {
 		switch (r->type & ~REDIST_NO) {
 		case REDIST_STATIC:
@@ -84,6 +81,9 @@ print_redistribute(struct ripd_conf *conf)
 		case REDIST_LABEL:
 			printf("%sredistribute rtlabel %s\n",
 			    print_no(r->type), rtlabel_id2name(r->label));
+			break;
+		case REDIST_DEFAULT:
+			printf("redistribute default\n");
 			break;
 		case REDIST_ADDR:
 			printf("%ssredistribute %s/%d\n",

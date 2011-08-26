@@ -1,4 +1,4 @@
-/*	$OpenBSD: mopprobe.c,v 1.10 2006/04/16 20:18:27 maja Exp $ */
+/*	$OpenBSD: mopprobe.c,v 1.13 2010/05/01 08:14:26 mk Exp $ */
 
 /*
  * Copyright (c) 1993-96 Mats O Jansson.  All rights reserved.
@@ -24,15 +24,10 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef lint
-static const char rcsid[] = "$OpenBSD: mopprobe.c,v 1.10 2006/04/16 20:18:27 maja Exp $";
-#endif
-
 /*
  * mopprobe - MOP Probe Utility
  *
- * Usage:	mopprobe -a [ -3 | -4 ] [-v] [-o]
- *		mopprobe [ -3 | -4 ] [-v] [-o] interface
+ * Usage:	mopprobe [-3 | -4] [-aov] interface
  */
 
 #include "os.h"
@@ -119,14 +114,12 @@ main(int argc, char *argv[])
 void
 Usage()
 {
-	fprintf(stderr, "usage: %s -a [ -3 | -4 ] [-v] [-o]\n", __progname);
-	fprintf(stderr, "       %s [ -3 | -4 ] [-v] [-o] interface\n",
-	    __progname);
+	fprintf(stderr, "usage: %s [-3 | -4] [-aov] interface\n", __progname);
 	exit(1);
 }
 
 /*
- * Process incomming packages.
+ * Process incoming packages.
  */
 void
 mopProcess(struct if_info *ii, u_char *pkt)
