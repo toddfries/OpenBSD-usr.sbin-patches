@@ -1,4 +1,4 @@
-/*	$OpenBSD: ramqueue.c,v 1.11 2011/08/16 19:02:03 gilles Exp $	*/
+/*	$OpenBSD: ramqueue.c,v 1.15 2011/08/17 20:54:16 gilles Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -194,18 +194,18 @@ ramqueue_insert(struct ramqueue *rqueue, struct envelope *envelope, time_t curtm
 		SET_IF_GREATER(env->stats->ramqueue.messages,
 		    env->stats->ramqueue.messages_max);
 	}
+	rq_msg->rq_host = ramqueue_get_host(rqueue, envelope->delivery.rcpt.domain);
 
 	rq_evp = calloc(1, sizeof (*rq_evp));
 	if (rq_evp == NULL)
 		fatal("calloc");
 	rq_evp->evpid = envelope->delivery.id;
 	rq_evp->sched = ramqueue_next_schedule(envelope, curtm);
-	rq_evp->host = ramqueue_get_host(rqueue, envelope->delivery.rcpt.domain);
-	rq_evp->batch = ramqueue_get_batch(rqueue, rq_evp->host, envelope);
+	rq_evp->rq_batch = ramqueue_get_batch(rqueue, rq_msg->rq_host, envelope);
 	RB_INSERT(evptree, &rq_msg->evptree, rq_evp);
-	rq_evp->message = rq_msg;
+	rq_evp->rq_msg = rq_msg;
 
-	TAILQ_INSERT_TAIL(&rq_evp->batch->envelope_queue, rq_evp,
+	TAILQ_INSERT_TAIL(&rq_evp->rq_batch->envelope_queue, rq_evp,
 	    batchqueue_entry);
 
 	/* sorted insert */
@@ -221,22 +221,6 @@ ramqueue_insert(struct ramqueue *rqueue, struct envelope *envelope, time_t curtm
  	env->stats->ramqueue.envelopes++;
 	SET_IF_GREATER(env->stats->ramqueue.envelopes,
 	    env->stats->ramqueue.envelopes_max);
-}
-
-void
-ramqueue_remove(struct ramqueue *rqueue, struct ramqueue_envelope *rq_evp)
-{
-	struct ramqueue_batch *rq_batch = rq_evp->batch;
-	struct ramqueue_message *rq_message = rq_evp->message;
-
-	if (rq_evp == rqueue->current_evp)
-		rqueue->current_evp = TAILQ_NEXT(rqueue->current_evp, queue_entry);
-
-	RB_REMOVE(evptree, &rq_message->evptree, rq_evp);
-	TAILQ_REMOVE(&rq_batch->envelope_queue, rq_evp, batchqueue_entry);
-	TAILQ_REMOVE(&rqueue->queue, rq_evp, queue_entry);
-
-	env->stats->ramqueue.envelopes--;
 }
 
 static int
@@ -383,28 +367,36 @@ ramqueue_remove_message(struct ramqueue *rqueue, struct ramqueue_message *rq_msg
 }
 
 void
-ramqueue_reschedule(struct ramqueue *rqueue, u_int64_t id)
+ramqueue_schedule(struct ramqueue *rq, u_int64_t id)
 {
+	struct ramqueue_message *rq_msg;
 	struct ramqueue_envelope *rq_evp;
-	time_t tm;
 
-	tm = time(NULL);
-	TAILQ_FOREACH(rq_evp, &rqueue->queue, queue_entry) {
-		if (id != rq_evp->evpid &&
-		    (id <= 0xffffffffLL &&
-			evpid_to_msgid(rq_evp->evpid) != id))
-			continue;
-
-		TAILQ_REMOVE(&rqueue->queue, rq_evp, queue_entry);
-		rq_evp->sched = 0;
-		TAILQ_INSERT_HEAD(&rqueue->queue, rq_evp, queue_entry);
-
-		/* we were scheduling one envelope and found it,
-		 * no need to go through the entire queue
-		 */
-		if (id > 0xffffffffLL)
-			break;
+	/* scheduling by evpid */
+	if (id > 0xffffffffL) {
+		rq_evp = ramqueue_lookup_envelope(rq, id);
+		if (rq_evp == NULL)
+			return;
+		ramqueue_schedule_envelope(rq, rq_evp);
+		return;
 	}
+
+	rq_msg = ramqueue_lookup_message(rq, id);
+	if (rq_msg == NULL)
+		return;
+
+	/* scheduling by msgid */
+	RB_FOREACH(rq_evp, evptree, &rq_msg->evptree) {
+		ramqueue_schedule_envelope(rq, rq_evp);
+	}
+}
+
+void
+ramqueue_schedule_envelope(struct ramqueue *rq, struct ramqueue_envelope *rq_evp)
+{
+	rq_evp->sched = 0;
+	TAILQ_REMOVE(&rq->queue, rq_evp, queue_entry);
+	TAILQ_INSERT_HEAD(&rq->queue, rq_evp, queue_entry);
 }
 
 struct ramqueue_envelope *
@@ -437,6 +429,59 @@ int
 ramqueue_evp_cmp(struct ramqueue_envelope *e1, struct ramqueue_envelope *e2)
 {
 	return (e1->evpid < e2->evpid ? -1 : e1->evpid > e2->evpid);
+}
+
+struct ramqueue_host *
+ramqueue_lookup_host(struct ramqueue *rq, char *hostname)
+{
+	struct ramqueue_host hostkey;
+
+	if (strlcpy(hostkey.hostname, hostname, sizeof(hostkey.hostname))
+	    >= sizeof(hostkey.hostname))
+		fatalx("ramqueue_lookup_host: hostname truncated");
+
+	return RB_FIND(hosttree, &rq->hosttree, &hostkey);
+}
+
+struct ramqueue_message *
+ramqueue_lookup_message(struct ramqueue *rq, u_int32_t msgid)
+{
+	struct ramqueue_message  msgkey;
+
+	msgkey.msgid = msgid;
+	return RB_FIND(msgtree, &rq->msgtree, &msgkey);
+}
+
+struct ramqueue_envelope *
+ramqueue_lookup_envelope(struct ramqueue *rq, u_int64_t evpid)
+{
+	struct ramqueue_envelope  evpkey;
+	struct ramqueue_message *rq_msg;
+
+	rq_msg = ramqueue_lookup_message(rq, evpid_to_msgid(evpid));
+	if (rq_msg == NULL)
+		return NULL;
+
+	evpkey.evpid = evpid;
+	return RB_FIND(evptree, &rq_msg->evptree, &evpkey);
+}
+
+void
+ramqueue_remove_envelope(struct ramqueue *rq, struct ramqueue_envelope *rq_evp)
+{
+	struct ramqueue_batch *rq_batch;
+	struct ramqueue_message *rq_msg;
+
+	if (rq_evp == rq->current_evp)
+		rq->current_evp = TAILQ_NEXT(rq->current_evp, queue_entry);
+
+	rq_msg = rq_evp->rq_msg;
+	rq_batch = rq_evp->rq_batch;
+
+	RB_REMOVE(evptree, &rq_msg->evptree, rq_evp);
+	TAILQ_REMOVE(&rq_batch->envelope_queue, rq_evp, batchqueue_entry);
+	TAILQ_REMOVE(&rq->queue, rq_evp, queue_entry);
+	env->stats->ramqueue.envelopes--;
 }
 
 
