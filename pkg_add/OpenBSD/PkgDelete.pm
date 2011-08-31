@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgDelete.pm,v 1.20 2011/07/19 05:58:33 espie Exp $
+# $OpenBSD: PkgDelete.pm,v 1.23 2011/08/23 10:32:27 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -100,7 +100,7 @@ sub handle_options
 {
 	my $state = shift;
 	$state->SUPER::handle_options('',
-	    '[-acIinqsvx] [-B pkg-destdir] [-D name[=value]] pkg-name [...]');
+	    '[-acinqsvx] [-B pkg-destdir] [-D name[=value]] pkg-name [...]');
 
 	my $base = $state->opt('B') // $ENV{'PKG_DESTDIR'} // '';
 	if ($base ne '') {
@@ -167,7 +167,7 @@ sub setup_header
 		$state->print("\n");
 	}
 }
-	
+
 package OpenBSD::PkgDelete;
 our @ISA = qw(OpenBSD::AddDelete);
 
@@ -219,7 +219,7 @@ sub process_parameters
 			my $l;
 
 			if (OpenBSD::PackageName::is_stem($pkgname)) {
-				$l = $state->stem2location($inst, $pkgname, 
+				$l = $state->stem2location($inst, $pkgname,
 				    $state);
 			} else {
 				$l = $inst->find($pkgname, $state->{arch});
@@ -253,6 +253,7 @@ sub really_remove
 		OpenBSD::Delete::delete_package($pkgname, $state);
 	}
 	$state->progress->next($state->ntogo);
+	$state->syslog("Removed #1", $set->print);
 }
 
 sub delete_dependencies
