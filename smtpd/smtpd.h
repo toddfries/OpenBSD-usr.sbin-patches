@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.230 2011/08/16 19:02:03 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.233 2011/08/17 20:35:11 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -581,15 +581,15 @@ struct ramqueue_envelope {
 	TAILQ_ENTRY(ramqueue_envelope)	 queue_entry;
 	TAILQ_ENTRY(ramqueue_envelope)	 batchqueue_entry;
 	RB_ENTRY(ramqueue_envelope)	 evptree_entry;
-	struct ramqueue_host		*host;
-	struct ramqueue_batch		*batch;
-	struct ramqueue_message		*message;
+	struct ramqueue_batch		*rq_batch;
+	struct ramqueue_message		*rq_msg;
 	u_int64_t      			 evpid;
 	time_t				 sched;
 };
 struct ramqueue_message {
 	RB_ENTRY(ramqueue_message)		msgtree_entry;
 	RB_HEAD(evptree, ramqueue_envelope)	evptree;
+	struct ramqueue_host		       *rq_host;
 	u_int32_t				msgid;
 };
 struct ramqueue {
@@ -1095,14 +1095,12 @@ int ramqueue_load_offline(struct ramqueue *);
 int ramqueue_host_cmp(struct ramqueue_host *, struct ramqueue_host *);
 int ramqueue_msg_cmp(struct ramqueue_message *, struct ramqueue_message *);
 int ramqueue_evp_cmp(struct ramqueue_envelope *, struct ramqueue_envelope *);
-void ramqueue_remove(struct ramqueue *, struct ramqueue_envelope *);
 int ramqueue_is_empty(struct ramqueue *);
 int ramqueue_is_empty(struct ramqueue *);
 int ramqueue_batch_is_empty(struct ramqueue_batch *);
 int ramqueue_host_is_empty(struct ramqueue_host *);
 void ramqueue_remove_batch(struct ramqueue_host *, struct ramqueue_batch *);
 void ramqueue_remove_host(struct ramqueue *, struct ramqueue_host *);
-void ramqueue_reschedule(struct ramqueue *, u_int64_t);
 struct ramqueue_envelope *ramqueue_envelope_by_id(struct ramqueue *, u_int64_t);
 struct ramqueue_envelope *ramqueue_first_envelope(struct ramqueue *);
 struct ramqueue_envelope *ramqueue_next_envelope(struct ramqueue *);
@@ -1110,6 +1108,16 @@ struct ramqueue_envelope *ramqueue_batch_first_envelope(struct ramqueue_batch *)
 void ramqueue_insert(struct ramqueue *, struct envelope *, time_t);
 int ramqueue_message_is_empty(struct ramqueue_message *);
 void ramqueue_remove_message(struct ramqueue *, struct ramqueue_message *);
+
+struct ramqueue_host *ramqueue_lookup_host(struct ramqueue *, char *);
+struct ramqueue_message *ramqueue_lookup_message(struct ramqueue *, u_int32_t);
+struct ramqueue_envelope *ramqueue_lookup_envelope(struct ramqueue *, u_int64_t);
+
+void ramqueue_schedule(struct ramqueue *, u_int64_t);
+void ramqueue_schedule_envelope(struct ramqueue *, struct ramqueue_envelope *);
+
+void ramqueue_remove_envelope(struct ramqueue *, struct ramqueue_envelope *);
+
 
 RB_PROTOTYPE(hosttree, ramqueue_host, hosttree_entry, ramqueue_host_cmp);
 RB_PROTOTYPE(msgtree,  ramqueue_message, msg_entry, ramqueue_msg_cmp);
@@ -1119,6 +1127,9 @@ RB_PROTOTYPE(evptree,  ramqueue_envelope, evp_entry, ramqueue_evp_cmp);
 /* runner.c */
 pid_t runner(void);
 void message_reset_flags(struct envelope *);
+void runner_schedule(struct ramqueue *, u_int64_t);
+void runner_remove(struct ramqueue *, u_int64_t);
+void runner_remove_envelope(struct ramqueue *, struct ramqueue_envelope *);
 
 
 /* smtp.c */
