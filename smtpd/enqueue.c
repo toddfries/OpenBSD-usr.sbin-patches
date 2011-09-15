@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.44 2011/06/09 03:53:39 deraadt Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.47 2011/08/29 21:43:08 chl Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -28,9 +28,11 @@
 #include <event.h>
 #include <imsg.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
@@ -556,8 +558,8 @@ enqueue_offline(int argc, char *argv[])
 	FILE	*fp;
 	int	 i, fd, ch;
 
-	if (! bsnprintf(path, sizeof(path), "%s%s/%d.XXXXXXXXXX", PATH_SPOOL,
-		PATH_OFFLINE, time(NULL)))
+	if (! bsnprintf(path, sizeof(path), "%s%s/%lld.XXXXXXXXXX", PATH_SPOOL,
+		PATH_OFFLINE, (long long int) time(NULL)))
 		err(1, "snprintf");
 
 	if ((fd = mkstemp(path)) == -1 || (fp = fdopen(fd, "w+")) == NULL) {

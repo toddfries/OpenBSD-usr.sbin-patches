@@ -1,4 +1,4 @@
-/*	$OpenBSD: ramqueue.c,v 1.15 2011/08/17 20:54:16 gilles Exp $	*/
+/*	$OpenBSD: ramqueue.c,v 1.18 2011/09/01 19:56:49 eric Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
@@ -190,9 +191,7 @@ ramqueue_insert(struct ramqueue *rqueue, struct envelope *envelope, time_t curtm
 		rq_msg->msgid = msgkey.msgid;
 		RB_INSERT(msgtree, &rqueue->msgtree, rq_msg);
 		RB_INIT(&rq_msg->evptree);
-		env->stats->ramqueue.messages++;
-		SET_IF_GREATER(env->stats->ramqueue.messages,
-		    env->stats->ramqueue.messages_max);
+		stat_increment(STATS_RAMQUEUE_MESSAGE);
 	}
 	rq_msg->rq_host = ramqueue_get_host(rqueue, envelope->delivery.rcpt.domain);
 
@@ -218,9 +217,7 @@ ramqueue_insert(struct ramqueue *rqueue, struct envelope *envelope, time_t curtm
 	if (evp == NULL)
 		TAILQ_INSERT_TAIL(&rqueue->queue, rq_evp, queue_entry);
 
- 	env->stats->ramqueue.envelopes++;
-	SET_IF_GREATER(env->stats->ramqueue.envelopes,
-	    env->stats->ramqueue.envelopes_max);
+	stat_increment(STATS_RAMQUEUE_ENVELOPE);
 }
 
 static int
@@ -290,9 +287,7 @@ ramqueue_get_host(struct ramqueue *rqueue, char *hostname)
 		strlcpy(rq_host->hostname, hostname, sizeof(rq_host->hostname));
 		TAILQ_INIT(&rq_host->batch_queue);
 		RB_INSERT(hosttree, &rqueue->hosttree, rq_host);
-		env->stats->ramqueue.hosts++;
-		SET_IF_GREATER(env->stats->ramqueue.hosts,
-		    env->stats->ramqueue.hosts_max);
+		stat_increment(STATS_RAMQUEUE_HOST);
 	}
 
 	return rq_host;
@@ -327,9 +322,8 @@ ramqueue_get_batch(struct ramqueue *rqueue, struct ramqueue_host *host,
 	TAILQ_INIT(&rq_batch->envelope_queue);
 	TAILQ_INSERT_TAIL(&host->batch_queue, rq_batch, batch_entry);
 
-	env->stats->ramqueue.batches++;
-	SET_IF_GREATER(env->stats->ramqueue.batches,
-	    env->stats->ramqueue.batches_max);
+	stat_increment(STATS_RAMQUEUE_BATCH);
+
 	return rq_batch;
 }
 
@@ -352,18 +346,24 @@ void
 ramqueue_remove_batch(struct ramqueue_host *rq_host, struct ramqueue_batch *rq_batch)
 {
 	TAILQ_REMOVE(&rq_host->batch_queue, rq_batch, batch_entry);
+	free(rq_batch);
+	stat_decrement(STATS_RAMQUEUE_BATCH);
 }
 
 void
 ramqueue_remove_host(struct ramqueue *rqueue, struct ramqueue_host *rq_host)
 {
 	RB_REMOVE(hosttree, &rqueue->hosttree, rq_host);
+	free(rq_host);
+	stat_decrement(STATS_RAMQUEUE_HOST);
 }
 
 void
 ramqueue_remove_message(struct ramqueue *rqueue, struct ramqueue_message *rq_msg)
 {
 	RB_REMOVE(msgtree, &rqueue->msgtree, rq_msg);
+	free(rq_msg);
+	stat_decrement(STATS_RAMQUEUE_MESSAGE);
 }
 
 void
@@ -481,7 +481,8 @@ ramqueue_remove_envelope(struct ramqueue *rq, struct ramqueue_envelope *rq_evp)
 	RB_REMOVE(evptree, &rq_msg->evptree, rq_evp);
 	TAILQ_REMOVE(&rq_batch->envelope_queue, rq_evp, batchqueue_entry);
 	TAILQ_REMOVE(&rq->queue, rq_evp, queue_entry);
-	env->stats->ramqueue.envelopes--;
+	stat_decrement(STATS_RAMQUEUE_ENVELOPE);
+	free(rq_evp);
 }
 
 
