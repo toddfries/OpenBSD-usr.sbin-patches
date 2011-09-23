@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-icmp6.c,v 1.8 2010/04/06 16:01:57 jsg Exp $	*/
+/*	$OpenBSD: print-icmp6.c,v 1.10 2011/09/17 19:56:19 bluhm Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1991, 1993, 1994
@@ -226,10 +226,14 @@ icmp6_print(const u_char *bp, u_int length, const u_char *bp2)
 		}
 		break;
 	case ICMP6_ECHO_REQUEST:
-		printf("icmp6: echo request");
-		break;
 	case ICMP6_ECHO_REPLY:
-		printf("icmp6: echo reply");
+		printf("icmp6: echo %s", dp->icmp6_type == ICMP6_ECHO_REQUEST ?
+		    "request" : "reply");
+		if (vflag) {
+			TCHECK(dp->icmp6_seq);
+			printf(" (id:%04x seq:%u)",
+			    ntohs(dp->icmp6_id), ntohs(dp->icmp6_seq));
+		}
 		break;
 	case ICMP6_MEMBERSHIP_QUERY:
 		printf("icmp6: multicast listener query ");
@@ -422,14 +426,14 @@ icmp6_print(const u_char *bp, u_int length, const u_char *bp2)
 		if (vflag) {
 			printf(",%s", mode == FQDN ? "FQDN" : "WRU");
 			if (mode == FQDN) {
-				long ttl;
-				ttl = (long)ntohl(*(u_long *)&buf[8]);
+				int ttl;
+				ttl = (int)ntohl(*(u_int32_t *)&buf[8]);
 				if (dp->icmp6_code == 1)
 					printf(",TTL=unknown");
 				else if (ttl < 0)
-					printf(",TTL=%ld:invalid", ttl);
+					printf(",TTL=%d:invalid", ttl);
 				else
-					printf(",TTL=%ld", ttl);
+					printf(",TTL=%d", ttl);
 				if (buf[12] != ep - buf - 13) {
 					(void)printf(",invalid namelen:%d/%u",
 						buf[12],
