@@ -1,4 +1,4 @@
-/*	$OpenBSD: mib.c,v 1.45 2011/07/04 04:34:14 claudio Exp $	*/
+/*	$OpenBSD: mib.c,v 1.47 2011/09/16 20:52:48 yuo Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -1348,7 +1348,7 @@ static const char * const sensor_drive_s[SENSOR_DRIVE_STATES] = {
 
 static const char * const sensor_unit_s[SENSOR_MAX_TYPES + 1] = {
 	"degC",	"RPM", "V DC", "V AC", "Ohm", "W", "A", "Wh", "Ah",
-	"", "", "%", "lx", "", "sec", ""
+	"", "", "%", "lx", "", "sec", "%RH", "Hz", "degree", ""
 };
 
 const char *
@@ -1378,6 +1378,7 @@ mib_sensorvalue(struct sensor *s)
 	case SENSOR_WATTHOUR:
 	case SENSOR_AMPHOUR:
 	case SENSOR_LUX:
+	case SENSOR_FREQ:
 		ret = asprintf(&v, "%.2f", s->value / 1000000.0);
 		break;
 	case SENSOR_INDICATOR:
@@ -1397,8 +1398,8 @@ mib_sensorvalue(struct sensor *s)
 		}
 		/* FALLTHROUGH */
 	case SENSOR_FANRPM:
+	case SENSOR_OHMS:
 	case SENSOR_INTEGER:
-	case SENSOR_FREQ:
 	default:
 		ret = asprintf(&v, "%lld", s->value);
 		break;
