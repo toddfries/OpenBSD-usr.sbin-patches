@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.233 2011/08/17 20:35:11 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.240 2011/09/19 13:10:47 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -21,6 +21,8 @@
 #define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
 #endif
 
+#include "filter.h"
+
 #define IMSG_SIZE_CHECK(p) do {					\
 		if (IMSG_DATA_SIZE(&imsg) != sizeof(*p))	\
 			fatalx("bad length imsg received");	\
@@ -35,13 +37,14 @@
 
 #define MAX_HOPS_COUNT		 100
 
-/* sizes include the tailing '\0' */
-#define MAX_LINE_SIZE		 1024
-#define MAX_LOCALPART_SIZE	 128
-#define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 #define MAX_TAG_SIZE		 32
+/* SYNC WITH filter.h		  */
+//#define MAX_LINE_SIZE		 1024
+//#define MAX_LOCALPART_SIZE	 128
+//#define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 
 /* return and forward path size */
+#define	MAX_FILTER_NAME		 32
 #define MAX_PATH_SIZE		 256
 #define MAX_RULEBUFFER_LEN	 256
 
@@ -49,6 +52,7 @@
 #define SMTPD_QUEUE_MAXINTERVAL	 (4 * 60 * 60)
 #define SMTPD_QUEUE_EXPIRY	 (4 * 24 * 60 * 60)
 #define SMTPD_USER		 "_smtpd"
+#define SMTPD_FILTER_USER      	 "_smtpmfa"
 #define SMTPD_SOCKET		 "/var/run/smtpd.sock"
 #define SMTPD_BANNER		 "220 %s ESMTP OpenSMTPD"
 #define SMTPD_SESSION_TIMEOUT	 300
@@ -82,7 +86,7 @@
 #define FAST_RESPONSES		2
 
 /* max len of any smtp line */
-#define	SMTP_LINE_MAX		16384
+#define	SMTP_LINE_MAX		1024
 
 #define F_STARTTLS		 0x01
 #define F_SMTPS			 0x02
@@ -99,7 +103,6 @@
 	((s)->s_l->flags & F_AUTH && (s)->s_flags & F_SECURE && \
 	 !((s)->s_flags & F_AUTHENTICATED))
 
-#define SET_IF_GREATER(x,y) do { y = MAX(x,y); } while(0)
 		
 
 typedef u_int32_t	objid_t;
@@ -130,6 +133,7 @@ enum imsg_type {
 	IMSG_CONF_MAP_CONTENT,
 	IMSG_CONF_RULE,
 	IMSG_CONF_RULE_SOURCE,
+	IMSG_CONF_FILTER,
 	IMSG_CONF_END,
 	IMSG_CONF_RELOAD,
 	IMSG_LKA_MAIL,
@@ -138,8 +142,11 @@ enum imsg_type {
 	IMSG_LKA_RULEMATCH,
 	IMSG_MDA_SESS_NEW,
 	IMSG_MDA_DONE,
-	IMSG_MFA_RCPT,
+
+	IMSG_MFA_HELO,
 	IMSG_MFA_MAIL,
+	IMSG_MFA_RCPT,
+	IMSG_MFA_DATALINE,
 
 	IMSG_QUEUE_CREATE_MESSAGE,
 	IMSG_QUEUE_SUBMIT_ENVELOPE,
@@ -337,7 +344,6 @@ struct mailaddr {
 	char	domain[MAX_DOMAINPART_SIZE];
 };
 
-
 enum delivery_type {
 	D_INVALID = 0,
 	D_MDA,
@@ -389,7 +395,7 @@ struct delivery {
 
 	char				helo[MAXHOSTNAMELEN];
 	char				hostname[MAXHOSTNAMELEN];
-	char				errorline[MAX_LINE_SIZE];
+	char				errorline[MAX_LINE_SIZE + 1];
 	struct sockaddr_storage		ss;
 
 	struct mailaddr			from;
@@ -453,7 +459,7 @@ enum child_type {
 	CHILD_INVALID,
 	CHILD_DAEMON,
 	CHILD_MDA,
-	CHILD_ENQUEUE_OFFLINE
+	CHILD_ENQUEUE_OFFLINE,
 };
 
 struct child {
@@ -517,7 +523,7 @@ struct listener {
 struct auth {
 	u_int64_t	 id;
 	char		 user[MAXLOGNAME];
-	char		 pass[MAX_LINE_SIZE];
+	char		 pass[MAX_LINE_SIZE + 1];
 	int		 success;
 };
 
@@ -583,13 +589,13 @@ struct ramqueue_envelope {
 	RB_ENTRY(ramqueue_envelope)	 evptree_entry;
 	struct ramqueue_batch		*rq_batch;
 	struct ramqueue_message		*rq_msg;
+	struct ramqueue_host		*rq_host;
 	u_int64_t      			 evpid;
 	time_t				 sched;
 };
 struct ramqueue_message {
 	RB_ENTRY(ramqueue_message)		msgtree_entry;
 	RB_HEAD(evptree, ramqueue_envelope)	evptree;
-	struct ramqueue_host		       *rq_host;
 	u_int32_t				msgid;
 };
 struct ramqueue {
@@ -628,6 +634,8 @@ struct smtpd {
 	struct ramqueue				 sc_rqueue;
 	struct queue_backend			*sc_queue;
 
+	TAILQ_HEAD(filterlist, filter)		*sc_filters;
+
 	TAILQ_HEAD(listenerlist, listener)	*sc_listeners;
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
 	TAILQ_HEAD(rulelist, rule)		*sc_rules, *sc_rules_reload;
@@ -635,44 +643,62 @@ struct smtpd {
 	SPLAY_HEAD(ssltree, ssl)		*sc_ssl;
 	SPLAY_HEAD(childtree, child)		 children;
 	SPLAY_HEAD(lkatree, lka_session)	 lka_sessions;
+	SPLAY_HEAD(mfatree, mfa_session)	 mfa_sessions;
 	SPLAY_HEAD(mtatree, mta_session)	 mta_sessions;
 	LIST_HEAD(mdalist, mda_session)		 mda_sessions;
 
 	struct stats				*stats;
+	u_int64_t				 filtermask;
+};
+
+enum {
+	STATS_SMTP_SESSION = 0,
+	STATS_SMTP_SESSION_INET4,
+	STATS_SMTP_SESSION_INET6,
+	STATS_SMTP_SMTPS,
+	STATS_SMTP_STARTTLS,
+
+	STATS_MTA_SESSION,
+
+	STATS_MDA_SESSION,
+
+	STATS_CONTROL_SESSION,
+
+	STATS_LKA_SESSION,
+	STATS_LKA_SESSION_MX,
+	STATS_LKA_SESSION_HOST,
+	STATS_LKA_SESSION_CNAME,
+	STATS_LKA_FAILURE,
+
+	STATS_RUNNER,
+	STATS_RUNNER_BOUNCES,
+
+	STATS_QUEUE_LOCAL,
+	STATS_QUEUE_REMOTE,
+
+	STATS_RAMQUEUE_ENVELOPE,
+	STATS_RAMQUEUE_MESSAGE,
+	STATS_RAMQUEUE_BATCH,
+	STATS_RAMQUEUE_HOST,
+
+	STATS_MAX,
+};
+
+#define STAT_COUNT	0
+#define STAT_ACTIVE	1
+#define STAT_MAXACTIVE	2
+
+struct	stat_counter {
+	size_t	count;
+	size_t	active;
+	size_t	maxactive;
 };
 
 struct s_parent {
 	time_t		start;
 };
 
-struct s_queue {
-	size_t		inserts_local;
-	size_t		inserts_remote;
-};
-
-struct s_runner {
-	size_t		active;
-	size_t		maxactive;
-	size_t		bounces_active;
-	size_t		bounces_maxactive;
-	size_t		bounces;
-};
-
 struct s_session {
-	size_t		sessions;
-	size_t		sessions_inet4;
-	size_t		sessions_inet6;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-
-	size_t		smtps;
-	size_t		smtps_active;
-	size_t		smtps_maxactive;
-
-	size_t		starttls;
-	size_t		starttls_active;
-	size_t		starttls_maxactive;
-
 	size_t		read_error;
 	size_t		read_timeout;
 	size_t		read_eof;
@@ -685,49 +711,12 @@ struct s_session {
 	size_t		delays;
 };
 
-struct s_mda {
-	size_t		sessions;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-};
-
-struct s_control {
-	size_t		sessions;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-};
-
-struct s_lka {
-	size_t		queries;
-	size_t		queries_active;
-	size_t		queries_maxactive;
-	size_t		queries_mx;
-	size_t		queries_host;
-	size_t		queries_cname;
-	size_t		queries_failure;
-};
-
-struct s_ramqueue {
-	size_t		hosts;
-	size_t		batches;
-	size_t		messages;
-	size_t		envelopes;
-	size_t		hosts_max;
-	size_t		batches_max;
-	size_t		messages_max;
-	size_t		envelopes_max;
-};
-
 struct stats {
 	struct s_parent		 parent;
-	struct s_queue		 queue;
-	struct s_runner		 runner;
 	struct s_session	 mta;
-	struct s_mda		 mda;
 	struct s_session	 smtp;
-	struct s_control	 control;
-	struct s_lka		 lka;
-	struct s_ramqueue	 ramqueue;
+
+	struct stat_counter	 counters[STATS_MAX];
 };
 
 struct reload {
@@ -742,7 +731,8 @@ struct submit_status {
 		struct mailaddr		 maddr;
 		u_int32_t		 msgid;
 		u_int64_t		 evpid;
-		char			 errormsg[MAX_LINE_SIZE];
+		char			 errormsg[MAX_LINE_SIZE + 1];
+		char			 dataline[MAX_LINE_SIZE + 1];
 	}				 u;
 	enum delivery_flags		 flags;
 	struct sockaddr_storage		 ss;
@@ -817,6 +807,25 @@ struct lka_session {
 	u_int32_t			 pending;
 	enum lka_session_flags		 flags;
 	struct submit_status		 ss;
+};
+
+struct filter {
+	TAILQ_ENTRY(filter)     f_entry;
+	pid_t			pid;
+	struct event		ev;
+	struct imsgbuf		*ibuf;
+	char			name[MAX_FILTER_NAME];
+	char			path[MAXPATHLEN];
+};
+
+struct mfa_session {
+	SPLAY_ENTRY(mfa_session)	 nodes;
+	u_int64_t			 id;
+
+	enum session_state		 state;
+	struct submit_status		 ss;
+	struct filter			*filter;
+	struct filter_msg		 fm;
 };
 
 enum mta_state {
@@ -1046,7 +1055,8 @@ pid_t mda(void);
 
 /* mfa.c */
 pid_t mfa(void);
-
+int mfa_session_cmp(struct mfa_session *, struct mfa_session *);
+SPLAY_PROTOTYPE(mfatree, mfa_session, nodes, mfa_session_cmp);
 
 /* mta.c */
 pid_t mta(void);
@@ -1171,6 +1181,12 @@ SPLAY_PROTOTYPE(ssltree, ssl, ssl_nodes, ssl_cmp);
 /* ssl_privsep.c */
 int	 ssl_ctx_use_private_key(void *, char *, off_t);
 int	 ssl_ctx_use_certificate_chain(void *, char *, off_t);
+
+/* stats.c */
+void	stat_init(struct stat_counter *, int);
+size_t	stat_get(int, int);
+size_t	stat_increment(int);
+size_t	stat_decrement(int);
 
 
 /* user_backend.c */
