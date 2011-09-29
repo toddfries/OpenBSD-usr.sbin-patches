@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.138 2011/05/20 09:43:53 reyk Exp $	*/
+/*	$OpenBSD: relay.c,v 1.143 2011/09/21 18:45:40 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -77,9 +77,11 @@ u_int32_t	 relay_hash_addr(struct sockaddr_storage *, u_int32_t);
 
 void		 relay_write(struct bufferevent *, void *);
 void		 relay_read(struct bufferevent *, void *);
-int		 relay_splicelen(struct ctl_relay_event *);
 void		 relay_error(struct bufferevent *, short, void *);
 void		 relay_dump(struct ctl_relay_event *, const void *, size_t);
+
+int		 relay_splice(struct ctl_relay_event *);
+int		 relay_splicelen(struct ctl_relay_event *);
 
 int		 relay_resolve(struct ctl_relay_event *,
 		    struct protonode *, struct protonode *);
@@ -675,26 +677,10 @@ relay_connected(int fd, short sig, void *arg)
 		}
 		break;
 	case RELAY_PROTO_TCP:
-		if ((proto->tcpflags & TCPFLAG_NSPLICE) ||
-		    (rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)))
-			break;
-		if (setsockopt(con->se_in.s, SOL_SOCKET, SO_SPLICE,
-		    &con->se_out.s, sizeof(int)) == -1) {
-			log_debug("%s: session %d: splice forward failed: %s",
-			    __func__, con->se_id, strerror(errno));
-			return;
-		}
-		con->se_in.splicelen = 0;
-		if (setsockopt(con->se_out.s, SOL_SOCKET, SO_SPLICE,
-		    &con->se_in.s, sizeof(int)) == -1) {
-			log_debug("%s: session %d: splice backward failed: %s",
-			    __func__, con->se_id, strerror(errno));
-			return;
-		}
-		con->se_out.splicelen = 0;
+		/* Use defaults */
 		break;
 	default:
-		fatalx("relay_input: unknown protocol");
+		fatalx("relay_connected: unknown protocol");
 	}
 
 	/*
@@ -719,6 +705,9 @@ relay_connected(int fd, short sig, void *arg)
 	bufferevent_settimeout(bev,
 	    rlay->rl_conf.timeout.tv_sec, rlay->rl_conf.timeout.tv_sec);
 	bufferevent_enable(bev, EV_READ|EV_WRITE);
+
+	if (relay_splice(&con->se_out) == -1)
+		relay_close(con, strerror(errno));
 }
 
 void
@@ -766,6 +755,9 @@ relay_input(struct rsession *con)
 	bufferevent_settimeout(con->se_in.bev,
 	    rlay->rl_conf.timeout.tv_sec, rlay->rl_conf.timeout.tv_sec);
 	bufferevent_enable(con->se_in.bev, EV_READ|EV_WRITE);
+
+	if (relay_splice(&con->se_in) == -1)
+		relay_close(con, strerror(errno));
 }
 
 void
@@ -1056,8 +1048,7 @@ relay_handle_http(struct ctl_relay_event *cre, struct protonode *proot,
 		ret = PN_PASS;
 		break;
 	case NODE_ACTION_LOG:
-		DPRINTF("%s: log '%s: %s'", __func__,
-		    pn->key, pk->value);
+		log_info("%s: log '%s: %s'", __func__, pn->key, pk->value);
 		ret = PN_PASS;
 		break;
 	case NODE_ACTION_MARK:
@@ -1842,16 +1833,46 @@ relay_close_http(struct rsession *con, u_int code, const char *msg,
 }
 
 int
+relay_splice(struct ctl_relay_event *cre)
+{
+	struct rsession		*con = cre->con;
+	struct relay		*rlay = (struct relay *)con->se_relay;
+	struct protocol		*proto = rlay->rl_proto;
+	struct splice		 sp;
+
+	if ((rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)) ||
+	    (proto->tcpflags & TCPFLAG_NSPLICE))
+		return (0);
+
+	if (cre->bev->readcb != relay_read)
+		return (0);
+
+	bzero(&sp, sizeof(sp));
+	sp.sp_fd = cre->dst->s;
+	sp.sp_idle = rlay->rl_conf.timeout;
+	if (setsockopt(cre->s, SOL_SOCKET, SO_SPLICE, &sp, sizeof(sp)) == -1) {
+		log_debug("%s: session %d: splice dir %d failed: %s",
+		    __func__, con->se_id, cre->dir, strerror(errno));
+		return (-1);
+	}
+	cre->splicelen = 0;
+	DPRINTF("%s: session %d: splice dir %d successful",
+	    __func__, con->se_id, cre->dir);
+	return (1);
+}
+
+int
 relay_splicelen(struct ctl_relay_event *cre)
 {
-	struct rsession *con = cre->con;
-	off_t len;
-	socklen_t optlen;
+	struct rsession		*con = cre->con;
+	off_t			 len;
+	socklen_t		 optlen;
 
 	optlen = sizeof(len);
 	if (getsockopt(cre->s, SOL_SOCKET, SO_SPLICE, &len, &optlen) == -1) {
-		relay_close(con, strerror(errno));
-		return (0);
+		log_debug("%s: session %d: splice dir %d get length failed: %s",
+		    __func__, con->se_id, cre->dir, strerror(errno));
+		return (-1);
 	}
 	if (len > cre->splicelen) {
 		cre->splicelen = len;
@@ -1866,22 +1887,41 @@ relay_error(struct bufferevent *bev, short error, void *arg)
 	struct ctl_relay_event *cre = (struct ctl_relay_event *)arg;
 	struct rsession *con = cre->con;
 	struct evbuffer *dst;
-	struct timeval tv, tv_now;
 
 	if (error & EVBUFFER_TIMEOUT) {
-		if (gettimeofday(&tv_now, NULL) == -1) {
-			relay_close(con, strerror(errno));
-			return;
-		}
-		if (cre->splicelen >= 0 && relay_splicelen(cre))
-			con->se_tv_last = tv_now;
-		if (cre->dst->splicelen >= 0 && relay_splicelen(cre->dst))
-			con->se_tv_last = tv_now;
-		timersub(&tv_now, &con->se_tv_last, &tv);
-		if (timercmp(&tv, &con->se_relay->rl_conf.timeout, >=))
+		if (cre->splicelen >= 0) {
+			bufferevent_enable(bev, EV_READ);
+		} else if (cre->dst->splicelen >= 0) {
+			switch (relay_splicelen(cre->dst)) {
+			case -1:
+				goto fail;
+			case 0:
+				relay_close(con, "buffer event timeout");
+				break;
+			case 1:
+				bufferevent_enable(bev, EV_READ);
+				break;
+			}
+		} else {
 			relay_close(con, "buffer event timeout");
-		else
-			bufferevent_enable(cre->bev, EV_READ);
+		}
+		return;
+	}
+	if (error & EVBUFFER_ERROR && errno == ETIMEDOUT) {
+		if (cre->dst->splicelen >= 0) {
+			switch (relay_splicelen(cre->dst)) {
+			case -1:
+				goto fail;
+			case 0:
+				relay_close(con, "splice timeout");
+				return;
+			case 1:
+				bufferevent_enable(bev, EV_READ);
+				break;
+			}
+		}
+		if (relay_splice(cre) == -1)
+			goto fail;
 		return;
 	}
 	if (error & (EVBUFFER_READ|EVBUFFER_WRITE|EVBUFFER_EOF)) {
@@ -1892,12 +1932,16 @@ relay_error(struct bufferevent *bev, short error, void *arg)
 			dst = EVBUFFER_OUTPUT(cre->dst->bev);
 			if (EVBUFFER_LENGTH(dst))
 				return;
-		}
+		} else
+			return;
 
 		relay_close(con, "done");
 		return;
 	}
 	relay_close(con, "buffer event error");
+	return;
+ fail:
+	relay_close(con, strerror(errno));
 }
 
 void
@@ -2017,8 +2061,8 @@ relay_accept(int fd, short sig, void *arg)
 			return;
 		}
 
-		proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_NATLOOK, -1, cnl,
-		    sizeof(*cnl));
+		proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_NATLOOK, -1,
+		    cnl, sizeof(*cnl));
 
 		/* Schedule timeout */
 		evtimer_set(&con->se_ev, relay_natlook, con);
@@ -2279,7 +2323,8 @@ relay_connect(struct rsession *con)
 
 	if (errno == EINPROGRESS)
 		event_again(&con->se_ev, con->se_out.s, EV_WRITE|EV_TIMEOUT,
-		    relay_connected, &con->se_tv_start, &env->sc_timeout, con);
+		    relay_connected, &con->se_tv_start, &rlay->rl_conf.timeout,
+		    con);
 	else
 		relay_connected(con->se_out.s, EV_WRITE, con);
 
@@ -2625,7 +2670,7 @@ relay_ssl_transaction(struct rsession *con, struct ctl_relay_event *cre)
 	SSL			*ssl;
 	const SSL_METHOD	*method;
 	void			(*cb)(int, short, void *);
-	u_int			 flags = EV_TIMEOUT;
+	u_int			 flag;
 
 	ssl = SSL_new(rlay->rl_ssl_ctx);
 	if (ssl == NULL)
@@ -2634,11 +2679,11 @@ relay_ssl_transaction(struct rsession *con, struct ctl_relay_event *cre)
 	if (cre->dir == RELAY_DIR_REQUEST) {
 		cb = relay_ssl_accept;
 		method = SSLv23_server_method();
-		flags |= EV_READ;
+		flag = EV_READ;
 	} else {
 		cb = relay_ssl_connect;
 		method = SSLv23_client_method();
-		flags |= EV_WRITE;
+		flag = EV_WRITE;
 	}
 
 	if (!SSL_set_ssl_method(ssl, method))
@@ -2653,8 +2698,10 @@ relay_ssl_transaction(struct rsession *con, struct ctl_relay_event *cre)
 
 	cre->ssl = ssl;
 
-	event_again(&con->se_ev, cre->s, EV_TIMEOUT|flags,
-	    cb, &con->se_tv_start, &env->sc_timeout, con);
+	DPRINTF("%s: session %d: scheduling on %s", __func__, con->se_id,
+	    (flag == EV_READ) ? "EV_READ" : "EV_WRITE");
+	event_again(&con->se_ev, cre->s, EV_TIMEOUT|flag, cb,
+	    &con->se_tv_start, &rlay->rl_conf.timeout, con);
 	return;
 
  err:
@@ -2721,7 +2768,7 @@ retry:
 	DPRINTF("%s: session %d: scheduling on %s", __func__, con->se_id,
 	    (retry_flag == EV_READ) ? "EV_READ" : "EV_WRITE");
 	event_again(&con->se_ev, fd, EV_TIMEOUT|retry_flag, relay_ssl_accept,
-	    &con->se_tv_start, &env->sc_timeout, con);
+	    &con->se_tv_start, &rlay->rl_conf.timeout, con);
 }
 
 void
@@ -2780,7 +2827,7 @@ retry:
 	DPRINTF("%s: session %d: scheduling on %s", __func__, con->se_id,
 	    (retry_flag == EV_READ) ? "EV_READ" : "EV_WRITE");
 	event_again(&con->se_ev, fd, EV_TIMEOUT|retry_flag, relay_ssl_connect,
-	    &con->se_tv_start, &env->sc_timeout, con);
+	    &con->se_tv_start, &rlay->rl_conf.timeout, con);
 }
 
 void
