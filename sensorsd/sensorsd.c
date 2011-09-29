@@ -1,4 +1,4 @@
-/*	$OpenBSD: sensorsd.c,v 1.49 2010/04/21 04:07:13 deraadt Exp $ */
+/*	$OpenBSD: sensorsd.c,v 1.51 2011/09/16 17:45:06 yuo Exp $ */
 
 /*
  * Copyright (c) 2003 Henning Brauer <henning@openbsd.org>
@@ -626,6 +626,9 @@ print_sensor(enum sensor_type type, int64_t value)
 	case SENSOR_VOLTS_DC:
 		snprintf(fbuf, RFBUFSIZ, "%.2f V DC", value / 1000000.0);
 		break;
+	case SENSOR_VOLTS_AC:
+		snprintf(fbuf, RFBUFSIZ, "%.2f V AC", value / 1000000.0);
+		break;
 	case SENSOR_WATTS:
 		snprintf(fbuf, RFBUFSIZ, "%.2f W", value / 1000000.0);
 		break;
@@ -658,6 +661,12 @@ print_sensor(enum sensor_type type, int64_t value)
 		break;
 	case SENSOR_TIMEDELTA:
 		snprintf(fbuf, RFBUFSIZ, "%.6f secs", value / 1000000000.0);
+		break;
+	case SENSOR_HUMIDITY:
+		snprintf(fbuf, RFBUFSIZ, "%.2f%%", value / 1000.0);
+		break;
+	case SENSOR_FREQ:
+		snprintf(fbuf, RFBUFSIZ, "%.2f Hz", value / 1000000.0);
 		break;
 	case SENSOR_ANGLE:
 		snprintf(fbuf, RFBUFSIZ, "%lld", value);
@@ -752,6 +761,7 @@ get_val(char *buf, int upper, enum sensor_type type)
 		rval = val;
 		break;
 	case SENSOR_VOLTS_DC:
+	case SENSOR_VOLTS_AC:
 		if (*p != 'V')
 			errx(1, "unknown unit %s for voltage sensor", p);
 		rval = val * 1000 * 1000;
@@ -770,10 +780,14 @@ get_val(char *buf, int upper, enum sensor_type type)
 	case SENSOR_WATTHOUR:
 	case SENSOR_AMPHOUR:
 	case SENSOR_LUX:
+	case SENSOR_FREQ:
 		rval = val * 1000 * 1000;
 		break;
 	case SENSOR_TIMEDELTA:
 		rval = val * 1000 * 1000 * 1000;
+		break;
+	case SENSOR_HUMIDITY:
+		rval = val * 1000.0;
 		break;
 	default:
 		errx(1, "unsupported sensor type");
