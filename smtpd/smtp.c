@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.86 2011/05/16 21:05:52 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.91 2011/09/01 20:17:47 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -29,6 +29,7 @@
 #include <imsg.h>
 #include <netdb.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,9 +80,11 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 
 	if (iev->proc == PROC_MFA) {
 		switch (imsg->hdr.type) {
-		case IMSG_MFA_RCPT:
+		case IMSG_MFA_HELO:
 		case IMSG_MFA_MAIL:
-			log_debug("smtp: got imsg_mfa_mail/rcpt");
+		case IMSG_MFA_RCPT:
+			log_debug("smtp: got imsg_mfa_helo/mail/rcpt");
+		case IMSG_MFA_DATALINE:
 			ss = imsg->data;
 			s = session_lookup(ss->id);
 			if (s == NULL)
@@ -530,12 +533,6 @@ smtp_new(struct listener *l)
 	if (env->sc_opts & SMTPD_SMTP_PAUSED)
 		fatalx("smtp_new: unexpected client");
 
-	if (env->stats->smtp.sessions_active >= env->sc_maxconn) {
-		log_warnx("client limit hit, disabling incoming connections");
-		smtp_pause();
-		return (NULL);
-	}
-	
 	if ((s = calloc(1, sizeof(*s))) == NULL)
 		fatal(NULL);
 	s->s_id = generate_uid();
@@ -543,17 +540,15 @@ smtp_new(struct listener *l)
 	strlcpy(s->s_msg.tag, l->tag, sizeof(s->s_msg.tag));
 	SPLAY_INSERT(sessiontree, &env->sc_sessions, s);
 
-	env->stats->smtp.sessions++;
-	env->stats->smtp.sessions_active++;
+	if (stat_increment(STATS_SMTP_SESSION) >= env->sc_maxconn) {
+		log_warnx("client limit hit, disabling incoming connections");
+		smtp_pause();
+	}
 
 	if (s->s_l->ss.ss_family == AF_INET)
-		env->stats->smtp.sessions_inet4++;
+		stat_increment(STATS_SMTP_SESSION_INET4);
 	if (s->s_l->ss.ss_family == AF_INET6)
-		env->stats->smtp.sessions_inet6++;
-
-	SET_IF_GREATER(env->stats->smtp.sessions_active,
-		env->stats->smtp.sessions_maxactive);
-
+		stat_increment(STATS_SMTP_SESSION_INET6);
 
 	return (s);
 }
