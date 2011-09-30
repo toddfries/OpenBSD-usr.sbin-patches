@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageInfo.pm,v 1.53 2010/12/29 13:03:05 espie Exp $
+# $OpenBSD: PackageInfo.pm,v 1.56 2011/08/23 10:32:27 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -23,8 +23,8 @@ require Exporter;
 our @ISA=qw(Exporter);
 our @EXPORT=qw(installed_packages installed_info installed_name info_names is_info_name installed_stems
     lock_db unlock_db
-    add_installed delete_installed is_installed borked_package CONTENTS COMMENT DESC INSTALL DEINSTALL REQUIRE
-    REQUIRED_BY REQUIRING DISPLAY UNDISPLAY MTREE_DIRS);
+    add_installed delete_installed is_installed borked_package CONTENTS COMMENT DESC
+    REQUIRED_BY REQUIRING DISPLAY UNDISPLAY);
 
 use OpenBSD::PackageName;
 use OpenBSD::Paths;
@@ -32,21 +32,17 @@ use constant {
 	CONTENTS => '+CONTENTS',
 	COMMENT => '+COMMENT',
 	DESC => '+DESC',
-	INSTALL => '+INSTALL',
-	DEINSTALL => '+DEINSTALL',
-	REQUIRE => '+REQUIRE',
 	REQUIRED_BY => '+REQUIRED_BY',
 	REQUIRING => '+REQUIRING',
 	DISPLAY => '+DISPLAY',
-	UNDISPLAY => '+UNDISPLAY',
-	MTREE_DIRS => '+MTREE_DIRS' };
+	UNDISPLAY => '+UNDISPLAY'};
 
 use Fcntl qw/:flock/;
 my $pkg_db = $ENV{"PKG_DBDIR"} || OpenBSD::Paths->pkgdb;
 
 my ($list, $stemlist);
 
-our @info = (CONTENTS, COMMENT, DESC, REQUIRE, INSTALL, DEINSTALL, REQUIRED_BY, REQUIRING, DISPLAY, UNDISPLAY, MTREE_DIRS);
+our @info = (CONTENTS, COMMENT, DESC, REQUIRED_BY, REQUIRING, DISPLAY, UNDISPLAY);
 
 our %info = ();
 for my $i (@info) {
@@ -125,7 +121,8 @@ sub installed_info
 
 sub installed_contents
 {
-	return installed_info(shift).CONTENTS;
+	my $name = shift;
+	return installed_info($name).CONTENTS;
 }
 
 sub borked_package
@@ -213,70 +210,6 @@ sub unlock_db()
 		flock($dlock, LOCK_UN);
 		close($dlock);
 	}
-}
-
-
-sub solve_installed_names
-{
-	my ($old, $new, $msg, $state) = @_;
-
-	my $bad = 0;
-	my $seen = {};
-
-	for my $pkgname (@$old) {
-	    $pkgname =~ s/\.tgz$//o;
-	    if (is_installed($pkgname)) {
-	    	if (!$seen->{$pkgname}) {
-		    $seen->{$pkgname} = 1;
-		    push(@$new, installed_name($pkgname));
-		}
-	    } else {
-		if (OpenBSD::PackageName::is_stem($pkgname)) {
-		    require OpenBSD::Search;
-
-		    my $r = $state->repo->installed->match_locations(OpenBSD::Search::Stem->new($pkgname));
-		    if (@$r == 0) {
-			print "Can't resolve $pkgname to an installed package name\n";
-			$bad = 1;
-		    } elsif (@$r == 1) {
-			if (!$seen->{$r->[0]}) {
-			    $seen->{$r->[0]} = 1;
-			    push(@$new, $r->[0]->name);
-			}
-		    } else {
-		    	# try to see if we already solved the ambiguity
-			my $found = 0;
-			for my $p (@$r) {
-			    if ($seen->{$p}) {
-				$found = 1;
-				last;
-			    }
-			}
-			next if $found;
-
-			if ($state->defines('ambiguous')) {
-			    my @l = map {$_->name} @$r;
-			    $state->say("Ambiguous: #1 could be #2",
-				$pkgname, join(' ', @l));
-			    $state->say($msg);
-			    push(@$new, @l);
-			    for my $p (@$r) {
-			    	$seen->{$p} = 1;
-			    }
-			} else {
-			    my $result = $state->choose_location($pkgname, $r);
-			    if (defined $result) {
-			    	push(@$new, $result->name);
-				$seen->{$result} = 1;
-			    } else {
-				$bad = 1;
-			    }
-			}
-		    }
-		}
-	    }
-    	}
-	return $bad;
 }
 
 1;

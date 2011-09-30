@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.113 2011/01/23 06:56:53 espie Exp $
+# $OpenBSD: Delete.pm,v 1.117 2011/09/17 15:33:56 schwarze Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -50,7 +50,8 @@ sub manpages_unindex
 		my @l = map { $destdir.$_ } @$v;
 		if ($state->{not}) {
 			$state->say("Removing manpages in #1: #2",
-			    $destdir.$k, join(@l)) if $state->verbose >= 2;
+			    $destdir.$k, join(' ', @l))
+				 if $state->verbose >= 2;
 		} else {
 			eval { OpenBSD::Makewhatis::remove($destdir.$k, \@l,
 			    $state); };
@@ -119,8 +120,6 @@ sub delete_package
 	$state->vstat->synchronize;
 
 	delete_plist($plist, $state);
-	$state->{done}++;
-	$state->progress->next($state->ntogo);
 }
 
 sub unregister_dependencies
@@ -378,10 +377,11 @@ sub prepare_for_deletion
 
 	my $fname = $state->{destdir}.$self->fullname;
 	my $s;
+	my $size = $self->{tied} ? 0 : $self->{size};
 	if ($state->{delete_first}) {
-		$s = $state->vstat->remove_first($fname, $self->{size});
+		$s = $state->vstat->remove_first($fname, $size);
 	} else {
-		$s = $state->vstat->remove($fname, $self->{size});
+		$s = $state->vstat->remove($fname, $size);
 	}
 	return unless defined $s;
 	if ($s->ro) {
@@ -666,14 +666,6 @@ sub delete
 	my ($self, $state) = @_;
 	$self->SUPER::delete($state);
 	$self->mark_ldconfig_directory($state);
-}
-
-package OpenBSD::PackingElement::FDEINSTALL;
-sub delete
-{
-	my ($self, $state) = @_;
-
-	$self->run($state, "DEINSTALL");
 }
 
 package OpenBSD::PackingElement::Depend;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ssl.c,v 1.32 2011/03/15 19:24:55 gilles Exp $	*/
+/*	$OpenBSD: ssl.c,v 1.37 2011/09/01 19:56:49 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -58,7 +58,7 @@ int	 ssl_buf_read(SSL *, struct ibuf_read *);
 int	 ssl_buf_write(SSL *, struct msgbuf *);
 
 DH	*get_dh1024(void);
-DH	*get_dh_from_memory(u_int8_t *, size_t);
+DH	*get_dh_from_memory(char *, size_t);
 void	 ssl_set_ephemeral_key_exchange(SSL_CTX *, DH *);
 
 extern void	bufferevent_read_pressure_cb(struct evbuffer *, size_t,
@@ -112,11 +112,12 @@ ssl_connect(int fd, short event, void *p)
 	s->s_flags |= F_SECURE;
 
 	if (s->s_flags & F_PEERHASTLS) {
-		session_respond(s, "EHLO %s", s->s_env->sc_hostname);
+		session_respond(s, "EHLO %s", env->sc_hostname);
 	}
 
 	return;
 retry:
+	event_set(&s->s_ev, s->s_fd, EV_TIMEOUT|retry_flag, ssl_connect, s);
 	event_add(&s->s_ev, &s->s_tv);
 }
 
@@ -346,7 +347,7 @@ ssl_ctx_create(void)
 }
 
 int
-ssl_load_certfile(struct smtpd *env, const char *name, u_int8_t flags)
+ssl_load_certfile(const char *name, u_int8_t flags)
 {
 	struct ssl	*s;
 	struct ssl	 key;
@@ -390,8 +391,8 @@ ssl_load_certfile(struct smtpd *env, const char *name, u_int8_t flags)
 
 	if ((s->ssl_dhparams = ssl_load_file(certfile,
 		    &s->ssl_dhparams_len)) == NULL) {
-		log_warnx("no DH parameters found in %s", certfile);
-		log_warnx("using built-in DH parameters");
+		log_info("no DH parameters found in %s", certfile);
+		log_info("using built-in DH parameters");
 	}
 
 	SPLAY_INSERT(ssltree, env->sc_ssl, s);
@@ -423,7 +424,7 @@ ssl_init(void)
 }
 
 void
-ssl_setup(struct smtpd *env, struct listener *l)
+ssl_setup(struct listener *l)
 {
 	struct ssl	key;
 	DH *dh;
@@ -535,18 +536,11 @@ ssl_session_accept(int fd, short event, void *p)
 	log_info("ssl_session_accept: accepted ssl client");
 	s->s_flags |= F_SECURE;
 
-	if (s->s_l->flags & F_SMTPS) {
-		s->s_env->stats->smtp.smtps++;
-		s->s_env->stats->smtp.smtps_active++;
-		SET_IF_GREATER(s->s_env->stats->smtp.smtps_active,
-			s->s_env->stats->smtp.smtps_maxactive);
-	}
-	if (s->s_l->flags & F_STARTTLS) {
-		s->s_env->stats->smtp.starttls++;
-		s->s_env->stats->smtp.starttls_active++;
-		SET_IF_GREATER(s->s_env->stats->smtp.starttls_active,
-			s->s_env->stats->smtp.starttls_maxactive);
-	}
+	if (s->s_l->flags & F_SMTPS)
+		stat_increment(STATS_SMTP_SMTPS);
+
+	if (s->s_l->flags & F_STARTTLS)
+		stat_increment(STATS_SMTP_STARTTLS);
 
 	session_bufferevent_new(s);
 	event_set(&s->s_bev->ev_read, s->s_fd, EV_READ, ssl_read, s->s_bev);
@@ -643,20 +637,19 @@ ssl_session_destroy(struct session *s)
 		return;
 	}
 
-	if (s->s_l->flags & F_SMTPS) {
+	if (s->s_l->flags & F_SMTPS)
 		if (s->s_flags & F_SECURE)
-			s->s_env->stats->smtp.smtps_active--;
-	}
-	if (s->s_l->flags & F_STARTTLS) {
+			stat_decrement(STATS_SMTP_SMTPS);
+
+	if (s->s_l->flags & F_STARTTLS)
 		if (s->s_flags & F_SECURE)
-			s->s_env->stats->smtp.starttls_active--;
-	}
+			stat_decrement(STATS_SMTP_STARTTLS);
 }
 
 int
 ssl_buf_read(SSL *s, struct ibuf_read *r)
 {
-	char	*buf = r->buf + r->wpos;
+	u_char	*buf = r->buf + r->wpos;
 	ssize_t	 bufsz = sizeof(r->buf) - r->wpos;
 	int	 ret;
 
@@ -737,7 +730,7 @@ get_dh1024(void)
 }
 
 DH *
-get_dh_from_memory(u_int8_t *params, size_t len)
+get_dh_from_memory(char *params, size_t len)
 {
 	BIO *mem;
         DH *dh;

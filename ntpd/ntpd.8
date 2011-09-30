@@ -1,4 +1,4 @@
-.\" $OpenBSD: ntpd.8,v 1.27 2009/02/12 01:33:37 stevesk Exp $
+.\" $OpenBSD: ntpd.8,v 1.31 2011/09/17 10:22:00 jmc Exp $
 .\"
 .\" Copyright (c) 2003, 2004, 2006 Henning Brauer <henning@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 .\" OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: February 12 2009 $
+.Dd $Mdocdate: September 17 2011 $
 .Dt NTPD 8
 .Os
 .Sh NAME
@@ -60,10 +60,11 @@ Only check the configuration file for validity.
 Do not set the time immediately at startup.
 This is the default.
 .It Fl s
-Set the time immediately at startup.
-Allows for a large time correction,
-eliminating the need to run
-.Xr rdate 8 .
+Try to set the time immediately at startup, as opposed to slowly adjusting the
+clock.
+.Nm
+will stay in the foreground for up to 15 seconds waiting for one of the
+configured NTP servers to reply.
 .It Fl v
 This option allows
 .Nm
@@ -136,8 +137,7 @@ Drift file.
 .Xr ntpd.conf 5 ,
 .Xr rc 8 ,
 .Xr rc.conf 8 ,
-.Xr rdate 8 ,
-.Xr timed 8
+.Xr rdate 8
 .Rs
 .%R RFC 1305
 .%T "Network Time Protocol (Version 3)"

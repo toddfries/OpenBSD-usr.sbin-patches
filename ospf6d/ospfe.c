@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.33 2010/08/22 20:27:52 bluhm Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.37 2011/07/07 17:10:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -178,7 +178,7 @@ ospfe(struct ospfd_conf *xconf, int pipe_parent2ospfe[2], int pipe_ospfe2rde[2],
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
 
-	if ((pkt_ptr = calloc(1, IBUF_READ_SIZE)) == NULL)
+	if ((pkt_ptr = calloc(1, READ_BUF_SIZE)) == NULL)
 		fatal("ospfe");
 
 	/* start interfaces */
@@ -286,11 +286,12 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 			iface = if_find(ifp->ifindex);
 			if (iface == NULL)
 				fatalx("interface lost in ospfe");
-			iface->flags = ifp->flags;
-			iface->linkstate = ifp->linkstate;
-			iface->nh_reachable = ifp->nh_reachable;
 
-			if (iface->nh_reachable) {
+			if_update(iface, ifp->mtu, ifp->flags, ifp->media_type,
+			    ifp->linkstate, ifp->baudrate);
+			    
+			if ((iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate)) {
 				if_fsm(iface, IF_EVT_UP);
 				log_warnx("interface %s up", iface->name);
 			} else {
@@ -516,13 +517,13 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				 * virtual links
 				 */
 				LIST_FOREACH(area, &oeconf->area_list, entry) {
-				    if (area->stub)
-					    continue;
-				    LIST_FOREACH(iface, &area->iface_list,
-					entry) {
-					    noack += lsa_flood(iface, nbr,
-						&lsa_hdr, imsg.data);
-				    }
+					if (area->stub)
+						continue;
+					LIST_FOREACH(iface, &area->iface_list,
+					    entry) {
+						noack += lsa_flood(iface, nbr,
+						    &lsa_hdr, imsg.data);
+					}
 				}
 			} else if (lsa_hdr.type == htons(LSA_TYPE_LINK)) {
 				/*
@@ -804,7 +805,7 @@ orig_rtr_lsa_area(struct area *area)
 				rtr_link.nbr_iface_id = htonl(nbr->iface_id);
 				rtr_link.nbr_rtr_id = nbr->id.s_addr;
 				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 			}
 			continue;
 		case IF_TYPE_BROADCAST:
@@ -831,7 +832,7 @@ orig_rtr_lsa_area(struct area *area)
 					if (ibuf_add(buf, &rtr_link,
 					    sizeof(rtr_link)))
 						fatalx("orig_rtr_lsa: "
-						    "buf_add failed");
+						    "ibuf_add failed");
 					break;
 				}
 			}
@@ -855,7 +856,7 @@ orig_rtr_lsa_area(struct area *area)
 					rtr_link.metric = htons(iface->metric);
 				virtual = 1;
 				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 
 				log_debug("orig_rtr_lsa: virtual link, "
 				    "interface %s", iface->name);
@@ -869,7 +870,7 @@ orig_rtr_lsa_area(struct area *area)
 			rtr_link.type = LINK_TYPE_STUB_NET;
 			rtr_link.metric = htons(iface->metric);
 			if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-				fatalx("orig_rtr_lsa: buf_add failed");
+				fatalx("orig_rtr_lsa: ibuf_add failed");
 
 			LIST_FOREACH(nbr, &iface->nbr_list, entry) {
 				if (nbr != iface->self &&
@@ -891,7 +892,7 @@ orig_rtr_lsa_area(struct area *area)
 					if (ibuf_add(buf, &rtr_link,
 					    sizeof(rtr_link)))
 						fatalx("orig_rtr_lsa: "
-						    "buf_add failed");
+						    "ibuf_add failed");
 				}
 			}
 			continue;
@@ -985,7 +986,7 @@ orig_net_lsa(struct iface *iface)
 		}
 
 	if (num_rtr == 1) {
-		/* non transit net therefor no need to generate a net lsa */
+		/* non transit net therefore no need to generate a net lsa */
 		ibuf_free(buf);
 		return;
 	}
@@ -1143,8 +1144,8 @@ ospfe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 			if (idx == 0 || idx == iface->ifindex) {
 				ictl = if_to_ctl(iface);
 				imsg_compose_event(&c->iev,
-				    IMSG_CTL_SHOW_INTERFACE,
-				    0, 0, -1, ictl, sizeof(struct ctl_iface));
+				    IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
+				    ictl, sizeof(struct ctl_iface));
 			}
 }
 
@@ -1181,7 +1182,7 @@ ospfe_demote_area(struct area *area, int active)
 
 	bzero(&dmsg, sizeof(dmsg));
 	strlcpy(dmsg.demote_group, area->demote_group,
-	sizeof(dmsg.demote_group));
+	    sizeof(dmsg.demote_group));
 	dmsg.level = area->demote_level;
 	if (active)
 		dmsg.level = -dmsg.level;
@@ -1205,6 +1206,9 @@ ospfe_demote_iface(struct iface *iface, int active)
 		dmsg.level = -1;
 	else
 		dmsg.level = 1;
+
+	log_warnx("ospfe_demote_iface: group %s level %d", dmsg.demote_group,
+	    dmsg.level);
 
 	ospfe_imsg_compose_parent(IMSG_DEMOTE, 0, &dmsg, sizeof(dmsg));
 }

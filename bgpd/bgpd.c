@@ -1,4 +1,4 @@
-/*	$OpenBSD: bgpd.c,v 1.166 2010/09/02 14:03:21 sobrado Exp $ */
+/*	$OpenBSD: bgpd.c,v 1.168 2011/08/20 19:02:28 sthen Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -118,6 +118,7 @@ main(int argc, char *argv[])
 	bgpd_process = PROC_MAIN;
 
 	log_init(1);		/* log to stderr until daemonized */
+	log_verbose(1);
 
 	bzero(&conf, sizeof(conf));
 	LIST_INIT(&mrt_l);
@@ -183,6 +184,7 @@ main(int argc, char *argv[])
 		errx(1, "unknown user %s", BGPD_USER);
 
 	log_init(debug);
+	log_verbose(conf.opts & BGPD_OPT_VERBOSE);
 
 	if (!debug)
 		daemon(1, 0);
@@ -368,6 +370,8 @@ main(int argc, char *argv[])
 	free(ibuf_se);
 	msgbuf_clear(&ibuf_rde->w);
 	free(ibuf_rde);
+	free(rcname);
+	free(cname);
 
 	log_info("Terminating");
 	return (0);

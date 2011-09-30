@@ -1,4 +1,4 @@
-/*	$OpenBSD: interface.c,v 1.70 2010/07/03 04:44:52 guenther Exp $ */
+/*	$OpenBSD: interface.c,v 1.74 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -167,6 +167,7 @@ if_new(struct kif *kif, struct kif_addr *ka)
 	LIST_INIT(&iface->nbr_list);
 	TAILQ_INIT(&iface->ls_ack_list);
 	TAILQ_INIT(&iface->auth_md_list);
+	RB_INIT(&iface->lsa_tree);
 
 	iface->crypt_seq_num = arc4random() & 0x0fffffff;
 
@@ -189,7 +190,6 @@ if_new(struct kif *kif, struct kif_addr *ka)
 		iface->type = IF_TYPE_BROADCAST;
 	if (kif->flags & IFF_LOOPBACK) {
 		iface->type = IF_TYPE_POINTOPOINT;
-		iface->state = IF_STA_LOOPBACK;
 		iface->passive = 1;
 	}
 
@@ -257,7 +257,7 @@ if_init(struct ospfd_conf *xconf, struct iface *iface)
 		rdomain = 0;
 	else {
 		rdomain = ifr.ifr_rdomainid;
-		if (setsockopt(iface->fd, IPPROTO_IP, SO_RTABLE,
+		if (setsockopt(iface->fd, SOL_SOCKET, SO_RTABLE,
 		    &rdomain, sizeof(rdomain)) == -1)
 			fatal("failed to set rdomain");
 	}
@@ -339,9 +339,7 @@ if_act_start(struct iface *iface)
 	struct timeval		 now;
 
 	if (!((iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP))))
+	    LINK_STATE_IS_UP(iface->linkstate)))
 		return (0);
 
 	if (iface->media_type == IFT_CARP && iface->passive == 0) {
@@ -351,14 +349,18 @@ if_act_start(struct iface *iface)
 		iface->passive = 1;
 	}
 
+	gettimeofday(&now, NULL);
+	iface->uptime = now.tv_sec;
+
+	/* loopback interfaces have a special state and are passive */
+	if (iface->flags & IFF_LOOPBACK)
+		iface->state = IF_STA_LOOPBACK;
+
 	if (iface->passive) {
 		/* for an update of stub network entries */
 		orig_rtr_lsa(iface->area);
 		return (0);
 	}
-
-	gettimeofday(&now, NULL);
-	iface->uptime = now.tv_sec;
 
 	switch (iface->type) {
 	case IF_TYPE_POINTOPOINT:

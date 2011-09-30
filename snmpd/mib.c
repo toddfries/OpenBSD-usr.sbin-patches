@@ -1,4 +1,4 @@
-/*	$OpenBSD: mib.c,v 1.44 2011/04/10 03:20:59 guenther Exp $	*/
+/*	$OpenBSD: mib.c,v 1.47 2011/09/16 20:52:48 yuo Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@vantronix.net>
@@ -958,14 +958,14 @@ mib_iftable(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 		break;
 	case 8:
 		/* ifOperStatus */
-		if ((kif->if_flags & IFF_UP) == 0) {
+		if ((kif->if_flags & IFF_UP) == 0)
 			i = 2;	/* down(2) */
-		} else if (LINK_STATE_IS_UP(kif->if_link_state)) {
-			i = 1;	/* up(1) */
-		} else if (kif->if_link_state == LINK_STATE_DOWN) {
-			i = 7;	/* lowerLayerDown(7) or dormant(5)? */
-		} else
+		else if (kif->if_link_state == LINK_STATE_UNKNOWN)
 			i = 4;	/* unknown(4) */
+		else if (LINK_STATE_IS_UP(kif->if_link_state))
+			i = 1;	/* up(1) */
+		else
+			i = 7;	/* lowerLayerDown(7) or dormant(5)? */
 		ber = ber_add_integer(ber, i);
 		break;
 	case 9:
@@ -1348,7 +1348,7 @@ static const char * const sensor_drive_s[SENSOR_DRIVE_STATES] = {
 
 static const char * const sensor_unit_s[SENSOR_MAX_TYPES + 1] = {
 	"degC",	"RPM", "V DC", "V AC", "Ohm", "W", "A", "Wh", "Ah",
-	"", "", "%", "lx", "", "sec", ""
+	"", "", "%", "lx", "", "sec", "%RH", "Hz", "degree", ""
 };
 
 const char *
@@ -1378,6 +1378,7 @@ mib_sensorvalue(struct sensor *s)
 	case SENSOR_WATTHOUR:
 	case SENSOR_AMPHOUR:
 	case SENSOR_LUX:
+	case SENSOR_FREQ:
 		ret = asprintf(&v, "%.2f", s->value / 1000000.0);
 		break;
 	case SENSOR_INDICATOR:
@@ -1397,8 +1398,8 @@ mib_sensorvalue(struct sensor *s)
 		}
 		/* FALLTHROUGH */
 	case SENSOR_FANRPM:
+	case SENSOR_OHMS:
 	case SENSOR_INTEGER:
-	case SENSOR_FREQ:
 	default:
 		ret = asprintf(&v, "%lld", s->value);
 		break;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.80 2011/03/25 08:52:21 claudio Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.83 2011/07/04 04:34:14 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -252,7 +252,8 @@ int
 ospfe_imsg_compose_rde(int type, u_int32_t peerid, pid_t pid,
     void *data, u_int16_t datalen)
 {
-	return (imsg_compose_event(iev_rde, type, peerid, pid, -1, data, datalen));
+	return (imsg_compose_event(iev_rde, type, peerid, pid, -1,
+	    data, datalen));
 }
 
 /* ARGSUSED */
@@ -264,14 +265,12 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 	struct ifaddrdel	*ifc;
 	struct imsg	 imsg;
 	struct imsgev	*iev = bula;
-	struct imsgbuf	*ibuf;
+	struct imsgbuf	*ibuf = &iev->ibuf;
 	struct area	*area = NULL;
 	struct iface	*iface = NULL;
 	struct kif	*kif;
 	struct auth_md	 md;
 	int		 n, link_ok, stub_changed, shut = 0;
-
-	ibuf = &iev->ibuf;
 
 	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
@@ -297,10 +296,7 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 				fatalx("IFINFO imsg with wrong len");
 			kif = imsg.data;
 			link_ok = (kif->flags & IFF_UP) &&
-			    (LINK_STATE_IS_UP(kif->link_state) ||
-			    (kif->link_state == LINK_STATE_UNKNOWN &&
-			    kif->media_type != IFT_CARP));
-
+			    LINK_STATE_IS_UP(kif->link_state);
 
 			LIST_FOREACH(area, &oeconf->area_list, entry) {
 				LIST_FOREACH(iface, &area->iface_list, entry) {
@@ -376,6 +372,7 @@ ospfe_dispatch_main(int fd, short event, void *bula)
 			LIST_INIT(&niface->nbr_list);
 			TAILQ_INIT(&niface->ls_ack_list);
 			TAILQ_INIT(&niface->auth_md_list);
+			RB_INIT(&niface->lsa_tree);
 
 			niface->area = narea;
 			LIST_INSERT_HEAD(&narea->iface_list, niface, entry);
@@ -423,7 +420,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 {
 	struct lsa_hdr		 lsa_hdr;
 	struct imsgev		*iev = bula;
-	struct imsgbuf		*ibuf;
+	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct nbr		*nbr;
 	struct lsa_hdr		*lhp;
 	struct lsa_ref		*ref;
@@ -434,8 +431,6 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 	struct abr_rtr		 ar;
 	int			 n, noack = 0, shut = 0;
 	u_int16_t		 l, age;
-
-	ibuf = &iev->ibuf;
 
 	if (event & EV_READ) {
 		if ((n = imsg_read(ibuf)) == -1)
@@ -547,6 +542,12 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 						&lsa_hdr, imsg.data);
 				    }
 				}
+			} else if (lsa_hdr.type == LSA_TYPE_LINK_OPAQ) {
+				/*
+				 * Flood on interface only
+				 */
+				noack += lsa_flood(nbr->iface, nbr,
+				    &lsa_hdr, imsg.data);
 			} else {
 				/*
 				 * Flood on all area interfaces. For
@@ -679,6 +680,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				}
 			break;
 		case IMSG_CTL_AREA:
+		case IMSG_CTL_IFACE:
 		case IMSG_CTL_END:
 		case IMSG_CTL_SHOW_DATABASE:
 		case IMSG_CTL_SHOW_DB_EXT:
@@ -687,6 +689,7 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 		case IMSG_CTL_SHOW_DB_SELF:
 		case IMSG_CTL_SHOW_DB_SUM:
 		case IMSG_CTL_SHOW_DB_ASBR:
+		case IMSG_CTL_SHOW_DB_OPAQ:
 		case IMSG_CTL_SHOW_RIB:
 		case IMSG_CTL_SHOW_SUM:
 		case IMSG_CTL_SHOW_SUM_AREA:
@@ -784,7 +787,7 @@ orig_rtr_lsa(struct area *area)
 			rtr_link.metric = htons(iface->metric);
 			num_links++;
 			if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-				fatalx("orig_rtr_lsa: buf_add failed");
+				fatalx("orig_rtr_lsa: ibuf_add failed");
 			continue;
 		}
 
@@ -808,7 +811,7 @@ orig_rtr_lsa(struct area *area)
 					rtr_link.metric = htons(iface->metric);
 				num_links++;
 				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 			}
 			if (iface->state & IF_STA_POINTTOPOINT) {
 				log_debug("orig_rtr_lsa: stub net, "
@@ -825,7 +828,7 @@ orig_rtr_lsa(struct area *area)
 				rtr_link.metric = htons(iface->metric);
 				num_links++;
 				if (ibuf_add(buf, &rtr_link, sizeof(rtr_link)))
-					fatalx("orig_rtr_lsa: buf_add failed");
+					fatalx("orig_rtr_lsa: ibuf_add failed");
 			}
 			continue;
 		case IF_TYPE_BROADCAST:
@@ -854,17 +857,10 @@ orig_rtr_lsa(struct area *area)
 			/*
 			 * do not add a stub net LSA for interfaces that are:
 			 *  - down
-			 *  - have a linkstate which is down and are not carp
-			 *  - have a linkstate unknown and are carp
-			 * carp uses linkstate down for backup and unknown
-			 * in cases where a major fubar happend.
+			 *  - have a linkstate which is down
 			 */
 			if (!(iface->flags & IFF_UP) ||
-			    (iface->media_type != IFT_CARP &&
-			    !(LINK_STATE_IS_UP(iface->linkstate) ||
-			    iface->linkstate == LINK_STATE_UNKNOWN)) ||
-			    (iface->media_type == IFT_CARP &&
-			    iface->linkstate == LINK_STATE_UNKNOWN))
+			    !LINK_STATE_IS_UP(iface->linkstate))
 				continue;
 			log_debug("orig_rtr_lsa: stub net, "
 			    "interface %s", iface->name);
@@ -1109,8 +1105,9 @@ ospfe_iface_ctl(struct ctl_conn *c, unsigned int idx)
 		LIST_FOREACH(iface, &area->iface_list, entry)
 			if (idx == 0 || idx == iface->ifindex) {
 				ictl = if_to_ctl(iface);
-				imsg_compose_event(&c->iev, IMSG_CTL_SHOW_INTERFACE,
-				    0, 0, -1, ictl, sizeof(struct ctl_iface));
+				imsg_compose_event(&c->iev,
+				    IMSG_CTL_SHOW_INTERFACE, 0, 0, -1,
+				    ictl, sizeof(struct ctl_iface));
 			}
 }
 
@@ -1173,7 +1170,7 @@ ospfe_demote_iface(struct iface *iface, int active)
 		dmsg.level = 1;
 
 	log_warnx("ospfe_demote_iface: group %s level %d", dmsg.demote_group,
-		dmsg.level);
+	    dmsg.level);
 
 	ospfe_imsg_compose_parent(IMSG_DEMOTE, 0, &dmsg, sizeof(dmsg));
 }

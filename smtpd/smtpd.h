@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.219 2011/04/17 13:36:07 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.240 2011/09/19 13:10:47 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -21,6 +21,8 @@
 #define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
 #endif
 
+#include "filter.h"
+
 #define IMSG_SIZE_CHECK(p) do {					\
 		if (IMSG_DATA_SIZE(&imsg) != sizeof(*p))	\
 			fatalx("bad length imsg received");	\
@@ -35,13 +37,14 @@
 
 #define MAX_HOPS_COUNT		 100
 
-/* sizes include the tailing '\0' */
-#define MAX_LINE_SIZE		 1024
-#define MAX_LOCALPART_SIZE	 128
-#define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 #define MAX_TAG_SIZE		 32
+/* SYNC WITH filter.h		  */
+//#define MAX_LINE_SIZE		 1024
+//#define MAX_LOCALPART_SIZE	 128
+//#define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 
 /* return and forward path size */
+#define	MAX_FILTER_NAME		 32
 #define MAX_PATH_SIZE		 256
 #define MAX_RULEBUFFER_LEN	 256
 
@@ -49,6 +52,7 @@
 #define SMTPD_QUEUE_MAXINTERVAL	 (4 * 60 * 60)
 #define SMTPD_QUEUE_EXPIRY	 (4 * 24 * 60 * 60)
 #define SMTPD_USER		 "_smtpd"
+#define SMTPD_FILTER_USER      	 "_smtpmfa"
 #define SMTPD_SOCKET		 "/var/run/smtpd.sock"
 #define SMTPD_BANNER		 "220 %s ESMTP OpenSMTPD"
 #define SMTPD_SESSION_TIMEOUT	 300
@@ -82,7 +86,7 @@
 #define FAST_RESPONSES		2
 
 /* max len of any smtp line */
-#define	SMTP_LINE_MAX		16384
+#define	SMTP_LINE_MAX		1024
 
 #define F_STARTTLS		 0x01
 #define F_SMTPS			 0x02
@@ -99,7 +103,6 @@
 	((s)->s_l->flags & F_AUTH && (s)->s_flags & F_SECURE && \
 	 !((s)->s_flags & F_AUTHENTICATED))
 
-#define SET_IF_GREATER(x,y) do { y = MAX(x,y); } while(0)
 		
 
 typedef u_int32_t	objid_t;
@@ -130,6 +133,7 @@ enum imsg_type {
 	IMSG_CONF_MAP_CONTENT,
 	IMSG_CONF_RULE,
 	IMSG_CONF_RULE_SOURCE,
+	IMSG_CONF_FILTER,
 	IMSG_CONF_END,
 	IMSG_CONF_RELOAD,
 	IMSG_LKA_MAIL,
@@ -138,8 +142,11 @@ enum imsg_type {
 	IMSG_LKA_RULEMATCH,
 	IMSG_MDA_SESS_NEW,
 	IMSG_MDA_DONE,
-	IMSG_MFA_RCPT,
+
+	IMSG_MFA_HELO,
 	IMSG_MFA_MAIL,
+	IMSG_MFA_RCPT,
+	IMSG_MFA_DATALINE,
 
 	IMSG_QUEUE_CREATE_MESSAGE,
 	IMSG_QUEUE_SUBMIT_ENVELOPE,
@@ -157,6 +164,9 @@ enum imsg_type {
 	IMSG_QUEUE_MESSAGE_FILE,
 	IMSG_QUEUE_SCHEDULE,
 	IMSG_QUEUE_REMOVE,
+
+	IMSG_RUNNER_REMOVE,
+	IMSG_RUNNER_SCHEDULE,
 
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
@@ -191,7 +201,6 @@ struct imsgev {
 	void			(*handler)(int, short, void *);
 	struct event		 ev;
 	void			*data;
-	struct smtpd		*env;
 	int			 proc;
 	short			 events;
 };
@@ -277,18 +286,13 @@ struct map {
 	TAILQ_HEAD(mapel_list, mapel)	 m_contents;
 };
 
+
 struct map_backend {
-	enum map_src source;
 	void *(*open)(char *);
 	void (*close)(void *);
-	char *(*get)(void *, char *, size_t *);
-	int (*put)(void *, char *, char *);
+	void *(*lookup)(void *, char *, enum map_kind);
 };
 
-struct map_parser {
-	enum map_kind kind;
-	void *(*extract)(char *, char *, size_t);
-};
 
 enum cond_type {
 	C_ALL,
@@ -313,9 +317,9 @@ enum action_type {
 	A_EXT
 };
 
-#define IS_MAILBOX(x)	((x).rule.r_action == A_MAILDIR || (x).rule.r_action == A_MBOX || (x).rule.r_action == A_FILENAME)
-#define IS_RELAY(x)	((x).rule.r_action == A_RELAY || (x).rule.r_action == A_RELAYVIA)
-#define IS_EXT(x)	((x).rule.r_action == A_EXT)
+#define IS_MAILBOX(x)	((x).r_action == A_MAILDIR || (x).r_action == A_MBOX || (x).r_action == A_FILENAME)
+#define IS_RELAY(x)	((x).r_action == A_RELAY || (x).r_action == A_RELAYVIA)
+#define IS_EXT(x)	((x).r_action == A_EXT)
 
 struct rule {
 	TAILQ_ENTRY(rule)		 r_entry;
@@ -330,19 +334,9 @@ struct rule {
 	}				 r_value;
 
 	char				*r_user;
+	struct mailaddr			*r_as;
 	objid_t				 r_amap;
 	time_t				 r_qexpire;
-};
-
-enum path_flags {
-	F_PATH_ALIAS = 0x1,
-	F_PATH_VIRTUAL = 0x2,
-	F_PATH_EXPANDED = 0x4,
-	F_PATH_NOFORWARD = 0x8,
-	F_PATH_FORWARDED = 0x10,
-	F_PATH_ACCOUNT = 0x20,
-	F_PATH_AUTHENTICATED = 0x40,
-	F_PATH_RELAY = 0x80,
 };
 
 struct mailaddr {
@@ -350,24 +344,76 @@ struct mailaddr {
 	char	domain[MAX_DOMAINPART_SIZE];
 };
 
-union path_data {
-	char username[MAXLOGNAME];
-	char filename[MAXPATHLEN];
-	char filter[MAXPATHLEN];
+enum delivery_type {
+	D_INVALID = 0,
+	D_MDA,
+	D_MTA,
+	D_BOUNCE
+};
+
+enum delivery_status {
+	DS_PERMFAILURE	= 0x2,
+	DS_TEMPFAILURE	= 0x4,
+	DS_REJECTED	= 0x8,
+	DS_ACCEPTED	= 0x10,
+	DS_RETRY       	= 0x20,
+	DS_EDNS		= 0x40,
+	DS_ECONNECT	= 0x80
+};
+
+enum delivery_flags {
+	DF_RESOLVED		= 0x1,
+	DF_SCHEDULED		= 0x2,
+	DF_PROCESSING		= 0x4,
+	DF_AUTHENTICATED	= 0x8,
+	DF_ENQUEUED		= 0x10,
+	DF_FORCESCHEDULE	= 0x20,
+	DF_BOUNCE		= 0x40,
+	DF_INTERNAL		= 0x80 /* internal expansion forward */
+};
+
+union delivery_data {
+	char user[MAXLOGNAME];
+	char buffer[MAX_RULEBUFFER_LEN];
 	struct mailaddr mailaddr;
 };
 
-struct path {
-	TAILQ_ENTRY(path)		 entry;
-	struct rule			 rule;
-	enum path_flags			 flags;
-	u_int8_t			 forwardcnt;
-	char				 user[MAX_LOCALPART_SIZE];
-	char				 domain[MAX_DOMAINPART_SIZE];
-	char				 pw_name[MAXLOGNAME];
-	union path_data			 u;
+struct delivery_mda {
+	enum action_type	method;
+	union delivery_data	to;
+	char			as_user[MAXLOGNAME];
 };
-TAILQ_HEAD(deliverylist, path);
+
+struct delivery_mta {
+	struct relayhost relay;
+	struct mailaddr	relay_as;
+};
+
+struct delivery {
+	u_int64_t			id;
+	enum delivery_type		type;
+
+	char				helo[MAXHOSTNAMELEN];
+	char				hostname[MAXHOSTNAMELEN];
+	char				errorline[MAX_LINE_SIZE + 1];
+	struct sockaddr_storage		ss;
+
+	struct mailaddr			from;
+	struct mailaddr			rcpt;
+	struct mailaddr			rcpt_orig;
+
+	union delivery_method {
+		struct delivery_mda	mda;
+		struct delivery_mta	mta;
+	} agent;
+
+	time_t				 creation;
+	time_t				 lasttry;
+	time_t				 expire;
+	u_int8_t			 retry;
+	enum delivery_flags		 flags;
+	enum delivery_status		 status;
+};
 
 enum expand_type {
 	EXPAND_INVALID,
@@ -388,71 +434,32 @@ struct expandnode {
 	size_t			refcnt;
 	enum expand_flags      	flags;
 	enum expand_type       	type;
-	union path_data		u;
+	char			as_user[MAXLOGNAME];
+	union delivery_data    	u;
 };
 
 RB_HEAD(expandtree, expandnode);
 
-enum message_type {
-	T_MDA_MESSAGE		= 0x1,
-	T_MTA_MESSAGE		= 0x2,
-	T_BOUNCE_MESSAGE	= 0x4
-};
-
-enum message_status {
-	S_MESSAGE_PERMFAILURE	= 0x2,
-	S_MESSAGE_TEMPFAILURE	= 0x4,
-	S_MESSAGE_REJECTED	= 0x8,
-	S_MESSAGE_ACCEPTED	= 0x10,
-	S_MESSAGE_RETRY		= 0x20,
-	S_MESSAGE_EDNS		= 0x40,
-	S_MESSAGE_ECONNECT	= 0x80
-};
-
-enum message_flags {
-	F_MESSAGE_RESOLVED	= 0x1,
-	F_MESSAGE_SCHEDULED	= 0x2,
-	F_MESSAGE_PROCESSING	= 0x4,
-	F_MESSAGE_AUTHENTICATED	= 0x8,
-	F_MESSAGE_ENQUEUED	= 0x10,
-	F_MESSAGE_FORCESCHEDULE	= 0x20,
-	F_MESSAGE_BOUNCE	= 0x40
-};
 
 struct envelope {
-	TAILQ_ENTRY(envelope)		 entry;
+	TAILQ_ENTRY(envelope)		entry;
 
-	enum message_type		 type;
+	char				tag[MAX_TAG_SIZE];
+	struct rule			rule;
 
-	u_int64_t			 id;
-	u_int64_t			 session_id;
-	u_int64_t			 batch_id;
+	u_int64_t			session_id;
+	u_int64_t			batch_id;
 
-	char				 tag[MAX_TAG_SIZE];
-
-	u_int64_t			 evpid;
-	char				 session_helo[MAXHOSTNAMELEN];
-	char				 session_hostname[MAXHOSTNAMELEN];
-	char				 session_errorline[MAX_LINE_SIZE];
-	struct sockaddr_storage		 session_ss;
-	struct path			 session_rcpt;
-
-	struct path			 sender;
-	struct path			 recipient;
-
-	time_t				 creation;
-	time_t				 lasttry;
-	time_t				 expire;
-	u_int8_t			 retry;
-	enum message_flags		 flags;
-	enum message_status		 status;
+	struct delivery			delivery;
 };
+TAILQ_HEAD(deliverylist, envelope);
+
 
 enum child_type {
 	CHILD_INVALID,
 	CHILD_DAEMON,
 	CHILD_MDA,
-	CHILD_ENQUEUE_OFFLINE
+	CHILD_ENQUEUE_OFFLINE,
 };
 
 struct child {
@@ -506,7 +513,6 @@ struct listener {
 	in_port_t		 port;
 	struct timeval		 timeout;
 	struct event		 ev;
-	struct smtpd		*env;
 	char			 ssl_cert_name[PATH_MAX];
 	struct ssl		*ssl;
 	void			*ssl_ctx;
@@ -517,7 +523,7 @@ struct listener {
 struct auth {
 	u_int64_t	 id;
 	char		 user[MAXLOGNAME];
-	char		 pass[MAX_LINE_SIZE];
+	char		 pass[MAX_LINE_SIZE + 1];
 	int		 success;
 };
 
@@ -544,7 +550,6 @@ struct session {
 	struct event			 s_ev;
 	struct bufferevent		*s_bev;
 	struct listener			*s_l;
-	struct smtpd			*s_env;
 	void				*s_ssl;
 	u_char				*s_buf;
 	int				 s_buflen;
@@ -564,7 +569,7 @@ struct session {
 
 /* ram-queue structures */
 struct ramqueue_host {
-	RB_ENTRY(ramqueue_host)		host_entry;
+	RB_ENTRY(ramqueue_host)		hosttree_entry;
 	TAILQ_HEAD(,ramqueue_batch)	batch_queue;
 	u_int64_t			h_id;
 	char				hostname[MAXHOSTNAMELEN];
@@ -572,7 +577,7 @@ struct ramqueue_host {
 struct ramqueue_batch {
 	TAILQ_ENTRY(ramqueue_batch)	batch_entry;
 	TAILQ_HEAD(,ramqueue_envelope)	envelope_queue;
-	enum message_type		type;
+	enum delivery_type		type;
 	u_int64_t			h_id;
 	u_int64_t			b_id;
 	u_int32_t      			msgid;
@@ -581,16 +586,22 @@ struct ramqueue_batch {
 struct ramqueue_envelope {
 	TAILQ_ENTRY(ramqueue_envelope)	 queue_entry;
 	TAILQ_ENTRY(ramqueue_envelope)	 batchqueue_entry;
-	struct ramqueue_host		*host;
-	struct ramqueue_batch		*batch;
+	RB_ENTRY(ramqueue_envelope)	 evptree_entry;
+	struct ramqueue_batch		*rq_batch;
+	struct ramqueue_message		*rq_msg;
+	struct ramqueue_host		*rq_host;
 	u_int64_t      			 evpid;
 	time_t				 sched;
 };
-
+struct ramqueue_message {
+	RB_ENTRY(ramqueue_message)		msgtree_entry;
+	RB_HEAD(evptree, ramqueue_envelope)	evptree;
+	u_int32_t				msgid;
+};
 struct ramqueue {
-	struct smtpd			       *env;
 	struct ramqueue_envelope	       *current_evp;
 	RB_HEAD(hosttree, ramqueue_host)	hosttree;
+	RB_HEAD(msgtree, ramqueue_message)	msgtree;
 	TAILQ_HEAD(,ramqueue_envelope)		queue;
 };
 
@@ -623,53 +634,71 @@ struct smtpd {
 	struct ramqueue				 sc_rqueue;
 	struct queue_backend			*sc_queue;
 
+	TAILQ_HEAD(filterlist, filter)		*sc_filters;
+
 	TAILQ_HEAD(listenerlist, listener)	*sc_listeners;
 	TAILQ_HEAD(maplist, map)		*sc_maps, *sc_maps_reload;
 	TAILQ_HEAD(rulelist, rule)		*sc_rules, *sc_rules_reload;
 	SPLAY_HEAD(sessiontree, session)	 sc_sessions;
-	SPLAY_HEAD(msgtree, envelope)		 sc_messages;
 	SPLAY_HEAD(ssltree, ssl)		*sc_ssl;
 	SPLAY_HEAD(childtree, child)		 children;
-	SPLAY_HEAD(lkatree, lkasession)		 lka_sessions;
-	SPLAY_HEAD(dnstree, dnssession)		 dns_sessions;
+	SPLAY_HEAD(lkatree, lka_session)	 lka_sessions;
+	SPLAY_HEAD(mfatree, mfa_session)	 mfa_sessions;
 	SPLAY_HEAD(mtatree, mta_session)	 mta_sessions;
 	LIST_HEAD(mdalist, mda_session)		 mda_sessions;
 
 	struct stats				*stats;
+	u_int64_t				 filtermask;
+};
+
+enum {
+	STATS_SMTP_SESSION = 0,
+	STATS_SMTP_SESSION_INET4,
+	STATS_SMTP_SESSION_INET6,
+	STATS_SMTP_SMTPS,
+	STATS_SMTP_STARTTLS,
+
+	STATS_MTA_SESSION,
+
+	STATS_MDA_SESSION,
+
+	STATS_CONTROL_SESSION,
+
+	STATS_LKA_SESSION,
+	STATS_LKA_SESSION_MX,
+	STATS_LKA_SESSION_HOST,
+	STATS_LKA_SESSION_CNAME,
+	STATS_LKA_FAILURE,
+
+	STATS_RUNNER,
+	STATS_RUNNER_BOUNCES,
+
+	STATS_QUEUE_LOCAL,
+	STATS_QUEUE_REMOTE,
+
+	STATS_RAMQUEUE_ENVELOPE,
+	STATS_RAMQUEUE_MESSAGE,
+	STATS_RAMQUEUE_BATCH,
+	STATS_RAMQUEUE_HOST,
+
+	STATS_MAX,
+};
+
+#define STAT_COUNT	0
+#define STAT_ACTIVE	1
+#define STAT_MAXACTIVE	2
+
+struct	stat_counter {
+	size_t	count;
+	size_t	active;
+	size_t	maxactive;
 };
 
 struct s_parent {
 	time_t		start;
 };
 
-struct s_queue {
-	size_t		inserts_local;
-	size_t		inserts_remote;
-};
-
-struct s_runner {
-	size_t		active;
-	size_t		maxactive;
-	size_t		bounces_active;
-	size_t		bounces_maxactive;
-	size_t		bounces;
-};
-
 struct s_session {
-	size_t		sessions;
-	size_t		sessions_inet4;
-	size_t		sessions_inet6;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-
-	size_t		smtps;
-	size_t		smtps_active;
-	size_t		smtps_maxactive;
-
-	size_t		starttls;
-	size_t		starttls_active;
-	size_t		starttls_maxactive;
-
 	size_t		read_error;
 	size_t		read_timeout;
 	size_t		read_eof;
@@ -682,47 +711,12 @@ struct s_session {
 	size_t		delays;
 };
 
-struct s_mda {
-	size_t		sessions;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-};
-
-struct s_control {
-	size_t		sessions;
-	size_t		sessions_active;
-	size_t		sessions_maxactive;
-};
-
-struct s_lka {
-	size_t		queries;
-	size_t		queries_active;
-	size_t		queries_maxactive;
-	size_t		queries_mx;
-	size_t		queries_host;
-	size_t		queries_cname;
-	size_t		queries_failure;
-};
-
-struct s_ramqueue {
-	size_t		hosts;
-	size_t		batches;
-	size_t		envelopes;
-	size_t		hosts_max;
-	size_t		batches_max;
-	size_t		envelopes_max;
-};
-
 struct stats {
 	struct s_parent		 parent;
-	struct s_queue		 queue;
-	struct s_runner		 runner;
 	struct s_session	 mta;
-	struct s_mda		 mda;
 	struct s_session	 smtp;
-	struct s_control	 control;
-	struct s_lka		 lka;
-	struct s_ramqueue	 ramqueue;
+
+	struct stat_counter	 counters[STATS_MAX];
 };
 
 struct reload {
@@ -734,20 +728,30 @@ struct submit_status {
 	u_int64_t			 id;
 	int				 code;
 	union submit_path {
-		struct path		 path;
+		struct mailaddr		 maddr;
 		u_int32_t		 msgid;
 		u_int64_t		 evpid;
-		char			 errormsg[MAX_LINE_SIZE];
+		char			 errormsg[MAX_LINE_SIZE + 1];
+		char			 dataline[MAX_LINE_SIZE + 1];
 	}				 u;
-	enum message_flags		 flags;
+	enum delivery_flags		 flags;
 	struct sockaddr_storage		 ss;
-	struct envelope			 msg;
+	struct envelope			 envelope;
 };
 
 struct forward_req {
 	u_int64_t			 id;
 	u_int8_t			 status;
-	char				 pw_name[MAXLOGNAME];
+	char				 as_user[MAXLOGNAME];
+	struct envelope			 envelope;
+};
+
+enum dns_status {
+	DNS_OK = 0,
+	DNS_RETRY,
+	DNS_EINVAL,
+	DNS_ENONAME,
+	DNS_ENOTFOUND,
 };
 
 struct dns {
@@ -758,7 +762,6 @@ struct dns {
 	int			 type;
 	struct imsgev		*asker;
 	struct sockaddr_storage	 ss;
-	struct smtpd		*env;
 	struct dns		*next;
 };
 
@@ -789,41 +792,40 @@ struct rulematch {
 	struct submit_status	 ss;
 };
 
-enum lkasession_flags {
+enum lka_session_flags {
 	F_ERROR		= 0x1
 };
 
-struct lkasession {
-	SPLAY_ENTRY(lkasession)		 nodes;
+struct lka_session {
+	SPLAY_ENTRY(lka_session)	 nodes;
 	u_int64_t			 id;
 
-	struct path			 path;
-	struct deliverylist    		 deliverylist;
-
+	struct deliverylist		 deliverylist;
 	struct expandtree		 expandtree;
 
 	u_int8_t			 iterations;
 	u_int32_t			 pending;
-	enum lkasession_flags		 flags;
-	struct envelope			 message;
+	enum lka_session_flags		 flags;
 	struct submit_status		 ss;
 };
 
-struct mx {
-        char    host[MAXHOSTNAMELEN];
-        int     prio;
+struct filter {
+	TAILQ_ENTRY(filter)     f_entry;
+	pid_t			pid;
+	struct event		ev;
+	struct imsgbuf		*ibuf;
+	char			name[MAX_FILTER_NAME];
+	char			path[MAXPATHLEN];
 };
 
-struct dnssession {
-        SPLAY_ENTRY(dnssession)          nodes;
-        u_int64_t                        id;
-        struct dns                       query;
-        struct event                     ev;
-        struct asr_query                *aq;
-        struct mx                        mxarray[MAX_MX_COUNT];
-        size_t                           mxarraysz;
-        size_t                           mxcurrent;
-	size_t				 mxfound;
+struct mfa_session {
+	SPLAY_ENTRY(mfa_session)	 nodes;
+	u_int64_t			 id;
+
+	enum session_state		 state;
+	struct submit_status		 ss;
+	struct filter			*filter;
+	struct filter_msg		 fm;
 };
 
 enum mta_state {
@@ -855,7 +857,6 @@ struct mta_relay {
 struct mta_session {
 	SPLAY_ENTRY(mta_session) entry;
 	u_int64_t		 id;
-	struct smtpd		*env;
 	enum mta_state		 state;
 	char			*host;
 	int			 port;
@@ -920,33 +921,67 @@ enum queue_op {
 
 struct queue_backend {
 	enum queue_type	type;
-	int (*init)(struct smtpd *);
-	int (*message)(struct smtpd *, enum queue_kind, enum queue_op, u_int32_t *);
-	int (*envelope)(struct smtpd *, enum queue_kind, enum queue_op,
-	    struct envelope *);
+	int (*init)(void);
+	int (*message)(enum queue_kind, enum queue_op, u_int32_t *);
+	int (*envelope)(enum queue_kind, enum queue_op, struct envelope *);
 };
 
 
-extern void (*imsg_callback)(struct smtpd *, struct imsgev *, struct imsg *);
+/* auth structures */
+enum auth_type {
+	AUTH_INVALID=0,
+	AUTH_BSD,
+	AUTH_GETPWNAM,
+};
+
+struct auth_backend {
+	enum auth_type	type;
+	int (*authenticate)(char *, char *);
+};
+
+
+/* user structures */
+enum user_type {
+	USER_INVALID=0,
+	USER_GETPWNAM,
+};
+
+#define	MAXPASSWORDLEN	128
+struct user {
+	char username[MAXLOGNAME];
+	char directory[MAXPATHLEN];
+	char password[MAXPASSWORDLEN];
+	uid_t uid;
+	gid_t gid;
+};
+
+struct user_backend {
+	enum user_type	type;
+	int (*getbyname)(struct user *, char *);
+	int (*getbyuid)(struct user *, uid_t);
+};
+
+
+extern struct smtpd	*env;
+extern void (*imsg_callback)(struct imsgev *, struct imsg *);
 
 
 /* aliases.c */
-int aliases_exist(struct smtpd *, objid_t, char *);
-int aliases_get(struct smtpd *, objid_t, struct expandtree *, char *);
-int aliases_vdomain_exists(struct smtpd *, objid_t, char *);
-int aliases_virtual_exist(struct smtpd *, objid_t, struct path *);
-int aliases_virtual_get(struct smtpd *, objid_t, struct expandtree *, struct path *);
+int aliases_exist(objid_t, char *);
+int aliases_get(objid_t, struct expandtree *, char *);
+int aliases_vdomain_exists(objid_t, char *);
+int aliases_virtual_exist(objid_t, struct mailaddr *);
+int aliases_virtual_get(objid_t, struct expandtree *, struct mailaddr *);
 int alias_parse(struct expandnode *, char *);
 
 
-/* authenticate.c */
-int authenticate_user(char *, char *);
+/* auth_backend.c */
+struct auth_backend *auth_backend_lookup(enum auth_type);
 
 
 /* bounce.c */
-int bounce_session(struct smtpd *, int, struct envelope *);
-int bounce_session_switch(struct smtpd *, FILE *, enum session_state *, char *,
-	struct envelope *);
+int bounce_session(int, struct envelope *);
+int bounce_session_switch(FILE *, enum session_state *, char *, struct envelope *);
 void bounce_event(int, short, void *);
 
 
@@ -956,29 +991,26 @@ void bounce_event(int, short, void *);
 #define PURGE_RULES		0x04
 #define PURGE_SSL		0x08
 #define PURGE_EVERYTHING	0xff
-void purge_config(struct smtpd *, u_int8_t);
-void unconfigure(struct smtpd *);
-void configure(struct smtpd *);
-void init_pipes(struct smtpd *);
-void config_pipes(struct smtpd *, struct peer *, u_int);
-void config_peers(struct smtpd *, struct peer *, u_int);
+void purge_config(u_int8_t);
+void unconfigure(void);
+void configure(void);
+void init_pipes(void);
+void config_pipes(struct peer *, u_int);
+void config_peers(struct peer *, u_int);
 
 
 /* control.c */
-pid_t control(struct smtpd *);
+pid_t control(void);
 void session_socket_blockmode(int, enum blockmodes);
 void session_socket_no_linger(int);
 int session_socket_error(int);
 
 
 /* dns.c */
-void dns_query_host(struct smtpd *, char *, int, u_int64_t);
-void dns_query_mx(struct smtpd *, char *, int, u_int64_t);
-void dns_query_ptr(struct smtpd *, struct sockaddr_storage *,
-    u_int64_t);
-void dns_async(struct smtpd *, struct imsgev *, int, struct dns *);
-int dnssession_cmp(struct dnssession *, struct dnssession *);
-SPLAY_PROTOTYPE(dnstree, dnssession, nodes, dnssession_cmp);
+void dns_query_host(char *, int, u_int64_t);
+void dns_query_mx(char *, int, u_int64_t);
+void dns_query_ptr(struct sockaddr_storage *, u_int64_t);
+void dns_async(struct imsgev *, int, struct dns *);
 
 
 /* enqueue.c */
@@ -997,31 +1029,37 @@ RB_PROTOTYPE(expandtree, expandnode, nodes, expand_cmp);
 
 
 /* forward.c */
-int forwards_get(int, struct expandtree *);
+int forwards_get(int, struct expandtree *, char *);
 
 
 /* lka.c */
-pid_t lka(struct smtpd *);
-int lkasession_cmp(struct lkasession *, struct lkasession *);
-SPLAY_PROTOTYPE(lkatree, lkasession, nodes, lkasession_cmp);
+pid_t lka(void);
+int lka_session_cmp(struct lka_session *, struct lka_session *);
+SPLAY_PROTOTYPE(lkatree, lka_session, nodes, lka_session_cmp);
+
+/* lka_session.c */
+struct lka_session *lka_session_init(struct submit_status *);
+void lka_session_fail(struct lka_session *);
+void lka_session_destroy(struct lka_session *);
 
 
 /* map.c */
-void *map_lookup(struct smtpd *, objid_t, char *, enum map_kind);
-struct map *map_find(struct smtpd *, objid_t);
-struct map *map_findbyname(struct smtpd *, const char *);
+void *map_lookup(objid_t, char *, enum map_kind);
+struct map *map_find(objid_t);
+struct map *map_findbyname(const char *);
 
 
 /* mda.c */
-pid_t mda(struct smtpd *);
+pid_t mda(void);
 
 
 /* mfa.c */
-pid_t mfa(struct smtpd *);
-
+pid_t mfa(void);
+int mfa_session_cmp(struct mfa_session *, struct mfa_session *);
+SPLAY_PROTOTYPE(mfatree, mfa_session, nodes, mfa_session_cmp);
 
 /* mta.c */
-pid_t mta(struct smtpd *);
+pid_t mta(void);
 int mta_session_cmp(struct mta_session *, struct mta_session *);
 SPLAY_PROTOTYPE(mtatree, mta_session, entry, mta_session_cmp);
 
@@ -1032,64 +1070,81 @@ int cmdline_symset(char *);
 
 
 /* queue.c */
-pid_t queue(struct smtpd *);
-void queue_submit_envelope(struct smtpd *, struct envelope *);
-void queue_commit_envelopes(struct smtpd *, struct envelope *);
+pid_t queue(void);
+void queue_submit_envelope(struct envelope *);
+void queue_commit_envelopes(struct envelope *);
 
 
 /* queue_backend.c */
 struct queue_backend *queue_backend_lookup(enum queue_type);
-int queue_message_create(struct smtpd *, enum queue_kind, u_int32_t *);
-int queue_message_delete(struct smtpd *, enum queue_kind, u_int32_t);
-int queue_message_commit(struct smtpd *, enum queue_kind, u_int32_t);
-int queue_message_fd_r(struct smtpd *, enum queue_kind, u_int32_t);
-int queue_message_fd_rw(struct smtpd *, enum queue_kind, u_int32_t);
-int queue_message_purge(struct smtpd *, enum queue_kind, u_int32_t);
-int queue_envelope_create(struct smtpd *, enum queue_kind,
-    struct envelope *);
-int queue_envelope_delete(struct smtpd *, enum queue_kind,
-    struct envelope *);
-int queue_envelope_load(struct smtpd *, enum queue_kind,
-    u_int64_t, struct envelope *);
-int queue_envelope_update(struct smtpd *, enum queue_kind,
-    struct envelope *);
+int queue_message_create(enum queue_kind, u_int32_t *);
+int queue_message_delete(enum queue_kind, u_int32_t);
+int queue_message_commit(enum queue_kind, u_int32_t);
+int queue_message_fd_r(enum queue_kind, u_int32_t);
+int queue_message_fd_rw(enum queue_kind, u_int32_t);
+int queue_message_purge(enum queue_kind, u_int32_t);
+int queue_envelope_create(enum queue_kind, struct envelope *);
+int queue_envelope_delete(enum queue_kind, struct envelope *);
+int queue_envelope_load(enum queue_kind, u_int64_t, struct envelope *);
+int queue_envelope_update(enum queue_kind, struct envelope *);
 
 
 /* queue_shared.c */
-void queue_message_update(struct smtpd *, struct envelope *);
+void queue_message_update(struct envelope *);
 struct qwalk	*qwalk_new(char *);
 int qwalk(struct qwalk *, char *);
 void qwalk_close(struct qwalk *);
-int bounce_record_message(struct smtpd *, struct envelope *, struct envelope *);
+int bounce_record_message(struct envelope *, struct envelope *);
 void show_queue(char *, int);
 
 
 /* ramqueue.c */
-void ramqueue_init(struct smtpd *, struct ramqueue *);
+void ramqueue_init(struct ramqueue *);
 int ramqueue_load(struct ramqueue *, time_t *);
 int ramqueue_load_offline(struct ramqueue *);
 int ramqueue_host_cmp(struct ramqueue_host *, struct ramqueue_host *);
-void ramqueue_remove(struct ramqueue *, struct ramqueue_envelope *);
+int ramqueue_msg_cmp(struct ramqueue_message *, struct ramqueue_message *);
+int ramqueue_evp_cmp(struct ramqueue_envelope *, struct ramqueue_envelope *);
 int ramqueue_is_empty(struct ramqueue *);
 int ramqueue_is_empty(struct ramqueue *);
 int ramqueue_batch_is_empty(struct ramqueue_batch *);
 int ramqueue_host_is_empty(struct ramqueue_host *);
 void ramqueue_remove_batch(struct ramqueue_host *, struct ramqueue_batch *);
 void ramqueue_remove_host(struct ramqueue *, struct ramqueue_host *);
+struct ramqueue_envelope *ramqueue_envelope_by_id(struct ramqueue *, u_int64_t);
 struct ramqueue_envelope *ramqueue_first_envelope(struct ramqueue *);
 struct ramqueue_envelope *ramqueue_next_envelope(struct ramqueue *);
 struct ramqueue_envelope *ramqueue_batch_first_envelope(struct ramqueue_batch *);
-RB_PROTOTYPE(hosttree, ramqueue_host, host_entry, ramqueue_host_cmp);
+void ramqueue_insert(struct ramqueue *, struct envelope *, time_t);
+int ramqueue_message_is_empty(struct ramqueue_message *);
+void ramqueue_remove_message(struct ramqueue *, struct ramqueue_message *);
+
+struct ramqueue_host *ramqueue_lookup_host(struct ramqueue *, char *);
+struct ramqueue_message *ramqueue_lookup_message(struct ramqueue *, u_int32_t);
+struct ramqueue_envelope *ramqueue_lookup_envelope(struct ramqueue *, u_int64_t);
+
+void ramqueue_schedule(struct ramqueue *, u_int64_t);
+void ramqueue_schedule_envelope(struct ramqueue *, struct ramqueue_envelope *);
+
+void ramqueue_remove_envelope(struct ramqueue *, struct ramqueue_envelope *);
+
+
+RB_PROTOTYPE(hosttree, ramqueue_host, hosttree_entry, ramqueue_host_cmp);
+RB_PROTOTYPE(msgtree,  ramqueue_message, msg_entry, ramqueue_msg_cmp);
+RB_PROTOTYPE(evptree,  ramqueue_envelope, evp_entry, ramqueue_evp_cmp);
 
 
 /* runner.c */
-pid_t runner(struct smtpd *);
+pid_t runner(void);
 void message_reset_flags(struct envelope *);
+void runner_schedule(struct ramqueue *, u_int64_t);
+void runner_remove(struct ramqueue *, u_int64_t);
+void runner_remove_envelope(struct ramqueue *, struct ramqueue_envelope *);
 
 
 /* smtp.c */
-pid_t smtp(struct smtpd *);
-void smtp_resume(struct smtpd *);
+pid_t smtp(void);
+void smtp_resume(void);
 
 
 /* smtp_session.c */
@@ -1117,8 +1172,8 @@ void ssl_init(void);
 void ssl_transaction(struct session *);
 void ssl_session_init(struct session *);
 void ssl_session_destroy(struct session *);
-int ssl_load_certfile(struct smtpd *, const char *, u_int8_t);
-void ssl_setup(struct smtpd *, struct listener *);
+int ssl_load_certfile(const char *, u_int8_t);
+void ssl_setup(struct listener *);
 int ssl_cmp(struct ssl *, struct ssl *);
 SPLAY_PROTOTYPE(ssltree, ssl, ssl_nodes, ssl_cmp);
 
@@ -1126,6 +1181,16 @@ SPLAY_PROTOTYPE(ssltree, ssl, ssl_nodes, ssl_cmp);
 /* ssl_privsep.c */
 int	 ssl_ctx_use_private_key(void *, char *, off_t);
 int	 ssl_ctx_use_certificate_chain(void *, char *, off_t);
+
+/* stats.c */
+void	stat_init(struct stat_counter *, int);
+size_t	stat_get(int, int);
+size_t	stat_increment(int);
+size_t	stat_decrement(int);
+
+
+/* user_backend.c */
+struct user_backend *user_backend_lookup(enum user_type);
 
 
 /* util.c */
@@ -1141,19 +1206,18 @@ int bsnprintf(char *, size_t, const char *, ...)
 	__attribute__ ((format (printf, 3, 4)));
 int safe_fclose(FILE *);
 int hostname_match(char *, char *);
-int recipient_to_path(struct path *, char *);
+int email_to_mailaddr(struct mailaddr *, char *);
 int valid_localpart(char *);
 int valid_domainpart(char *);
 char *ss_to_text(struct sockaddr_storage *);
 int valid_message_id(char *);
 int valid_message_uid(char *);
 char *time_to_text(time_t);
-int secure_file(int, char *, struct passwd *, int);
+int secure_file(int, char *, char *, uid_t, int);
 void lowercase(char *, char *, size_t);
-void message_set_errormsg(struct envelope *, char *, ...);
-char *message_get_errormsg(struct envelope *);
+void envelope_set_errormsg(struct envelope *, char *, ...);
+char *envelope_get_errormsg(struct envelope *);
 void sa_set_port(struct sockaddr *, int);
-struct path *path_dup(struct path *);
 u_int64_t generate_uid(void);
 void fdlimit(double);
 int availdesc(void);
