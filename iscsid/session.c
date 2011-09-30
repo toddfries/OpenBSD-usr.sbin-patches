@@ -333,6 +333,8 @@ sess_do_conn_fail(struct session *s, struct sessev *sev)
 	TAILQ_FOREACH(c, &s->connections, entry) {
 		if (c->state & CONN_FAILED) {
 			state = SESS_FAILED;
+			/* try hard to keep these up? */
+			state = SESS_INIT;
 			break;
 		} else if (c->state & CONN_RUNNING)
 			state = SESS_LOGGED_IN;
@@ -356,6 +358,8 @@ sess_do_conn_closed(struct session *s, struct sessev *sev)
 	TAILQ_FOREACH(c, &s->connections, entry) {
 		if (c->state & CONN_FAILED) {
 			state = SESS_FAILED;
+			/* try hard to keep these up? */
+			state = SESS_INIT;
 			break;
 		} else if (c->state & CONN_RUNNING)
 			state = SESS_LOGGED_IN;
