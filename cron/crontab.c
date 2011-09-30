@@ -1,4 +1,4 @@
-/*	$OpenBSD: crontab.c,v 1.61 2011/04/04 15:17:52 millert Exp $	*/
+/*	$OpenBSD: crontab.c,v 1.64 2011/08/22 19:32:42 millert Exp $	*/
 
 /* Copyright 1988,1990,1993,1994 by Paul Vixie
  * All rights reserved
@@ -70,7 +70,7 @@ usage(const char *msg) {
 	    "\t-e\t(edit user's crontab)\n"
 	    "\t-l\t(list user's crontab)\n"
 	    "\t-r\t(delete user's crontab)\n");
-	exit(ERROR_EXIT);
+	exit(EXIT_FAILURE);
 }
 
 int
@@ -93,9 +93,9 @@ main(int argc, char *argv[]) {
 			User, ProgramName);
 		fprintf(stderr, "See crontab(1) for more information\n");
 		log_it(RealUser, Pid, "AUTH", "crontab command not allowed");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
-	exitstatus = OK_EXIT;
+	exitstatus = EXIT_SUCCESS;
 	switch (Option) {
 	case opt_list:
 		list_cmd();
@@ -108,10 +108,10 @@ main(int argc, char *argv[]) {
 		break;
 	case opt_replace:
 		if (replace_cmd() < 0)
-			exitstatus = ERROR_EXIT;
+			exitstatus = EXIT_FAILURE;
 		break;
 	default:
-		exitstatus = ERROR_EXIT;
+		exitstatus = EXIT_FAILURE;
 		break;
 	}
 	exit(exitstatus);
@@ -126,11 +126,11 @@ parse_args(int argc, char *argv[]) {
 		fprintf(stderr, "%s: your UID isn't in the passwd file.\n",
 			ProgramName);
 		fprintf(stderr, "bailing out.\n");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	if (strlen(pw->pw_name) >= sizeof User) {
 		fprintf(stderr, "username too long\n");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	strlcpy(User, pw->pw_name, sizeof(User));
 	strlcpy(RealUser, User, sizeof(RealUser));
@@ -148,12 +148,12 @@ parse_args(int argc, char *argv[]) {
 			if (MY_UID(pw) != ROOT_UID) {
 				fprintf(stderr,
 					"must be privileged to use -u\n");
-				exit(ERROR_EXIT);
+				exit(EXIT_FAILURE);
 			}
 			if (!(pw = getpwnam(optarg))) {
 				fprintf(stderr, "%s:  user `%s' unknown\n",
 					ProgramName, optarg);
-				exit(ERROR_EXIT);
+				exit(EXIT_FAILURE);
 			}
 			if (strlcpy(User, optarg, sizeof User) >= sizeof User)
 				usage("username too long");
@@ -211,15 +211,15 @@ parse_args(int argc, char *argv[]) {
 
 			if (swap_gids() < OK) {
 				perror("swapping gids");
-				exit(ERROR_EXIT);
+				exit(EXIT_FAILURE);
 			}
 			if (!(NewCrontab = fopen(Filename, "r"))) {
 				perror(Filename);
-				exit(ERROR_EXIT);
+				exit(EXIT_FAILURE);
 			}
 			if (swap_gids_back() < OK) {
 				perror("swapping gids back");
-				exit(ERROR_EXIT);
+				exit(EXIT_FAILURE);
 			}
 		}
 	}
@@ -236,14 +236,14 @@ list_cmd(void) {
 	log_it(RealUser, Pid, "LIST", User);
 	if (snprintf(n, sizeof n, "%s/%s", SPOOL_DIR, User) >= sizeof(n)) {
 		fprintf(stderr, "path too long\n");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	if (!(f = fopen(n, "r"))) {
 		if (errno == ENOENT)
 			fprintf(stderr, "no crontab for %s\n", User);
 		else
 			perror(n);
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 
 	/* file is open. copy to stdout, close.
@@ -261,14 +261,14 @@ delete_cmd(void) {
 	log_it(RealUser, Pid, "DELETE", User);
 	if (snprintf(n, sizeof n, "%s/%s", SPOOL_DIR, User) >= sizeof(n)) {
 		fprintf(stderr, "path too long\n");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	if (unlink(n) != 0) {
 		if (errno == ENOENT)
 			fprintf(stderr, "no crontab for %s\n", User);
 		else
 			perror(n);
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	poke_daemon(SPOOL_DIR, RELOAD_CRON);
 }
@@ -286,24 +286,23 @@ edit_cmd(void) {
 	FILE *f;
 	int t;
 	struct stat statbuf, xstatbuf;
-	struct timespec mtimespec;
-	struct timeval tv[2];
+	struct timespec ts[2];
 
 	log_it(RealUser, Pid, "BEGIN EDIT", User);
 	if (snprintf(n, sizeof n, "%s/%s", SPOOL_DIR, User) >= sizeof(n)) {
 		fprintf(stderr, "path too long\n");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	if (!(f = fopen(n, "r"))) {
 		if (errno != ENOENT) {
 			perror(n);
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
 		fprintf(stderr, "no crontab for %s - using an empty one\n",
 			User);
 		if (!(f = fopen(_PATH_DEVNULL, "r"))) {
 			perror(_PATH_DEVNULL);
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
 	}
 
@@ -311,13 +310,8 @@ edit_cmd(void) {
 		perror("fstat");
 		goto fatal;
 	}
-	/*
-	 * Note that timespec has higher precision than timeval so we
-	 * store mtimespec using timeval precision so we can compare later.
-	 */
-	TIMESPEC_TO_TIMEVAL(&tv[0], &statbuf.st_atimespec);
-	TIMESPEC_TO_TIMEVAL(&tv[1], &statbuf.st_mtimespec);
-	TIMEVAL_TO_TIMESPEC(&tv[1], &mtimespec);
+	ts[0] = statbuf.st_atim;
+	ts[1] = statbuf.st_mtim;
 
 	/* Turn off signals. */
 	(void)signal(SIGHUP, SIG_IGN);
@@ -336,12 +330,12 @@ edit_cmd(void) {
 	}
 	if (swap_gids() < OK) {
 		perror("swapping gids");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	t = mkstemp(Filename);
 	if (swap_gids_back() < OK) {
 		perror("swapping gids back");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	if (t == -1) {
 		perror(Filename);
@@ -358,9 +352,9 @@ edit_cmd(void) {
 	fclose(f);
 	if (fflush(NewCrontab) < OK) {
 		perror(Filename);
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
-	(void)futimes(t, tv);
+	(void)futimens(t, ts);
  again:
 	rewind(NewCrontab);
 	if (ferror(NewCrontab)) {
@@ -369,14 +363,14 @@ edit_cmd(void) {
  fatal:
 		if (swap_gids() < OK) {
 			perror("swapping gids");
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
 		unlink(Filename);
 		if (swap_gids_back() < OK) {
 			perror("swapping gids back");
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 
 	/* we still have the file open.  editors will generally rewrite the
@@ -395,10 +389,10 @@ edit_cmd(void) {
 		perror("fstat");
 		goto fatal;
 	}
-	if (timespeccmp(&mtimespec, &statbuf.st_mtimespec, -) == 0) {
+	if (timespeccmp(&ts[1], &statbuf.st_mtim, ==)) {
 		if (swap_gids() < OK) {
 			perror("swapping gids");
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
 		if (lstat(Filename, &xstatbuf) == 0 &&
 		    statbuf.st_ino != xstatbuf.st_ino) {
@@ -407,7 +401,7 @@ edit_cmd(void) {
 		}
 		if (swap_gids_back() < OK) {
 			perror("swapping gids back");
-			exit(ERROR_EXIT);
+			exit(EXIT_FAILURE);
 		}
 		fprintf(stderr, "%s: no changes made to crontab\n",
 			ProgramName);
@@ -451,12 +445,12 @@ edit_cmd(void) {
  remove:
 	if (swap_gids() < OK) {
 		perror("swapping gids");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
 	unlink(Filename);
 	if (swap_gids_back() < OK) {
 		perror("swapping gids back");
-		exit(ERROR_EXIT);
+		exit(EXIT_FAILURE);
 	}
  done:
 	log_it(RealUser, Pid, "END EDIT", User);
@@ -547,7 +541,7 @@ replace_cmd(void) {
 		case FALSE:
 			e = load_entry(tmp, check_error, pw, envp);
 			if (e)
-				free(e);
+				free_entry(e);
 			break;
 		case TRUE:
 			break;
@@ -669,7 +663,7 @@ static void
 die(int x) {
 	if (TempFilename[0])
 		(void) unlink(TempFilename);
-	_exit(ERROR_EXIT);
+	_exit(EXIT_FAILURE);
 }
 
 static void

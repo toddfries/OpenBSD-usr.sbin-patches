@@ -1,4 +1,4 @@
-/*	$OpenBSD: check_tcp.c,v 1.39 2010/12/20 12:38:06 dhill Exp $	*/
+/*	$OpenBSD: check_tcp.c,v 1.42 2011/06/17 14:36:51 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -38,7 +38,8 @@
 #include "relayd.h"
 
 void	tcp_write(int, short, void *);
-void	tcp_host_up(int, struct ctl_tcp_event *);
+void	tcp_host_up(struct ctl_tcp_event *);
+void	tcp_close(struct ctl_tcp_event *, int);
 void	tcp_send_req(int, short, void *);
 void	tcp_read_buf(int, short, void *);
 
@@ -76,6 +77,8 @@ check_tcp(struct ctl_tcp_event *cte)
 		goto bad;
 	}
 
+	cte->s = s;
+
 	bzero(&lng, sizeof(lng));
 	if (setsockopt(s, SOL_SOCKET, SO_LINGER, &lng, sizeof(lng)) == -1)
 		goto bad;
@@ -105,8 +108,7 @@ check_tcp(struct ctl_tcp_event *cte)
 	return;
 
 bad:
-	close(s);
-	cte->host->up = HOST_DOWN;
+	tcp_close(cte, HOST_DOWN);
 	hce_notify_done(cte->host, he);
 }
 
@@ -118,8 +120,7 @@ tcp_write(int s, short event, void *arg)
 	socklen_t		 len;
 
 	if (event == EV_TIMEOUT) {
-		close(s);
-		cte->host->up = HOST_DOWN;
+		tcp_close(cte, HOST_DOWN);
 		hce_notify_done(cte->host, HCE_TCP_CONNECT_TIMEOUT);
 		return;
 	}
@@ -128,26 +129,36 @@ tcp_write(int s, short event, void *arg)
 	if (getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &len))
 		fatal("tcp_write: getsockopt");
 	if (err != 0) {
-		close(s);
-		cte->host->up = HOST_DOWN;
+		tcp_close(cte, HOST_DOWN);
 		hce_notify_done(cte->host, HCE_TCP_CONNECT_FAIL);
 		return;
 	}
 
 	cte->host->up = HOST_UP;
-	tcp_host_up(s, cte);
+	tcp_host_up(cte);
 }
 
 void
-tcp_host_up(int s, struct ctl_tcp_event *cte)
+tcp_close(struct ctl_tcp_event *cte, int status)
 {
-	cte->s = s;
+	close(cte->s);
+	cte->s = -1;
+	if (status != 0)
+		cte->host->up = status;
+	if (cte->buf) {
+		ibuf_free(cte->buf);
+		cte->buf = NULL;
+	}
+}
 
+void
+tcp_host_up(struct ctl_tcp_event *cte)
+{
 	switch (cte->table->conf.check) {
 	case CHECK_TCP:
 		if (cte->table->conf.flags & F_SSL)
 			break;
-		close(s);
+		tcp_close(cte, 0);
 		hce_notify_done(cte->host, HCE_TCP_CONNECT_OK);
 		return;
 	case CHECK_HTTP_CODE:
@@ -171,14 +182,14 @@ tcp_host_up(int s, struct ctl_tcp_event *cte)
 
 	if (cte->table->sendbuf != NULL) {
 		cte->req = cte->table->sendbuf;
-		event_again(&cte->ev, s, EV_TIMEOUT|EV_WRITE, tcp_send_req,
+		event_again(&cte->ev, cte->s, EV_TIMEOUT|EV_WRITE, tcp_send_req,
 		    &cte->tv_start, &cte->table->conf.timeout, cte);
 		return;
 	}
 
 	if ((cte->buf = ibuf_dynamic(SMALL_READ_BUF_SIZE, UINT_MAX)) == NULL)
 		fatalx("tcp_host_up: cannot create dynamic buffer");
-	event_again(&cte->ev, s, EV_TIMEOUT|EV_READ, tcp_read_buf,
+	event_again(&cte->ev, cte->s, EV_TIMEOUT|EV_READ, tcp_read_buf,
 	    &cte->tv_start, &cte->table->conf.timeout, cte);
 }
 
@@ -190,8 +201,7 @@ tcp_send_req(int s, short event, void *arg)
 	int			 len;
 
 	if (event == EV_TIMEOUT) {
-		cte->host->up = HOST_DOWN;
-		close(cte->s);
+		tcp_close(cte, HOST_DOWN);
 		hce_notify_done(cte->host, HCE_TCP_WRITE_TIMEOUT);
 		return;
 	}
@@ -201,9 +211,8 @@ tcp_send_req(int s, short event, void *arg)
 		if (bs == -1) {
 			if (errno == EAGAIN || errno == EINTR)
 				goto retry;
-			log_warnx("tcp_send_req: cannot send request");
-			cte->host->up = HOST_DOWN;
-			close(cte->s);
+			log_warnx("%s: cannot send request", __func__);
+			tcp_close(cte, HOST_DOWN);
 			hce_notify_done(cte->host, HCE_TCP_WRITE_FAIL);
 			return;
 		}
@@ -230,9 +239,7 @@ tcp_read_buf(int s, short event, void *arg)
 	struct ctl_tcp_event	*cte = arg;
 
 	if (event == EV_TIMEOUT) {
-		cte->host->up = HOST_DOWN;
-		ibuf_free(cte->buf);
-		close(s);
+		tcp_close(cte, HOST_DOWN);
 		hce_notify_done(cte->host, HCE_TCP_READ_TIMEOUT);
 		return;
 	}
@@ -243,16 +250,13 @@ tcp_read_buf(int s, short event, void *arg)
 	case -1:
 		if (errno == EAGAIN || errno == EINTR)
 			goto retry;
-		cte->host->up = HOST_DOWN;
-		ibuf_free(cte->buf);
-		close(cte->s);
+		tcp_close(cte, HOST_DOWN);
 		hce_notify_done(cte->host, HCE_TCP_READ_FAIL);
 		return;
 	case 0:
 		cte->host->up = HOST_DOWN;
 		(void)cte->validate_close(cte);
-		close(cte->s);
-		ibuf_free(cte->buf);
+		tcp_close(cte, 0);
 		hce_notify_done(cte->host, cte->host->he);
 		return;
 	default:
@@ -261,9 +265,7 @@ tcp_read_buf(int s, short event, void *arg)
 		if (cte->validate_read != NULL) {
 			if (cte->validate_read(cte) != 0)
 				goto retry;
-
-			close(cte->s);
-			ibuf_free(cte->buf);
+			tcp_close(cte, 0);
 			hce_notify_done(cte->host, cte->host->he);
 			return;
 		}
@@ -325,8 +327,8 @@ check_http_code(struct ctl_tcp_event *cte)
 
 	if (strncmp(head, "HTTP/1.1 ", strlen("HTTP/1.1 ")) &&
 	    strncmp(head, "HTTP/1.0 ", strlen("HTTP/1.0 "))) {
-		log_debug("check_http_code: %s failed "
-		    "(cannot parse HTTP version)", host->conf.name);
+		log_debug("%s: %s failed (cannot parse HTTP version)",
+		    __func__, host->conf.name);
 		host->up = HOST_DOWN;
 		return (1);
 	}
@@ -338,14 +340,14 @@ check_http_code(struct ctl_tcp_event *cte)
 	(void)strlcpy(scode, head, sizeof(scode));
 	code = strtonum(scode, 100, 999, &estr);
 	if (estr != NULL) {
-		log_debug("check_http_code: %s failed "
-		    "(cannot parse HTTP code)", host->conf.name);
+		log_debug("%s: %s failed (cannot parse HTTP code)",
+		    __func__, host->conf.name);
 		host->up = HOST_DOWN;
 		return (1);
 	}
 	if (code != cte->table->conf.retcode) {
-		log_debug("check_http_code: %s failed "
-		    "(invalid HTTP code returned)", host->conf.name);
+		log_debug("%s: %s failed (invalid HTTP code returned)",
+		    __func__, host->conf.name);
 		host->he = HCE_HTTP_CODE_FAIL;
 		host->up = HOST_DOWN;
 	} else {
@@ -376,8 +378,8 @@ check_http_digest(struct ctl_tcp_event *cte)
 	host->he = HCE_HTTP_DIGEST_ERROR;
 
 	if ((head = strstr(head, "\r\n\r\n")) == NULL) {
-		log_debug("check_http_digest: %s failed "
-		    "(no end of headers)", host->conf.name);
+		log_debug("%s: %s failed (no end of headers)",
+		    __func__, host->conf.name);
 		host->up = HOST_DOWN;
 		return (1);
 	}
@@ -386,8 +388,8 @@ check_http_digest(struct ctl_tcp_event *cte)
 	digeststr(cte->table->conf.digest_type, head, strlen(head), digest);
 
 	if (strcmp(cte->table->conf.digest, digest)) {
-		log_warnx("check_http_digest: %s failed "
-		    "(wrong digest)", host->conf.name);
+		log_warnx("%s: %s failed (wrong digest)",
+		    __func__, host->conf.name);
 		host->he = HCE_HTTP_DIGEST_FAIL;
 		host->up = HOST_DOWN;
 	} else {

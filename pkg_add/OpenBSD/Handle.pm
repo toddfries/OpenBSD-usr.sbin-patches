@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Handle.pm,v 1.27 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: Handle.pm,v 1.29 2011/08/26 08:46:09 espie Exp $
 #
 # Copyright (c) 2007-2009 Marc Espie <espie@openbsd.org>
 #
@@ -29,7 +29,8 @@ use constant {
 	BAD_PACKAGE => 1,
 	CANT_INSTALL => 2,
 	ALREADY_INSTALLED => 3,
-	NOT_FOUND => 4
+	NOT_FOUND => 4,
+	CANT_DELETE => 5,
 };
 
 sub cleanup
@@ -146,7 +147,7 @@ sub create_old
 	my $self= $class->new;
 	$self->{name} = $pkgname;
 
-	my $location = $state->repo->installed->find($pkgname, $state->{arch});
+	my $location = $state->repo->installed->find($pkgname);
 	if (defined $location) {
 		$self->{location} = $location;
 	}
@@ -222,7 +223,7 @@ sub get_location
 
 	my $name = $handle->{name};
 
-	my $location = $state->repo->find($name, $state->{arch});
+	my $location = $state->repo->find($name);
 	if (!$location) {
 		$state->print("#1", $state->deptree_header($name));
 		$handle->set_error(NOT_FOUND);

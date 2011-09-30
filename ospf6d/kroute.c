@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.30 2011/03/07 07:43:02 henning Exp $ */
+/*	$OpenBSD: kroute.c,v 1.36 2011/07/07 18:39:11 claudio Exp $ */
 
 /*
  * Copyright (c) 2004 Esben Norby <norby@openbsd.org>
@@ -645,10 +645,10 @@ kif_validate(u_short ifindex)
 
 	if ((iface = if_find(ifindex)) == NULL) {
 		log_warnx("interface with index %u not found", ifindex);
-		return (1);
+		return (-1);
 	}
 
-	return (iface->nh_reachable);
+	return ((iface->flags & IFF_UP) && LINK_STATE_IS_UP(iface->linkstate));
 }
 
 struct kroute_node *
@@ -797,33 +797,34 @@ if_change(u_short ifindex, int flags, struct if_data *ifd)
 {
 	struct kroute_node	*kr, *tkr;
 	struct iface		*iface;
-	u_int8_t		 reachable;
+	u_int8_t		 wasvalid, isvalid;
+
+	wasvalid = kif_validate(ifindex);
 
 	if ((iface = kif_update(ifindex, flags, ifd, NULL)) == NULL) {
 		log_warn("if_change: kif_update(%u)", ifindex);
 		return;
 	}
 
-	reachable = (iface->flags & IFF_UP) &&
-	    (LINK_STATE_IS_UP(iface->linkstate) ||
-	    (iface->linkstate == LINK_STATE_UNKNOWN &&
-	    iface->media_type != IFT_CARP));
+	isvalid = (iface->flags & IFF_UP) &&
+	    LINK_STATE_IS_UP(iface->linkstate);
 
-	if (reachable == iface->nh_reachable)
-		return;		/* nothing changed wrt nexthop validity */
+	if (wasvalid == isvalid)
+		return;		/* nothing changed wrt validity */
 
-	iface->nh_reachable = reachable;
-
-	/* notify ospfe about interface link state */
-	if (iface->cflags & F_IFACE_CONFIGURED)
+	/* inform engine and rde about state change if interface is used */
+	if (iface->cflags & F_IFACE_CONFIGURED) {
 		main_imsg_compose_ospfe(IMSG_IFINFO, 0, iface,
 		    sizeof(struct iface));
+		main_imsg_compose_rde(IMSG_IFINFO, 0, iface,
+		    sizeof(struct iface));
+	}
 
 	/* update redistribute list */
 	RB_FOREACH(kr, kroute_tree, &krt) {
 		for (tkr = kr; tkr != NULL; tkr = tkr->next) {
 			if (tkr->r.ifindex == ifindex) {
-				if (reachable)
+				if (isvalid)
 					tkr->r.flags &= ~F_DOWN;
 				else
 					tkr->r.flags |= F_DOWN;
@@ -901,12 +902,15 @@ if_newaddr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 	}
 
 	TAILQ_INSERT_TAIL(&iface->ifa_list, ia, entry);
-	ifc.addr = ia->addr;
-	ifc.dstbrd = ia->dstbrd;
-	ifc.prefixlen = ia->prefixlen;
-	ifc.ifindex = ifindex;
-	main_imsg_compose_ospfe(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
-	main_imsg_compose_rde(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+	/* inform engine and rde if interface is used */
+	if (iface->cflags & F_IFACE_CONFIGURED) {
+		ifc.addr = ia->addr;
+		ifc.dstbrd = ia->dstbrd;
+		ifc.prefixlen = ia->prefixlen;
+		ifc.ifindex = ifindex;
+		main_imsg_compose_ospfe(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+		main_imsg_compose_rde(IMSG_IFADDRNEW, 0, &ifc, sizeof(ifc));
+	}
 }
 
 void
@@ -946,14 +950,17 @@ if_deladdr(u_short ifindex, struct sockaddr_in6 *ifa, struct sockaddr_in6 *mask,
 			log_debug("if_deladdr: ifindex %u, addr %s/%d",
 			    ifindex, log_in6addr(&ia->addr), ia->prefixlen);
 			TAILQ_REMOVE(&iface->ifa_list, ia, entry);
-			ifc.addr = ia->addr;
-			ifc.dstbrd = ia->dstbrd;
-			ifc.prefixlen = ia->prefixlen;
-			ifc.ifindex = ifindex;
-			main_imsg_compose_ospfe(IMSG_IFADDRDEL, 0, &ifc,
-			    sizeof(ifc));
-			main_imsg_compose_rde(IMSG_IFADDRDEL, 0, &ifc,
-			    sizeof(ifc));
+			/* inform engine and rde if interface is used */
+			if (iface->cflags & F_IFACE_CONFIGURED) {
+				ifc.addr = ia->addr;
+				ifc.dstbrd = ia->dstbrd;
+				ifc.prefixlen = ia->prefixlen;
+				ifc.ifindex = ifindex;
+				main_imsg_compose_ospfe(IMSG_IFADDRDEL, 0, &ifc,
+				    sizeof(ifc));
+				main_imsg_compose_rde(IMSG_IFADDRDEL, 0, &ifc,
+				    sizeof(ifc));
+			}
 			free(ia);
 			return;
 		}
@@ -1068,6 +1075,7 @@ send_rtmsg(int fd, int action, struct kroute *kroute)
 		bzero(&ifp, sizeof(ifp));
 		ifp.addr.sdl_len = sizeof(struct sockaddr_dl);
 		ifp.addr.sdl_family = AF_LINK;
+		
 		ifp.addr.sdl_index  = kroute->ifindex;
 		/* adjust header */
 		hdr.rtm_flags |= RTF_CLONING;
@@ -1267,7 +1275,7 @@ fetchifs(u_short ifindex)
 		return (-1);
 	}
 	if ((buf = malloc(len)) == NULL) {
-		log_warn("fetchif");
+		log_warn("fetchifs");
 		return (-1);
 	}
 	if (sysctl(mib, 6, buf, &len, NULL, 0) == -1) {
@@ -1290,13 +1298,6 @@ fetchifs(u_short ifindex)
 			if ((iface = kif_update(ifm.ifm_index,
 			    ifm.ifm_flags, &ifm.ifm_data,
 			    (struct sockaddr_dl *)rti_info[RTAX_IFP])) == NULL)
-				fatal("fetchifs");
-
-			iface->nh_reachable = (iface->flags & IFF_UP) &&
-			    (LINK_STATE_IS_UP(ifm.ifm_data.ifi_link_state) ||
-			    (ifm.ifm_data.ifi_link_state ==
-			    LINK_STATE_UNKNOWN &&
-			    ifm.ifm_data.ifi_type != IFT_CARP));
 			break;
 		case RTM_NEWADDR:
 			ifam = (struct ifa_msghdr *)rtm;

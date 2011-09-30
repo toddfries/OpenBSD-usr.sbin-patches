@@ -1,4 +1,4 @@
-/*	$OpenBSD: hce.c,v 1.57 2011/02/08 08:52:28 sthen Exp $	*/
+/*	$OpenBSD: hce.c,v 1.60 2011/05/19 08:56:49 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -41,135 +41,46 @@
 
 #include "relayd.h"
 
-__dead void hce_shutdown(void);
-void	hce_sig_handler(int sig, short, void *);
-void	hce_dispatch_imsg(int, short, void *);
-void	hce_dispatch_parent(int, short, void *);
-void	hce_launch_checks(int, short, void *);
-void	hce_setup_events(void);
-void	hce_disable_events(void);
+void	 hce_init(struct privsep *, struct privsep_proc *p, void *);
+void	 hce_sig_handler(int sig, short, void *);
+void	 hce_launch_checks(int, short, void *);
+void	 hce_setup_events(void);
+void	 hce_disable_events(void);
+
+int	 hce_dispatch_parent(int, struct privsep_proc *, struct imsg *);
+int	 hce_dispatch_pfe(int, struct privsep_proc *, struct imsg *);
 
 static struct relayd *env = NULL;
-struct imsgev		*iev_pfe;
-struct imsgev		*iev_main;
 int			 running = 0;
 
-void
-hce_sig_handler(int sig, short event, void *arg)
-{
-	switch (sig) {
-	case SIGINT:
-	case SIGTERM:
-		hce_shutdown();
-		break;
-	case SIGCHLD:
-	case SIGHUP:
-	case SIGPIPE:
-		/* ignore */
-		break;
-	default:
-		fatalx("hce_sig_handler: unexpected signal");
-	}
-}
+static struct privsep_proc procs[] = {
+	{ "parent",	PROC_PARENT,	hce_dispatch_parent },
+	{ "pfe",	PROC_PFE,	hce_dispatch_pfe },
+};
 
 pid_t
-hce(struct relayd *x_env, int pipe_parent2pfe[2], int pipe_parent2hce[2],
-    int pipe_parent2relay[RELAY_MAXPROC][2], int pipe_pfe2hce[2],
-    int pipe_pfe2relay[RELAY_MAXPROC][2])
+hce(struct privsep *ps, struct privsep_proc *p)
 {
-	pid_t		 pid;
-	struct passwd	*pw;
-	int		 i;
-
-	switch (pid = fork()) {
-	case -1:
-		fatal("hce: cannot fork");
-	case 0:
-		break;
-	default:
-		return (pid);
-	}
-
-	env = x_env;
-	purge_config(env, PURGE_RDRS|PURGE_RELAYS|PURGE_PROTOS);
-
-	if ((pw = getpwnam(RELAYD_USER)) == NULL)
-		fatal("hce: getpwnam");
-
-#ifndef DEBUG
-	if (chroot(pw->pw_dir) == -1)
-		fatal("hce: chroot");
-	if (chdir("/") == -1)
-		fatal("hce: chdir(\"/\")");
-#else
-#warning disabling privilege revocation and chroot in DEBUG mode
-#endif
-
-	setproctitle("host check engine");
-	relayd_process = PROC_HCE;
+	env = ps->ps_env;
 
 	/* this is needed for icmp tests */
 	icmp_init(env);
 
-#ifndef DEBUG
-	if (setgroups(1, &pw->pw_gid) ||
-	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
-	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
-		fatal("hce: can't drop privileges");
-#endif
+	return (proc_run(ps, p, procs, nitems(procs), hce_init, NULL));
+}
 
-	event_init();
+void
+hce_init(struct privsep *ps, struct privsep_proc *p, void *arg)
+{
+	if (config_init(ps->ps_env) == -1)
+		fatal("failed to initialize configuration");
+
+	env->sc_id = getpid() & 0xffff;
 
 	/* Allow maximum available sockets for TCP checks */
 	socket_rlimit(-1);
 
-	if ((iev_pfe = calloc(1, sizeof(struct imsgev))) == NULL ||
-	    (iev_main = calloc(1, sizeof(struct imsgev))) == NULL)
-		fatal("hce");
-	imsg_init(&iev_pfe->ibuf, pipe_pfe2hce[0]);
-	iev_pfe->handler = hce_dispatch_imsg;
-	imsg_init(&iev_main->ibuf, pipe_parent2hce[1]);
-	iev_main->handler = hce_dispatch_parent;
-
-	iev_pfe->events = EV_READ;
-	event_set(&iev_pfe->ev, iev_pfe->ibuf.fd, iev_pfe->events,
-	    iev_pfe->handler, iev_pfe);
-	event_add(&iev_pfe->ev, NULL);
-
-	iev_main->events = EV_READ;
-	event_set(&iev_main->ev, iev_main->ibuf.fd, iev_main->events,
-	    iev_main->handler, iev_main);
-	event_add(&iev_main->ev, NULL);
-
-	signal_set(&env->sc_evsigint, SIGINT, hce_sig_handler, env);
-	signal_set(&env->sc_evsigterm, SIGTERM, hce_sig_handler, env);
-	signal_set(&env->sc_evsigchld, SIGCHLD, hce_sig_handler, env);
-	signal_set(&env->sc_evsighup, SIGHUP, hce_sig_handler, env);
-	signal_set(&env->sc_evsigpipe, SIGPIPE, hce_sig_handler, env);
-
-	signal_add(&env->sc_evsigint, NULL);
-	signal_add(&env->sc_evsigterm, NULL);
-	signal_add(&env->sc_evsigchld, NULL);
-	signal_add(&env->sc_evsighup, NULL);
-	signal_add(&env->sc_evsigpipe, NULL);
-
-	/* setup pipes */
-	close(pipe_pfe2hce[1]);
-	close(pipe_parent2hce[0]);
-	close(pipe_parent2pfe[0]);
-	close(pipe_parent2pfe[1]);
-	for (i = 0; i < env->sc_prefork_relay; i++) {
-		close(pipe_parent2relay[i][0]);
-		close(pipe_parent2relay[i][1]);
-		close(pipe_pfe2relay[i][0]);
-		close(pipe_pfe2relay[i][1]);
-	}
-
-	hce_setup_events();
-	event_dispatch();
-	hce_shutdown();
-
-	return (0);
+	snmp_init(env, PROC_PARENT);
 }
 
 void
@@ -178,18 +89,17 @@ hce_setup_events(void)
 	struct timeval	 tv;
 	struct table	*table;
 
-	snmp_init(env, iev_main);
-
-	if (!TAILQ_EMPTY(env->sc_tables)) {
+	if (!(TAILQ_EMPTY(env->sc_tables) ||
+	    event_initialized(&env->sc_ev))) {
 		evtimer_set(&env->sc_ev, hce_launch_checks, env);
 		bzero(&tv, sizeof(tv));
 		evtimer_add(&env->sc_ev, &tv);
 	}
 
 	if (env->sc_flags & F_SSL) {
-		ssl_init(env);
 		TAILQ_FOREACH(table, env->sc_tables, entry) {
-			if (!(table->conf.flags & F_SSL))
+			if (!(table->conf.flags & F_SSL) ||
+			    table->ssl_ctx != NULL)
 				continue;
 			table->ssl_ctx = ssl_ctx_create(env);
 		}
@@ -206,8 +116,10 @@ hce_disable_events(void)
 	TAILQ_FOREACH(table, env->sc_tables, entry) {
 		TAILQ_FOREACH(host, &table->hosts, entry) {
 			host->he = HCE_ABORT;
-			event_del(&host->cte.ev);
-			close(host->cte.s);
+			if (event_initialized(&host->cte.ev)) {
+				event_del(&host->cte.ev);
+				close(host->cte.s);
+			}
 		}
 	}
 	if (env->sc_has_icmp) {
@@ -230,13 +142,17 @@ hce_launch_checks(int fd, short event, void *arg)
 	/*
 	 * notify pfe checks are done and schedule next check
 	 */
-	imsg_compose_event(iev_pfe, IMSG_SYNC, 0, 0, -1, NULL, 0);
+	proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_SYNC, -1, NULL, 0);
 	TAILQ_FOREACH(table, env->sc_tables, entry) {
 		TAILQ_FOREACH(host, &table->hosts, entry) {
 			if ((host->flags & F_CHECK_DONE) == 0)
 				host->he = HCE_INTERVAL_TIMEOUT;
 			host->flags &= ~(F_CHECK_SENT|F_CHECK_DONE);
-			event_del(&host->cte.ev);
+			if (event_initialized(&host->cte.ev)) {
+				event_del(&host->cte.ev);
+				close(host->cte.s);
+			}
+			host->cte.s = -1;
 		}
 	}
 
@@ -265,7 +181,7 @@ hce_launch_checks(int fd, short event, void *arg)
 				schedule_icmp(env, host);
 				break;
 			case CHECK_SCRIPT:
-				check_script(host);
+				check_script(env, host);
 				break;
 			default:
 				/* Any other TCP-style checks */
@@ -299,7 +215,7 @@ hce_notify_done(struct host *host, enum host_error he)
 	host->he = he;
 
 	if (host->up == HOST_DOWN && host->retry_cnt) {
-		log_debug("hce_notify_done: host %s retry %d",
+		log_debug("%s: host %s retry %d", __func__,
 		    host->conf.name, host->retry_cnt);
 		host->up = host->last_up;
 		host->retry_cnt--;
@@ -318,10 +234,10 @@ hce_notify_done(struct host *host, enum host_error he)
 	host->flags |= (F_CHECK_SENT|F_CHECK_DONE);
 	msg = host_error(he);
 	if (msg)
-		log_debug("hce_notify_done: %s (%s)", host->conf.name, msg);
+		log_debug("%s: %s (%s)", __func__, host->conf.name, msg);
 
-	imsg_compose_event(iev_pfe, IMSG_HOST_STATUS,
-	    0, 0, -1, &st, sizeof(st));
+	proc_compose_imsg(env->sc_ps, PROC_PFE, -1, IMSG_HOST_STATUS,
+	    -1, &st, sizeof(st));
 	if (host->up != host->last_up)
 		logopt = RELAYD_OPT_LOGUPDATE;
 	else
@@ -348,7 +264,7 @@ hce_notify_done(struct host *host, enum host_error he)
 	}
 
 	if (host->last_up != host->up)
-		snmp_hosttrap(table, host);
+		snmp_hosttrap(env, table, host);
 
 	host->last_up = host->up;
 
@@ -362,200 +278,91 @@ hce_notify_done(struct host *host, enum host_error he)
 	}
 }
 
-void
-hce_shutdown(void)
+int
+hce_dispatch_pfe(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	log_info("host check engine exiting");
-	_exit(0);
-}
-
-void
-hce_dispatch_imsg(int fd, short event, void *ptr)
-{
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
-	ssize_t			 n;
 	objid_t			 id;
 	struct host		*host;
 	struct table		*table;
-	int			 verbose;
 
-	iev = ptr;
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("hce_dispatch_imsg: imsg_read_error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
-	}
-
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("hce_dispatch_imsg: msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("hce_dispatch_imsg: imsg_read error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_HOST_DISABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((host = host_find(env, id)) == NULL)
-				fatalx("hce_dispatch_imsg: desynchronized");
-			host->flags |= F_DISABLE;
+	switch (imsg->hdr.type) {
+	case IMSG_HOST_DISABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((host = host_find(env, id)) == NULL)
+			fatalx("hce_dispatch_imsg: desynchronized");
+		host->flags |= F_DISABLE;
+		host->up = HOST_UNKNOWN;
+		host->check_cnt = 0;
+		host->up_cnt = 0;
+		host->he = HCE_NONE;
+		break;
+	case IMSG_HOST_ENABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((host = host_find(env, id)) == NULL)
+			fatalx("hce_dispatch_imsg: desynchronized");
+		host->flags &= ~(F_DISABLE);
+		host->up = HOST_UNKNOWN;
+		host->he = HCE_NONE;
+		break;
+	case IMSG_TABLE_DISABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((table = table_find(env, id)) == NULL)
+			fatalx("hce_dispatch_imsg: desynchronized");
+		table->conf.flags |= F_DISABLE;
+		TAILQ_FOREACH(host, &table->hosts, entry)
 			host->up = HOST_UNKNOWN;
-			host->check_cnt = 0;
-			host->up_cnt = 0;
-			host->he = HCE_NONE;
-			break;
-		case IMSG_HOST_ENABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((host = host_find(env, id)) == NULL)
-				fatalx("hce_dispatch_imsg: desynchronized");
-			host->flags &= ~(F_DISABLE);
+		break;
+	case IMSG_TABLE_ENABLE:
+		memcpy(&id, imsg->data, sizeof(id));
+		if ((table = table_find(env, id)) == NULL)
+			fatalx("hce_dispatch_imsg: desynchronized");
+		table->conf.flags &= ~(F_DISABLE);
+		TAILQ_FOREACH(host, &table->hosts, entry)
 			host->up = HOST_UNKNOWN;
-			host->he = HCE_NONE;
-			break;
-		case IMSG_TABLE_DISABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((table = table_find(env, id)) == NULL)
-				fatalx("hce_dispatch_imsg: desynchronized");
-			table->conf.flags |= F_DISABLE;
-			TAILQ_FOREACH(host, &table->hosts, entry)
-				host->up = HOST_UNKNOWN;
-			break;
-		case IMSG_TABLE_ENABLE:
-			memcpy(&id, imsg.data, sizeof(id));
-			if ((table = table_find(env, id)) == NULL)
-				fatalx("hce_dispatch_imsg: desynchronized");
-			table->conf.flags &= ~(F_DISABLE);
-			TAILQ_FOREACH(host, &table->hosts, entry)
-				host->up = HOST_UNKNOWN;
-			break;
-		case IMSG_CTL_POLL:
-			evtimer_del(&env->sc_ev);
-			TAILQ_FOREACH(table, env->sc_tables, entry)
-				table->skipped = 0;
-			hce_launch_checks(-1, EV_TIMEOUT, env);
-			break;
-		case IMSG_CTL_LOG_VERBOSE:
-			memcpy(&verbose, imsg.data, sizeof(verbose));
-			log_verbose(verbose);
-			break;
-		default:
-			log_debug("hce_dispatch_msg: unexpected imsg %d",
-			    imsg.hdr.type);
-			break;
-		}
-		imsg_free(&imsg);
+		break;
+	case IMSG_CTL_POLL:
+		evtimer_del(&env->sc_ev);
+		TAILQ_FOREACH(table, env->sc_tables, entry)
+			table->skipped = 0;
+		hce_launch_checks(-1, EV_TIMEOUT, env);
+		break;
+	default:
+		return (-1);
 	}
-	imsg_event_add(iev);
+
+	return (0);
 }
 
-void
-hce_dispatch_parent(int fd, short event, void * ptr)
+int
+hce_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct imsgev		*iev;
-	struct imsgbuf		*ibuf;
-	struct imsg		 imsg;
 	struct ctl_script	 scr;
-	ssize_t			 n;
-	size_t			 len;
-	static struct table	*table = NULL;
-	struct host		*host, *parent;
 
-	iev = ptr;
-	ibuf = &iev->ibuf;
-
-	if (event & EV_READ) {
-		if ((n = imsg_read(ibuf)) == -1)
-			fatal("hce_dispatch_parent: imsg_read error");
-		if (n == 0) {
-			/* this pipe is dead, so remove the event handler */
-			event_del(&iev->ev);
-			event_loopexit(NULL);
-			return;
-		}
+	switch (imsg->hdr.type) {
+	case IMSG_SCRIPT:
+		IMSG_SIZE_CHECK(imsg, &scr);
+		bcopy(imsg->data, &scr, sizeof(scr));
+		script_done(env, &scr);
+		break;
+	case IMSG_CFG_TABLE:
+		config_gettable(env, imsg);
+		break;
+	case IMSG_CFG_HOST:
+		config_gethost(env, imsg);
+		break;
+	case IMSG_SNMPSOCK:
+		snmp_getsock(env, imsg);
+		break;
+	case IMSG_CFG_DONE:
+		config_getcfg(env, imsg);
+		hce_setup_events();
+		break;
+	case IMSG_CTL_RESET:
+		config_getreset(env, imsg);
+		break;
+	default:
+		return (-1);
 	}
 
-	if (event & EV_WRITE) {
-		if (msgbuf_write(&ibuf->w) == -1)
-			fatal("hce_dispatch_parent: msgbuf_write");
-	}
-
-	for (;;) {
-		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			fatal("hce_dispatch_parent: imsg_read error");
-		if (n == 0)
-			break;
-
-		switch (imsg.hdr.type) {
-		case IMSG_SCRIPT:
-			if (imsg.hdr.len - IMSG_HEADER_SIZE !=
-			    sizeof(scr))
-				fatalx("hce_dispatch_parent: "
-				    "invalid size of script request");
-			bcopy(imsg.data, &scr, sizeof(scr));
-			script_done(env, &scr);
-			break;
-		case IMSG_RECONF:
-			log_debug("hce: reloading configuration");
-			if (imsg.hdr.len !=
-			    sizeof(struct relayd) + IMSG_HEADER_SIZE)
-				fatalx("corrupted reload data");
-			hce_disable_events();
-			purge_config(env, PURGE_TABLES);
-			merge_config(env, (struct relayd *)imsg.data);
-
-			env->sc_tables = calloc(1, sizeof(*env->sc_tables));
-			if (env->sc_tables == NULL)
-				fatal(NULL);
-
-			TAILQ_INIT(env->sc_tables);
-			break;
-		case IMSG_RECONF_TABLE:
-			if ((table = calloc(1, sizeof(*table))) == NULL)
-				fatal(NULL);
-			memcpy(&table->conf, imsg.data, sizeof(table->conf));
-			TAILQ_INIT(&table->hosts);
-			TAILQ_INSERT_TAIL(env->sc_tables, table, entry);
-			break;
-		case IMSG_RECONF_SENDBUF:
-			len = imsg.hdr.len - IMSG_HEADER_SIZE;
-			table->sendbuf = calloc(1, len);
-			(void)strlcpy(table->sendbuf, (char *)imsg.data, len);
-			break;
-		case IMSG_RECONF_HOST:
-			if ((host = calloc(1, sizeof(*host))) == NULL)
-				fatal(NULL);
-			memcpy(&host->conf, imsg.data, sizeof(host->conf));
-			host->tablename = table->conf.name;
-			TAILQ_INSERT_TAIL(&table->hosts, host, entry);
-			if (host->conf.parentid) {
-				parent = host_find(env, host->conf.parentid);
-				SLIST_INSERT_HEAD(&parent->children,
-				    host, child);
-			}
-			break;
-		case IMSG_RECONF_END:
-			log_warnx("hce: configuration reloaded");
-			hce_setup_events();
-			break;
-		default:
-			log_debug("hce_dispatch_parent: unexpected imsg %d",
-			    imsg.hdr.type);
-			break;
-		}
-		imsg_free(&imsg);
-	}
-	imsg_event_add(iev);
+	return (0);
 }

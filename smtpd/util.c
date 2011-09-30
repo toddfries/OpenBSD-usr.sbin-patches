@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.44 2011/04/17 13:36:07 gilles Exp $	*/
+/*	$OpenBSD: util.c,v 1.47 2011/05/17 18:54:32 gilles Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -110,40 +110,6 @@ hostname_match(char *hostname, char *pattern)
 }
 
 int
-recipient_to_path(struct path *path, char *recipient)
-{
-	char *username;
-	char *hostname;
-
-	username = recipient;
-	hostname = strrchr(username, '@');
-
-	if (username[0] == '\0') {
-		*path->user = '\0';
-		*path->domain = '\0';
-		return 1;
-	}
-
-	if (hostname == NULL) {
-		if (strcasecmp(username, "postmaster") != 0)
-			return 0;
-		hostname = "localhost";
-	} else {
-		*hostname++ = '\0';
-	}
-
-	if (strlcpy(path->user, username, sizeof(path->user))
-	    >= sizeof(path->user))
-		return 0;
-
-	if (strlcpy(path->domain, hostname, sizeof(path->domain))
-	    >= sizeof(path->domain))
-		return 0;
-
-	return 1;
-}
-
-int
 valid_localpart(char *s)
 {
 #define IS_ATEXT(c)     (isalnum((int)(c)) || strchr("!#$%&'*+-/=?^_`{|}~", (c)))
@@ -184,6 +150,40 @@ nextsub:
                 goto nextsub;
 	}
         return 1;
+}
+
+int
+email_to_mailaddr(struct mailaddr *maddr, char *email)
+{
+	char *username;
+	char *hostname;
+
+	username = email;
+	hostname = strrchr(username, '@');
+
+	if (username[0] == '\0') {
+		*maddr->user = '\0';
+		*maddr->domain = '\0';
+		return 1;
+	}
+
+	if (hostname == NULL) {
+		if (strcasecmp(username, "postmaster") != 0)
+			return 0;
+		hostname = "localhost";
+	} else {
+		*hostname++ = '\0';
+	}
+
+	if (strlcpy(maddr->user, username, sizeof(maddr->user))
+	    >= sizeof(maddr->user))
+		return 0;
+
+	if (strlcpy(maddr->domain, hostname, sizeof(maddr->domain))
+	    >= sizeof(maddr->domain))
+		return 0;
+
+	return 1;
 }
 
 char *
@@ -252,7 +252,7 @@ time_to_text(time_t when)
  * Check file for security. Based on usr.bin/ssh/auth.c.
  */
 int
-secure_file(int fd, char *path, struct passwd *pw, int mayread)
+secure_file(int fd, char *path, char *userdir, uid_t uid, int mayread)
 {
 	char		 buf[MAXPATHLEN];
 	char		 homedir[MAXPATHLEN];
@@ -262,13 +262,13 @@ secure_file(int fd, char *path, struct passwd *pw, int mayread)
 	if (realpath(path, buf) == NULL)
 		return 0;
 
-	if (realpath(pw->pw_dir, homedir) == NULL)
+	if (realpath(userdir, homedir) == NULL)
 		homedir[0] = '\0';
 
 	/* Check the open file to avoid races. */
 	if (fstat(fd, &st) < 0 ||
 	    !S_ISREG(st.st_mode) ||
-	    (st.st_uid != 0 && st.st_uid != pw->pw_uid) ||
+	    (st.st_uid != 0 && st.st_uid != uid) ||
 	    (st.st_mode & (mayread ? 022 : 066)) != 0)
 		return 0;
 
@@ -279,7 +279,7 @@ secure_file(int fd, char *path, struct passwd *pw, int mayread)
 		strlcpy(buf, cp, sizeof(buf));
 
 		if (stat(buf, &st) < 0 ||
-		    (st.st_uid != 0 && st.st_uid != pw->pw_uid) ||
+		    (st.st_uid != 0 && st.st_uid != uid) ||
 		    (st.st_mode & 022) != 0)
 			return 0;
 
@@ -345,16 +345,16 @@ lowercase(char *buf, char *s, size_t len)
 }
 
 void
-message_set_errormsg(struct envelope *m, char *fmt, ...)
+envelope_set_errormsg(struct envelope *e, char *fmt, ...)
 {
 	int ret;
 	va_list ap;
 
 	va_start(ap, fmt);
 
-	ret = vsnprintf(m->session_errorline, MAX_LINE_SIZE, fmt, ap);
+	ret = vsnprintf(e->delivery.errorline, MAX_LINE_SIZE, fmt, ap);
 	if (ret >= MAX_LINE_SIZE)
-		strlcpy(m->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
+		strlcpy(e->delivery.errorline + (MAX_LINE_SIZE - 4), "...", 4);
 
 	/* this should not happen */
 	if (ret == -1)
@@ -364,9 +364,9 @@ message_set_errormsg(struct envelope *m, char *fmt, ...)
 }
 
 char *
-message_get_errormsg(struct envelope *m)
+envelope_get_errormsg(struct envelope *e)
 {
-	return m->session_errorline;
+	return e->delivery.errorline;
 }
 
 void
@@ -393,20 +393,6 @@ sa_set_port(struct sockaddr *sa, int port)
 
 	memcpy(sa, res->ai_addr, res->ai_addrlen);
 	freeaddrinfo(res);
-}
-
-struct path *
-path_dup(struct path *path)
-{
-	struct path *pathp;
-
-	pathp = calloc(sizeof(struct path), 1);
-	if (pathp == NULL)
-		fatal("calloc");
-
-	*pathp = *path;
-
-	return pathp;
 }
 
 u_int64_t
@@ -483,7 +469,8 @@ session_socket_no_linger(int fd)
 int
 session_socket_error(int fd)
 {
-	int	 error, len;
+	int		error;
+	socklen_t	len;
 
 	len = sizeof(error);
 	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) == -1)
