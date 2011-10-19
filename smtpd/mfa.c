@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.61 2011/08/31 18:56:30 gilles Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.63 2011/10/09 18:39:53 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -53,6 +53,8 @@ static void
 mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 {
 	struct filter *filter;
+
+	log_imsg(PROC_MFA, iev->proc, imsg);
 
 	if (iev->proc == PROC_SMTP) {
 		switch (imsg->hdr.type) {
@@ -354,7 +356,8 @@ mfa_fork_filter(struct filter *filter)
 		/* filter */
 		dup2(sockpair[0], 0);
 		
-		closefrom(3);
+		if (closefrom(STDERR_FILENO + 1) < 0)
+			exit(1);
 
 		execl(filter->path, filter->name, NULL);
 		exit(1);
