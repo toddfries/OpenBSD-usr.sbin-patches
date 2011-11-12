@@ -1,4 +1,4 @@
-/*	$OpenBSD: runner.c,v 1.120 2011/10/23 09:30:07 gilles Exp $	*/
+/*	$OpenBSD: runner.c,v 1.123 2011/11/07 11:14:10 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <event.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <libgen.h>
 #include <pwd.h>
 #include <signal.h>
@@ -88,7 +89,7 @@ runner_imsg(struct imsgev *iev, struct imsg *imsg)
 		 * gets reinserted in ramqueue
 		 */
 		if (e->status & DS_TEMPFAILURE) {
-			log_debug("TEMPFAIL: %016llx", e->id);
+			log_debug("TEMPFAIL: %016" PRIx64, e->id);
 			e->status &= ~DS_TEMPFAILURE;
 			queue_envelope_update(Q_QUEUE, e);
 			ramqueue_insert(&env->sc_rqueue, e, time(NULL));
@@ -101,10 +102,10 @@ runner_imsg(struct imsgev *iev, struct imsg *imsg)
 		 */
 		if (e->status & DS_PERMFAILURE) {
 			struct envelope bounce;
-			log_debug("PERMFAIL: %016llx", e->id);
+			log_debug("PERMFAIL: %016" PRIx64, e->id);
 			if (e->type != D_BOUNCE &&
 			    e->sender.user[0] != '\0') {
-				log_debug("PERMFAIL #2: %016llx", e->id);
+				log_debug("PERMFAIL #2: %016" PRIx64, e->id);
 				bounce_record_message(e, &bounce);
 				ramqueue_insert(&env->sc_rqueue, &bounce, time(NULL));
 				runner_reset_events();
@@ -114,7 +115,7 @@ runner_imsg(struct imsgev *iev, struct imsg *imsg)
 		/* successful delivery or permanent failure,
 		 * remove envelope from queue.
 		 */
-		log_debug("#### %s: queue_envelope_delete: %016llx",
+		log_debug("#### %s: queue_envelope_delete: %016" PRIx64,
 		    __func__, e->id);
 		queue_envelope_delete(Q_QUEUE, e);
 		return;
@@ -125,10 +126,6 @@ runner_imsg(struct imsgev *iev, struct imsg *imsg)
 
 	case IMSG_BATCH_DONE:
 		stat_decrement(STATS_MTA_SESSION);
-		return;
-
-	case IMSG_PARENT_ENQUEUE_OFFLINE:
-		/*		runner_process_offline();*/
 		return;
 
 	case IMSG_SMTP_ENQUEUE:
@@ -142,20 +139,22 @@ runner_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 		return;
 
-	case IMSG_QUEUE_PAUSE_LOCAL:
+	case IMSG_QUEUE_PAUSE_MDA:
 		env->sc_opts |= SMTPD_MDA_PAUSED;
 		return;
 
-	case IMSG_QUEUE_RESUME_LOCAL:
+	case IMSG_QUEUE_RESUME_MDA:
 		env->sc_opts &= ~SMTPD_MDA_PAUSED;
+		runner_reset_events();
 		return;
 
-	case IMSG_QUEUE_PAUSE_OUTGOING:
+	case IMSG_QUEUE_PAUSE_MTA:
 		env->sc_opts |= SMTPD_MTA_PAUSED;
 		return;
 
-	case IMSG_QUEUE_RESUME_OUTGOING:
+	case IMSG_QUEUE_RESUME_MTA:
 		env->sc_opts &= ~SMTPD_MTA_PAUSED;
+		runner_reset_events();
 		return;
 
 	case IMSG_CTL_VERBOSE:
@@ -303,7 +302,6 @@ runner_timeout(int fd, short event, void *p)
 	struct ramqueue_envelope *rq_evp;
 	struct timeval		 tv;
 	static int		 rq_done = 0;
-	static int		 rq_off_done = 0;
 	time_t			 nsched;
 	time_t			 curtm;
 
@@ -313,15 +311,6 @@ runner_timeout(int fd, short event, void *p)
 	rq_evp = ramqueue_first_envelope(rqueue);
 	if (rq_evp)
 		nsched = rq_evp->sched;
-
-
-	/* fetch one offline message at a time to prevent a huge
-	 * offline queue from hogging the deliveries of incoming
-	 * messages.
-	 */
-	if (! rq_off_done)
-		rq_off_done = ramqueue_load_offline(rqueue);
-
 
 	/* load as many envelopes as possible from disk-queue to
 	 * ram-queue until a schedulable envelope is found.
@@ -334,19 +323,22 @@ runner_timeout(int fd, short event, void *p)
 	curtm = time(NULL);
 	rq_evp = ramqueue_next_envelope(rqueue);
 	while (rq_evp) {
-		if (rq_evp->sched > curtm)
+		if (rq_evp->sched > curtm) {
+			nsched = rq_evp->sched;
 			break;
+		}
 		runner_process_envelope(rq_evp, curtm);
 		rq_evp = ramqueue_next_envelope(rqueue);
 	}
 
-	if (rq_done && rq_off_done && ramqueue_is_empty(rqueue)) {
-		log_debug("runner: ramqueue is empty, wake me up. zZzZzZ");
+	if (rq_evp == NULL ||
+	    (rq_done && ramqueue_is_empty(rqueue))) {
+		log_debug("runner: nothing to schedule, wake me up. zZzZzZ");
 		return;
 	}
 
 	/* disk-queues not fully loaded, no time for sleeping */
-	if (!rq_done || !rq_off_done)
+	if (!rq_done)
 		nsched = 0;
 	else {
 		nsched = nsched - curtm;
@@ -372,29 +364,29 @@ runner_process_envelope(struct ramqueue_envelope *rq_evp, time_t curtm)
 	mda_av = env->sc_maxconn - stat_get(STATS_MDA_SESSION, STAT_ACTIVE);
 	bnc_av = env->sc_maxconn - stat_get(STATS_RUNNER_BOUNCES, STAT_ACTIVE);
 	
-	if (! queue_envelope_load(Q_QUEUE, rq_evp->evpid, &envelope))
-		return 0;
-
-	if (envelope.type & D_MDA) {
+	if (rq_evp->rq_batch->type == D_MDA) {
 		if (env->sc_opts & SMTPD_MDA_PAUSED)
 			return 0;
 		if (mda_av == 0)
 			return 0;
 	}
 
-	if (envelope.type & D_MTA) {
+	if (rq_evp->rq_batch->type == D_MTA) {
 		if (env->sc_opts & SMTPD_MTA_PAUSED)
 			return 0;
 		if (mta_av == 0)
 			return 0;
 	}
 
-	if (envelope.type & D_BOUNCE) {
+	if (rq_evp->rq_batch->type == D_BOUNCE) {
 		if (env->sc_opts & (SMTPD_MDA_PAUSED|SMTPD_MTA_PAUSED))
 			return 0;
 		if (bnc_av == 0)
 			return 0;
 	}
+
+	if (! queue_envelope_load(Q_QUEUE, rq_evp->evpid, &envelope))
+		return 0;
 
 	if (runner_check_loop(&envelope)) {
 		struct envelope bounce;
@@ -403,7 +395,7 @@ runner_process_envelope(struct ramqueue_envelope *rq_evp, time_t curtm)
 		bounce_record_message(&envelope, &bounce);
 		ramqueue_insert(&env->sc_rqueue, &bounce, time(NULL));
 		runner_setup_events();
-		log_debug("#### %s: queue_envelope_delete: %016llx",
+		log_debug("#### %s: queue_envelope_delete: %016" PRIx64,
 		    __func__, envelope.id);
 		queue_envelope_delete(Q_QUEUE, &envelope);
 		return 0;
@@ -526,7 +518,8 @@ runner_force_message_to_ramqueue(struct ramqueue *rqueue, u_int32_t msgid)
 			continue;
 
 		if ((evpid = filename_to_evpid(dp->d_name)) == 0) {
-			log_warnx("runner_force_message_to_ramqueue: invalid evpid: %016llx", evpid);
+			log_warnx("runner_force_message_to_ramqueue: "
+				  "invalid evpid: %016" PRIx64, evpid);
 			continue;
 		}
 
@@ -722,7 +715,7 @@ runner_remove_envelope(struct ramqueue *rq, struct ramqueue_envelope *rq_evp)
 	struct envelope evp;
 
 	if (queue_envelope_load(Q_QUEUE, rq_evp->evpid, &evp)) {
-		log_debug("#### %s: queue_envelope_delete: %016llx",
+		log_debug("#### %s: queue_envelope_delete: %016" PRIx64,
 		    __func__, evp.id);
 		queue_envelope_delete(Q_QUEUE, &evp);
 	}
