@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.50 2011/10/21 18:19:34 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.53 2011/11/16 11:41:38 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -567,14 +567,39 @@ sub solve_all_depends
 {
 	my ($solver, $state) = @_;
 
-
 	while (1) {
 		my @todo = $solver->solve_depends($state);
 		if (@todo == 0) {
 			return;
 		}
+		if ($solver->solve_wantlibs($state, 0)) {
+			return;
+		}
 		$solver->{set}->add_new(@todo);
 	}
+}
+
+sub solve_wantlibs
+{
+	my ($solver, $state, $final) = @_;
+
+	my $okay = 1;
+	my $lib_finder = OpenBSD::lookup::library->new($solver);
+	my $h = $solver->{set}->{new}[0];
+	for my $lib (@{$h->{plist}->{wantlib}}) {
+		$solver->{localbase} = $h->{plist}->localbase;
+		next if $lib_finder->lookup($solver,
+		    $solver->{to_register}->{$h}, $state,
+		    $lib->spec);
+		$okay = 0;
+		OpenBSD::SharedLibs::report_problem($state,
+		    $lib->spec) if $final;
+	}
+	if (!$okay && $final) {
+		$solver->dump($state);
+		$lib_finder->dump($state);
+	}
+	return $okay;
 }
 
 sub really_solve_dependency
@@ -607,12 +632,25 @@ sub solve_from_ports
 	if (defined $cache->{$dep->{pkgpath}}) {
 		$pkgname = $cache->{$dep->{pkgpath}};
 	} else {
-		my $plist = $self->ask_tree($state, $dep, $portsdir,
-		    'print-plist-with-depends', 'wantlib_args=no-wantlib-args');
-		if ($? != 0 || !defined $plist->pkgname) {
-			$state->error("Can't obtain dependency #1 from ports tree",
-			    $dep->{pattern});
-			return undef;
+		my ($plist, $diskcache);
+		if ($ENV{_DEPENDS_CACHE}) {
+			$diskcache = $dep->{pkgpath};
+			$diskcache =~ s/\//--/g;
+			$diskcache = $ENV{_DEPENDS_CACHE}."/pkgcreate-".
+			    $diskcache;
+		}
+		if (defined $diskcache && -f $diskcache) {
+			$plist = OpenBSD::PackingList->fromfile($diskcache);
+		} else {
+			$plist = $self->ask_tree($state, $dep, $portsdir,
+			    'print-plist-libs-with-depends', 
+			    'wantlib_args=no-wantlib-args');
+			if ($? != 0 || !defined $plist->pkgname) {
+				$state->error("Can't obtain dependency #1 from ports tree",
+				    $dep->{pattern});
+				return undef;
+			}
+			$plist->tofile($diskcache) if defined $diskcache;
 		}
 		OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
 		$self->add_dep($plist);
@@ -649,13 +687,6 @@ sub ask_tree
 	    \&OpenBSD::PackingList::PrelinkStuffOnly);
 	close($fh);
 	return $plist;
-}
-
-sub errsay_library
-{
-	my ($solver, $state, $h) = @_;
-
-	$state->errsay("Can't create #1 because of libraries", $h->pkgname);
 }
 
 # we don't want old libs
@@ -805,7 +836,7 @@ sub read_fragments
 				} else {
 					$_ = $subst->do($_);
 					if ($fast) {
-						next unless m/^\@(?:cwd|lib)\b/o || m/lib.*\.a$/o;
+						next unless m/^\@(?:cwd|lib|depend|wantlib)\b/o || m/lib.*\.a$/o;
 					}
 					&$cont($_);
 				}
@@ -1060,10 +1091,12 @@ sub check_dependencies
 	my ($self, $plist, $state) = @_;
 
 	my $solver = OpenBSD::Dependencies::CreateSolver->new($plist);
-	$solver->solve_all_depends($state);
+
 	# look for libraries in the "real" tree
 	$state->{destdir} = '/';
-	if (!$solver->solve_wantlibs($state)) {
+
+	$solver->solve_all_depends($state);
+	if (!$solver->solve_wantlibs($state, 1)) {
 		$state->{bad}++;
 	}
 }
