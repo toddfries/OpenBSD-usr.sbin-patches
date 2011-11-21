@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.135 2011/11/07 11:14:10 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.138 2011/11/16 11:18:54 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -56,7 +56,6 @@ static void parent_send_config_ruleset(int);
 static void parent_sig_handler(int, short, void *);
 static void forkmda(struct imsgev *, u_int32_t, struct deliver *);
 static int parent_forward_open(char *);
-static int path_starts_with(char *, char *);
 static void fork_peers(void);
 static struct child *child_lookup(pid_t);
 static struct child *child_add(pid_t, int, int);
@@ -161,7 +160,7 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	fatalx("parent_imsg: unexpected imsg");
+	errx(1, "parent_imsg: unexpected %s imsg", imsg_to_str(imsg->hdr.type));
 }
 
 static void
@@ -378,7 +377,10 @@ parent_sig_handler(int sig, short event, void *p)
 			case CHILD_ENQUEUE_OFFLINE:
 				if (fail)
 					log_warnx("smtpd: couldn't enqueue offline "
-					    "message; smtpctl %s", cause);
+					    "message %s; smtpctl %s", child->path, cause);
+				else
+					unlink(child->path);
+				free(child->path);
 				offline_done();
 				break;
 
@@ -489,12 +491,17 @@ main(int argc, char *argv[])
 	if ((env->sc_pw =  getpwnam(SMTPD_USER)) == NULL)
 		errx(1, "unknown user %s", SMTPD_USER);
 
+	if (ckdir(PATH_SPOOL, 0711, 0, 0, 1) == 0)
+		errx(1, "error in spool directory setup");
+	if (ckdir(PATH_SPOOL PATH_OFFLINE, 01777, 0, 0, 1) == 0)
+		errx(1, "error in offline directory setup");
+
 	env->sc_queue = queue_backend_lookup(QT_FS);
 	if (env->sc_queue == NULL)
 		errx(1, "could not find queue backend");
 
 	if (!env->sc_queue->init())
-		errx(1, "invalid directory permissions");
+		errx(1, "could not initialize queue backend");
 
 	log_init(debug);
 	log_verbose(verbose);
@@ -893,7 +900,10 @@ offline_scan(int fd, short ev, void *arg)
 		if (d->d_type != DT_REG)
 			continue;
 
-		offline_add(d->d_name);
+		if (offline_add(d->d_name)) {
+			log_warnx("smtpd: could not add offline message %s", d->d_name);
+			continue;
+		}
 
 		if ((n++) == OFFLINE_READMAX) {
 			evtimer_set(&offline_ev, offline_scan, dir);
@@ -911,58 +921,30 @@ offline_scan(int fd, short ev, void *arg)
 static int
 offline_enqueue(char *name)
 {
-	char			path[MAXPATHLEN];
+	char		 t[MAXPATHLEN], *path;
 	struct user_backend *ub;
 	struct user	 u;
 	struct stat	 sb;
 	pid_t		 pid;
+	struct child	*child;
 
-	strlcpy(path, PATH_SPOOL PATH_OFFLINE "/", sizeof path);
-	if (strlcat(path, name, sizeof path) >= sizeof path)
-		fatalx("smtpd: path name too long");
+	if (!bsnprintf(t, sizeof t, "%s/%s", PATH_SPOOL PATH_OFFLINE, name)) {
+		log_warnx("smtpd: path name too long");
+		return (-1);
+	}
 
-	if (! path_starts_with(path, PATH_SPOOL PATH_OFFLINE))
-		fatalx("smtpd: path outside offline dir");
+	if ((path = strdup(t)) == NULL) {
+		log_warn("smtpd: strdup");
+		return (-1);
+	}
 
 	log_debug("smtpd: enqueueing offline message %s", path);
 
-	if (lstat(path, &sb) == -1) {
-		if (errno == ENOENT) {
-			log_warn("smtpd: lstat: %s", path);
-			return (0);
-		}
-		fatal("lstat");
+	if ((pid = fork()) == -1) {
+		log_warn("smtpd: fork");
+		free(path);
+		return (-1);
 	}
-
-	if (chflags(path, 0) == -1) {
-		if (errno == ENOENT) {
-			log_warn("smtpd: chflags: %s", path);
-			return (0);
-		}
-		fatal("chflags");
-	}
-
-	ub = user_backend_lookup(USER_GETPWNAM);
-	bzero(&u, sizeof (u));
-	errno = 0;
-	if (! ub->getbyuid(&u, sb.st_uid)) {
-		log_warn("smtpd: getpwuid for uid %d failed",
-		    sb.st_uid);
-		unlink(path);
-		return (0);
-	}
-
-	if (! S_ISREG(sb.st_mode)) {
-		log_warnx("smtpd: file %s (uid %d) not regular, removing", path, sb.st_uid);
-		if (S_ISDIR(sb.st_mode))
-			rmdir(path);
-		else
-			unlink(path);
-		return (0);
-	}
-
-	if ((pid = fork()) == -1)
-		fatal("offline_enqueue: fork");
 
 	if (pid == 0) {
 		char	*envp[2], *p, *tmp;
@@ -972,19 +954,39 @@ offline_enqueue(char *name)
 
 		bzero(&args, sizeof(args));
 
-		if (setgroups(1, &u.gid) ||
-		    setresgid(u.gid, u.gid, u.gid) ||
-		    setresuid(u.uid, u.uid, u.uid) ||
-		    closefrom(STDERR_FILENO + 1) == -1) {
-			unlink(path);
+		if (lstat(path, &sb) == -1) {
+			log_warn("smtpd: lstat: %s", path);
 			_exit(1);
 		}
 
-		if ((fp = fopen(path, "r")) == NULL) {
-			unlink(path);
+		if (chflags(path, 0) == -1) {
+			log_warn("smtpd: chflags: %s", path);
 			_exit(1);
 		}
-		unlink(path);
+
+		ub = user_backend_lookup(USER_GETPWNAM);
+		bzero(&u, sizeof (u));
+		errno = 0;
+		if (! ub->getbyuid(&u, sb.st_uid)) {
+			log_warnx("smtpd: getpwuid for uid %d failed",
+			    sb.st_uid);
+			_exit(1);
+		}
+
+		if (! S_ISREG(sb.st_mode)) {
+			log_warnx("smtpd: file %s (uid %d) not regular",
+			    path, sb.st_uid);
+			_exit(1);
+		}
+
+		if (setgroups(1, &u.gid) ||
+		    setresgid(u.gid, u.gid, u.gid) ||
+		    setresuid(u.uid, u.uid, u.uid) ||
+		    closefrom(STDERR_FILENO + 1) == -1)
+			_exit(1);
+
+		if ((fp = fopen(path, "r")) == NULL)
+			_exit(1);
 
 		if (chdir(u.directory) == -1 && chdir("/") == -1)
 			_exit(1);
@@ -1018,9 +1020,10 @@ offline_enqueue(char *name)
 	}
 
 	offline_running++;
-	child_add(pid, CHILD_ENQUEUE_OFFLINE, -1);
+	child = child_add(pid, CHILD_ENQUEUE_OFFLINE, -1);
+	child->path = path;
 
-	return (1);
+	return (0);
 }
 
 static int
@@ -1039,7 +1042,7 @@ offline_add(char *path)
 	memmove(q->path, path, strlen(path) + 1);
 	TAILQ_INSERT_TAIL(&offline_q, q, entry);
 
-	return (1);
+	return (0);
 }
 
 static void
@@ -1092,18 +1095,6 @@ parent_forward_open(char *username)
 }
 
 int
-path_starts_with(char *file, char *prefix)
-{
-	char	 rprefix[MAXPATHLEN];
-	char	 rfile[MAXPATHLEN];
-
-	if (realpath(file, rfile) == NULL || realpath(prefix, rprefix) == NULL)
-		return (-1);
-
-	return (strncmp(rfile, rprefix, strlen(rprefix)) == 0);
-}
-
-int
 child_cmp(struct child *c1, struct child *c2)
 {
 	if (c1->pid < c2->pid)
@@ -1151,9 +1142,6 @@ imsg_dispatch(int fd, short event, void *p)
 
 SPLAY_GENERATE(childtree, child, entry, child_cmp);
 
-const char * proc_to_str(int);
-const char * imsg_to_str(int);
-
 void
 log_imsg(int to, int from, struct imsg *imsg)
 {
@@ -1187,6 +1175,8 @@ proc_to_str(int proc)
 const char *
 imsg_to_str(int type)
 {
+	static char	 buf[32];
+
 	switch(type) {
 	CASE(IMSG_NONE);
 	CASE(IMSG_CTL_OK);
@@ -1256,6 +1246,8 @@ imsg_to_str(int type)
 	CASE(IMSG_DNS_MX);
 	CASE(IMSG_DNS_PTR);
 	default:
-		return "IMSG_???";
+		snprintf(buf, sizeof(buf), "IMSG_??? (%d)", type);
+
+		return buf;
 	}
 }
