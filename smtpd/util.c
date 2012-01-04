@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.51 2011/11/16 19:38:56 eric Exp $	*/
+/*	$OpenBSD: util.c,v 1.54 2011/12/18 22:51:29 chl Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -34,7 +34,6 @@
 #include <event.h>
 #include <fcntl.h>
 #include <imsg.h>
-#include <inttypes.h>
 #include <libgen.h>
 #include <netdb.h>
 #include <pwd.h>
@@ -417,16 +416,15 @@ envelope_set_errormsg(struct envelope *e, char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-
-	ret = vsnprintf(e->errorline, MAX_LINE_SIZE, fmt, ap);
-	if (ret >= MAX_LINE_SIZE)
-		strlcpy(e->errorline + (MAX_LINE_SIZE - 4), "...", 4);
+	ret = vsnprintf(e->errorline, sizeof(e->errorline), fmt, ap);
+	va_end(ap);
 
 	/* this should not happen */
 	if (ret == -1)
 		err(1, "vsnprintf");
 
-	va_end(ap);
+	if ((size_t)ret >= sizeof(e->errorline))
+		strlcpy(e->errorline + (sizeof(e->errorline) - 4), "...", 4);
 }
 
 char *
@@ -590,4 +588,38 @@ u_int64_t
 msgid_to_evpid(u_int32_t msgid)
 {
 	return ((u_int64_t)msgid << 32);
+}
+
+const char *
+parse_smtp_response(char *line, size_t len, char **msg, int *cont)
+{
+	size_t	 i;
+
+	if (len >= SMTP_LINE_MAX)
+		return "line too long";
+
+	if (len > 3) {
+		if (msg)
+			*msg = line + 4;
+		if (cont)
+			*cont = (line[3] == '-');
+	} else if (len == 3) {
+		if (msg)
+			*msg = line + 3;
+		if (cont)
+			*cont = 0;
+	} else
+		return "line too short";
+
+	/* validate reply code */
+	if (line[0] < '2' || line[0] > '5' || !isdigit(line[1]) ||
+	    !isdigit(line[2]))
+		return "reply code out of range";
+
+	/* validate reply message */
+	for (i = 0; i < len; i++)
+		if (!isprint(line[i]))
+			return "non-printable character in reply";
+
+	return NULL;
 }

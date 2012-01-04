@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.254 2011/11/21 18:57:54 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.268 2011/12/18 22:55:31 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -303,7 +303,7 @@ enum action_type {
 	A_MAILDIR,
 	A_MBOX,
 	A_FILENAME,
-	A_EXT
+	A_MDA
 };
 
 #define IS_MAILBOX(x)	((x).r_action == A_MAILDIR || (x).r_action == A_MBOX || (x).r_action == A_FILENAME)
@@ -405,8 +405,6 @@ struct envelope {
 	u_int64_t			session_id;
 	u_int64_t			batch_id;
 
-//	struct delivery			delivery;
-
 	u_int32_t			version;
 	u_int64_t			id;
 	enum delivery_type		type;
@@ -474,11 +472,13 @@ enum session_state {
 	S_DONE,
 	S_QUIT
 };
-#define STATE_COUNT	18
+#define STATE_COUNT	19
 
 struct ssl {
 	SPLAY_ENTRY(ssl)	 ssl_nodes;
 	char			 ssl_name[PATH_MAX];
+	char			*ssl_ca;
+	off_t			 ssl_ca_len;
 	char			*ssl_cert;
 	off_t			 ssl_cert_len;
 	char			*ssl_key;
@@ -587,7 +587,6 @@ struct ramqueue {
 	TAILQ_HEAD(,ramqueue_envelope)		queue;
 };
 
-
 struct smtpd {
 	char					 sc_conffile[MAXPATHLEN];
 	size_t					 sc_maxsize;
@@ -633,8 +632,12 @@ struct smtpd {
 	u_int64_t				 filtermask;
 };
 
-#define	TRACE_VERBOSE	0x01
-#define	TRACE_IMSG	0x02
+#define	TRACE_VERBOSE	0x0001
+#define	TRACE_IMSG	0x0002
+#define	TRACE_IO	0x0004
+#define	TRACE_SMTP	0x0008
+#define	TRACE_MTA	0x0010
+#define	TRACE_BOUNCE	0x0020
 
 enum {
 	STATS_SMTP_SESSION = 0,
@@ -831,6 +834,7 @@ enum mta_state {
 #define	MTA_ALLOW_PLAIN		0x04
 #define	MTA_USE_AUTH		0x08
 #define	MTA_FORCE_MX		0x10
+#define	MTA_USE_CERT		0x20
 
 struct mta_relay {
 	TAILQ_ENTRY(mta_relay)	 entry;
@@ -853,9 +857,8 @@ struct mta_session {
 	int			 fd;
 	FILE			*datafp;
 	struct event		 ev;
-	char			*cert;
 	void			*pcb;
-	struct ramqueue_batch	*batch;
+	struct ssl		*ssl;
 };
 
 
@@ -905,8 +908,6 @@ enum queue_op {
 };
 
 struct queue_backend {
-	enum queue_type	type;
-
 	int (*init)(void);
 	int (*message)(enum queue_kind, enum queue_op, u_int32_t *);
 	int (*envelope)(enum queue_kind, enum queue_op, struct envelope *);
@@ -919,25 +920,22 @@ struct queue_backend {
 
 /* auth structures */
 enum auth_type {
-	AUTH_INVALID=0,
 	AUTH_BSD,
-	AUTH_GETPWNAM,
+	AUTH_PWD,
 };
 
 struct auth_backend {
-	enum auth_type	type;
 	int (*authenticate)(char *, char *);
 };
 
 
 /* user structures */
 enum user_type {
-	USER_INVALID=0,
-	USER_GETPWNAM,
+	USER_PWD,
 };
 
 #define	MAXPASSWORDLEN	128
-struct user {
+struct mta_user {
 	char username[MAXLOGNAME];
 	char directory[MAXPATHLEN];
 	char password[MAXPASSWORDLEN];
@@ -946,10 +944,17 @@ struct user {
 };
 
 struct user_backend {
-	enum user_type	type;
-	int (*getbyname)(struct user *, char *);
-	int (*getbyuid)(struct user *, uid_t);
+	int (*getbyname)(struct mta_user *, char *);
+	int (*getbyuid)(struct mta_user *, uid_t);
 };
+
+
+/* delivery_backend */
+struct delivery_backend {
+	void	(*open)(struct deliver *);
+};
+
+
 
 
 extern struct smtpd	*env;
@@ -965,7 +970,7 @@ int aliases_virtual_get(objid_t, struct expandtree *, struct mailaddr *);
 int alias_parse(struct expandnode *, char *);
 
 
-/* auth_backend.c */
+/* auth.c */
 struct auth_backend *auth_backend_lookup(enum auth_type);
 
 
@@ -973,7 +978,7 @@ struct auth_backend *auth_backend_lookup(enum auth_type);
 int bounce_session(int, struct envelope *);
 int bounce_session_switch(FILE *, enum session_state *, char *, struct envelope *);
 void bounce_event(int, short, void *);
-
+int bounce_record_message(struct envelope *, struct envelope *);
 
 /* config.c */
 #define PURGE_LISTENERS		0x01
@@ -994,6 +999,10 @@ pid_t control(void);
 void session_socket_blockmode(int, enum blockmodes);
 void session_socket_no_linger(int);
 int session_socket_error(int);
+
+
+/* delivery.c */
+struct delivery_backend *delivery_backend_lookup(enum action_type);
 
 
 /* dns.c */
@@ -1083,12 +1092,6 @@ int queue_envelope_update(enum queue_kind, struct envelope *);
 void *qwalk_new(enum queue_kind, u_int32_t);
 int   qwalk(void *, u_int64_t *);
 void  qwalk_close(void *);
-
-
-/* queue_shared.c */
-void queue_message_update(struct envelope *);
-int bounce_record_message(struct envelope *, struct envelope *);
-void show_queue(enum queue_kind, int);
 
 
 /* ramqueue.c */
@@ -1184,7 +1187,7 @@ size_t	stat_increment(int);
 size_t	stat_decrement(int);
 
 
-/* user_backend.c */
+/* user.c */
 struct user_backend *user_backend_lookup(enum user_type);
 
 
@@ -1220,3 +1223,4 @@ u_int32_t evpid_to_msgid(u_int64_t);
 u_int64_t msgid_to_evpid(u_int32_t);
 void log_imsg(int, int, struct imsg*);
 int ckdir(const char *, mode_t, uid_t, gid_t, int);
+const char *parse_smtp_response(char *, size_t, char **, int *);
