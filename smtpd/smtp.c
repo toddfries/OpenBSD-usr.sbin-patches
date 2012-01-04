@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.94 2011/11/14 19:23:41 chl Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.96 2011/12/13 23:55:00 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -209,6 +209,14 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 				if (ssl->ssl_dhparams == NULL)
 					fatal(NULL);
 			}
+			if (ssl->ssl_ca_len) {
+				ssl->ssl_ca = strdup((char *)imsg->data
+				    + sizeof *ssl + ssl->ssl_cert_len +
+				    ssl->ssl_key_len + ssl->ssl_dhparams_len);
+				if (ssl->ssl_ca == NULL)
+					fatal(NULL);
+			}
+
 			SPLAY_INSERT(ssltree, env->sc_ssl, ssl);
 			return;
 
@@ -378,7 +386,7 @@ smtp_setup_events(void)
 	int avail = availdesc();
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry) {
-		log_debug("smtp_setup_events: listen on %s port %d flags 0x%01x"
+		log_debug("smtp: listen on %s port %d flags 0x%01x"
 		    " cert \"%s\"", ss_to_text(&l->ss), ntohs(l->port),
 		    l->flags, l->ssl_cert_name);
 
@@ -403,7 +411,7 @@ smtp_disable_events(void)
 {
 	struct listener	*l;
 
-	log_debug("smtp_disable_events: closing listening sockets");
+	log_debug("smtp: closing listening sockets");
 	while ((l = TAILQ_FIRST(env->sc_listeners)) != NULL) {
 		TAILQ_REMOVE(env->sc_listeners, l, entry);
 		event_del(&l->ev);
@@ -420,7 +428,7 @@ smtp_pause(void)
 {
 	struct listener *l;
 
-	log_debug("smtp_pause: pausing listening sockets");
+	log_debug("smtp: pausing listening sockets");
 	env->sc_opts |= SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
@@ -432,7 +440,7 @@ smtp_resume(void)
 {
 	struct listener *l;
 
-	log_debug("smtp_resume: resuming listening sockets");
+	log_debug("smtp: resuming listening sockets");
 	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
@@ -525,7 +533,7 @@ smtp_new(struct listener *l)
 {
 	struct session	*s;
 
-	log_debug("smtp_new: incoming client on listener: %p", l);
+	log_debug("smtp: new client on listener: %p", l);
 
 	if (env->sc_opts & SMTPD_SMTP_PAUSED)
 		fatalx("smtp_new: unexpected client");
