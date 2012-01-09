@@ -385,7 +385,8 @@ parent_sig_handler(int sig, short event, void *p)
 				break;
 
 			default:
-				fatalx("unexpected child type");
+				log_warnx("unexpected child type");
+				break;
 			}
 
 			child_del(child->pid);
@@ -396,7 +397,7 @@ parent_sig_handler(int sig, short event, void *p)
 			parent_shutdown();
 		break;
 	default:
-		fatalx("unexpected signal");
+		log_warnx("unexpected signal: %d", sig);
 	}
 }
 
