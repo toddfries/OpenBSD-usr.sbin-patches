@@ -1,4 +1,4 @@
-.\"	$OpenBSD: smtpd.conf.5,v 1.38 2011/03/15 19:24:55 gilles Exp $
+.\"	$OpenBSD: smtpd.conf.5,v 1.47 2011/12/13 23:55:00 gilles Exp $
 .\"
 .\" Copyright (c) 2008 Janne Johansson <jj@openbsd.org>
 .\" Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -16,7 +16,7 @@
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
 .\"
-.Dd $Mdocdate: March 15 2011 $
+.Dd $Mdocdate: December 13 2011 $
 .Dt SMTPD.CONF 5
 .Os
 .Sh NAME
@@ -27,9 +27,14 @@
 is the configuration file for the mail daemon
 .Xr smtpd 8 .
 .Pp
+The current line can be extended over multiple lines using a backslash
+.Pq Sq \e .
 Comments can be put anywhere in the file using a hash mark
-.Pq # ,
+.Pq Sq # ,
 and extend to the end of the current line.
+Care should be taken when commenting out multi-line text:
+the comment is effective until the end of the entire block.
+.Pp
 Arguments containing whitespace should be surrounded by double quotes
 .Pq \&" .
 .Pp
@@ -101,7 +106,8 @@ Specify an
 and
 .Ar port
 to listen on.
-An IP address or domain name may be used in place of
+An interface group, an IP address or a domain name may
+be used in place of
 .Ar interface .
 .Pp
 Secured connections are provided either using STARTTLS
@@ -120,7 +126,9 @@ is specified,
 a certificate
 .Ao Ar name Ac Ns .crt ,
 a key
-.Ao Ar name Ac Ns .key
+.Ao Ar name Ac Ns .key ,
+a certificate authority
+.Ao Ar name Ac Ns .ca
 and Diffie-Hellman parameters
 .Ao Ar name Ac Ns .dh
 are searched for.
@@ -131,6 +139,7 @@ the default interface name is instead used,
 for example
 .Pa fxp0.crt ,
 .Pa fxp0.key ,
+.Pa fxp0.ca ,
 and
 .Pa fxp0.dh .
 If no DH parameters are provided, smtpd will use
@@ -212,7 +221,8 @@ This is the default,
 and may be omitted.
 .It Ic from Ar network
 The rule matches if the connection is made from the specified
-.Ar network .
+.Ar network ,
+specified in CIDR notation.
 .El
 .Pp
 Next comes the selection based on the domain the message is sent to:
@@ -276,9 +286,25 @@ Mail is piped to the specified
 which is run with the privileges of the user the message is destined to.
 This parameter may use conversion specifiers that are expanded before use
 (see above).
-.It Ic relay
+.It Xo
+.Ic relay
+.Op Ic as Ar address
+.Xc
 Mail is relayed.
 The routing decision is based on the DNS system.
+.Pp
+If the
+.Ic as
+parameter is specified,
+.Xr smtpd 8
+will rewrite the sender advertised
+in the SMTP session.
+.Ar address
+may be a user, a domain prefixed with
+.Sq @ ,
+or an email address, causing
+smtpd to rewrite the user-part, the domain-part, or the entire address,
+respectively.
 .It Xo
 .Ic relay via
 .Ar host
@@ -286,6 +312,7 @@ The routing decision is based on the DNS system.
 .Op Ic tls | smtps | ssl
 .Op Ic certificate Ar name
 .Op Ic auth Ar map
+.Op Ic as Ar address
 .Xc
 Mail is relayed through the specified
 .Ar host
@@ -317,6 +344,19 @@ is desired, use the
 parameter to specify the
 .Ar map
 that holds the credentials.
+.Pp
+If the
+.Ic as
+parameter is specified,
+.Xr smtpd 8
+will rewrite the sender advertised
+in the SMTP session.
+.Ar address
+may be a user, a domain prefixed with
+.Sq @ ,
+or an email address, causing
+smtpd to rewrite the user-part, the domain-part, or the entire address,
+respectively.
 .It Ic expire Ar n {s|m|h|d}
 Specify how long a message that matched this rule can stay in the queue.
 .El
@@ -341,13 +381,13 @@ as well as permitting email to remote servers.
 Some more complex configurations are given below.
 .Pp
 This first example is the same as the default configuration,
-but all outgoing mail is forwarded to a gmail SMTP server.
+but all outgoing mail is forwarded to a remote SMTP server.
 A secrets file is needed to specify a username and password:
 .Bd -literal -offset indent
 # touch /etc/mail/secrets
 # chmod 640 /etc/mail/secrets
 # chown root:_smtpd /etc/mail/secrets
-# echo "smtp.gmail.com  username:password" \*(Gt /etc/mail/secrets
+# echo "smtp.example.com  username:password" \*(Gt /etc/mail/secrets
 # makemap /etc/mail/secrets
 .Ed
 .Pp
@@ -358,21 +398,21 @@ listen on lo0
 map aliases { source db "/etc/mail/aliases.db" }
 map secrets { source db "/etc/mail/secrets.db" }
 accept for local deliver to mbox
-accept for all relay via smtp.gmail.com tls auth "secrets"
+accept for all relay via smtp.example.com tls auth "secrets"
 .Ed
 .Pp
 In this second example,
 the aim is to permit mail relaying for any user that can authenticate
 using their normal login credentials.
 An RSA certificate must be provided to prove the server's identity.
-The mail server has an external interface pppoe0.
-Mail with a local destination should be sent to procmail.
+The mail server has an external interface bnx0.
+Mail with a local destination should be sent to an external mda.
 First, the RSA certificate is created:
 .Bd -literal -offset indent
-# openssl genrsa -out /etc/mail/certs/pppoe0.key 4096
-# openssl req -new -x509 -key /etc/mail/certs/pppoe0.key \e
-	-out /etc/mail/certs/pppoe0.crt -days 365
-# chmod 600 /etc/mail/certs/pppoe0.*
+# openssl genrsa -out /etc/mail/certs/mail.example.com.key 4096
+# openssl req -new -x509 -key /etc/mail/certs/mail.example.com.key \e
+	-out /etc/mail/certs/mail.example.com.crt -days 365
+# chmod 600 /etc/mail/certs/mail.example.com.*
 .Ed
 .Pp
 In the example above,
@@ -380,10 +420,10 @@ a certificate valid for one year was created.
 The configuration file would look like this:
 .Bd -literal -offset indent
 listen on lo0
-listen on pppoe0 tls enable auth
+listen on bnx0 tls certificate "mail.example.com" enable auth
 map aliases { source db "/etc/mail/aliases.db" }
-accept for local deliver to mda "procmail -f -"
-accept from all for domain example.org deliver to mda "procmail -f -"
+accept for local deliver to mda "/path/to/mda -f -"
+accept from all for domain example.org deliver to mda "/path/to/mda -f -"
 accept for all relay
 .Ed
 .Sh SEE ALSO

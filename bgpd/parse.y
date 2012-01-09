@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.258 2010/09/02 14:03:21 sobrado Exp $ */
+/*	$OpenBSD: parse.y,v 1.260 2011/09/17 16:29:44 claudio Exp $ */
 
 /*
  * Copyright (c) 2002, 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -125,8 +125,6 @@ int		 str2key(char *, char *, size_t);
 int		 neighbor_consistent(struct peer *);
 int		 merge_filterset(struct filter_set_head *, struct filter_set *);
 void		 copy_filterset(struct filter_set_head *,
-		    struct filter_set_head *);
-void		 move_filterset(struct filter_set_head *,
 		    struct filter_set_head *);
 struct filter_rule	*get_rule(enum action_types);
 
@@ -451,6 +449,8 @@ conf_main	: AS as4number		{
 				action = MRT_TABLE_DUMP;
 			else if (!strcmp($2, "table-mp"))
 				action = MRT_TABLE_DUMP_MP;
+			else if (!strcmp($2, "table-v2"))
+				action = MRT_TABLE_DUMP_V2;
 			else {
 				yyerror("unknown mrt dump type");
 				free($2);
@@ -478,6 +478,8 @@ conf_main	: AS as4number		{
 				action = MRT_TABLE_DUMP;
 			else if (!strcmp($4, "table-mp"))
 				action = MRT_TABLE_DUMP_MP;
+			else if (!strcmp($4, "table-v2"))
+				action = MRT_TABLE_DUMP_V2;
 			else {
 				yyerror("unknown mrt dump type");
 				free($3);
@@ -608,7 +610,7 @@ network		: NETWORK prefix filter_set	{
 			memcpy(&n->net.prefix, &$2.prefix,
 			    sizeof(n->net.prefix));
 			n->net.prefixlen = $2.len;
-			move_filterset($3, &n->net.attrset);
+			filterset_move($3, &n->net.attrset);
 			free($3);
 
 			TAILQ_INSERT_TAIL(netconf, n, entry);
@@ -626,7 +628,7 @@ network		: NETWORK prefix filter_set	{
 				YYERROR;
 			}
 			n->net.type = $3 ? NETWORK_STATIC : NETWORK_CONNECTED;
-			move_filterset($4, &n->net.attrset);
+			filterset_move($4, &n->net.attrset);
 			free($4);
 
 			TAILQ_INSERT_TAIL(netconf, n, entry);
@@ -3462,22 +3464,6 @@ copy_filterset(struct filter_set_head *source, struct filter_set_head *dest)
 			fatal(NULL);
 		memcpy(t, s, sizeof(struct filter_set));
 		TAILQ_INSERT_TAIL(dest, t, entry);
-	}
-}
-
-void
-move_filterset(struct filter_set_head *source, struct filter_set_head *dest)
-{
-	struct filter_set	*s;
-
-	TAILQ_INIT(dest);
-
-	if (source == NULL)
-		return;
-
-	while ((s = TAILQ_FIRST(source)) != NULL) {
-		TAILQ_REMOVE(source, s, entry);
-		TAILQ_INSERT_TAIL(dest, s, entry);
 	}
 }
 

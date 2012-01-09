@@ -1,4 +1,4 @@
-/*	$OpenBSD: ruleset.c,v 1.16 2011/04/17 13:36:07 gilles Exp $ */
+/*	$OpenBSD: ruleset.c,v 1.20 2011/10/23 09:30:07 gilles Exp $ */
 
 /*
  * Copyright (c) 2009 Gilles Chehade <gilles@openbsd.org>
@@ -33,7 +33,7 @@
 #include "log.h"
 
 
-struct rule *ruleset_match(struct smtpd *, char *tag, struct path *, struct sockaddr_storage *);
+struct rule *ruleset_match(struct envelope *);
 
 static int ruleset_check_source(struct map *, struct sockaddr_storage *);
 static int ruleset_match_mask(struct sockaddr_storage *, struct netaddr *);
@@ -42,19 +42,24 @@ static int ruleset_inet6_match(struct sockaddr_in6 *, struct netaddr *);
 
 
 struct rule *
-ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_storage *ss)
+ruleset_match(struct envelope *evp)
 {
 	struct rule *r;
 	struct map *map;
 	struct mapel *me;
+	struct mailaddr *maddr = &evp->dest;
+	struct sockaddr_storage *ss = &evp->ss;
+
+	if (evp->flags & DF_INTERNAL)
+		ss = NULL;
 
 	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
 
-		if (r->r_tag[0] != '\0' && strcmp(r->r_tag, tag) != 0)
+		if (r->r_tag[0] != '\0' && strcmp(r->r_tag, evp->tag) != 0)
 			continue;
 
 		if (ss != NULL &&
-		    (!(path->flags & F_PATH_AUTHENTICATED) &&
+		    (!(evp->flags & DF_AUTHENTICATED) &&
 			! ruleset_check_source(r->r_sources, ss)))
 			continue;
 
@@ -62,19 +67,19 @@ ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_s
 			return r;
 
 		if (r->r_condition.c_type == C_DOM) {
-			map = map_find(env, r->r_condition.c_map);
+			map = map_find(r->r_condition.c_map);
 			if (map == NULL)
 				fatal("failed to lookup map.");
 
 			switch (map->m_src) {
 			case S_NONE:
 				TAILQ_FOREACH(me, &map->m_contents, me_entry) {
-					if (hostname_match(path->domain, me->me_key.med_string))
+					if (hostname_match(maddr->domain, me->me_key.med_string))
 						return r;
 				}
 				break;
 			case S_DB:
-				if (map_lookup(env, map->m_id, path->domain, K_VIRTUAL) != NULL)
+				if (map_lookup(map->m_id, maddr->domain, K_VIRTUAL) != NULL)
 					return r;
 				break;
 			default:
@@ -84,7 +89,7 @@ ruleset_match(struct smtpd *env, char *tag, struct path *path, struct sockaddr_s
 		}
 
 		if (r->r_condition.c_type == C_VDOM)
-			if (aliases_vdomain_exists(env, r->r_condition.c_map, path->domain))
+			if (aliases_vdomain_exists(r->r_condition.c_map, maddr->domain))
 				return r;
 	}
 

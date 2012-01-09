@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.c,v 1.10 2010/11/28 13:56:43 gilles Exp $	*/
+/*	$OpenBSD: log.c,v 1.12 2011/10/22 00:16:33 eric Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -23,7 +23,6 @@
 #include <sys/socket.h>
 
 #include <errno.h>
-#include <event.h>
 #include <pwd.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -141,6 +140,18 @@ log_debug(const char *emsg, ...)
 	va_list	 ap;
 
 	if (verbose) {
+		va_start(ap, emsg);
+		vlog(LOG_DEBUG, emsg, ap);
+		va_end(ap);
+	}
+}
+
+void
+log_trace(int mask, const char *emsg, ...)
+{
+	va_list	 ap;
+
+	if (verbose & mask) {
 		va_start(ap, emsg);
 		vlog(LOG_DEBUG, emsg, ap);
 		va_end(ap);

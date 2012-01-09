@@ -1,4 +1,4 @@
-/*	$OpenBSD: session.c,v 1.316 2010/12/23 17:41:40 claudio Exp $ */
+/*	$OpenBSD: session.c,v 1.319 2011/07/09 02:51:18 henning Exp $ */
 
 /*
  * Copyright (c) 2003, 2004, 2005 Henning Brauer <henning@openbsd.org>
@@ -34,7 +34,6 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <poll.h>
 #include <pwd.h>
 #include <signal.h>
@@ -180,7 +179,6 @@ pid_t
 session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
     int pipe_s2rctl[2])
 {
-	struct rlimit		 rl;
 	int			 nfds, timeout, pfkeysock;
 	unsigned int		 i, j, idx_peers, idx_listeners, idx_mrts;
 	pid_t			 pid;
@@ -216,13 +214,6 @@ session_main(int pipe_m2s[2], int pipe_s2r[2], int pipe_m2r[2],
 
 	setproctitle("session engine");
 	bgpd_process = PROC_SE;
-
-	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("getrlimit");
-	rl.rlim_cur = rl.rlim_max;
-	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("setrlimit");
-
 	pfkeysock = pfkey_init(&sysdep);
 
 	if (setgroups(1, &pw->pw_gid) ||
@@ -1286,8 +1277,7 @@ session_newmsg(enum msg_type msgtype, u_int16_t len)
 	errs += ibuf_add(buf, &hdr.len, sizeof(hdr.len));
 	errs += ibuf_add(buf, &hdr.type, sizeof(hdr.type));
 
-	if (errs > 0 ||
-	    (msg = calloc(1, sizeof(*msg))) == NULL) {
+	if (errs || (msg = calloc(1, sizeof(*msg))) == NULL) {
 		ibuf_free(buf);
 		return (NULL);
 	}
@@ -1327,7 +1317,7 @@ session_open(struct peer *p)
 	struct msg_open		 msg;
 	u_int16_t		 len;
 	u_int8_t		 i, op_type, optparamlen = 0;
-	u_int			 errs = 0;
+	int			 errs = 0;
 
 
 	if ((opb = ibuf_dynamic(0, UCHAR_MAX - sizeof(op_type) -
@@ -1402,7 +1392,7 @@ session_open(struct peer *p)
 
 	ibuf_free(opb);
 
-	if (errs > 0) {
+	if (errs) {
 		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
@@ -1472,7 +1462,7 @@ session_notification(struct peer *p, u_int8_t errcode, u_int8_t subcode,
     void *data, ssize_t datalen)
 {
 	struct bgp_msg		*buf;
-	u_int			 errs = 0;
+	int			 errs = 0;
 
 	if (p->stats.last_sent_errcode)	/* some notification already sent */
 		return;
@@ -1491,7 +1481,7 @@ session_notification(struct peer *p, u_int8_t errcode, u_int8_t subcode,
 	if (datalen > 0)
 		errs += ibuf_add(buf->buf, data, datalen);
 
-	if (errs > 0) {
+	if (errs) {
 		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
@@ -1545,7 +1535,7 @@ session_rrefresh(struct peer *p, u_int8_t aid)
 	errs += ibuf_add(buf->buf, &null8, sizeof(null8));
 	errs += ibuf_add(buf->buf, &safi, sizeof(safi));
 
-	if (errs > 0) {
+	if (errs) {
 		ibuf_free(buf->buf);
 		free(buf);
 		bgp_fsm(p, EVNT_CON_FATAL);
@@ -2462,9 +2452,7 @@ session_dispatch_imsg(struct imsgbuf *ibuf, int idx, u_int *listener_cnt)
 				fatalx("IFINFO imsg with wrong len");
 			kif = imsg.data;
 			depend_ok = (kif->flags & IFF_UP) &&
-			    (LINK_STATE_IS_UP(kif->link_state) ||
-			    (kif->link_state == LINK_STATE_UNKNOWN &&
-			    kif->media_type != IFT_CARP));
+			    LINK_STATE_IS_UP(kif->link_state);
 
 			for (p = peers; p != NULL; p = p->next)
 				if (!strcmp(p->conf.if_depend, kif->ifname)) {

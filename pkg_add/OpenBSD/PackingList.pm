@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.111 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.117 2011/08/27 08:57:39 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -49,9 +49,16 @@ package OpenBSD::PackingList::hashpath;
 sub match
 {
 	my ($h, $plist) = @_;
-	return
-	    defined $plist->fullpkgpath &&
-	    $h->{$plist->fullpkgpath};
+	my $f = $plist->fullpkgpath2;
+	if (!defined $f) {
+		return 0;
+	}
+	for my $i (@{$h->{$f->{dir}}}) {
+		if ($i->match($f)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 package OpenBSD::Composite;
@@ -186,8 +193,7 @@ sub LibraryOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
-		next unless m/^\@(?:cwd|lib|name)\b/o ||
-			m/^\@comment\s+subdir\=/o;
+		next unless m/^\@(?:cwd|lib|name|comment\s+subdir\=)\b/o;
 		&$cont($_);
 	}
 }
@@ -207,8 +213,7 @@ sub PrelinkStuffOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
-		next unless m/^\@(?:cwd|bin|lib|name|depend|wantlib)\b/o ||
-			m/^\@comment\s+subdir\=/o;
+		next unless m/^\@(?:cwd|bin|lib|name|depend|wantlib|comment\s+ubdir\=)\b/o;
 		&$cont($_);
 	}
 }
@@ -218,19 +223,12 @@ sub DependOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
+		if (m/^\@(?:depend|wantlib|define-tag)\b/o) {
+			&$cont($_);
 		# XXX optimization
-		if (m/^\@arch\b/o) {
-			while (<$fh>) {
-			    if (m/^\@(?:depend|wantlib|define-tag)\b/o) {
-				    &$cont($_);
-			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
-				    last;
-			    }
-			}
-			return;
+		} elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
+			last;
 		}
-		next unless m/^\@(?:depend|wantlib|define-tag)\b/o;
-		&$cont($_);
 	}
 }
 
@@ -239,19 +237,12 @@ sub ExtraInfoOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
+		if (m/^\@(?:name|pkgpath|comment\s+subdir\=)\b/o) {
+			&$cont($_);
 		# XXX optimization
-		if (m/^\@arch\b/o) {
-			while (<$fh>) {
-			    if (m/^\@(?:pkgpath)\b/o) {
-				    &$cont($_);
-			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
-				    last;
-			    }
-			}
-			return;
+		} elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
+			last;
 		}
-		next unless m/^\@(?:name\b|comment\s+subdir\=)/o;
-		&$cont($_);
 	}
 }
 
@@ -260,17 +251,6 @@ sub UpdateInfoOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
-		# XXX optimization
-		if (m/^\@arch\b/o) {
-			while (<$fh>) {
-			    if (m/^\@(?:depend|wantlib|conflict|option|pkgpath|url)\b/o) {
-				    &$cont($_);
-			    } elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
-				    last;
-			    }
-			}
-			return;
-		}
 		# if alwaysupdate, all info is sig
 		if (m/^\@option\s+always-update\b/o) {
 		    &$cont($_);
@@ -279,23 +259,12 @@ sub UpdateInfoOnly
 		    }
 		    return;
 		}
-		next unless m/^\@(?:name\b|depend\b|wantlib\b|conflict|\b|option\b|pkgpath\b|comment\s+subdir\=|arch\b|url\b)/o;
-		&$cont($_);
-	}
-}
-
-sub FatOnly
-{
-	my ($fh, $cont) = @_;
-	my $_;
-	while (<$fh>) {
-		# XXX optimization
-		if (m/^\@arch\b/o) {
+		if (m/^\@(?:name|depend|wantlib|conflict|option|pkgpath|url|arch|comment\s+subdir\=)\b/o) {
 			&$cont($_);
-			return;
+		# XXX optimization
+		} elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
+			last;
 		}
-		next unless m/^\@(?:name\b)/o;
-		&$cont($_);
 	}
 }
 
@@ -304,40 +273,12 @@ sub ConflictOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
-		# XXX optimization
-		if (m/^\@arch\b/o) {
-			while (<$fh>) {
-			    if (m/^\@(?:conflict|option|name)\b/o) {
-				    &$cont($_);
-			    } elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
-				    last;
-			    }
-			}
-			return;
-		}
-	    	next unless m/^\@(?:conflict|option|name)\b/o;
-		&$cont($_);
-	}
-}
-
-sub SharedStuffOnly
-{
-	my ($fh, $cont) = @_;
-	my $_;
-MAINLOOP:
-	while (<$fh>) {
-		if (m/^\@shared\b/o) {
+		if (m/^\@(?:name|conflict|option)\b/o) {
 			&$cont($_);
-			while(<$fh>) {
-				redo MAINLOOP unless m/^\@(?:sha|md5|size|symlink|link)\b/o;
-				    m/^\@size\b/o || m/^\@symlink\b/o ||
-				    m/^\@link\b/o;
-				&$cont($_);
-			}
-		} else {
-			next unless m/^\@(?:cwd|name)\b/o;
+		# XXX optimization
+		} elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
+			last;
 		}
-		&$cont($_);
 	}
 }
 
@@ -448,18 +389,30 @@ sub fullpkgpath
 		return undef;
 	}
 }
+
+sub fullpkgpath2
+{
+	my $self = shift;
+	if (defined $self->{extrainfo} && $self->{extrainfo}->{subdir} ne '') {
+		return $self->{extrainfo}->{path};
+	} else {
+		return undef;
+	}
+}
+
 sub pkgpath
 {
 	my $self = shift;
 	if (!defined $self->{_hashpath}) {
 		my $h = $self->{_hashpath} =
 		    bless {}, "OpenBSD::PackingList::hashpath";
-		if (defined $self->fullpkgpath) {
-			$h->{$self->fullpkgpath} = 1;
+		my $f = $self->fullpkgpath2;
+		if (defined $f) {
+			push(@{$h->{$f->{dir}}}, $f);
 		}
 		if (defined $self->{pkgpath}) {
 			for my $i (@{$self->{pkgpath}}) {
-				$h->{$i->name} = 1;
+				push(@{$h->{$i->{path}->{dir}}}, $i->{path});
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-/* $OpenBSD: ppp.h,v 1.5 2010/09/24 02:57:43 yasuoka Exp $ */
+/* $OpenBSD: ppp.h,v 1.7 2011/10/15 03:24:11 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -380,12 +380,16 @@ typedef int (*npppd_iofunc) (
 
 /** Flag indicates the orignal packet was encrypted by MPPE */
 #define	PPP_IO_FLAGS_MPPE_ENCRYPTED			0x0001
+/** Flag indicates the orignal packet was delayed */
+#define	PPP_IO_FLAGS_DELAYED				0x0002
 
 typedef void (*npppd_voidfunc) (
 	npppd_ppp 	*ppp
 );
 
 #ifdef	USE_NPPPD_MPPE
+
+#define MPPE_NOLDKEY		64
 
 typedef struct _mppe_rc4 {
 	void		*rc4ctx;
@@ -403,6 +407,7 @@ typedef struct _mppe_rc4 {
 
 	uint8_t		master_key[MPPE_KEYLEN];
 	uint8_t		session_key[MPPE_KEYLEN];
+	uint8_t		(*old_session_keys)[MPPE_KEYLEN];
 } mppe_rc4_t;
 
 /** Type for MPPE */
@@ -423,7 +428,7 @@ typedef struct _mppe {
 			reserved	:11;
 	uint16_t	keylenbits;
 
-	mppe_rc4_t	send, recv, keychg;
+	mppe_rc4_t	send, recv;
 } mppe;
 #endif
 
@@ -520,6 +525,9 @@ struct _npppd_ppp {
 	/** Address pool used by IP asssignment */
 	void		*assigned_pool;
 
+	/** Framed-IP-Address for Accounting */
+	struct in_addr	acct_framed_ip_address;
+
 	struct in_addr	realm_framed_ip_address;
 	struct in_addr	realm_framed_ip_netmask;
 
@@ -580,6 +588,9 @@ struct _npppd_ppp {
 	uint64_t	ibytes;
 	/** Number of output packet bytes */
 	uint64_t	obytes;
+
+	/** RADIUS Accouting (RFC2866) Terminate Cause */
+	int				terminate_cause;
 
 	/*
 	 * Disconnect cause information for RFC3145
@@ -746,7 +757,8 @@ int          ppp_init (npppd *, npppd_ppp *);
 void         ppp_start (npppd_ppp *);
 int          ppp_dialin_proxy_prepare (npppd_ppp *, dialin_proxy_info *);
 void         ppp_stop (npppd_ppp *, const char *);
-void         ppp_stop_ex (npppd_ppp *, const char *, npppd_ppp_disconnect_code, int, int, const char *);
+void         ppp_set_disconnect_cause (npppd_ppp *, npppd_ppp_disconnect_code, int, int, const char *);
+void         ppp_set_radius_terminate_cause(npppd_ppp *, int);
 
 void         ppp_destroy (void *);
 void         ppp_lcp_up (npppd_ppp *);

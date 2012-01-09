@@ -1,4 +1,4 @@
-/*	$OpenBSD: vscsi.c,v 1.6 2011/04/27 19:02:07 claudio Exp $ */
+/*	$OpenBSD: vscsi.c,v 1.8 2011/05/04 21:00:04 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -49,7 +49,7 @@ struct scsi_task {
 
 void vscsi_callback(struct connection *, void *, struct pdu *);
 void vscsi_fail(void *arg);
-void vscsi_dataout(struct session *, struct scsi_task *, u_int32_t, size_t);
+void vscsi_dataout(struct connection *, struct scsi_task *, u_int32_t, size_t);
 
 void
 vscsi_open(char *dev)
@@ -229,7 +229,7 @@ send_status:
 		if (size > n)
 			fatal("This does not work as it should");
 		vscsi_data(VSCSI_DATA_READ, t->tag, buf, size);
-		if (sresp->flags & 1) {
+		if (sresp->flags & 1) {			/* XXX magic */
 			conn_task_cleanup(c, &t->task);
 			vscsi_status(t->tag, status, NULL, 0);
 			free(t);
@@ -242,7 +242,7 @@ send_status:
 			fatalx("vscsi: r2t bummer failure");
 		size = ntohl(r2t->desired_datalen);
 
-		vscsi_dataout(c->session, t, r2t->ttt, size);
+		vscsi_dataout(c, t, r2t->ttt, size);
 		break;
 	default:
 		log_debug("scsi task: tag %d, target %d lun %d", t->tag,
@@ -265,7 +265,8 @@ vscsi_fail(void *arg)
 }
 
 void
-vscsi_dataout(struct session *s, struct scsi_task *t, u_int32_t ttt, size_t len)
+vscsi_dataout(struct connection *c, struct scsi_task *t, u_int32_t ttt,
+    size_t len)
 {
 	struct pdu *p;
 	struct iscsi_pdu_data_out *dout;
@@ -274,8 +275,8 @@ vscsi_dataout(struct session *s, struct scsi_task *t, u_int32_t ttt, size_t len)
 	u_int32_t t32, dsn = 0;
 
 	for (off = 0; off < len; off += size) {
-		/* XXX hardcoded numbers, bad bad bad */
-		size = len - off > 8 * 1024 ? 8 * 1024 : len - off;
+		size = len - off > c->active.MaxRecvDataSegmentLength ?
+		    c->active.MaxRecvDataSegmentLength : len - off;
 
 		if (!(p = pdu_new()))
 			fatal("vscsi_r2t");
@@ -300,5 +301,5 @@ vscsi_dataout(struct session *s, struct scsi_task *t, u_int32_t ttt, size_t len)
 		pdu_addbuf(p, buf, size, PDU_DATA);
 		task_pdu_add(&t->task, p);
 	}
-	session_task_issue(s, &t->task);
+	conn_task_issue(c, &t->task);
 }

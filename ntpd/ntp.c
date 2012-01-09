@@ -1,4 +1,4 @@
-/*	$OpenBSD: ntp.c,v 1.114 2009/06/11 17:36:53 henning Exp $ */
+/*	$OpenBSD: ntp.c,v 1.117 2011/09/21 15:41:30 phessler Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -110,6 +110,7 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 		fatal(NULL);
 	hotplugfd = sensor_hotplugfd();
 
+	close(pipe_prnt[0]);
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, pipe_dns) == -1)
 		fatal("socketpair");
 	dns_pid = ntp_dns(pipe_dns, nconf, pw);
@@ -150,7 +151,6 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 	signal(SIGHUP, SIG_IGN);
 	signal(SIGCHLD, SIG_DFL);
 
-	close(pipe_prnt[0]);
 	if ((ibuf_main = malloc(sizeof(struct imsgbuf))) == NULL)
 		fatal(NULL);
 	imsg_init(ibuf_main, pipe_prnt[1]);
@@ -245,8 +245,9 @@ ntp_main(int pipe_prnt[2], struct ntpd_conf *nconf, struct passwd *pw)
 			if (p->deadline > 0 && p->deadline <= getmonotime()) {
 				timeout = 300;
 				log_debug("no reply from %s received in time, "
-				    "next query %ds", log_sockaddr(
-				    (struct sockaddr *)&p->addr->ss), timeout);
+				    "next query %ds %s", log_sockaddr(
+				    (struct sockaddr *)&p->addr->ss), timeout,
+				    print_rtable(p->rtable));
 				if (p->trustlevel >= TRUSTLEVEL_BADPEER &&
 				    (p->trustlevel /= 2) < TRUSTLEVEL_BADPEER)
 					log_info("peer %s now invalid",
@@ -482,6 +483,7 @@ ntp_dispatch_imsg_dns(void)
 					npeer->addr_head.name =
 					    peer->addr_head.name;
 					npeer->addr_head.pool = 1;
+					npeer->rtable = peer->rtable;
 					client_peer_init(npeer);
 					npeer->state = STATE_DNS_DONE;
 					peer_add(npeer);
@@ -637,6 +639,8 @@ priv_adjtime(void)
 
 	conf->status.reftime = gettime();
 	conf->status.stratum++;	/* one more than selected peer */
+	if (conf->status.stratum > NTP_MAXSTRATUM)
+		conf->status.stratum = NTP_MAXSTRATUM;
 	update_scale(offset_median);
 
 	conf->status.refid = offsets[i]->status.send_refid;
@@ -768,8 +772,9 @@ report_peers(int always)
 					    (struct sockaddr *)&p->addr->ss);
 				if (p->addr_head.pool)
 					pool = "from pool ";
-				log_warnx("bad peer %s%s (%s)",  pool,
-				    p->addr_head.name, a);
+				log_warnx("bad peer %s%s (%s) %s",
+				    pool, p->addr_head.name, a,
+				    print_rtable(p->rtable));
 			}
 		}
 	}

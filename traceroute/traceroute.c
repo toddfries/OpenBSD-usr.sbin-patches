@@ -1,4 +1,4 @@
-/*	$OpenBSD: traceroute.c,v 1.76 2011/04/23 10:00:13 sthen Exp $	*/
+/*	$OpenBSD: traceroute.c,v 1.79 2011/11/08 12:16:54 sthen Exp $	*/
 /*	$NetBSD: traceroute.c,v 1.10 1995/05/21 15:50:45 mycroft Exp $	*/
 
 /*-
@@ -219,6 +219,7 @@
 #include <netinet/udp.h>
 
 #include <arpa/inet.h>
+#include <arpa/nameser.h>
 
 #include <netmpls/mpls.h>
 
@@ -260,7 +261,9 @@ int packet_ok(u_char *, int, struct sockaddr_in *, int, int);
 void print_exthdr(u_char *, int);
 void print(u_char *, int, struct sockaddr_in *);
 char *inetname(struct in_addr);
+void print_asn(struct in_addr);
 u_short in_cksum(u_short *, int);
+int map_tos(char *, int *);
 void usage(void);
 
 int s;				/* receive (icmp) socket file descriptor */
@@ -287,6 +290,7 @@ int nflag;			/* print addresses numerically */
 int dump;
 int xflag;			/* show ICMP extension header */
 int tflag;			/* tos flag was set */
+int Aflag;			/* lookup ASN */
 
 int
 main(int argc, char *argv[])
@@ -321,11 +325,14 @@ main(int argc, char *argv[])
 	(void) sysctl(mib, sizeof(mib)/sizeof(mib[0]), &max_ttl, &size,
 	    NULL, 0);
 
-	while ((ch = getopt(argc, argv, "cDdf:g:Ilm:nP:p:q:rSs:t:V:vw:x"))
+	while ((ch = getopt(argc, argv, "AcDdf:g:Ilm:nP:p:q:rSs:t:V:vw:x"))
 			!= -1)
 		switch (ch) {
 		case 'S':
 			sump = 1;
+			break;
+		case 'A':
+			Aflag++;
 			break;
 		case 'f':
 			errno = 0;
@@ -425,13 +432,21 @@ main(int argc, char *argv[])
 			source = optarg;
 			break;
 		case 't':
+			if (!map_tos(optarg, &tos)) {
 			errno = 0;
-			ep = NULL;
-			l = strtol(optarg, &ep, 10);
-			if (errno || !*optarg || *ep || l < 0 || l > 255)
-				errx(1, "tos must be 0 to 255.");
-			last_tos = tos = (int)l;
+				errstr = NULL;
+				if (strlen(optarg) > 1 && optarg[0] == '0' &&
+				    optarg[1] == 'x')
+					tos = (int)strtol(optarg, NULL, 16);
+				else
+					tos = (int)strtonum(optarg, 0, 255,
+					    &errstr);
+				if (tos < 0 || tos > 255 || errstr || errno)
+					errx(1, "illegal tos value %s",
+					    optarg);
+			}
 			tflag = 1;
+			last_tos = tos;
 			break;
 		case 'v':
 			verbose++;
@@ -442,10 +457,10 @@ main(int argc, char *argv[])
 			if (errstr)
 				errx(1, "rtable value is %s: %s",
 				    errstr, optarg);
-			if (setsockopt(sndsock, IPPROTO_IP, SO_RTABLE,
+			if (setsockopt(sndsock, SOL_SOCKET, SO_RTABLE,
 			    &rtableid, sizeof(rtableid)) == -1)
 				err(1, "setsockopt SO_RTABLE");
-			if (setsockopt(s, IPPROTO_IP, SO_RTABLE,
+			if (setsockopt(s, SOL_SOCKET, SO_RTABLE,
 			    &rtableid, sizeof(rtableid)) == -1)
 				err(1, "setsockopt SO_RTABLE");
 			break;
@@ -1104,6 +1119,8 @@ print(u_char *buf, int cc, struct sockaddr_in *from)
 	else
 		printf(" %s (%s)", inetname(from->sin_addr),
 		    inet_ntoa(from->sin_addr));
+	if (Aflag)
+		print_asn(from->sin_addr);
 
 	if (verbose)
 		printf(" %d bytes to %s", cc, inet_ntoa(ip->ip_dst));
@@ -1175,13 +1192,90 @@ inetname(struct in_addr in)
 }
 
 void
+print_asn(struct in_addr in)
+{
+	const u_char *uaddr = (const u_char *)&in.s_addr;
+	int n, i, counter;
+	struct rrsetinfo *answers = NULL;
+	char qbuf[MAXDNAME+1];
+
+	(void) snprintf(qbuf, sizeof qbuf, "%u.%u.%u.%u.origin.asn.cymru.com",
+	    (uaddr[3] & 0xff), (uaddr[2] & 0xff),
+	    (uaddr[1] & 0xff), (uaddr[0] & 0xff));
+	if (n = getrrsetbyname(qbuf, C_IN, T_TXT, 0, &answers))
+		return;
+	for (counter = 0; counter < answers->rri_nrdatas; counter++) {
+		char *p, *as = answers->rri_rdatas[counter].rdi_data;
+		as++; /* skip first byte, it contains length */
+		if (p = strchr(as,'|')) {
+			printf(counter ? ", " : " [");
+			p[-1] = 0;
+			printf("AS%s", as);
+		}
+	}
+	if (counter)
+		printf("]");
+
+	freerrset(answers);
+	return;
+}
+
+int
+map_tos(char *s, int *val)
+{
+	/* DiffServ Codepoints and other TOS mappings */
+	const struct toskeywords {
+		const char	*keyword;
+		int		 val;
+	} *t, toskeywords[] = {
+		{ "af11",		IPTOS_DSCP_AF11 },
+		{ "af12",		IPTOS_DSCP_AF12 },
+		{ "af13",		IPTOS_DSCP_AF13 },
+		{ "af21",		IPTOS_DSCP_AF21 },
+		{ "af22",		IPTOS_DSCP_AF22 },
+		{ "af23",		IPTOS_DSCP_AF23 },
+		{ "af31",		IPTOS_DSCP_AF31 },
+		{ "af32",		IPTOS_DSCP_AF32 },
+		{ "af33",		IPTOS_DSCP_AF33 },
+		{ "af41",		IPTOS_DSCP_AF41 },
+		{ "af42",		IPTOS_DSCP_AF42 },
+		{ "af43",		IPTOS_DSCP_AF43 },
+		{ "critical",		IPTOS_PREC_CRITIC_ECP },
+		{ "cs0",		IPTOS_DSCP_CS0 },
+		{ "cs1",		IPTOS_DSCP_CS1 },
+		{ "cs2",		IPTOS_DSCP_CS2 },
+		{ "cs3",		IPTOS_DSCP_CS3 },
+		{ "cs4",		IPTOS_DSCP_CS4 },
+		{ "cs5",		IPTOS_DSCP_CS5 },
+		{ "cs6",		IPTOS_DSCP_CS6 },
+		{ "cs7",		IPTOS_DSCP_CS7 },
+		{ "ef",			IPTOS_DSCP_EF },
+		{ "inetcontrol",	IPTOS_PREC_INTERNETCONTROL },
+		{ "lowdelay",		IPTOS_LOWDELAY },
+		{ "netcontrol",		IPTOS_PREC_NETCONTROL },
+		{ "reliability",	IPTOS_RELIABILITY },
+		{ "throughput",		IPTOS_THROUGHPUT },
+		{ NULL, 		-1 },
+	};
+	
+	for (t = toskeywords; t->keyword != NULL; t++) {
+		if (strcmp(s, t->keyword) == 0) {
+			*val = t->val;
+			return (1);
+		}
+	}
+	
+	return (0);
+}
+
+void
 usage(void)
 {
 	extern char *__progname;
 
 	fprintf(stderr,
-	    "usage: %s [-cDdIlnrSvx] [-f first_ttl] [-g gateway_addr] [-m max_ttl]\n"
-	    "\t[-P proto] [-p port] [-q nqueries] [-s src_addr] [-t tos]\n"
+	    "usage: %s [-AcDdIlnrSvx] [-f first_ttl] [-g gateway_addr] [-m max_ttl]\n"
+	    "\t[-P proto] [-p port] [-q nqueries] [-s src_addr] [-t toskeyword]\n"
 	    "\t[-V rtable] [-w waittime] host [packetsize]\n", __progname);
 	exit(1);
 }

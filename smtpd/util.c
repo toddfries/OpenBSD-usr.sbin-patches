@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.44 2011/04/17 13:36:07 gilles Exp $	*/
+/*	$OpenBSD: util.c,v 1.54 2011/12/18 22:51:29 chl Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -65,6 +65,71 @@ bsnprintf(char *str, size_t size, const char *format, ...)
 	return 1;
 }
 
+int
+ckdir(const char *path, mode_t mode, uid_t owner, gid_t group, int create)
+{
+	char		mode_str[12];
+	int		ret;
+	struct stat	sb;
+
+	if (stat(path, &sb) == -1) {
+		if (errno != ENOENT || create == 0) {
+			warn("stat: %s", path);
+			return (0);
+		}
+
+		/* chmod is deferred to avoid umask effect */
+		if (mkdir(path, 0) == -1) {
+			warn("mkdir: %s", path);
+			return (0);
+		}
+
+		if (chown(path, owner, group) == -1) {
+			warn("chown: %s", path);
+			return (0);
+		}
+
+		if (chmod(path, mode) == -1) {
+			warn("chmod: %s", path);
+			return (0);
+		}
+
+		if (stat(path, &sb) == -1) {
+			warn("stat: %s", path);
+			return (0);
+		}
+	}
+
+	ret = 1;
+
+	/* check if it's a directory */
+	if (!S_ISDIR(sb.st_mode)) {
+		ret = 0;
+		warnx("%s is not a directory", path);
+	}
+
+	/* check that it is owned by owner/group */
+	if (sb.st_uid != owner) {
+		ret = 0;
+		warnx("%s is not owned by uid %d", path, owner);
+	}
+	if (sb.st_gid != group) {
+		ret = 0;
+		warnx("%s is not owned by gid %d", path, group);
+	}
+
+	/* check permission */
+	if ((sb.st_mode & 07777) != mode) {
+		ret = 0;
+		strmode(mode, mode_str);
+		mode_str[10] = '\0';
+		warnx("%s must be %s (%o)", path, mode_str + 1, mode);
+	}
+
+	return ret;
+}
+
+
 /* Close file, signifying temporary error condition (if any) to the caller. */
 int
 safe_fclose(FILE *fp)
@@ -110,40 +175,6 @@ hostname_match(char *hostname, char *pattern)
 }
 
 int
-recipient_to_path(struct path *path, char *recipient)
-{
-	char *username;
-	char *hostname;
-
-	username = recipient;
-	hostname = strrchr(username, '@');
-
-	if (username[0] == '\0') {
-		*path->user = '\0';
-		*path->domain = '\0';
-		return 1;
-	}
-
-	if (hostname == NULL) {
-		if (strcasecmp(username, "postmaster") != 0)
-			return 0;
-		hostname = "localhost";
-	} else {
-		*hostname++ = '\0';
-	}
-
-	if (strlcpy(path->user, username, sizeof(path->user))
-	    >= sizeof(path->user))
-		return 0;
-
-	if (strlcpy(path->domain, hostname, sizeof(path->domain))
-	    >= sizeof(path->domain))
-		return 0;
-
-	return 1;
-}
-
-int
 valid_localpart(char *s)
 {
 #define IS_ATEXT(c)     (isalnum((int)(c)) || strchr("!#$%&'*+-/=?^_`{|}~", (c)))
@@ -184,6 +215,40 @@ nextsub:
                 goto nextsub;
 	}
         return 1;
+}
+
+int
+email_to_mailaddr(struct mailaddr *maddr, char *email)
+{
+	char *username;
+	char *hostname;
+
+	username = email;
+	hostname = strrchr(username, '@');
+
+	if (username[0] == '\0') {
+		*maddr->user = '\0';
+		*maddr->domain = '\0';
+		return 1;
+	}
+
+	if (hostname == NULL) {
+		if (strcasecmp(username, "postmaster") != 0)
+			return 0;
+		hostname = "localhost";
+	} else {
+		*hostname++ = '\0';
+	}
+
+	if (strlcpy(maddr->user, username, sizeof(maddr->user))
+	    >= sizeof(maddr->user))
+		return 0;
+
+	if (strlcpy(maddr->domain, hostname, sizeof(maddr->domain))
+	    >= sizeof(maddr->domain))
+		return 0;
+
+	return 1;
 }
 
 char *
@@ -252,7 +317,7 @@ time_to_text(time_t when)
  * Check file for security. Based on usr.bin/ssh/auth.c.
  */
 int
-secure_file(int fd, char *path, struct passwd *pw, int mayread)
+secure_file(int fd, char *path, char *userdir, uid_t uid, int mayread)
 {
 	char		 buf[MAXPATHLEN];
 	char		 homedir[MAXPATHLEN];
@@ -262,13 +327,13 @@ secure_file(int fd, char *path, struct passwd *pw, int mayread)
 	if (realpath(path, buf) == NULL)
 		return 0;
 
-	if (realpath(pw->pw_dir, homedir) == NULL)
+	if (realpath(userdir, homedir) == NULL)
 		homedir[0] = '\0';
 
 	/* Check the open file to avoid races. */
 	if (fstat(fd, &st) < 0 ||
 	    !S_ISREG(st.st_mode) ||
-	    (st.st_uid != 0 && st.st_uid != pw->pw_uid) ||
+	    (st.st_uid != 0 && st.st_uid != uid) ||
 	    (st.st_mode & (mayread ? 022 : 066)) != 0)
 		return 0;
 
@@ -279,7 +344,7 @@ secure_file(int fd, char *path, struct passwd *pw, int mayread)
 		strlcpy(buf, cp, sizeof(buf));
 
 		if (stat(buf, &st) < 0 ||
-		    (st.st_uid != 0 && st.st_uid != pw->pw_uid) ||
+		    (st.st_uid != 0 && st.st_uid != uid) ||
 		    (st.st_mode & 022) != 0)
 			return 0;
 
@@ -345,28 +410,27 @@ lowercase(char *buf, char *s, size_t len)
 }
 
 void
-message_set_errormsg(struct envelope *m, char *fmt, ...)
+envelope_set_errormsg(struct envelope *e, char *fmt, ...)
 {
 	int ret;
 	va_list ap;
 
 	va_start(ap, fmt);
-
-	ret = vsnprintf(m->session_errorline, MAX_LINE_SIZE, fmt, ap);
-	if (ret >= MAX_LINE_SIZE)
-		strlcpy(m->session_errorline + (MAX_LINE_SIZE - 4), "...", 4);
+	ret = vsnprintf(e->errorline, sizeof(e->errorline), fmt, ap);
+	va_end(ap);
 
 	/* this should not happen */
 	if (ret == -1)
 		err(1, "vsnprintf");
 
-	va_end(ap);
+	if ((size_t)ret >= sizeof(e->errorline))
+		strlcpy(e->errorline + (sizeof(e->errorline) - 4), "...", 4);
 }
 
 char *
-message_get_errormsg(struct envelope *m)
+envelope_get_errormsg(struct envelope *e)
 {
-	return m->session_errorline;
+	return e->errorline;
 }
 
 void
@@ -393,20 +457,6 @@ sa_set_port(struct sockaddr *sa, int port)
 
 	memcpy(sa, res->ai_addr, res->ai_addrlen);
 	freeaddrinfo(res);
-}
-
-struct path *
-path_dup(struct path *path)
-{
-	struct path *pathp;
-
-	pathp = calloc(sizeof(struct path), 1);
-	if (pathp == NULL)
-		fatal("calloc");
-
-	*pathp = *path;
-
-	return pathp;
 }
 
 u_int64_t
@@ -483,7 +533,8 @@ session_socket_no_linger(int fd)
 int
 session_socket_error(int fd)
 {
-	int	 error, len;
+	int		error;
+	socklen_t	len;
 
 	len = sizeof(error);
 	if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) == -1)
@@ -528,38 +579,6 @@ log_sockaddr(struct sockaddr *sa)
 }
 
 u_int32_t
-filename_to_msgid(char *filename)
-{
-	u_int32_t ulval;
-	char *ep;
-
-	errno = 0;
-	ulval = strtoul(filename, &ep, 16);
-	if (filename[0] == '\0' || *ep != '\0')
-		return 0;
-	if (errno == ERANGE && ulval == 0xffffffff)
-		return 0;
-
-	return ulval;
-}
-
-u_int64_t
-filename_to_evpid(char *filename)
-{
-	u_int64_t ullval;
-	char *ep;
-
-	errno = 0;
-	ullval = strtoull(filename, &ep, 16);
-	if (filename[0] == '\0' || *ep != '\0')
-		return 0;
-	if (errno == ERANGE && ullval == ULLONG_MAX)
-		return 0;
-
-	return ullval;
-}
-
-u_int32_t
 evpid_to_msgid(u_int64_t evpid)
 {
 	return (evpid >> 32);
@@ -569,4 +588,38 @@ u_int64_t
 msgid_to_evpid(u_int32_t msgid)
 {
 	return ((u_int64_t)msgid << 32);
+}
+
+const char *
+parse_smtp_response(char *line, size_t len, char **msg, int *cont)
+{
+	size_t	 i;
+
+	if (len >= SMTP_LINE_MAX)
+		return "line too long";
+
+	if (len > 3) {
+		if (msg)
+			*msg = line + 4;
+		if (cont)
+			*cont = (line[3] == '-');
+	} else if (len == 3) {
+		if (msg)
+			*msg = line + 3;
+		if (cont)
+			*cont = 0;
+	} else
+		return "line too short";
+
+	/* validate reply code */
+	if (line[0] < '2' || line[0] > '5' || !isdigit(line[1]) ||
+	    !isdigit(line[2]))
+		return "reply code out of range";
+
+	/* validate reply message */
+	for (i = 0; i < len; i++)
+		if (!isprint(line[i]))
+			return "non-printable character in reply";
+
+	return NULL;
 }

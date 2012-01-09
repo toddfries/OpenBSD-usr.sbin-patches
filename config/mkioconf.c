@@ -1,4 +1,4 @@
-/*	$OpenBSD: mkioconf.c,v 1.28 2008/03/24 21:35:03 maja Exp $	*/
+/*	$OpenBSD: mkioconf.c,v 1.31 2011/10/02 22:20:50 edd Exp $	*/
 /*	$NetBSD: mkioconf.c,v 1.41 1996/11/11 14:18:49 mycroft Exp $	*/
 
 /*
@@ -42,10 +42,12 @@
  */
 
 #include <sys/param.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include "config.h"
 
 /*
@@ -336,7 +338,7 @@ emitcfdata(FILE *fp)
 {
 	struct devi **p, *i;
 	int unit, v;
-	const char *vs, *state, *basename, *attachment;
+	const char *state, *basename, *attachment;
 	struct nvlist *nv;
 	struct attr *a;
 	char *loc;
@@ -349,7 +351,7 @@ emitcfdata(FILE *fp)
 #define DSTR FSTATE_DSTAR\n\
 \n\
 struct cfdata cfdata[] = {\n\
-    /* attachment       driver        unit  state loc     flags parents nm ivstubs starunit1 */\n") < 0)
+    /* attachment       driver        unit  state loc     flags parents nm starunit1 */\n") < 0)
 		return (1);
 	for (p = packed; (i = *p) != NULL; p++) {
 		/* the description */
@@ -388,8 +390,6 @@ struct cfdata cfdata[] = {\n\
 				state = "NORM";
 			}
 		}
-		vs = "";
-		v = 0;
 		if (i->i_locoff >= 0) {
 			(void)snprintf(locbuf, sizeof locbuf, "loc+%3d",
 			    i->i_locoff);
@@ -397,11 +397,11 @@ struct cfdata cfdata[] = {\n\
 		} else
 			loc = "loc";
 		if (fprintf(fp, "\
-    {&%s_ca,%s&%s_cd,%s%2d, %s, %7s, %#4x, pv+%2d, %d, %s%d, %4d},\n",
+    {&%s_ca,%s&%s_cd,%s%2d, %s, %7s, %#4x, pv+%2d, %d, %4d},\n",
 		    attachment, strlen(attachment) < 6 ? "\t\t" : "\t",
 		    basename, strlen(basename) < 3 ? "\t\t" : "\t", unit,
 		    state, loc, i->i_cfflags, i->i_pvoff, i->i_locnami,
-		    vs, v, unit) < 0)
+		    unit) < 0)
 			  return (1);
 	}
 	if (fprintf(fp, "    {0},\n    {0},\n    {0},\n    {0},\n") < 0)
