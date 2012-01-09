@@ -1,4 +1,4 @@
-/*	$OpenBSD: pppoe.c,v 1.17 2008/06/24 08:21:46 sobrado Exp $	*/
+/*	$OpenBSD: pppoe.c,v 1.19 2011/11/05 09:20:36 yasuoka Exp $	*/
 
 /*
  * Copyright (c) 2000 Network Security Technologies, Inc. http://www.netsec.net
@@ -27,8 +27,6 @@
 
 #include <stdio.h>
 #include <sys/types.h>
-#include <sys/uio.h>
-#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -46,7 +44,6 @@
 #include <pwd.h>
 #include <unistd.h>
 #include <sysexits.h>
-#include <stdlib.h>
 #include <signal.h>
 #include <ifaddrs.h>
 
@@ -504,7 +501,8 @@ signal_init(void)
 void
 drop_privs(struct passwd *pw, int server_mode)
 {
-	int groups[2], ng = 1;
+	int ng = 1;
+	gid_t groups[2];
 	struct group *gr;
 
 	groups[0] = pw->pw_gid;

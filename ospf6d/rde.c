@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.50 2010/08/22 20:55:10 bluhm Exp $ */
+/*	$OpenBSD: rde.c,v 1.59 2011/11/06 10:29:05 guenther Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -18,10 +18,11 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <sys/param.h>			/* for MIN() */
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/queue.h>
-#include <sys/param.h>
+#include <net/if_types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <err.h>
@@ -252,7 +253,6 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 	struct lsa		*lsa;
 	struct area		*area;
 	struct vertex		*v;
-	struct iface		*iface, *ifp;
 	char			*buf;
 	ssize_t			 n;
 	time_t			 now;
@@ -375,8 +375,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				    req_hdr.type, req_hdr.ls_id,
 				    req_hdr.adv_rtr)) == NULL) {
 					imsg_compose_event(iev_ospfe,
-					    IMSG_LS_BADREQ,
-					    imsg.hdr.peerid, 0, -1, NULL, 0);
+					    IMSG_LS_BADREQ, imsg.hdr.peerid,
+					    0, -1, NULL, 0);
 					continue;
 				}
 				imsg_compose_event(iev_ospfe, IMSG_LS_UPD,
@@ -405,7 +405,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			}
 
 			v = lsa_find(nbr->iface, lsa->hdr.type, lsa->hdr.ls_id,
-				    lsa->hdr.adv_rtr);
+			    lsa->hdr.adv_rtr);
 			if (v == NULL)
 				db_hdr = NULL;
 			else
@@ -448,9 +448,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				/* reflood self originated LSA */
 				if (self && v)
 					imsg_compose_event(iev_ospfe,
-					    IMSG_LS_FLOOD,
-					    v->peerid, 0, -1, v->lsa,
-					    ntohs(v->lsa->hdr.len));
+					    IMSG_LS_FLOOD, v->peerid, 0, -1,
+					    v->lsa, ntohs(v->lsa->hdr.len));
 				/* new LSA was not added so free it */
 				if (self)
 					free(lsa);
@@ -465,8 +464,8 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				 */
 				if (rde_req_list_exists(nbr, &lsa->hdr)) {
 					imsg_compose_event(iev_ospfe,
-					    IMSG_LS_BADREQ,
-					    imsg.hdr.peerid, 0, -1, NULL, 0);
+					    IMSG_LS_BADREQ, imsg.hdr.peerid,
+					    0, -1, NULL, 0);
 					free(lsa);
 					break;
 				}
@@ -509,7 +508,7 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 				break;
 
 			v = lsa_find(nbr->iface, lsa_hdr.type, lsa_hdr.ls_id,
-				    lsa_hdr.adv_rtr);
+			    lsa_hdr.adv_rtr);
 			if (v == NULL)
 				db_hdr = NULL;
 			else
@@ -579,24 +578,16 @@ rde_dispatch_imsg(int fd, short event, void *bula)
 			break;
 		case IMSG_IFINFO:
 			if (imsg.hdr.len != IMSG_HEADER_SIZE +
-			    sizeof(struct iface))
+			    sizeof(int))
 				fatalx("IFINFO imsg with wrong len");
 
-			ifp = imsg.data;
+			nbr = rde_nbr_find(imsg.hdr.peerid);
+			if (nbr == NULL)
+				fatalx("IFINFO imsg with bad peerid");
+			memcpy(&nbr->iface->state, imsg.data, sizeof(int));
 
-			iface = if_find(ifp->ifindex);
-			if (iface == NULL)
-				fatalx("interface lost in rde");
-			iface->flags = ifp->flags;
-			iface->linkstate = ifp->linkstate;
-			iface->nh_reachable = ifp->nh_reachable;
-			if (iface->state != ifp->state) {
-				iface->state = ifp->state;
-				area = area_find(rdeconf, iface->area_id);
-				if (!area)
-					fatalx("interface lost area");
-				orig_intra_area_prefix_lsas(area);
-			}
+			/* Resend LSAs if interface state changes. */
+			orig_intra_area_prefix_lsas(nbr->area);
 			break;
 		case IMSG_CTL_LOG_VERBOSE:
 			/* already checked by ospfe */
@@ -625,7 +616,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 {
 	static struct area	*narea;
 	struct area		*area;
-	struct iface		*iface;
+	struct iface		*iface, *ifp;
 	struct ifaddrchange	*ifc;
 	struct iface_addr	*ia, *nia;
 	struct imsg		 imsg;
@@ -637,7 +628,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 	struct vertex		*v;
 	struct rt_node		*rn;
 	ssize_t			 n;
-	int			 shut = 0;
+	int			 shut = 0, wasvalid;
 	unsigned int		 ifindex;
 
 	if (event & EV_READ) {
@@ -708,8 +699,33 @@ rde_dispatch_parent(int fd, short event, void *bula)
 				rde_send_change_kroute(rn);
 			else
 				/* should not happen */
-				imsg_compose_event(iev_main, IMSG_KROUTE_DELETE, 0,
-				    0, -1, &kr, sizeof(kr));
+				imsg_compose_event(iev_main, IMSG_KROUTE_DELETE,
+				    0, 0, -1, &kr, sizeof(kr));
+			break;
+		case IMSG_IFINFO:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct iface))
+				fatalx("IFINFO imsg with wrong len");
+
+			ifp = imsg.data;
+			iface = if_find(ifp->ifindex);
+			if (iface == NULL)
+				fatalx("interface lost in rde");
+
+			wasvalid = (iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate);
+
+			if_update(iface, ifp->mtu, ifp->flags, ifp->media_type,
+			    ifp->linkstate, ifp->baudrate);
+
+			/* Resend LSAs if interface state changes. */
+			if (wasvalid != (iface->flags & IFF_UP) &&
+			    LINK_STATE_IS_UP(iface->linkstate)) {
+				area = area_find(rdeconf, iface->area_id);
+				if (!area)
+					fatalx("interface lost area");
+				orig_intra_area_prefix_lsas(area);
+			}
 			break;
 		case IMSG_IFADD:
 			if ((iface = malloc(sizeof(struct iface))) == NULL)
@@ -731,7 +747,7 @@ rde_dispatch_parent(int fd, short event, void *bula)
 			memcpy(&ifindex, imsg.data, sizeof(ifindex));
 			iface = if_find(ifindex);
 			if (iface == NULL)
-				fatalx("interface lost in ospfe");
+				fatalx("interface lost in rde");
 
 			LIST_REMOVE(iface, entry);
 			if_del(iface);
@@ -1022,11 +1038,7 @@ rde_nbr_new(u_int32_t peerid, struct rde_nbr *new)
 	if ((area = area_find(rdeconf, new->area_id)) == NULL)
 		fatalx("rde_nbr_new: unknown area");
 
-	LIST_FOREACH(iface, &area->iface_list, entry) {
-		if (iface->ifindex == new->ifindex)
-			break;
-	}
-	if (iface == NULL)
+	if ((iface = if_find(new->ifindex)) == NULL)
 		fatalx("rde_nbr_new: unknown interface");
 
 	if ((nbr = calloc(1, sizeof(*nbr))) == NULL)
@@ -1455,11 +1467,15 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 	lsa->data.pref_intra.ref_ls_id = 0;
 	lsa->data.pref_intra.ref_adv_rtr = rde_router_id();
 
-	log_debug("orig_intra_lsa_rtr: area %s", inet_ntoa(area->id));
-
 	numprefix = 0;
 	LIST_FOREACH(iface, &area->iface_list, entry) {
-		if (iface->state & IF_STA_DOWN)
+		if (!((iface->flags & IFF_UP) &&
+		    LINK_STATE_IS_UP(iface->linkstate)))
+			/* interface or link state down */
+			continue;
+		if ((iface->state & IF_STA_DOWN) && 
+		    !(iface->cflags & F_IFACE_PASSIVE)) 
+			/* passive interfaces stay in state DOWN */
 			continue;
 
 		/* Broadcast links with adjacencies are handled
@@ -1498,6 +1514,11 @@ orig_intra_lsa_rtr(struct area *area, struct vertex *old)
 
 			if (lsa_prefix->prefixlen == 128)
 				lsa_prefix->options |= OSPF_PREFIX_LA;
+
+			log_debug("orig_intra_lsa_rtr: area %s, interface %s: "
+			    "%s/%d", inet_ntoa(area->id),
+			    iface->name, log_in6addr(&ia->addr),
+			    lsa_prefix->prefixlen);
 
 			prefix = (struct in6_addr *)(lsa_prefix + 1);
 			inet6applymask(prefix, &ia->addr,

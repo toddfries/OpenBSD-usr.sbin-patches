@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde.c,v 1.307 2011/02/15 12:26:37 claudio Exp $ */
+/*	$OpenBSD: rde.c,v 1.311 2011/09/20 21:19:06 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -23,7 +23,6 @@
 
 #include <errno.h>
 #include <ifaddrs.h>
-#include <limits.h>
 #include <pwd.h>
 #include <poll.h>
 #include <signal.h>
@@ -158,7 +157,6 @@ pid_t
 rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
     int debug)
 {
-	struct rlimit		 rl;
 	pid_t			 pid;
 	struct passwd		*pw;
 	struct pollfd		*pfd = NULL;
@@ -187,12 +185,6 @@ rde_main(int pipe_m2r[2], int pipe_s2r[2], int pipe_m2s[2], int pipe_s2rctl[2],
 
 	setproctitle("route decision engine");
 	bgpd_process = PROC_RDE;
-
-	if (getrlimit(RLIMIT_DATA, &rl) == -1)
-		fatal("getrlimit");
-	rl.rlim_cur = rl.rlim_max;
-	if (setrlimit(RLIMIT_DATA, &rl) == -1)
-		fatal("setrlimit");
 
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
@@ -828,7 +820,8 @@ rde_dispatch_imsg_parent(struct imsgbuf *ibuf)
 				log_warnx("expected to receive fd for mrt dump "
 				    "but didn't receive any");
 			else if (xmrt.type == MRT_TABLE_DUMP ||
-			    xmrt.type == MRT_TABLE_DUMP_MP) {
+			    xmrt.type == MRT_TABLE_DUMP_MP ||
+			    xmrt.type == MRT_TABLE_DUMP_V2) {
 				rde_dump_mrt_new(&xmrt, imsg.hdr.pid, fd);
 			} else
 				close(fd);
@@ -2093,8 +2086,6 @@ rde_dump_rib_as(struct prefix *p, struct rde_aspath *asp, pid_t pid, int flags)
 	rib.lastchange = p->lastchange;
 	rib.local_pref = asp->lpref;
 	rib.med = asp->med;
-	rib.prefix_cnt = asp->prefix_cnt;
-	rib.active_cnt = asp->active_cnt;
 	strlcpy(rib.descr, asp->peer->conf.descr, sizeof(rib.descr));
 	memcpy(&rib.remote_addr, &asp->peer->remote_addr,
 	    sizeof(rib.remote_addr));
@@ -2193,7 +2184,8 @@ rde_dump_filter(struct prefix *p, struct ctl_show_rib_request *req)
 		if (req->peerid && req->peerid != p->aspath->peer->conf.id)
 			return;
 		if (req->type == IMSG_CTL_SHOW_RIB_AS &&
-		    !aspath_match(p->aspath->aspath, req->as.type, req->as.as))
+		    !aspath_match(p->aspath->aspath->data,
+		    p->aspath->aspath->len, req->as.type, req->as.as))
 			return;
 		if (req->type == IMSG_CTL_SHOW_RIB_COMMUNITY &&
 		    !community_match(p->aspath, req->community.as,
@@ -2344,6 +2336,10 @@ rde_dump_mrt_new(struct mrt *mrt, pid_t pid, int fd)
 		free(ctx);
 		return;
 	}
+
+	if (ctx->mrt.type == MRT_TABLE_DUMP_V2)
+		mrt_dump_v2_hdr(&ctx->mrt, conf, &peerlist);
+
 	ctx->ribctx.ctx_count = RDE_RUNNER_ROUNDS;
 	ctx->ribctx.ctx_rib = &ribs[id];
 	ctx->ribctx.ctx_upcall = mrt_dump_upcall;

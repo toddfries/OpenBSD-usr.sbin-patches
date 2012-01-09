@@ -1,4 +1,4 @@
-/*	$OpenBSD: tag.c,v 1.3 2011/03/31 09:19:35 sobrado Exp $	*/
+/*	$OpenBSD: tag.c,v 1.5 2011/11/05 09:20:36 yasuoka Exp $	*/
 
 /*
  * Copyright (c) 2000 Network Security Technologies, Inc. http://www.netsec.net
@@ -25,24 +25,14 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdio.h>
 #include <sys/types.h>
-#include <sys/uio.h>
-#include <sys/time.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_types.h>
 #include <netinet/in.h>
 #include <netinet/if_ether.h>
-#include <net/bpf.h>
-#include <errno.h>
 #include <string.h>
-#include <err.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sysexits.h>
 #include <stdlib.h>
 
 #include "pppoe.h"
@@ -142,4 +132,15 @@ tag_pkt(struct tag_list *l, u_long pktlen, u_int8_t *pkt)
 	if (pktlen != 0)
 		return (-1);
 	return (0);
+}
+
+void
+tag_hton(struct tag_list *l)
+{
+	struct tag_node *p;
+
+	for (p = LIST_FIRST(&l->thelist); p; p = LIST_NEXT(p, next)) {
+		p->len = htons(p->len);
+		p->type = htons(p->type);
+	}
 }

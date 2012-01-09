@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_backend.c,v 1.9 2011/04/17 11:39:22 gilles Exp $	*/
+/*	$OpenBSD: queue_backend.c,v 1.16 2011/12/16 17:35:00 eric Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -23,6 +23,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <ctype.h>
 #include <event.h>
 #include <imsg.h>
 #include <libgen.h>
@@ -35,97 +36,166 @@
 #include "smtpd.h"
 #include "log.h"
 
+static int envelope_validate(struct envelope *);
+
 /* fsqueue backend */
-int	fsqueue_init(struct smtpd *);
-int	fsqueue_message(struct smtpd *, enum queue_kind,
-    enum queue_op, u_int32_t *);
-int	fsqueue_envelope(struct smtpd *, enum queue_kind,
-    enum queue_op , struct envelope *);
+extern struct queue_backend	queue_backend_fs;
 
-
-struct queue_backend queue_backends[] = {
-	{ QT_FS,
-	  fsqueue_init,
-	  fsqueue_message,
-	  fsqueue_envelope }
-};
 
 struct queue_backend *
 queue_backend_lookup(enum queue_type type)
 {
-	u_int8_t i;
+	switch (type) {
+	case QT_FS:
+		return &queue_backend_fs;
 
-	for (i = 0; i < nitems(queue_backends); ++i)
-		if (queue_backends[i].type == type)
-			break;
-
-	if (i == nitems(queue_backends))
+	default:
 		fatalx("invalid queue type");
+	}
 
-	return &queue_backends[i];
+	return (NULL);
 }
 
 int
-queue_message_create(struct smtpd *env, enum queue_kind qkind, u_int32_t *msgid)
+queue_message_create(enum queue_kind qkind, u_int32_t *msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_CREATE, msgid);
+	return env->sc_queue->message(qkind, QOP_CREATE, msgid);
 }
 
 int
-queue_message_delete(struct smtpd *env, enum queue_kind qkind, u_int32_t msgid)
+queue_message_delete(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_DELETE, &msgid);
+	return env->sc_queue->message(qkind, QOP_DELETE, &msgid);
 }
 
 int
-queue_message_commit(struct smtpd *env, enum queue_kind qkind, u_int32_t msgid)
+queue_message_commit(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_COMMIT, &msgid);
+	return env->sc_queue->message(qkind, QOP_COMMIT, &msgid);
 }
 
 int
-queue_message_purge(struct smtpd *env, enum queue_kind qkind, u_int32_t msgid)
+queue_message_purge(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_PURGE, &msgid);
+	return env->sc_queue->message(qkind, QOP_PURGE, &msgid);
 }
 
 int
-queue_message_fd_r(struct smtpd *env, enum queue_kind qkind, u_int32_t msgid)
+queue_message_corrupt(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_FD_R, &msgid);
+	return env->sc_queue->message(qkind, QOP_CORRUPT, &msgid);
 }
 
 int
-queue_message_fd_rw(struct smtpd *env, enum queue_kind qkind, u_int32_t msgid)
+queue_message_fd_r(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(env, qkind, QOP_FD_RW, &msgid);
+	return env->sc_queue->message(qkind, QOP_FD_R, &msgid);
 }
 
 int
-queue_envelope_create(struct smtpd *env, enum queue_kind qkind,
-    struct envelope *m)
+queue_message_fd_rw(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->envelope(env, qkind, QOP_CREATE, m);
+	return env->sc_queue->message(qkind, QOP_FD_RW, &msgid);
 }
 
 int
-queue_envelope_delete(struct smtpd *env, enum queue_kind qkind,
-    struct envelope *m)
+queue_envelope_create(enum queue_kind qkind, struct envelope *ep)
 {
-	return env->sc_queue->envelope(env, qkind, QOP_DELETE, m);
+	ep->id >>= 32;
+	return env->sc_queue->envelope(qkind, QOP_CREATE, ep);
 }
 
 int
-queue_envelope_load(struct smtpd *env, enum queue_kind qkind,
-    u_int64_t evpid, struct envelope *m)
+queue_envelope_delete(enum queue_kind qkind, struct envelope *ep)
 {
-	m->evpid = evpid;
-	return env->sc_queue->envelope(env, qkind, QOP_LOAD, m);
+	return env->sc_queue->envelope(qkind, QOP_DELETE, ep);
 }
 
 int
-queue_envelope_update(struct smtpd *env, enum queue_kind qkind,
-    struct envelope *m)
+queue_envelope_load(enum queue_kind qkind, u_int64_t evpid, struct envelope *ep)
 {
-	return env->sc_queue->envelope(env, qkind, QOP_UPDATE, m);
+	ep->id = evpid;
+	if (env->sc_queue->envelope(qkind, QOP_LOAD, ep))
+		return envelope_validate(ep);
+	return 0;
+}
+
+int
+queue_envelope_update(enum queue_kind qkind, struct envelope *ep)
+{
+	return env->sc_queue->envelope(qkind, QOP_UPDATE, ep);
+}
+
+void *
+qwalk_new(enum queue_kind kind, u_int32_t msgid)
+{
+	return env->sc_queue->qwalk_new(kind, msgid);
+}
+
+int
+qwalk(void *hdl, u_int64_t *evpid)
+{
+	return env->sc_queue->qwalk(hdl, evpid);
+}
+
+void
+qwalk_close(void *hdl)
+{
+	return env->sc_queue->qwalk_close(hdl);
+}
+
+u_int32_t
+queue_generate_msgid(void)
+{
+	u_int32_t msgid;
+
+	while((msgid = arc4random_uniform(0xffffffff)) == 0)
+		;
+
+	return msgid;
+}
+
+u_int64_t
+queue_generate_evpid(u_int32_t msgid)
+{
+	u_int32_t rnd;
+	u_int64_t evpid;
+
+	while((rnd = arc4random_uniform(0xffffffff)) == 0)
+		;
+
+	evpid = msgid;
+	evpid <<= 32;
+	evpid |= rnd;
+
+	return evpid;
+}
+
+
+/**/
+static int
+envelope_validate(struct envelope *ep)
+{
+	if (ep->version != SMTPD_ENVELOPE_VERSION)
+		return 0;
+
+	if ((ep->id & 0xffffffff) == 0 ||
+	    ((ep->id >> 32) & 0xffffffff) == 0)
+		return 0;
+
+	if (ep->helo[0] == '\0')
+		return 0;
+
+	if (ep->hostname[0] == '\0')
+		return 0;
+
+	if (ep->errorline[0] != '\0') {
+		if (! isdigit(ep->errorline[0]) ||
+		    ! isdigit(ep->errorline[1]) ||
+		    ! isdigit(ep->errorline[2]) ||
+		    ep->errorline[3] != ' ')
+			return 0;
+	}
+
+	return 1;
 }

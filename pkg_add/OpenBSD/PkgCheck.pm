@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCheck.pm,v 1.28 2010/12/29 13:03:05 espie Exp $
+# $OpenBSD: PkgCheck.pm,v 1.32 2011/11/26 17:35:09 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -100,7 +100,11 @@ sub thorough_check
 		$state->log("can't read #1", $name);
 		return;
 	}
-	my $d = $self->compute_digest($name);
+	if (!defined $self->{d}) {
+		$state->log("no checksum for #1", $name);
+		return;
+	}
+	my $d = $self->compute_digest($name, ref($self->{d}));
 	if (!$d->equals($self->{d})) {
 		$state->log("checksum for #1 does not match", $name);
 	}
@@ -503,12 +507,18 @@ sub sanity_check
 			$self->may_remove($state, $name);
 			return;
 		}
+		if (!defined $plist->pkgname) {
+			$state->errsay("#1: no pkgname in plist",
+			    $state->safe($name));
+			$self->may_remove($state, $name);
+			return;
+		}
 		if ($plist->pkgname ne $name) {
 			$state->errsay("#1: pkgname does not match",
 			    $state->safe($name));
 			$self->may_remove($state, $name);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 		$state->{exists}{$plist->pkgname} = 1;
 	});
 }
@@ -565,7 +575,7 @@ sub package_files_check
 		} else {
 			$plist->thorough_check($state);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 	});
 }
 
