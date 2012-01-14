@@ -2280,9 +2280,6 @@ load_config(const char *filename, struct relayd *x_conf)
 		errors++;
 	}
 
-	if (TAILQ_EMPTY(conf->sc_relays))
-		conf->sc_prefork_relay = 0;
-
 	/* Cleanup relay list to inherit */
 	while ((rlay = TAILQ_FIRST(&relays)) != NULL) {
 		TAILQ_REMOVE(&relays, rlay, rl_entry);

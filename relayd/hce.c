@@ -355,6 +355,8 @@ hce_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 		break;
 	case IMSG_CFG_DONE:
 		config_getcfg(env, imsg);
+		break;
+	case IMSG_CTL_START:
 		hce_setup_events();
 		break;
 	case IMSG_CTL_RESET:
