@@ -203,6 +203,8 @@ pfe_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 		config_getcfg(env, imsg);
 		init_filter(env, imsg->fd);
 		init_tables(env);
+		break;
+	case IMSG_CTL_START:
 		pfe_setup_events();
 		pfe_sync();
 		break;
