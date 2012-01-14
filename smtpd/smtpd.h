@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.269 2011/12/27 17:13:05 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.279 2012/01/13 21:58:35 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -58,13 +58,13 @@
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
 
-#define	PATH_MAILLOCAL		"/usr/libexec/mail.local"
 #define	PATH_SMTPCTL		"/usr/sbin/smtpctl"
 
 #define	DIRHASH_BUCKETS		 4096
 
 #define PATH_SPOOL		"/var/spool/smtpd"
 #define PATH_OFFLINE		"/offline"
+#define PATH_PURGE		"/purge"
 
 /* number of MX records to lookup */
 #define MAX_MX_COUNT		10
@@ -125,7 +125,6 @@ enum imsg_type {
 	IMSG_CONF_RULE_SOURCE,
 	IMSG_CONF_FILTER,
 	IMSG_CONF_END,
-	IMSG_CONF_RELOAD,
 	IMSG_LKA_MAIL,
 	IMSG_LKA_RCPT,
 	IMSG_LKA_SECRET,
@@ -149,7 +148,9 @@ enum imsg_type {
 	IMSG_QUEUE_RESUME_MDA,
 	IMSG_QUEUE_RESUME_MTA,
 
-	IMSG_QUEUE_MESSAGE_UPDATE,
+	IMSG_QUEUE_DELIVERY_OK,
+	IMSG_QUEUE_DELIVERY_TEMPFAIL,
+	IMSG_QUEUE_DELIVERY_PERMFAIL,
 	IMSG_QUEUE_MESSAGE_FD,
 	IMSG_QUEUE_MESSAGE_FILE,
 	IMSG_QUEUE_SCHEDULE,
@@ -341,10 +342,8 @@ enum delivery_type {
 };
 
 enum delivery_status {
-	DS_PERMFAILURE	= 0x2,
-	DS_TEMPFAILURE	= 0x4,
-	DS_REJECTED	= 0x8,
-	DS_ACCEPTED	= 0x10
+	DS_PERMFAILURE	= 0x1,
+	DS_TEMPFAILURE	= 0x2,
 };
 
 enum delivery_flags {
@@ -428,10 +427,34 @@ struct envelope {
 	time_t				 expire;
 	u_int8_t			 retry;
 	enum delivery_flags		 flags;
-	enum delivery_status		 status;
-
 };
 TAILQ_HEAD(deliverylist, envelope);
+
+enum envelope_field {
+	EVP_VERSION,
+	EVP_ID,
+	EVP_TYPE,
+	EVP_HELO,
+	EVP_HOSTNAME,
+	EVP_ERRORLINE,
+	EVP_SOCKADDR,
+	EVP_SENDER,
+	EVP_RCPT,
+	EVP_DEST,
+	EVP_CTIME,
+	EVP_EXPIRE,
+	EVP_RETRY,
+	EVP_LASTTRY,
+	EVP_FLAGS,
+	EVP_MDA_METHOD,
+	EVP_MDA_BUFFER,
+	EVP_MDA_USER,
+	EVP_MTA_RELAY_HOST,
+	EVP_MTA_RELAY_PORT,
+	EVP_MTA_RELAY_FLAGS,
+	EVP_MTA_RELAY_CERT,
+	EVP_MTA_RELAY_AUTHMAP
+};
 
 
 enum child_type {
@@ -542,6 +565,7 @@ struct session {
 	long				 s_datalen;
 
 	struct auth			 s_auth;
+	int				 s_dstatus;
 
 	FILE				*datafp;
 	int				 mboxfd;
@@ -581,7 +605,6 @@ struct ramqueue_message {
 	u_int32_t				msgid;
 };
 struct ramqueue {
-	struct ramqueue_envelope	       *current_evp;
 	RB_HEAD(hosttree, ramqueue_host)	hosttree;
 	RB_HEAD(msgtree, ramqueue_message)	msgtree;
 	TAILQ_HEAD(,ramqueue_envelope)		queue;
@@ -707,11 +730,6 @@ struct stats {
 	struct stat_counter	 counters[STATS_MAX];
 };
 
-struct reload {
-	int			fd;
-	int			ret;
-};
-
 struct submit_status {
 	u_int64_t			 id;
 	int				 code;
@@ -771,6 +789,7 @@ struct mda_session {
 
 struct deliver {
 	char			to[PATH_MAX];
+	char			from[PATH_MAX];
 	char			user[MAXLOGNAME];
 	short			mode;
 };
@@ -888,7 +907,6 @@ enum queue_type {
 enum queue_kind {
 	Q_INCOMING,
 	Q_QUEUE,
-	Q_PURGE,
 	Q_CORRUPT
 };
 
@@ -901,7 +919,6 @@ enum queue_op {
 	QOP_LOAD,
 	QOP_FD_R,
 	QOP_FD_RW,
-	QOP_PURGE,
 	QOP_CORRUPT,
 };
 
@@ -1015,6 +1032,14 @@ int		 enqueue(int, char **);
 int		 enqueue_offline(int, char **);
 
 
+/* envelope.c */
+void envelope_set_errormsg(struct envelope *, char *, ...);
+char *envelope_ascii_field_name(enum envelope_field);
+int envelope_ascii_load(enum envelope_field, struct envelope *, char *);
+int envelope_ascii_dump(enum envelope_field, struct envelope *, char *,
+    size_t);
+
+
 /* expand.c */
 int expand_cmp(struct expandnode *, struct expandnode *);
 void expandtree_increment_node(struct expandtree *, struct expandnode *);
@@ -1081,7 +1106,6 @@ int queue_message_delete(enum queue_kind, u_int32_t);
 int queue_message_commit(enum queue_kind, u_int32_t);
 int queue_message_fd_r(enum queue_kind, u_int32_t);
 int queue_message_fd_rw(enum queue_kind, u_int32_t);
-int queue_message_purge(enum queue_kind, u_int32_t);
 int queue_message_corrupt(enum queue_kind, u_int32_t);
 int queue_envelope_create(enum queue_kind, struct envelope *);
 int queue_envelope_delete(enum queue_kind, struct envelope *);
@@ -1095,7 +1119,6 @@ void  qwalk_close(void *);
 /* ramqueue.c */
 void ramqueue_init(struct ramqueue *);
 int ramqueue_load(struct ramqueue *, time_t *);
-int ramqueue_load_offline(struct ramqueue *);
 int ramqueue_host_cmp(struct ramqueue_host *, struct ramqueue_host *);
 int ramqueue_msg_cmp(struct ramqueue_message *, struct ramqueue_message *);
 int ramqueue_evp_cmp(struct ramqueue_envelope *, struct ramqueue_envelope *);
@@ -1211,8 +1234,6 @@ int valid_message_uid(char *);
 char *time_to_text(time_t);
 int secure_file(int, char *, char *, uid_t, int);
 void lowercase(char *, char *, size_t);
-void envelope_set_errormsg(struct envelope *, char *, ...);
-char *envelope_get_errormsg(struct envelope *);
 void sa_set_port(struct sockaddr *, int);
 u_int64_t generate_uid(void);
 void fdlimit(double);
@@ -1221,4 +1242,6 @@ u_int32_t evpid_to_msgid(u_int64_t);
 u_int64_t msgid_to_evpid(u_int32_t);
 void log_imsg(int, int, struct imsg*);
 int ckdir(const char *, mode_t, uid_t, gid_t, int);
+int rmtree(char *, int);
+int mvpurge(char *, char *);
 const char *parse_smtp_response(char *, size_t, char **, int *);
