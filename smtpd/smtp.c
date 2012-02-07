@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.98 2012/01/13 14:27:55 eric Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.101 2012/01/31 21:05:26 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -75,22 +75,27 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 			    sizeof s->s_hostname);
 			strlcpy(s->s_msg.hostname, s->s_hostname,
 			    sizeof s->s_msg.hostname);
-			session_init(s->s_l, s);
+			session_pickup(s, NULL);
 			return;
 		}
 	}
 
 	if (iev->proc == PROC_MFA) {
 		switch (imsg->hdr.type) {
+		case IMSG_MFA_CONNECT:
 		case IMSG_MFA_HELO:
 		case IMSG_MFA_MAIL:
 		case IMSG_MFA_RCPT:
 		case IMSG_MFA_DATALINE:
+		case IMSG_MFA_QUIT:
+		case IMSG_MFA_RSET:
 			ss = imsg->data;
 			s = session_lookup(ss->id);
 			if (s == NULL)
 				return;
 			session_pickup(s, ss);
+			return;
+		case IMSG_MFA_CLOSE:
 			return;
 		}
 	}
@@ -125,14 +130,11 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_QUEUE_TEMPFAIL:
 			skey.s_id = ss->id;
+			/* do not use lookup since this is not a expected imsg -- eric@ */
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &skey);
 			if (s == NULL)
 				fatalx("smtp: session is gone");
-			if (s->s_flags & F_WRITEONLY)
-				/* session is write-only, must not destroy it. */
-				s->s_dstatus |= DS_TEMPFAILURE;
-			else
-				fatalx("smtp: corrupt session");
+			s->s_dstatus |= DS_TEMPFAILURE;
 			return;
 
 		case IMSG_QUEUE_COMMIT_ENVELOPES:
@@ -396,7 +398,7 @@ smtp_pause(void)
 	struct listener *l;
 
 	log_debug("smtp: pausing listening sockets");
-	env->sc_opts |= SMTPD_SMTP_PAUSED;
+	env->sc_flags |= SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
 		event_del(&l->ev);
@@ -408,7 +410,7 @@ smtp_resume(void)
 	struct listener *l;
 
 	log_debug("smtp: resuming listening sockets");
-	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
+	env->sc_flags &= ~SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
 		event_add(&l->ev, NULL);
@@ -443,7 +445,7 @@ smtp_enqueue(uid_t *euid)
 	 * call to smtp_pause() because enqueue listener is not a real socket
 	 * and thus cannot be paused properly.
 	 */
-	if (env->sc_opts & SMTPD_SMTP_PAUSED)
+	if (env->sc_flags & SMTPD_SMTP_PAUSED)
 		return (-1);
 
 	if ((s = smtp_new(l)) == NULL)
@@ -452,7 +454,7 @@ smtp_enqueue(uid_t *euid)
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, fd))
 		fatal("socketpair");
 
-	s->s_fd = fd[0];
+	s->s_io.sock = fd[0];
 	s->s_ss = sa;
 	s->s_msg.flags |= DF_ENQUEUED;
 
@@ -467,7 +469,7 @@ smtp_enqueue(uid_t *euid)
 	strlcpy(s->s_msg.hostname, s->s_hostname,
 	    sizeof(s->s_msg.hostname));
 
-	session_init(l, s);
+	session_pickup(s, NULL);
 
 	return (fd[1]);
 }
@@ -483,14 +485,14 @@ smtp_accept(int fd, short event, void *p)
 		return;
 
 	len = sizeof(s->s_ss);
-	if ((s->s_fd = accept(fd, (struct sockaddr *)&s->s_ss, &len)) == -1) {
+	if ((s->s_io.sock = accept(fd, (struct sockaddr *)&s->s_ss, &len)) == -1) {
 		if (errno == EINTR || errno == ECONNABORTED)
 			return;
 		fatal("smtp_accept");
 	}
 
-	
-	s->s_flags |= F_WRITEONLY;
+	io_set_timeout(&s->s_io, SMTPD_SESSION_TIMEOUT * 1000);
+	io_set_write(&s->s_io);
 	dns_query_ptr(&s->s_ss, s->s_id);
 }
 
@@ -502,7 +504,7 @@ smtp_new(struct listener *l)
 
 	log_debug("smtp: new client on listener: %p", l);
 
-	if (env->sc_opts & SMTPD_SMTP_PAUSED)
+	if (env->sc_flags & SMTPD_SMTP_PAUSED)
 		fatalx("smtp_new: unexpected client");
 
 	if ((s = calloc(1, sizeof(*s))) == NULL)
@@ -522,6 +524,10 @@ smtp_new(struct listener *l)
 	if (s->s_l->ss.ss_family == AF_INET6)
 		stat_increment(STATS_SMTP_SESSION_INET6);
 
+	iobuf_init(&s->s_iobuf, MAX_LINE_SIZE, MAX_LINE_SIZE);
+	io_init(&s->s_io, -1, s, session_io, &s->s_iobuf);
+	s->s_state = S_CONNECTED;
+
 	return (s);
 }
 
@@ -539,12 +545,8 @@ session_lookup(u_int64_t id)
 	if (s == NULL)
 		fatalx("session_lookup: session is gone");
 
-	if (!(s->s_flags & F_WRITEONLY))
-		fatalx("session_lookup: corrupt session");
-	s->s_flags &= ~F_WRITEONLY;
-
-	if (s->s_flags & F_QUIT) {
-		session_destroy(s);
+	if (s->s_flags & F_ZOMBIE) {
+		session_destroy(s, "(finalizing)");
 		s = NULL;
 	}
 

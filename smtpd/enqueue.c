@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.50 2011/12/15 17:23:54 eric Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.55 2012/02/02 16:52:59 eric Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -58,22 +58,33 @@ enum headerfields {
 	HDR_BCC,
 	HDR_SUBJECT,
 	HDR_DATE,
-	HDR_MSGID
+	HDR_MSGID,
+	HDR_MIME_VERSION,
+	HDR_CONTENT_TYPE,
+	HDR_CONTENT_DISPOSITION,
+	HDR_CONTENT_TRANSFER_ENCODING,
+	HDR_USER_AGENT
 };
 
 struct {
 	char			*word;
 	enum headerfields	 type;
 } keywords[] = {
-	{ "From:",		HDR_FROM },
-	{ "To:",		HDR_TO },
-	{ "Cc:",		HDR_CC },
-	{ "Bcc:",		HDR_BCC },
-	{ "Subject:",		HDR_SUBJECT },
-	{ "Date:",		HDR_DATE },
-	{ "Message-Id:",	HDR_MSGID }
+	{ "From:",			HDR_FROM },
+	{ "To:",			HDR_TO },
+	{ "Cc:",			HDR_CC },
+	{ "Bcc:",			HDR_BCC },
+	{ "Subject:",			HDR_SUBJECT },
+	{ "Date:",			HDR_DATE },
+	{ "Message-Id:",		HDR_MSGID },
+	{ "MIME-Version:",		HDR_MIME_VERSION },
+	{ "Content-Type:",		HDR_CONTENT_TYPE },
+	{ "Content-Disposition:",	HDR_CONTENT_DISPOSITION },
+	{ "Content-Transfer-Encoding:",	HDR_CONTENT_TRANSFER_ENCODING },
+	{ "User-Agent:",		HDR_USER_AGENT },
 };
 
+#define	LINESPLIT		990
 #define	SMTP_LINELEN		1000
 #define	TIMEOUTMSG		"Timeout\n"
 
@@ -90,9 +101,15 @@ struct {
 	char	 *fromname;
 	char	**rcpts;
 	int	  rcpt_cnt;
+	int	  need_linesplit;
 	int	  saw_date;
 	int	  saw_msgid;
 	int	  saw_from;
+	int	  saw_mime_version;
+	int	  saw_content_type;
+	int	  saw_content_disposition;
+	int	  saw_content_transfer_encoding;
+	int	  saw_user_agent;
 } msg;
 
 struct {
@@ -113,6 +130,34 @@ sighdlr(int sig)
 	}
 }
 
+static void
+qp_encoded_write(FILE *fp, char *buf, size_t len)
+{
+	while (len) {
+		if (*buf == '=')
+			fprintf(fp, "=3D");
+		else if (*buf == ' ' || *buf == '\t') {
+			char *p = buf;
+			
+			while (*p != '\n') {
+				if (*p != ' ' && *p != '\t')
+					break;
+				p++;
+			}
+			if (*p == '\n')
+				fprintf(fp, "=%2X", *buf & 0xff);
+			else
+				fprintf(fp, "%c", *buf & 0xff);
+		}
+		else if (! isprint(*buf) && *buf != '\n')
+			fprintf(fp, "=%2X", *buf & 0xff);
+		else
+			fprintf(fp, "%c", *buf);
+		buf++;
+		len--;
+	}
+}
+
 int
 enqueue(int argc, char *argv[])
 {
@@ -121,6 +166,9 @@ enqueue(int argc, char *argv[])
 	struct passwd		*pw;
 	FILE			*fp, *fout;
 	size_t			 len;
+	char			*line;
+	int			 dotted;
+	int			 inheaders = 0;
 
 	bzero(&msg, sizeof(msg));
 	time(&timestamp);
@@ -238,9 +286,25 @@ enqueue(int argc, char *argv[])
 		fprintf(fout, "Message-Id: <%llu.enqueue@%s>\n",
 		    generate_uid(), host);
 
+	if (msg.need_linesplit) {
+		/* we will always need to mime encode for long lines */
+		if (!msg.saw_mime_version)
+			fprintf(fout, "MIME-Version: 1.0\n");
+		if (!msg.saw_content_type)
+			fprintf(fout, "Content-Type: text/plain; charset=unknown-8bit\n");
+		if (!msg.saw_content_disposition)
+			fprintf(fout, "Content-Disposition: inline\n");
+		if (!msg.saw_content_transfer_encoding)
+			fprintf(fout, "Content-Transfer-Encoding: quoted-printable\n");
+	}
+	if (!msg.saw_user_agent)
+		fprintf(fout, "User-Agent: OpenSMTPD enqueuer (Demoosh)\n");
+
 	/* add separating newline */
 	if (noheader)
 		fprintf(fout, "\n");
+	else
+		inheaders = 1;
 
 	for (;;) {
 		buf = fgetln(fp, &len);
@@ -252,9 +316,34 @@ enqueue(int argc, char *argv[])
 		if (buf[len-1] != '\n')
 			errx(1, "expect EOL");
 
-		if (buf[0] == '.')
+		dotted = 0;
+		if (buf[0] == '.') {
 			fputc('.', fout);
-		fprintf(fout, "%.*s", (int)len, buf);
+			dotted = 1;
+		}
+
+		line = buf;
+
+		if (msg.saw_content_transfer_encoding || noheader || inheaders || !msg.need_linesplit) {
+			fprintf(fout, "%.*s", (int)len, line);
+			if (inheaders && buf[0] == '\n')
+				inheaders = 0;
+			continue;
+		}
+
+		/* we don't have a content transfer encoding, use our default */
+		do {
+			if (len < LINESPLIT) {
+				qp_encoded_write(fout, line, len);
+				break;
+			}
+			else {
+				qp_encoded_write(fout, line, LINESPLIT - 2 - dotted);
+				fprintf(fout, "=\n");
+				line += LINESPLIT - 2 - dotted;
+				len -= LINESPLIT - 2 - dotted;
+			}
+		} while (len);
 	}
 	fprintf(fout, ".\n");
 	get_responses(fout, 1);	
@@ -381,6 +470,10 @@ parse_message(FILE *fin, int get_from, int tflag, FILE *fout)
 			cur = HDR_NONE;
 		}
 
+		/* not really exact, if we are still in headers */
+		if (len + (buf[len - 1] == '\n' ? 0 : 1) >= LINESPLIT)
+			msg.need_linesplit = 1;
+
 		for (i = 0; !header_done && cur == HDR_NONE &&
 		    i < nitems(keywords); i++)
 			if (len > strlen(keywords[i].word) &&
@@ -416,6 +509,16 @@ parse_message(FILE *fin, int get_from, int tflag, FILE *fout)
 			msg.saw_date++;
 		if (cur == HDR_MSGID)
 			msg.saw_msgid++;
+		if (cur == HDR_MIME_VERSION)
+			msg.saw_mime_version = 1;
+		if (cur == HDR_CONTENT_TYPE)
+			msg.saw_content_type = 1;
+		if (cur == HDR_CONTENT_DISPOSITION)
+			msg.saw_content_disposition = 1;
+		if (cur == HDR_CONTENT_TRANSFER_ENCODING)
+			msg.saw_content_transfer_encoding = 1;
+		if (cur == HDR_USER_AGENT)
+			msg.saw_user_agent = 1;
 	}
 
 	return (!header_seen);
