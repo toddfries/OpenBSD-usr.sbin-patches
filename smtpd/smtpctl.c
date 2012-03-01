@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.74 2011/12/18 22:52:25 chl Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.78 2012/01/28 11:33:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -44,7 +44,6 @@
 
 void usage(void);
 static void setup_env(struct smtpd *);
-static void show_sizes(void);
 static int show_command_output(struct imsg *);
 static int show_stats_output(struct imsg *);
 static void show_queue(enum queue_kind, int);
@@ -85,7 +84,7 @@ setup_env(struct smtpd *smtpd)
 	if (env->sc_queue == NULL)
 		errx(1, "could not find queue backend");
 
-	if (!env->sc_queue->init())
+	if (!env->sc_queue->init(0))
 		errx(1, "invalid directory permissions");
 }
 
@@ -126,9 +125,6 @@ main(int argc, char *argv[])
 			show_queue(Q_QUEUE, 0);
 			break;
 		case SHOW_RUNQUEUE:
-			break;
-		case SHOW_SIZES:
-			show_sizes();
 			break;
 		default:
 			goto connected;
@@ -251,7 +247,6 @@ connected:
 			if (n == 0)
 				break;
 			switch(res->action) {
-			/* case RELOAD: */
 			case REMOVE:
 			case SCHEDULE:
 			case SCHEDULE_ALL:
@@ -301,30 +296,6 @@ show_command_output(struct imsg *imsg)
 		errx(1, "wrong message in summary: %u", imsg->hdr.type);
 	}
 	return (1);
-}
-
-void
-show_sizes(void)
-{
-	/*
-	 * size _does_ matter.
-	 *
-	 * small changes to ramqueue and diskqueue structures may cause
-	 * large changes to memory and disk usage on busy/large hosts.
-	 *
-	 * this will help developers optimize memory/disk use, and help
-	 * admins understand how the ramqueue.size / ramqueue.size.max
-	 * stats are computed (smtpctl show stats).
-	 *
-	 * -- gilles@
-	 *
-	 */
-	printf("struct ramqueue: %zu\n", sizeof (struct ramqueue));
-	printf("struct ramqueue_host: %zu\n", sizeof (struct ramqueue_host));
-	printf("struct ramqueue_message: %zu\n", sizeof (struct ramqueue_message));
-	printf("struct ramqueue_envelope: %zu\n", sizeof (struct ramqueue_envelope));
-
-	printf("struct envelope: %zu\n", sizeof (struct envelope));
 }
 
 static void
@@ -432,17 +403,6 @@ show_stats_output(struct imsg *imsg)
 	stat_print(STATS_RAMQUEUE_MESSAGE, STAT_MAXACTIVE);
 	stat_print(STATS_RAMQUEUE_ENVELOPE, STAT_MAXACTIVE);
 
-	printf("ramqueue.size=%zd\n",
-	    s[STATS_RAMQUEUE_HOST].active * sizeof(struct ramqueue_host) +
-	    s[STATS_RAMQUEUE_BATCH].active * sizeof(struct ramqueue_batch) +
-	    s[STATS_RAMQUEUE_MESSAGE].active * sizeof(struct ramqueue_message) +
-	    s[STATS_RAMQUEUE_ENVELOPE].active * sizeof(struct ramqueue_envelope));
-	printf("ramqueue.size.max=%zd\n",
-	    s[STATS_RAMQUEUE_HOST].maxactive * sizeof(struct ramqueue_host) +
-	    s[STATS_RAMQUEUE_BATCH].maxactive * sizeof(struct ramqueue_batch) +
-	    s[STATS_RAMQUEUE_MESSAGE].maxactive * sizeof(struct ramqueue_message) +
-	    s[STATS_RAMQUEUE_ENVELOPE].maxactive * sizeof(struct ramqueue_envelope));
-
 	printf("smtp.errors.delays=%zd\n", stats->smtp.delays);
 	printf("smtp.errors.linetoolong=%zd\n", stats->smtp.linetoolong);
 	printf("smtp.errors.read_eof=%zd\n", stats->smtp.read_eof);
@@ -507,13 +467,6 @@ show_envelope(struct envelope *e, int flags)
 	char	 status[128];
 
 	status[0] = '\0';
-
-	getflag(&e->status, DS_TEMPFAILURE, "TEMPFAIL",
-	    status, sizeof(status));
-
-	if (e->status)
-		errx(1, "%016" PRIx64 ": unexpected status 0x%04x", e->id,
-		    e->status);
 
 	getflag(&e->flags, DF_BOUNCE, "BOUNCE",
 	    status, sizeof(status));
