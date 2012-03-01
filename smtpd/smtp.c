@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp.c,v 1.96 2011/12/13 23:55:00 gilles Exp $	*/
+/*	$OpenBSD: smtp.c,v 1.101 2012/01/31 21:05:26 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -43,7 +43,6 @@ static void smtp_imsg(struct imsgev *, struct imsg *);
 static void smtp_shutdown(void);
 static void smtp_sig_handler(int, short, void *);
 static void smtp_setup_events(void);
-static void smtp_disable_events(void);
 static void smtp_pause(void);
 static int smtp_enqueue(uid_t *);
 static void smtp_accept(int, short, void *);
@@ -76,22 +75,27 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 			    sizeof s->s_hostname);
 			strlcpy(s->s_msg.hostname, s->s_hostname,
 			    sizeof s->s_msg.hostname);
-			session_init(s->s_l, s);
+			session_pickup(s, NULL);
 			return;
 		}
 	}
 
 	if (iev->proc == PROC_MFA) {
 		switch (imsg->hdr.type) {
+		case IMSG_MFA_CONNECT:
 		case IMSG_MFA_HELO:
 		case IMSG_MFA_MAIL:
 		case IMSG_MFA_RCPT:
 		case IMSG_MFA_DATALINE:
+		case IMSG_MFA_QUIT:
+		case IMSG_MFA_RSET:
 			ss = imsg->data;
 			s = session_lookup(ss->id);
 			if (s == NULL)
 				return;
 			session_pickup(s, ss);
+			return;
+		case IMSG_MFA_CLOSE:
 			return;
 		}
 	}
@@ -126,14 +130,11 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_QUEUE_TEMPFAIL:
 			skey.s_id = ss->id;
+			/* do not use lookup since this is not a expected imsg -- eric@ */
 			s = SPLAY_FIND(sessiontree, &env->sc_sessions, &skey);
 			if (s == NULL)
 				fatalx("smtp: session is gone");
-			if (s->s_flags & F_WRITEONLY)
-				/* session is write-only, must not destroy it. */
-				s->s_msg.status |= DS_TEMPFAILURE;
-			else
-				fatalx("smtp: corrupt session");
+			s->s_dstatus |= DS_TEMPFAILURE;
 			return;
 
 		case IMSG_QUEUE_COMMIT_ENVELOPES:
@@ -160,21 +161,6 @@ smtp_imsg(struct imsgev *iev, struct imsg *imsg)
 
 	if (iev->proc == PROC_PARENT) {
 		switch (imsg->hdr.type) {
-		case IMSG_CONF_RELOAD:
-			/*
-			 * Reloading may invalidate various pointers our
-			 * sessions rely upon, we better tell clients we
-			 * want them to retry.
-			 */
-			SPLAY_FOREACH(s, sessiontree, &env->sc_sessions) {
-				s->s_l = NULL;
-				s->s_msg.status |= DS_TEMPFAILURE;
-			}
-			if (env->sc_listeners)
-				smtp_disable_events();
-			imsg_compose_event(iev, IMSG_PARENT_SEND_CONFIG, 0, 0, -1,
-			    NULL, 0);
-			return;
 
 		case IMSG_CONF_START:
 			if (env->sc_flags & SMTPD_CONFIGURING)
@@ -407,29 +393,12 @@ smtp_setup_events(void)
 }
 
 static void
-smtp_disable_events(void)
-{
-	struct listener	*l;
-
-	log_debug("smtp: closing listening sockets");
-	while ((l = TAILQ_FIRST(env->sc_listeners)) != NULL) {
-		TAILQ_REMOVE(env->sc_listeners, l, entry);
-		event_del(&l->ev);
-		close(l->fd);
-		free(l);
-	}
-	free(env->sc_listeners);
-	env->sc_listeners = NULL;
-	env->sc_maxconn = 0;
-}
-
-static void
 smtp_pause(void)
 {
 	struct listener *l;
 
 	log_debug("smtp: pausing listening sockets");
-	env->sc_opts |= SMTPD_SMTP_PAUSED;
+	env->sc_flags |= SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
 		event_del(&l->ev);
@@ -441,7 +410,7 @@ smtp_resume(void)
 	struct listener *l;
 
 	log_debug("smtp: resuming listening sockets");
-	env->sc_opts &= ~SMTPD_SMTP_PAUSED;
+	env->sc_flags &= ~SMTPD_SMTP_PAUSED;
 
 	TAILQ_FOREACH(l, env->sc_listeners, entry)
 		event_add(&l->ev, NULL);
@@ -476,7 +445,7 @@ smtp_enqueue(uid_t *euid)
 	 * call to smtp_pause() because enqueue listener is not a real socket
 	 * and thus cannot be paused properly.
 	 */
-	if (env->sc_opts & SMTPD_SMTP_PAUSED)
+	if (env->sc_flags & SMTPD_SMTP_PAUSED)
 		return (-1);
 
 	if ((s = smtp_new(l)) == NULL)
@@ -485,7 +454,7 @@ smtp_enqueue(uid_t *euid)
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, fd))
 		fatal("socketpair");
 
-	s->s_fd = fd[0];
+	s->s_io.sock = fd[0];
 	s->s_ss = sa;
 	s->s_msg.flags |= DF_ENQUEUED;
 
@@ -500,7 +469,7 @@ smtp_enqueue(uid_t *euid)
 	strlcpy(s->s_msg.hostname, s->s_hostname,
 	    sizeof(s->s_msg.hostname));
 
-	session_init(l, s);
+	session_pickup(s, NULL);
 
 	return (fd[1]);
 }
@@ -516,14 +485,14 @@ smtp_accept(int fd, short event, void *p)
 		return;
 
 	len = sizeof(s->s_ss);
-	if ((s->s_fd = accept(fd, (struct sockaddr *)&s->s_ss, &len)) == -1) {
+	if ((s->s_io.sock = accept(fd, (struct sockaddr *)&s->s_ss, &len)) == -1) {
 		if (errno == EINTR || errno == ECONNABORTED)
 			return;
 		fatal("smtp_accept");
 	}
 
-	
-	s->s_flags |= F_WRITEONLY;
+	io_set_timeout(&s->s_io, SMTPD_SESSION_TIMEOUT * 1000);
+	io_set_write(&s->s_io);
 	dns_query_ptr(&s->s_ss, s->s_id);
 }
 
@@ -535,7 +504,7 @@ smtp_new(struct listener *l)
 
 	log_debug("smtp: new client on listener: %p", l);
 
-	if (env->sc_opts & SMTPD_SMTP_PAUSED)
+	if (env->sc_flags & SMTPD_SMTP_PAUSED)
 		fatalx("smtp_new: unexpected client");
 
 	if ((s = calloc(1, sizeof(*s))) == NULL)
@@ -555,6 +524,10 @@ smtp_new(struct listener *l)
 	if (s->s_l->ss.ss_family == AF_INET6)
 		stat_increment(STATS_SMTP_SESSION_INET6);
 
+	iobuf_init(&s->s_iobuf, MAX_LINE_SIZE, MAX_LINE_SIZE);
+	io_init(&s->s_io, -1, s, session_io, &s->s_iobuf);
+	s->s_state = S_CONNECTED;
+
 	return (s);
 }
 
@@ -572,12 +545,8 @@ session_lookup(u_int64_t id)
 	if (s == NULL)
 		fatalx("session_lookup: session is gone");
 
-	if (!(s->s_flags & F_WRITEONLY))
-		fatalx("session_lookup: corrupt session");
-	s->s_flags &= ~F_WRITEONLY;
-
-	if (s->s_flags & F_QUIT) {
-		session_destroy(s);
+	if (s->s_flags & F_ZOMBIE) {
+		session_destroy(s, "(finalizing)");
 		s = NULL;
 	}
 
