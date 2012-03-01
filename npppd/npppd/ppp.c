@@ -1,4 +1,4 @@
-/* $OpenBSD: ppp.c,v 1.9 2011/10/15 03:24:11 yasuoka Exp $ */
+/* $OpenBSD: ppp.c,v 1.12 2012/01/23 03:36:22 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -25,7 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/* $Id: ppp.c,v 1.9 2011/10/15 03:24:11 yasuoka Exp $ */
+/* $Id: ppp.c,v 1.12 2012/01/23 03:36:22 yasuoka Exp $ */
 /**@file
  * This file provides PPP(Point-to-Point Protocol, RFC 1661) and
  * {@link :: _npppd_ppp PPP instance} related functions.
@@ -77,7 +77,7 @@
 
 #include "debugutil.h"
 
-static u_int32_t ppp_seq = 0;
+static u_int ppp_seq = 0;
 
 static void  ppp_stop0 __P((npppd_ppp *));
 static int   ppp_recv_packet (npppd_ppp *, unsigned char *, int, int);
@@ -162,7 +162,8 @@ ppp_init(npppd *pppd, npppd_ppp *_this)
 	    ppp_config_str_equal(_this, "log.in.pktdump",  "true", 0);
 	_this->log_dump_out =
 	    ppp_config_str_equal(_this, "log.out.pktdump",  "true", 0);
-
+	_this->ingress_filter = ppp_config_str_equal(_this, "ingress_filter",
+	    "true", 0);
 
 #ifdef	USE_NPPPD_MPPE
 	mppe_init(&_this->mppe, _this);
@@ -388,14 +389,15 @@ ppp_stop0(npppd_ppp *_this)
 		snprintf(mppe_str, sizeof(mppe_str), "mppe=no");
 	ppp_log(_this, LOG_NOTICE,
 		"logtype=TUNNELUSAGE user=\"%s\" duration=%ldsec layer2=%s "
-		"layer2from=%s auth=%s data_in=%qubytes,%upackets "
-		"data_out=%qubytes,%upackets error_in=%u error_out=%u %s "
+		"layer2from=%s auth=%s data_in=%llubytes,%upackets "
+		"data_out=%llubytes,%upackets error_in=%u error_out=%u %s "
 		"iface=%s",
 		_this->username[0]? _this->username : "<unknown>",
 		(long)(_this->end_monotime - _this->start_monotime),
 		_this->phy_label,  label,
 		_this->username[0]? ppp_peer_auth_string(_this) : "none",
-		_this->ibytes, _this->ipackets, _this->obytes, _this->opackets,
+		(unsigned long long)_this->ibytes, _this->ipackets,
+		(unsigned long long)_this->obytes, _this->opackets,
 		_this->ierrors, _this->oerrors, mppe_str,
 		npppd_ppp_get_iface_name(_this->pppd, _this));
 
