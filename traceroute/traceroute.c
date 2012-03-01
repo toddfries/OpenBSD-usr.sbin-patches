@@ -1,4 +1,4 @@
-/*	$OpenBSD: traceroute.c,v 1.79 2011/11/08 12:16:54 sthen Exp $	*/
+/*	$OpenBSD: traceroute.c,v 1.82 2012/02/10 23:05:54 deraadt Exp $	*/
 /*	$NetBSD: traceroute.c,v 1.10 1995/05/21 15:50:45 mycroft Exp $	*/
 
 /*-
@@ -1195,14 +1195,15 @@ void
 print_asn(struct in_addr in)
 {
 	const u_char *uaddr = (const u_char *)&in.s_addr;
-	int n, i, counter;
+	int i, counter;
 	struct rrsetinfo *answers = NULL;
-	char qbuf[MAXDNAME+1];
+	char qbuf[MAXDNAME];
 
-	(void) snprintf(qbuf, sizeof qbuf, "%u.%u.%u.%u.origin.asn.cymru.com",
+	if (snprintf(qbuf, sizeof qbuf, "%u.%u.%u.%u.origin.asn.cymru.com",
 	    (uaddr[3] & 0xff), (uaddr[2] & 0xff),
-	    (uaddr[1] & 0xff), (uaddr[0] & 0xff));
-	if (n = getrrsetbyname(qbuf, C_IN, T_TXT, 0, &answers))
+	    (uaddr[1] & 0xff), (uaddr[0] & 0xff)) >= sizeof (qbuf))
+		return;
+	if (getrrsetbyname(qbuf, C_IN, T_TXT, 0, &answers) != 0)
 		return;
 	for (counter = 0; counter < answers->rri_nrdatas; counter++) {
 		char *p, *as = answers->rri_rdatas[counter].rdi_data;
@@ -1217,7 +1218,6 @@ print_asn(struct in_addr in)
 		printf("]");
 
 	freerrset(answers);
-	return;
 }
 
 int
