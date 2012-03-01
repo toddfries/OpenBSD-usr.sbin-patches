@@ -1,4 +1,4 @@
-/* $OpenBSD: npppd.c,v 1.12 2011/07/08 06:14:54 yasuoka Exp $ */
+/* $OpenBSD: npppd.c,v 1.15 2012/01/23 03:36:22 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -29,7 +29,7 @@
  * Next pppd(nppd). This file provides a npppd daemon process and operations
  * for npppd instance.
  * @author	Yasuoka Masahiko
- * $Id: npppd.c,v 1.12 2011/07/08 06:14:54 yasuoka Exp $
+ * $Id: npppd.c,v 1.15 2012/01/23 03:36:22 yasuoka Exp $
  */
 #include <sys/cdefs.h>
 #include "version.h"
@@ -387,6 +387,9 @@ npppd_init(npppd *_this, const char *config_file)
 	if (npppd_config_str_equali(_this, "arpd.enabled", "true", ARPD_DEFAULT) == 1)
         	arp_sock_init();
 #endif
+	npppd_ctl_init(&_this->ctl, _this, NPPPD_CTL_SOCK_PATH);
+	if ((status = npppd_ctl_start(&_this->ctl)) != 0)
+		return status;
 	return npppd_modules_reload(_this);
 }
 
@@ -795,7 +798,7 @@ npppd_get_ppp_by_user(npppd *_this, const char *username)
  *		specified ID is found, otherwise it returns NULL.
  */
 npppd_ppp *
-npppd_get_ppp_by_id(npppd *_this, int ppp_id)
+npppd_get_ppp_by_id(npppd *_this, u_int ppp_id)
 {
 	slist users;
 	npppd_ppp *ppp0, *ppp;
@@ -884,10 +887,10 @@ npppd_network_output(npppd *_this, npppd_ppp *ppp, int proto, u_char *pktp,
 		pip = (struct ip *)pktp;
 	}
 
-#ifndef	NO_INGRES_FILTER
-	if ((pip->ip_src.s_addr & ppp->ppp_framed_ip_netmask.s_addr) !=
-	    (ppp->ppp_framed_ip_address.s_addr &
-		    ppp->ppp_framed_ip_netmask.s_addr)) {
+	if (ppp->ingress_filter != 0 &&
+	    (pip->ip_src.s_addr & ppp->ppp_framed_ip_netmask.s_addr)
+		    != (ppp->ppp_framed_ip_address.s_addr &
+			ppp->ppp_framed_ip_netmask.s_addr)) {
 		char logbuf[80];
 		strlcpy(logbuf, inet_ntoa(pip->ip_dst), sizeof(logbuf));
 		ppp_log(ppp, LOG_INFO,
@@ -896,7 +899,6 @@ npppd_network_output(npppd *_this, npppd_ppp *ppp, int proto, u_char *pktp,
 
 		return;
 	}
-#endif
 	if (ppp->timeout_sec > 0 && !ip_is_idle_packet(pip, lbuf))
 		ppp_reset_idle_timeout(ppp);
 
@@ -939,6 +941,8 @@ pipex_setup_common(npppd_ppp *ppp, struct pipex_session_req *req)
 
 	if (ppp->adjust_mss != 0)
 		req->pr_ppp_flags |= PIPEX_PPP_ADJUST_TCPMSS;
+	if (ppp->ingress_filter != 0)
+		req->pr_ppp_flags |= PIPEX_PPP_INGRESS_FILTER;
 
 	req->pr_ip_srcaddr = ppp->pppd->iface[0].ip4addr;
 	req->pr_ip_address = ppp->ppp_framed_ip_address;
@@ -1243,7 +1247,8 @@ pipex_periodic(npppd *_this)
 {
 	struct pipex_session_list_req req;
 	npppd_ppp *ppp;
-	int i, error, ppp_id;
+	int i, error;
+	u_int ppp_id;
 	slist dlist, users;
 
 	slist_init(&dlist);
@@ -1258,7 +1263,7 @@ pipex_periodic(npppd *_this)
 		}
 		for (i = 0; i < req.plr_ppp_id_count; i++) {
 			ppp_id = req.plr_ppp_id[i];
-			slist_add(&dlist, (void *)ppp_id);
+			slist_add(&dlist, (void *)(uintptr_t)ppp_id);
 		}
 	} while (req.plr_flags & PIPEX_LISTREQ_MORE);
 
@@ -1275,7 +1280,7 @@ pipex_periodic(npppd *_this)
 	slist_itr_first(&dlist);
 	while (slist_itr_has_next(&dlist)) {
 		/* FIXME: Linear search by PPP Id eats CPU */
-		ppp_id = (int)slist_itr_next(&dlist);
+		ppp_id = (uintptr_t)slist_itr_next(&dlist);
 		slist_itr_first(&users);
 		ppp = NULL;
 		while (slist_itr_has_next(&users)) {
@@ -2366,4 +2371,24 @@ seed_random(long *seed)
 #endif
 	gettimeofday(&t, NULL);
 	*seed = gethostid() ^ t.tv_sec ^ t.tv_usec ^ getpid();
+}
+
+const char *
+npppd_ppp_tunnel_protocol_name(npppd *_this, npppd_ppp *ppp)
+{
+	switch (ppp->tunnel_type) {
+	case PPP_TUNNEL_NONE:
+		return "None";
+	case PPP_TUNNEL_L2TP:
+		return "L2TP";
+	case PPP_TUNNEL_PPTP:
+		return "PPTP";
+	case PPP_TUNNEL_PPPOE:
+		return "PPPoE";
+	case PPP_TUNNEL_SSTP:
+		return "SSTP";
+	}
+
+	NPPPD_ASSERT(0);
+	return "Error";
 }
