@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfe.c,v 1.71 2011/11/12 19:36:17 camield Exp $	*/
+/*	$OpenBSD: pfe.c,v 1.72 2012/01/21 13:40:48 camield Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
