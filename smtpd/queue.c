@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.113 2011/11/21 18:57:54 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.117 2012/01/28 11:33:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -42,14 +42,13 @@ static void queue_imsg(struct imsgev *, struct imsg *);
 static void queue_pass_to_runner(struct imsgev *, struct imsg *);
 static void queue_shutdown(void);
 static void queue_sig_handler(int, short, void *);
-static void queue_purge(enum queue_kind);
 
 static void
 queue_imsg(struct imsgev *iev, struct imsg *imsg)
 {
 	struct submit_status	 ss;
 	struct envelope		*e;
-	struct ramqueue_batch	*rq_batch;
+	struct mta_batch	*mta_batch;
 	int			 fd, ret;
 
 	log_imsg(PROC_QUEUE, iev->proc, imsg);
@@ -70,7 +69,7 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 			return;
 
 		case IMSG_QUEUE_REMOVE_MESSAGE:
-			queue_message_purge(Q_INCOMING, evpid_to_msgid(e->id));
+			queue_message_delete(Q_INCOMING, evpid_to_msgid(e->id));
 			return;
 
 		case IMSG_QUEUE_COMMIT_MESSAGE:
@@ -140,13 +139,15 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_MTA) {
 		switch (imsg->hdr.type) {
 		case IMSG_QUEUE_MESSAGE_FD:
-			rq_batch = imsg->data;
-			fd = queue_message_fd_r(Q_QUEUE, rq_batch->msgid);
+			mta_batch = imsg->data;
+			fd = queue_message_fd_r(Q_QUEUE, mta_batch->msgid);
 			imsg_compose_event(iev,  IMSG_QUEUE_MESSAGE_FD, 0, 0,
-			    fd, rq_batch, sizeof *rq_batch);
+			    fd, mta_batch, sizeof *mta_batch);
 			return;
 
-		case IMSG_QUEUE_MESSAGE_UPDATE:
+		case IMSG_QUEUE_DELIVERY_OK:
+		case IMSG_QUEUE_DELIVERY_TEMPFAIL:
+		case IMSG_QUEUE_DELIVERY_PERMFAIL:
 		case IMSG_BATCH_DONE:
 			queue_pass_to_runner(iev, imsg);
 			return;
@@ -155,7 +156,9 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 
 	if (iev->proc == PROC_MDA) {
 		switch (imsg->hdr.type) {
-		case IMSG_QUEUE_MESSAGE_UPDATE:
+		case IMSG_QUEUE_DELIVERY_OK:
+		case IMSG_QUEUE_DELIVERY_TEMPFAIL:
+		case IMSG_QUEUE_DELIVERY_PERMFAIL:
 		case IMSG_MDA_SESS_NEW:
 			queue_pass_to_runner(iev, imsg);
 			return;
@@ -282,28 +285,11 @@ queue(void)
 	config_pipes(peers, nitems(peers));
 	config_peers(peers, nitems(peers));
 
-	queue_purge(Q_INCOMING);
-
 	if (event_dispatch() <  0)
 		fatal("event_dispatch");
 	queue_shutdown();
 
 	return (0);
-}
-
-static void
-queue_purge(enum queue_kind qkind)
-{
-	struct qwalk	*q;
-	u_int32_t	 msgid;
-	u_int64_t	 evpid;
-
-	q = qwalk_new(qkind, 0);
-	while (qwalk(q, &evpid)) {
-		msgid = evpid_to_msgid(evpid);
-		queue_message_purge(qkind, msgid);
-	}
-	qwalk_close(q);
 }
 
 void

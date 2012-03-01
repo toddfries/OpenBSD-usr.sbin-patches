@@ -1,4 +1,4 @@
-/*	$OpenBSD: delivery_mbox.c,v 1.1 2011/12/13 21:44:47 gilles Exp $	*/
+/*	$OpenBSD: delivery_mbox.c,v 1.3 2012/02/04 17:11:45 chl Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -22,7 +22,6 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
-#include <db.h>
 #include <ctype.h>
 #include <err.h>
 #include <event.h>
@@ -57,8 +56,8 @@ delivery_mbox_open(struct deliver *deliver)
 	environ_new[0] = "PATH=" _PATH_DEFPATH;
 	environ_new[1] = (char *)NULL;
 	environ = environ_new;
-	execle("/bin/sh", "/bin/sh", "-c", deliver->to, (char *)NULL,
-	    environ_new);
+	execle(PATH_MAILLOCAL, PATH_MAILLOCAL, "-f", deliver->from,
+	    deliver->to, (char *)NULL, environ_new);
 	perror("execle");
 	_exit(1);
 }
