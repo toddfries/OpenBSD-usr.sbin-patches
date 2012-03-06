@@ -169,7 +169,7 @@ struct ctl_relay_event {
 
 	off_t			 splicelen;
 	int			 line;
-	size_t			 toread;
+	off_t			 toread;
 	int			 chunked;
 	int			 done;
 	enum httpmethod		 method;
