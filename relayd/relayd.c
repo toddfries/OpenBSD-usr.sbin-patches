@@ -260,9 +260,6 @@ main(int argc, char *argv[])
 	if (parent_configure(env) == -1)
 		fatalx("configuration failed");
 
-	if (env->sc_flags & F_DEMOTE)
-		carp_demote_reset(env->sc_demote_group, 0);
-
 	init_routes(env);
 
 	event_dispatch();
