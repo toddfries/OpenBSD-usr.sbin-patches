@@ -474,6 +474,9 @@ relay_dns_request(struct rsession *con)
 	if (gettimeofday(&con->se_tv_start, NULL) == -1)
 		return (-1);
 
+	bcopy( &rlay->rl_conf.timeout, &con->se_timeout, sizeof(
+	    con->se_timeout);
+
 	if (rlay->rl_dsttable != NULL) {
 		if (relay_from_table(con) != 0)
 			return (-1);
@@ -508,7 +511,7 @@ relay_dns_request(struct rsession *con)
 	}
 
 	event_again(&con->se_ev, con->se_out.s, EV_TIMEOUT|EV_READ,
-	    relay_udp_response, &con->se_tv_start, &env->sc_timeout, con);
+	    relay_udp_response, &con->se_tv_start, &con->se_timeout, con);
 
 	return (0);
 }
