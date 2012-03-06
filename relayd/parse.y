@@ -2215,7 +2215,6 @@ load_config(const char *filename, struct relayd *x_conf)
 	struct host	*h, *ph;
 
 	conf = x_conf;
-	conf->sc_flags = 0;
 
 	loadcfg = 1;
 	errors = 0;
