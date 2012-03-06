@@ -475,7 +475,7 @@ relay_dns_request(struct rsession *con)
 		return (-1);
 
 	bcopy( &rlay->rl_conf.timeout, &con->se_timeout, sizeof(
-	    con->se_timeout);
+	    con->se_timeout));
 
 	if (rlay->rl_dsttable != NULL) {
 		if (relay_from_table(con) != 0)
