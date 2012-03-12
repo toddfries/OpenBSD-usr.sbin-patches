@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.2 2012/03/02 04:51:21 dlg Exp $
+#	$OpenBSD: Makefile,v 1.4 2012/03/08 03:17:10 dlg Exp $
 
 PROG=	tftpd
 SRCS=	tftpd.c
