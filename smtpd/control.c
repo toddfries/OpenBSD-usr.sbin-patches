@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.60 2011/09/01 19:56:49 eric Exp $	*/
+/*	$OpenBSD: control.c,v 1.64 2012/01/12 18:06:18 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
@@ -64,7 +65,8 @@ void
 control_imsg(struct imsgev *iev, struct imsg *imsg)
 {
 	struct ctl_conn	*c;
-	struct reload	*reload;
+
+	log_imsg(PROC_CONTROL, iev->proc, imsg);
 
 	if (iev->proc == PROC_SMTP) {
 		switch (imsg->hdr.type) {
@@ -78,22 +80,8 @@ control_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	if (iev->proc == PROC_PARENT) {
-		switch (imsg->hdr.type) {
-		case IMSG_CONF_RELOAD:
-			env->sc_flags &= ~SMTPD_CONFIGURING;
-			reload = imsg->data;
-			c = control_connbyfd(reload->fd);
-			if (c == NULL)
-				return;
-			imsg_compose_event(&c->iev,
-			    reload->ret ? IMSG_CTL_OK : IMSG_CTL_FAIL, 0, 0,
-			    -1, NULL, 0);
-			return;
-		}
-	}
-
-	fatalx("control_imsg: unexpected imsg");
+	errx(1, "control_imsg: unexpected %s imsg",
+	    imsg_to_str(imsg->hdr.type));
 }
 
 void
@@ -396,7 +384,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		}
-		case IMSG_QUEUE_PAUSE_LOCAL:
+		case IMSG_QUEUE_PAUSE_MDA:
 			if (euid)
 				goto badcred;
 
@@ -407,10 +395,10 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags |= SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_PAUSE_MDA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_PAUSE_OUTGOING:
+		case IMSG_QUEUE_PAUSE_MTA:
 			if (euid)
 				goto badcred;
 
@@ -421,7 +409,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags |= SMTPD_MTA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_PAUSE_OUTGOING, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_PAUSE_MTA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_PAUSE:
@@ -438,7 +426,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			    0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_RESUME_LOCAL:
+		case IMSG_QUEUE_RESUME_MDA:
 			if (euid)
 				goto badcred;
 
@@ -449,10 +437,10 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags &= ~SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_RESUME_MDA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_RESUME_OUTGOING:
+		case IMSG_QUEUE_RESUME_MTA:
 			if (euid)
 				goto badcred;
 
@@ -463,7 +451,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags &= ~SMTPD_MTA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_RESUME_OUTGOING, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_RESUME_MTA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 
@@ -513,7 +501,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 		}
 		default:
 			log_debug("control_dispatch_ext: "
-			    "error handling imsg %d", imsg.hdr.type);
+			    "error handling %s imsg",
+			    imsg_to_str(imsg.hdr.type));
 			break;
 		}
 		imsg_free(&imsg);

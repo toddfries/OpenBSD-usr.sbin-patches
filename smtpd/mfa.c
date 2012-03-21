@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.61 2011/08/31 18:56:30 gilles Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.67 2012/01/18 13:41:54 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,6 +24,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <imsg.h>
@@ -40,11 +41,15 @@
 static void mfa_imsg(struct imsgev *, struct imsg *);
 static void mfa_shutdown(void);
 static void mfa_sig_handler(int, short, void *);
+static void mfa_test_connect(struct envelope *);
 static void mfa_test_helo(struct envelope *);
 static void mfa_test_mail(struct envelope *);
 static void mfa_test_rcpt(struct envelope *);
 static void mfa_test_rcpt_resume(struct submit_status *);
 static void mfa_test_dataline(struct submit_status *);
+static void mfa_test_quit(struct envelope *);
+static void mfa_test_close(struct envelope *);
+static void mfa_test_rset(struct envelope *);
 static int mfa_strip_source_route(char *, size_t);
 static int mfa_fork_filter(struct filter *);
 void mfa_session(struct submit_status *, enum session_state);
@@ -54,8 +59,13 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 {
 	struct filter *filter;
 
+	log_imsg(PROC_MFA, iev->proc, imsg);
+
 	if (iev->proc == PROC_SMTP) {
 		switch (imsg->hdr.type) {
+		case IMSG_MFA_CONNECT:
+			mfa_test_connect(imsg->data);
+			return;
 		case IMSG_MFA_HELO:
 			mfa_test_helo(imsg->data);
 			return;
@@ -67,6 +77,15 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 			return;
 		case IMSG_MFA_DATALINE:
 			mfa_test_dataline(imsg->data);
+			return;
+		case IMSG_MFA_QUIT:
+			mfa_test_quit(imsg->data);
+			return;
+		case IMSG_MFA_CLOSE:
+			mfa_test_close(imsg->data);
+			return;
+		case IMSG_MFA_RSET:
+			mfa_test_rset(imsg->data);
 			return;
 		}
 	}
@@ -117,7 +136,7 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	fatalx("mfa_imsg: unexpected imsg");
+	errx(1, "mfa_imsg: unexpected %s imsg", imsg_to_str(imsg->hdr.type));
 }
 
 static void
@@ -224,6 +243,18 @@ mfa(void)
 }
 
 static void
+mfa_test_connect(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_CONNECTED);
+}
+
+static void
 mfa_test_helo(struct envelope *e)
 {
 	struct submit_status	 ss;
@@ -233,7 +264,6 @@ mfa_test_helo(struct envelope *e)
 	ss.envelope = *e;
 
 	mfa_session(&ss, S_HELO);
-	return;
 }
 
 static void
@@ -243,7 +273,7 @@ mfa_test_mail(struct envelope *e)
 
 	ss.id = e->session_id;
 	ss.code = 530;
-	ss.u.maddr = e->delivery.from;
+	ss.u.maddr = e->sender;
 
 	if (mfa_strip_source_route(ss.u.maddr.user, sizeof(ss.u.maddr.user)))
 		goto refuse;
@@ -273,11 +303,11 @@ mfa_test_rcpt(struct envelope *e)
 
 	ss.id = e->session_id;
 	ss.code = 530;
-	ss.u.maddr = e->delivery.rcpt_orig;
-	ss.ss = e->delivery.ss;
+	ss.u.maddr = e->rcpt;
+	ss.ss = e->ss;
 	ss.envelope = *e;
-	ss.envelope.delivery.rcpt = e->delivery.rcpt_orig;
-	ss.flags = e->delivery.flags;
+	ss.envelope.dest = e->rcpt;
+	ss.flags = e->flags;
 
 	mfa_strip_source_route(ss.u.maddr.user, sizeof(ss.u.maddr.user));
 	
@@ -294,15 +324,16 @@ refuse:
 }
 
 static void
-mfa_test_rcpt_resume(struct submit_status *ss) {
+mfa_test_rcpt_resume(struct submit_status *ss)
+{
 	if (ss->code != 250) {
 		imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, ss,
 		    sizeof(*ss));
 		return;
 	}
 
-	ss->envelope.delivery.rcpt = ss->u.maddr;
-	ss->envelope.delivery.expire = ss->envelope.rule.r_qexpire;
+	ss->envelope.dest = ss->u.maddr;
+	ss->envelope.expire = ss->envelope.rule.r_qexpire;
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RCPT, 0, 0, -1,
 	    ss, sizeof(*ss));
 }
@@ -313,6 +344,42 @@ mfa_test_dataline(struct submit_status *ss)
 	ss->code = 250;
 
 	mfa_session(ss, S_DATACONTENT);
+}
+
+static void
+mfa_test_quit(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_QUIT);
+}
+
+static void
+mfa_test_close(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_CLOSE);
+}
+
+static void
+mfa_test_rset(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_RSET);
 }
 
 static int
@@ -352,9 +419,10 @@ mfa_fork_filter(struct filter *filter)
 
 	if (pid == 0) {
 		/* filter */
-		dup2(sockpair[0], 0);
+		dup2(sockpair[0], STDIN_FILENO);
 		
-		closefrom(3);
+		if (closefrom(STDERR_FILENO + 1) < 0)
+			exit(1);
 
 		execl(filter->path, filter->name, NULL);
 		exit(1);

@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) Igor Sysoev
+ * Copyright (C) Nginx, Inc.
  */
 
 
@@ -48,6 +49,7 @@ sig_atomic_t  ngx_reopen;
 sig_atomic_t  ngx_change_binary;
 ngx_pid_t     ngx_new_binary;
 ngx_uint_t    ngx_inherited;
+ngx_uint_t    ngx_chrooted = 1;
 ngx_uint_t    ngx_daemonized;
 
 sig_atomic_t  ngx_noaccept;
@@ -620,7 +622,8 @@ ngx_reap_children(ngx_cycle_t *cycle)
                     == NGX_INVALID_PID)
                 {
                     ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
-                                  "can not respawn %s", ngx_processes[i].name);
+                                  "could not respawn %s",
+                                  ngx_processes[i].name);
                     continue;
                 }
 
@@ -888,6 +891,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_uint_t priority)
 #endif
 
     if (geteuid() == 0) {
+        if (!ngx_chrooted) {
+            goto nochroot;
+        }
+
 	if ((pw = getpwnam(ccf->username)) == NULL) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                           "getpwnam(%s) failed", ccf->username);
@@ -922,7 +929,8 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_uint_t priority)
             /* fatal */
             exit(2);
 	}
-	
+
+nochroot:
         if (setgid(ccf->group) == -1) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                           "setgid(%d) failed", ccf->group);
@@ -950,7 +958,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_uint_t priority)
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "sched_setaffinity(0x%08Xl)", cpu_affinity);
 
-        if (sched_setaffinity(0, 32, (cpu_set_t *) &cpu_affinity) == -1) {
+        if (sched_setaffinity(0, sizeof(cpu_affinity),
+                               (cpu_set_t *) &cpu_affinity)
+             == -1)
+        {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           "sched_setaffinity(0x%08Xl) failed", cpu_affinity);
         }

@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) Igor Sysoev
+ * Copyright (C) Nginx, Inc.
  */
 
 
@@ -690,12 +691,12 @@ ngx_http_log_escape(u_char *dst, u_char *src, size_t size)
         0x10000000, /* 0001 0000 0000 0000  0000 0000 0000 0000 */
 
                     /*  ~}| {zyx wvut srqp  onml kjih gfed cba` */
-        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */
+        0x80000000, /* 1000 0000 0000 0000  0000 0000 0000 0000 */
 
-        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */
-        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */
-        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */
-        0x00000000, /* 0000 0000 0000 0000  0000 0000 0000 0000 */
+        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */
+        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */
+        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */
+        0xffffffff, /* 1111 1111 1111 1111  1111 1111 1111 1111 */
     };
 
 
@@ -960,7 +961,7 @@ buffer:
 
         if (log->script) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "buffered logs can not have variables in name");
+                               "buffered logs cannot have variables in name");
             return NGX_CONF_ERROR;
         }
 
@@ -1054,25 +1055,6 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
     value = args->elts;
 
     for ( /* void */ ; s < args->nelts; s++) {
-
-        for (i = 0; i < value[s].len; i++) {
-            if (value[s].data[i] != '%') {
-                continue;
-            }
-
-            ch = value[s].data[i + 1];
-
-            if ((ch >= 'A' && ch <= 'Z')
-                 || (ch >= 'a' && ch <= 'z')
-                 || ch == '{')
-            {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                     "the parameters in the \"%%name\" form are not supported, "
-                     "use the \"$variable\" instead");
-
-                return NGX_CONF_ERROR;
-            }
-        }
 
         i = 0;
 

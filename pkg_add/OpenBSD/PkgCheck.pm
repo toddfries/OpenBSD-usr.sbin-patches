@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCheck.pm,v 1.30 2011/07/17 09:56:12 espie Exp $
+# $OpenBSD: PkgCheck.pm,v 1.33 2012/01/07 16:28:16 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -141,7 +141,9 @@ sub basic_check
 	my ($self, $state) = @_;
 	$self->SUPER::basic_check($state);
 	my $name = $state->{destdir}.$self->fullname;
-	$state->{known}{$name}{'whatis.db'} = 1;
+	for my $file (OpenBSD::Paths::man_cruft()) {
+		$state->{known}{$name}{$file} = 1;
+	}
 }
 
 package OpenBSD::PackingElement::Fontdir;
@@ -518,7 +520,7 @@ sub sanity_check
 			    $state->safe($name));
 			$self->may_remove($state, $name);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 		$state->{exists}{$plist->pkgname} = 1;
 	});
 }
@@ -575,7 +577,7 @@ sub package_files_check
 		} else {
 			$plist->thorough_check($state);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 	});
 }
 
@@ -584,7 +586,9 @@ sub localbase_check
 	my ($self, $state) = @_;
 	$state->{known} //= {};
 	my $base = $state->{destdir}.OpenBSD::Paths->localbase;
-	$state->{known}{$base."/man"}{'whatis.db'} = 1;
+	for my $file (OpenBSD::Paths::man_cruft()) {
+		$state->{known}{$base."/man"}{$file} = 1;
+	}
 	$state->{known}{$base."/info"}{'dir'} = 1;
 	$state->{known}{$base."/lib/X11"}{'app-defaults'} = 1;
 	$state->{known}{$base."/libdata"} = {};

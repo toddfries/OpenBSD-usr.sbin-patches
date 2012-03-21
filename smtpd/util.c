@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.47 2011/05/17 18:54:32 gilles Exp $	*/
+/*	$OpenBSD: util.c,v 1.57 2012/01/28 16:54:10 gilles Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <imsg.h>
 #include <libgen.h>
 #include <netdb.h>
@@ -64,6 +65,149 @@ bsnprintf(char *str, size_t size, const char *format, ...)
 
 	return 1;
 }
+
+int
+ckdir(const char *path, mode_t mode, uid_t owner, gid_t group, int create)
+{
+	char		mode_str[12];
+	int		ret;
+	struct stat	sb;
+
+	if (stat(path, &sb) == -1) {
+		if (errno != ENOENT || create == 0) {
+			warn("stat: %s", path);
+			return (0);
+		}
+
+		/* chmod is deferred to avoid umask effect */
+		if (mkdir(path, 0) == -1) {
+			warn("mkdir: %s", path);
+			return (0);
+		}
+
+		if (chown(path, owner, group) == -1) {
+			warn("chown: %s", path);
+			return (0);
+		}
+
+		if (chmod(path, mode) == -1) {
+			warn("chmod: %s", path);
+			return (0);
+		}
+
+		if (stat(path, &sb) == -1) {
+			warn("stat: %s", path);
+			return (0);
+		}
+	}
+
+	ret = 1;
+
+	/* check if it's a directory */
+	if (!S_ISDIR(sb.st_mode)) {
+		ret = 0;
+		warnx("%s is not a directory", path);
+	}
+
+	/* check that it is owned by owner/group */
+	if (sb.st_uid != owner) {
+		ret = 0;
+		warnx("%s is not owned by uid %d", path, owner);
+	}
+	if (sb.st_gid != group) {
+		ret = 0;
+		warnx("%s is not owned by gid %d", path, group);
+	}
+
+	/* check permission */
+	if ((sb.st_mode & 07777) != mode) {
+		ret = 0;
+		strmode(mode, mode_str);
+		mode_str[10] = '\0';
+		warnx("%s must be %s (%o)", path, mode_str + 1, mode);
+	}
+
+	return ret;
+}
+
+int
+rmtree(char *path, int keepdir)
+{
+	char		*path_argv[2];
+	FTS		*fts;
+	FTSENT		*e;
+	int		 ret, depth;
+
+	path_argv[0] = path;
+	path_argv[1] = NULL;
+	ret = 0;
+	depth = 1;
+
+	if ((fts = fts_open(path_argv, FTS_PHYSICAL, NULL)) == NULL) {
+		warn("fts_open: %s", path);
+		return (-1);
+	}
+
+	while ((e = fts_read(fts)) != NULL) {
+		if (e->fts_number) {
+			depth--;
+			if (keepdir && e->fts_number == 1)
+				continue;
+			if (rmdir(e->fts_path) == -1) {
+				warn("rmdir: %s", e->fts_path);
+				ret = -1;
+			}
+			continue;
+		}
+
+		if (S_ISDIR(e->fts_statp->st_mode)) {
+			e->fts_number = depth++;
+			continue;
+		}
+
+		if (unlink(e->fts_path) == -1) {
+			warn("unlink: %s", e->fts_path);
+			ret = -1;
+		}
+	}
+
+	fts_close(fts);
+
+	return (ret);
+}
+
+int
+mvpurge(char *from, char *to)
+{
+	size_t		 n;
+	int		 retry;
+	const char	*sep;
+	char		 buf[MAXPATHLEN];
+
+	if ((n = strlen(to)) == 0)
+		fatalx("to is empty");
+
+	sep = (to[n - 1] == '/') ? "" : "/";
+	retry = 0;
+
+    again:
+	snprintf(buf, sizeof buf, "%s%s%u", to, sep, arc4random());
+	if (rename(from, buf) == -1) {
+		/* ENOTDIR has actually 2 meanings, and incorrect input
+		 * could lead to an infinite loop. Consider that after
+		 * 20 tries something is hopelessly wrong.
+		 */
+		if (errno == ENOTEMPTY || errno == EISDIR || errno == ENOTDIR) {
+			if ((retry++) >= 20)
+				return (-1);
+			goto again;
+		}
+		return -1;
+	}
+
+	return 0;
+}
+
 
 /* Close file, signifying temporary error condition (if any) to the caller. */
 int
@@ -345,31 +489,6 @@ lowercase(char *buf, char *s, size_t len)
 }
 
 void
-envelope_set_errormsg(struct envelope *e, char *fmt, ...)
-{
-	int ret;
-	va_list ap;
-
-	va_start(ap, fmt);
-
-	ret = vsnprintf(e->delivery.errorline, MAX_LINE_SIZE, fmt, ap);
-	if (ret >= MAX_LINE_SIZE)
-		strlcpy(e->delivery.errorline + (MAX_LINE_SIZE - 4), "...", 4);
-
-	/* this should not happen */
-	if (ret == -1)
-		err(1, "vsnprintf");
-
-	va_end(ap);
-}
-
-char *
-envelope_get_errormsg(struct envelope *e)
-{
-	return e->delivery.errorline;
-}
-
-void
 sa_set_port(struct sockaddr *sa, int port)
 {
 	char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
@@ -515,38 +634,6 @@ log_sockaddr(struct sockaddr *sa)
 }
 
 u_int32_t
-filename_to_msgid(char *filename)
-{
-	u_int32_t ulval;
-	char *ep;
-
-	errno = 0;
-	ulval = strtoul(filename, &ep, 16);
-	if (filename[0] == '\0' || *ep != '\0')
-		return 0;
-	if (errno == ERANGE && ulval == 0xffffffff)
-		return 0;
-
-	return ulval;
-}
-
-u_int64_t
-filename_to_evpid(char *filename)
-{
-	u_int64_t ullval;
-	char *ep;
-
-	errno = 0;
-	ullval = strtoull(filename, &ep, 16);
-	if (filename[0] == '\0' || *ep != '\0')
-		return 0;
-	if (errno == ERANGE && ullval == ULLONG_MAX)
-		return 0;
-
-	return ullval;
-}
-
-u_int32_t
 evpid_to_msgid(u_int64_t evpid)
 {
 	return (evpid >> 32);
@@ -556,4 +643,38 @@ u_int64_t
 msgid_to_evpid(u_int32_t msgid)
 {
 	return ((u_int64_t)msgid << 32);
+}
+
+const char *
+parse_smtp_response(char *line, size_t len, char **msg, int *cont)
+{
+	size_t	 i;
+
+	if (len >= SMTP_LINE_MAX)
+		return "line too long";
+
+	if (len > 3) {
+		if (msg)
+			*msg = line + 4;
+		if (cont)
+			*cont = (line[3] == '-');
+	} else if (len == 3) {
+		if (msg)
+			*msg = line + 3;
+		if (cont)
+			*cont = 0;
+	} else
+		return "line too short";
+
+	/* validate reply code */
+	if (line[0] < '2' || line[0] > '5' || !isdigit(line[1]) ||
+	    !isdigit(line[2]))
+		return "reply code out of range";
+
+	/* validate reply message */
+	for (i = 0; i < len; i++)
+		if (!isprint(line[i]))
+			return "non-printable character in reply";
+
+	return NULL;
 }

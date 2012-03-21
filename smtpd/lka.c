@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.127 2011/05/16 21:05:51 gilles Exp $	*/
+/*	$OpenBSD: lka.c,v 1.131 2011/11/14 19:23:41 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -27,6 +27,7 @@
 #include <netinet/in.h>
 
 #include <ctype.h>
+#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <imsg.h>
@@ -61,6 +62,8 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 	struct map		*map;
 	void			*tmp;
 
+	log_imsg(PROC_LKA, iev->proc, imsg);
+
 	if (imsg->hdr.type == IMSG_DNS_HOST || imsg->hdr.type == IMSG_DNS_MX ||
 	    imsg->hdr.type == IMSG_DNS_PTR) {
 		dns_async(iev, imsg->hdr.type, imsg->data);
@@ -90,9 +93,9 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 				ss->code = 250;
 				ss->envelope.rule = *rule;
 				if (IS_RELAY(*rule))
-					ss->envelope.delivery.type = D_MTA;
+					ss->envelope.type = D_MTA;
 				else
-					ss->envelope.delivery.type = D_MDA;
+					ss->envelope.type = D_MDA;
 			}
 			imsg_compose_event(iev, IMSG_LKA_RULEMATCH, 0, 0, -1,
 			    ss, sizeof *ss);
@@ -110,7 +113,7 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 			struct map_secret *map_secret;
 
 			secret = imsg->data;
-			map = map_find(secret->secmapid);
+			map = map_findbyname(secret->mapname);
 			if (map == NULL)
 				fatalx("lka: secrets map not found");
 			map_secret = map_lookup(map->m_id, secret->host, K_SECRET);
@@ -199,7 +202,7 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	fatalx("lka_imsg: unexpected imsg");
+	errx(1, "lka_imsg: unexpected %s imsg", imsg_to_str(imsg->hdr.type));
 }
 
 static void

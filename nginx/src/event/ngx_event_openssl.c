@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) Igor Sysoev
+ * Copyright (C) Nginx, Inc.
  */
 
 
@@ -26,8 +27,7 @@ static void ngx_ssl_connection_error(ngx_connection_t *c, int sslerr,
     ngx_err_t err, char *text);
 static void ngx_ssl_clear_error(ngx_log_t *log);
 
-static ngx_int_t ngx_ssl_session_cache_init(ngx_shm_zone_t *shm_zone,
-    void *data);
+ngx_int_t ngx_ssl_session_cache_init(ngx_shm_zone_t *shm_zone, void *data);
 static int ngx_ssl_new_session(ngx_ssl_conn_t *ssl_conn,
     ngx_ssl_session_t *sess);
 static ngx_ssl_session_t *ngx_ssl_get_cached_session(ngx_ssl_conn_t *ssl_conn,
@@ -79,18 +79,6 @@ ngx_module_t  ngx_openssl_module = {
 };
 
 
-static long  ngx_ssl_protocols[] = {
-    SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3|SSL_OP_NO_TLSv1,
-    SSL_OP_NO_SSLv3|SSL_OP_NO_TLSv1,
-    SSL_OP_NO_SSLv2|SSL_OP_NO_TLSv1,
-    SSL_OP_NO_TLSv1,
-    SSL_OP_NO_SSLv2|SSL_OP_NO_SSLv3,
-    SSL_OP_NO_SSLv3,
-    SSL_OP_NO_SSLv2,
-    0,
-};
-
-
 int  ngx_ssl_connection_index;
 int  ngx_ssl_server_conf_index;
 int  ngx_ssl_session_cache_index;
@@ -103,8 +91,6 @@ ngx_ssl_init(ngx_log_t *log)
 
     SSL_library_init();
     SSL_load_error_strings();
-
-    ENGINE_load_builtin_engines();
 
     OpenSSL_add_all_algorithms();
 
@@ -172,9 +158,33 @@ ngx_ssl_create(ngx_ssl_t *ssl, ngx_uint_t protocols, void *data)
 
     SSL_CTX_set_options(ssl->ctx, SSL_OP_SINGLE_DH_USE);
 
-    if (ngx_ssl_protocols[protocols >> 1] != 0) {
-        SSL_CTX_set_options(ssl->ctx, ngx_ssl_protocols[protocols >> 1]);
+    if (!(protocols & NGX_SSL_SSLv2)) {
+        SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_SSLv2);
     }
+    if (!(protocols & NGX_SSL_SSLv3)) {
+        SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_SSLv3);
+    }
+    if (!(protocols & NGX_SSL_TLSv1)) {
+        SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_TLSv1);
+    }
+#ifdef SSL_OP_NO_TLSv1_1
+    if (!(protocols & NGX_SSL_TLSv1_1)) {
+        SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_TLSv1_1);
+    }
+#endif
+#ifdef SSL_OP_NO_TLSv1_2
+    if (!(protocols & NGX_SSL_TLSv1_2)) {
+        SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_TLSv1_2);
+    }
+#endif
+
+#ifdef SSL_OP_NO_COMPRESSION
+    SSL_CTX_set_options(ssl->ctx, SSL_OP_NO_COMPRESSION);
+#endif
+
+#ifdef SSL_MODE_RELEASE_BUFFERS
+    SSL_CTX_set_mode(ssl->ctx, SSL_MODE_RELEASE_BUFFERS);
+#endif
 
     SSL_CTX_set_read_ahead(ssl->ctx, 1);
 
@@ -856,6 +866,13 @@ ngx_ssl_handle_recv(ngx_connection_t *c, int n)
 
         ngx_log_error(NGX_LOG_NOTICE, c->log, 0, "SSL renegotiation disabled");
 
+        while (ERR_peek_error()) {
+            ngx_ssl_error(NGX_LOG_DEBUG, c->log, 0,
+                          "ignoring stale global SSL error");
+        }
+
+        ERR_clear_error();
+
         c->ssl->no_wait_shutdown = 1;
         c->ssl->no_send_shutdown = 1;
 
@@ -1206,6 +1223,7 @@ ngx_ssl_shutdown(ngx_connection_t *c)
 
     if (c->timedout) {
         mode = SSL_RECEIVED_SHUTDOWN|SSL_SENT_SHUTDOWN;
+        SSL_set_quiet_shutdown(c->ssl->connection, 1);
 
     } else {
         mode = SSL_get_shutdown(c->ssl->connection);
@@ -1216,6 +1234,10 @@ ngx_ssl_shutdown(ngx_connection_t *c)
 
         if (c->ssl->no_send_shutdown) {
             mode |= SSL_SENT_SHUTDOWN;
+        }
+
+        if (c->ssl->no_wait_shutdown && c->ssl->no_send_shutdown) {
+            SSL_set_quiet_shutdown(c->ssl->connection, 1);
         }
     }
 
@@ -1340,19 +1362,37 @@ ngx_ssl_connection_error(ngx_connection_t *c, int sslerr, ngx_err_t err,
         n = ERR_GET_REASON(ERR_peek_error());
 
             /* handshake failures */
-        if (n == SSL_R_BLOCK_CIPHER_PAD_IS_WRONG                     /*  129 */
+        if (n == SSL_R_BAD_CHANGE_CIPHER_SPEC                        /*  103 */
+            || n == SSL_R_BLOCK_CIPHER_PAD_IS_WRONG                  /*  129 */
             || n == SSL_R_DIGEST_CHECK_FAILED                        /*  149 */
+            || n == SSL_R_ERROR_IN_RECEIVED_CIPHER_LIST              /*  151 */
+            || n == SSL_R_EXCESSIVE_MESSAGE_SIZE                     /*  152 */
             || n == SSL_R_LENGTH_MISMATCH                            /*  159 */
             || n == SSL_R_NO_CIPHERS_PASSED                          /*  182 */
             || n == SSL_R_NO_CIPHERS_SPECIFIED                       /*  183 */
+            || n == SSL_R_NO_COMPRESSION_SPECIFIED                   /*  187 */
             || n == SSL_R_NO_SHARED_CIPHER                           /*  193 */
             || n == SSL_R_RECORD_LENGTH_MISMATCH                     /*  213 */
+#ifdef SSL_R_PARSE_TLSEXT
+            || n == SSL_R_PARSE_TLSEXT                               /*  227 */
+#endif
             || n == SSL_R_UNEXPECTED_MESSAGE                         /*  244 */
             || n == SSL_R_UNEXPECTED_RECORD                          /*  245 */
             || n == SSL_R_UNKNOWN_ALERT_TYPE                         /*  246 */
             || n == SSL_R_UNKNOWN_PROTOCOL                           /*  252 */
             || n == SSL_R_WRONG_VERSION_NUMBER                       /*  267 */
             || n == SSL_R_DECRYPTION_FAILED_OR_BAD_RECORD_MAC        /*  281 */
+#ifdef SSL_R_RENEGOTIATE_EXT_TOO_LONG
+            || n == SSL_R_RENEGOTIATE_EXT_TOO_LONG                   /*  335 */
+            || n == SSL_R_RENEGOTIATION_ENCODING_ERR                 /*  336 */
+            || n == SSL_R_RENEGOTIATION_MISMATCH                     /*  337 */
+#endif
+#ifdef SSL_R_UNSAFE_LEGACY_RENEGOTIATION_DISABLED
+            || n == SSL_R_UNSAFE_LEGACY_RENEGOTIATION_DISABLED       /*  338 */
+#endif
+#ifdef SSL_R_SCSV_RECEIVED_WHEN_RENEGOTIATING
+            || n == SSL_R_SCSV_RECEIVED_WHEN_RENEGOTIATING           /*  345 */
+#endif
             || n == 1000 /* SSL_R_SSLV3_ALERT_CLOSE_NOTIFY */
             || n == SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE             /* 1010 */
             || n == SSL_R_SSLV3_ALERT_BAD_RECORD_MAC                 /* 1020 */
@@ -1505,8 +1545,6 @@ ngx_ssl_session_cache(ngx_ssl_t *ssl, ngx_str_t *sess_ctx,
     SSL_CTX_set_timeout(ssl->ctx, (long) timeout);
 
     if (shm_zone) {
-        shm_zone->init = ngx_ssl_session_cache_init;
-
         SSL_CTX_sess_set_new_cb(ssl->ctx, ngx_ssl_new_session);
         SSL_CTX_sess_set_get_cb(ssl->ctx, ngx_ssl_get_cached_session);
         SSL_CTX_sess_set_remove_cb(ssl->ctx, ngx_ssl_remove_session);
@@ -1524,7 +1562,7 @@ ngx_ssl_session_cache(ngx_ssl_t *ssl, ngx_str_t *sess_ctx,
 }
 
 
-static ngx_int_t
+ngx_int_t
 ngx_ssl_session_cache_init(ngx_shm_zone_t *shm_zone, void *data)
 {
     size_t                    len;

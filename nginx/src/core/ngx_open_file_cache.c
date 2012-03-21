@@ -1,6 +1,7 @@
 
 /*
  * Copyright (C) Igor Sysoev
+ * Copyright (C) Nginx, Inc.
  */
 
 
@@ -284,13 +285,13 @@ ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
 
             if (of->uniq == file->uniq) {
 
-                file->count++;
-
                 if (file->event) {
                     file->use_event = 1;
                 }
 
-                goto renew;
+                of->is_directio = file->is_directio;
+
+                goto update;
             }
 
             /* file was changed */
@@ -393,8 +394,6 @@ update:
             file->count++;
         }
     }
-
-renew:
 
     file->created = now;
 

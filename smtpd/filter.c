@@ -1,4 +1,4 @@
-/*	$OpenBSD: filter.c,v 1.2 2011/08/31 18:56:30 gilles Exp $	*/
+/*	$OpenBSD: filter.c,v 1.6 2012/01/18 13:41:54 chl Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -35,20 +35,33 @@ static struct filter_internals {
 	struct event	ev;
 	struct imsgbuf	ibuf;
 
-	int (*helo_cb)(u_int64_t, struct filter_helo *, void *);
+	enum filter_status (*connect_cb)(u_int64_t, struct filter_connect *, void *);
+	void *connect_cb_arg;
+
+	enum filter_status (*helo_cb)(u_int64_t, struct filter_helo *, void *);
 	void *helo_cb_arg;
 
-	int (*ehlo_cb)(u_int64_t, struct filter_helo *, void *);
+	enum filter_status (*ehlo_cb)(u_int64_t, struct filter_helo *, void *);
 	void *ehlo_cb_arg;
 
-	int (*mail_cb)(u_int64_t, struct filter_mail *, void *);
+	enum filter_status (*mail_cb)(u_int64_t, struct filter_mail *, void *);
 	void *mail_cb_arg;
 
-	int (*rcpt_cb)(u_int64_t, struct filter_rcpt *, void *);
+	enum filter_status (*rcpt_cb)(u_int64_t, struct filter_rcpt *, void *);
 	void *rcpt_cb_arg;
 
-	int (*dataline_cb)(u_int64_t, struct filter_dataline *, void *);
+	enum filter_status (*dataline_cb)(u_int64_t, struct filter_dataline *, void *);
 	void *dataline_cb_arg;
+
+	enum filter_status (*quit_cb)(u_int64_t, void *);
+	void *quit_cb_arg;
+
+	enum filter_status (*close_cb)(u_int64_t, void *);
+	void *close_cb_arg;
+
+	enum filter_status (*rset_cb)(u_int64_t, void *);
+	void *rset_cb_arg;
+
 } fi;
 
 static void filter_handler(int, short, void *);
@@ -74,39 +87,68 @@ filter_loop(void)
 }
 
 void
-filter_register_helo_callback(int (*cb)(u_int64_t, struct filter_helo *, void *), void *cb_arg)
+filter_register_connect_callback(enum filter_status (*cb)(u_int64_t, struct filter_connect *, void *), void *cb_arg)
+{
+	filter_register_callback(FILTER_CONNECT, cb, cb_arg);
+}
+
+void
+filter_register_helo_callback(enum filter_status (*cb)(u_int64_t, struct filter_helo *, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_HELO, cb, cb_arg);
 }
 
 void
-filter_register_ehlo_callback(int (*cb)(u_int64_t, struct filter_helo *, void *), void *cb_arg)
+filter_register_ehlo_callback(enum filter_status (*cb)(u_int64_t, struct filter_helo *, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_EHLO, cb, cb_arg);
 }
 
 void
-filter_register_mail_callback(int (*cb)(u_int64_t, struct filter_mail *, void *), void *cb_arg)
+filter_register_mail_callback(enum filter_status (*cb)(u_int64_t, struct filter_mail *, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_MAIL, cb, cb_arg);
 }
 
 void
-filter_register_rcpt_callback(int (*cb)(u_int64_t, struct filter_rcpt *, void *), void *cb_arg)
+filter_register_rcpt_callback(enum filter_status (*cb)(u_int64_t, struct filter_rcpt *, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_RCPT, cb, cb_arg);
 }
 
 void
-filter_register_dataline_callback(int (*cb)(u_int64_t, struct filter_dataline *, void *), void *cb_arg)
+filter_register_dataline_callback(enum filter_status (*cb)(u_int64_t, struct filter_dataline *, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_DATALINE, cb, cb_arg);
+}
+
+void
+filter_register_quit_callback(enum filter_status (*cb)(u_int64_t, void *), void *cb_arg)
+{
+	filter_register_callback(FILTER_QUIT, cb, cb_arg);
+}
+
+void
+filter_register_close_callback(enum filter_status (*cb)(u_int64_t, void *), void *cb_arg)
+{
+	filter_register_callback(FILTER_CLOSE, cb, cb_arg);
+}
+
+void
+filter_register_rset_callback(enum filter_status (*cb)(u_int64_t, void *), void *cb_arg)
+{
+	filter_register_callback(FILTER_RSET, cb, cb_arg);
 }
 
 static void
 filter_register_callback(enum filter_type type, void *cb, void *cb_arg)
 {
 	switch (type) {
+	case FILTER_CONNECT:
+		fi.connect_cb = cb;
+		fi.connect_cb_arg = cb_arg;
+		break;
+
 	case FILTER_HELO:
 		fi.helo_cb = cb;
 		fi.helo_cb_arg = cb_arg;
@@ -131,6 +173,24 @@ filter_register_callback(enum filter_type type, void *cb, void *cb_arg)
 		fi.dataline_cb = cb;
 		fi.dataline_cb_arg = cb_arg;
 		break;
+
+	case FILTER_QUIT:
+		fi.quit_cb = cb;
+		fi.quit_cb_arg = cb_arg;
+		break;
+
+	case FILTER_CLOSE:
+		fi.close_cb = cb;
+		fi.close_cb_arg = cb_arg;
+		break;
+
+	case FILTER_RSET:
+		fi.rset_cb = cb;
+		fi.rset_cb_arg = cb_arg;
+		break;
+
+	default:
+		errx(1, "filter_register_callback: unknown filter type");
 	}
 }
 
@@ -140,6 +200,7 @@ filter_handler(int fd, short event, void *p)
 	struct imsg		imsg;
 	ssize_t			n;
 	short			evflags = EV_READ;
+	enum filter_status	ret;
 	struct filter_msg	fm;
 
 	if (event & EV_READ) {
@@ -176,45 +237,75 @@ filter_handler(int fd, short event, void *p)
 			errx(1, "API version mismatch");
 
 		switch (imsg.hdr.type) {
+		case FILTER_CONNECT:
+			if (fi.connect_cb == NULL)
+				goto ignore;
+			ret = fi.connect_cb(fm.cl_id, &fm.u.connect,
+			    fi.connect_cb_arg);
+			break;
 		case FILTER_HELO:
 			if (fi.helo_cb == NULL)
 				goto ignore;
-			fm.code = fi.helo_cb(fm.cl_id, &fm.u.helo,
+			ret = fi.helo_cb(fm.cl_id, &fm.u.helo,
 			    fi.helo_cb_arg);
 			break;
 		case FILTER_EHLO:
 			if (fi.ehlo_cb == NULL)
 				goto ignore;
-			fm.code = fi.ehlo_cb(fm.cl_id, &fm.u.helo,
+			ret = fi.ehlo_cb(fm.cl_id, &fm.u.helo,
 			    fi.ehlo_cb_arg);
 			break;
 		case FILTER_MAIL:
 			if (fi.mail_cb == NULL)
 				goto ignore;
-			fm.code = fi.mail_cb(fm.cl_id, &fm.u.mail,
+			ret = fi.mail_cb(fm.cl_id, &fm.u.mail,
 			    fi.mail_cb_arg);
 			break;
 		case FILTER_RCPT:
 			if (fi.rcpt_cb == NULL)
 				goto ignore;
-			fm.code = fi.rcpt_cb(fm.cl_id, &fm.u.rcpt,
+			ret = fi.rcpt_cb(fm.cl_id, &fm.u.rcpt,
 			    fi.rcpt_cb_arg);
 			break;
 		case FILTER_DATALINE:
 			if (fi.dataline_cb == NULL)
 				goto ignore;
-			fm.code = fi.dataline_cb(fm.cl_id, &fm.u.dataline,
+			ret = fi.dataline_cb(fm.cl_id, &fm.u.dataline,
 			    fi.dataline_cb_arg);
 			break;
+		case FILTER_QUIT:
+			if (fi.quit_cb == NULL)
+				goto ignore;
+			ret = fi.quit_cb(fm.cl_id, fi.quit_cb_arg);
+			break;
+		case FILTER_CLOSE:
+			if (fi.close_cb == NULL)
+				goto ignore;
+			ret = fi.close_cb(fm.cl_id, fi.close_cb_arg);
+			break;
+		case FILTER_RSET:
+			if (fi.rset_cb == NULL)
+				goto ignore;
+			ret = fi.rset_cb(fm.cl_id, fi.rset_cb_arg);
+ 			break;
+
 		default:
 			errx(1, "unsupported imsg");
 		}
 
-		if (! fm.code)
-			fm.code = -1;
-			
-		imsg_compose(&fi.ibuf, imsg.hdr.type, 0, 0, -1, &fm, sizeof fm);
-		evflags |= EV_WRITE;
+		switch (ret) {
+		case STATUS_ACCEPT:
+		case STATUS_REJECT:
+			fm.code = ret;
+			imsg_compose(&fi.ibuf, imsg.hdr.type, 0, 0, -1, &fm,
+			    sizeof fm);
+			evflags |= EV_WRITE;
+			break;
+		case STATUS_WAITING:
+			/* waiting for asynchronous call ... */
+			break;
+		}
+
 		imsg_free(&imsg);
 	}
 
@@ -224,7 +315,7 @@ filter_handler(int fd, short event, void *p)
 
 ignore:
 	imsg_free(&imsg);
-	fm.code = 0;
+	fm.code = STATUS_IGNORE;
 	imsg_compose(&fi.ibuf, imsg.hdr.type, 0, 0, -1, &fm, sizeof fm);
 	evflags |= EV_WRITE;
 	event_set(&fi.ev, 0, evflags, filter_handler, &fi);
