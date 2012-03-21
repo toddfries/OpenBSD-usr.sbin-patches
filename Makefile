@@ -14,9 +14,10 @@ SUBDIR=	ac accton acpidump adduser amd apm apmd arp \
 	rarpd rbootd rdate relayctl relayd repquota rip6query ripctl ripd \
 	rmt route6d rpc.bootparamd rpc.lockd rpc.statd rtadvd rtsold rwhod \
 	sa sasyncd sensorsd sliplogin slstats smtpd snmpctl snmpd spamdb \
-	spray syslogc syslogd sysmerge tcpdrop tcpdump tftpd tokenadm \
-	tokeninit traceroute traceroute6 trpt usbdevs user vipw watchdogd \
 	wsconscfg wsfontload wsmoused zdump zic ztsscale
+	spray syslogc syslogd sysmerge tcpdrop tcpdump tftpd tokenadm \
+	tokeninit traceroute traceroute6 trpt unbound usbdevs user vipw \
+	watchdogd wsconscfg wsfontload wsmoused zdump zic ztsscale
 
 .if (${AFS:L} == "yes")
 SUBDIR+=afs
