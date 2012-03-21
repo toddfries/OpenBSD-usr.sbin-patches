@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.117 2011/09/17 15:33:56 schwarze Exp $
+# $OpenBSD: Delete.pm,v 1.119 2012/01/16 08:42:38 schwarze Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #

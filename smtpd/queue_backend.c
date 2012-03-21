@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_backend.c,v 1.11 2011/05/16 21:05:52 gilles Exp $	*/
+/*	$OpenBSD: queue_backend.c,v 1.20 2012/01/14 15:13:14 chl Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -23,8 +23,10 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#include <ctype.h>
 #include <event.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <libgen.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -35,32 +37,24 @@
 #include "smtpd.h"
 #include "log.h"
 
+static const char* envelope_validate(struct envelope *, uint64_t);
+
 /* fsqueue backend */
-int	fsqueue_init(void);
-int	fsqueue_message(enum queue_kind, enum queue_op, u_int32_t *);
-int	fsqueue_envelope(enum queue_kind, enum queue_op , struct envelope *);
+extern struct queue_backend	queue_backend_fs;
 
-
-struct queue_backend queue_backends[] = {
-	{ QT_FS,
-	  fsqueue_init,
-	  fsqueue_message,
-	  fsqueue_envelope }
-};
 
 struct queue_backend *
 queue_backend_lookup(enum queue_type type)
 {
-	u_int8_t i;
+	switch (type) {
+	case QT_FS:
+		return &queue_backend_fs;
 
-	for (i = 0; i < nitems(queue_backends); ++i)
-		if (queue_backends[i].type == type)
-			break;
-
-	if (i == nitems(queue_backends))
+	default:
 		fatalx("invalid queue type");
+	}
 
-	return &queue_backends[i];
+	return (NULL);
 }
 
 int
@@ -82,9 +76,9 @@ queue_message_commit(enum queue_kind qkind, u_int32_t msgid)
 }
 
 int
-queue_message_purge(enum queue_kind qkind, u_int32_t msgid)
+queue_message_corrupt(enum queue_kind qkind, u_int32_t msgid)
 {
-	return env->sc_queue->message(qkind, QOP_PURGE, &msgid);
+	return env->sc_queue->message(qkind, QOP_CORRUPT, &msgid);
 }
 
 int
@@ -114,12 +108,94 @@ queue_envelope_delete(enum queue_kind qkind, struct envelope *ep)
 int
 queue_envelope_load(enum queue_kind qkind, u_int64_t evpid, struct envelope *ep)
 {
-	ep->delivery.id = evpid;
-	return env->sc_queue->envelope(qkind, QOP_LOAD, ep);
+	const char	*e;
+
+	ep->id = evpid;
+	if (env->sc_queue->envelope(qkind, QOP_LOAD, ep)) {
+		if ((e = envelope_validate(ep, evpid)) == NULL)
+			return 1;
+		log_debug("invalid envelope %016" PRIx64 ": %s", ep->id, e);
+	}
+	return 0;
 }
 
 int
 queue_envelope_update(enum queue_kind qkind, struct envelope *ep)
 {
 	return env->sc_queue->envelope(qkind, QOP_UPDATE, ep);
+}
+
+void *
+qwalk_new(enum queue_kind kind, u_int32_t msgid)
+{
+	return env->sc_queue->qwalk_new(kind, msgid);
+}
+
+int
+qwalk(void *hdl, u_int64_t *evpid)
+{
+	return env->sc_queue->qwalk(hdl, evpid);
+}
+
+void
+qwalk_close(void *hdl)
+{
+	return env->sc_queue->qwalk_close(hdl);
+}
+
+u_int32_t
+queue_generate_msgid(void)
+{
+	u_int32_t msgid;
+
+	while((msgid = arc4random_uniform(0xffffffff)) == 0)
+		;
+
+	return msgid;
+}
+
+u_int64_t
+queue_generate_evpid(u_int32_t msgid)
+{
+	u_int32_t rnd;
+	u_int64_t evpid;
+
+	while((rnd = arc4random_uniform(0xffffffff)) == 0)
+		;
+
+	evpid = msgid;
+	evpid <<= 32;
+	evpid |= rnd;
+
+	return evpid;
+}
+
+
+/**/
+static const char*
+envelope_validate(struct envelope *ep, uint64_t id)
+{
+	if (ep->version != SMTPD_ENVELOPE_VERSION)
+		return "version mismatch";
+
+	if ((ep->id & 0xffffffff) == 0 || ((ep->id >> 32) & 0xffffffff) == 0)
+		return "invalid id";
+
+	if (ep->id != id)
+		return "id mismatch";
+
+	if (memchr(ep->helo, '\0', sizeof(ep->helo)) == NULL)
+		return "invalid helo";
+	if (ep->helo[0] == '\0')
+		return "empty helo";
+
+	if (memchr(ep->hostname, '\0', sizeof(ep->hostname)) == NULL)
+		return "invalid hostname";
+	if (ep->hostname[0] == '\0')
+		return "empty hostname";
+
+	if (memchr(ep->errorline, '\0', sizeof(ep->errorline)) == NULL)
+		return "invalid error line";
+
+	return NULL;
 }

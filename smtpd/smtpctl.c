@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.67 2011/09/01 19:56:49 eric Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.78 2012/01/28 11:33:07 gilles Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -30,6 +30,8 @@
 #include <errno.h>
 #include <event.h>
 #include <imsg.h>
+#include <inttypes.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,11 +40,15 @@
 
 #include "smtpd.h"
 #include "parser.h"
+#include "log.h"
 
 void usage(void);
-static void show_sizes(void);
+static void setup_env(struct smtpd *);
 static int show_command_output(struct imsg *);
 static int show_stats_output(struct imsg *);
+static void show_queue(enum queue_kind, int);
+static void show_envelope(struct envelope *, int);
+static void getflag(u_int *, int, char *, char *, size_t);
 
 int proctype;
 struct imsgbuf	*ibuf;
@@ -65,12 +71,30 @@ usage(void)
 	exit(1);
 }
 
+static void
+setup_env(struct smtpd *smtpd)
+{
+	bzero(smtpd, sizeof (*smtpd));
+	env = smtpd;
+
+	if ((env->sc_pw = getpwnam(SMTPD_USER)) == NULL)
+		errx(1, "unknown user %s", SMTPD_USER);
+
+	env->sc_queue = queue_backend_lookup(QT_FS);
+	if (env->sc_queue == NULL)
+		errx(1, "could not find queue backend");
+
+	if (!env->sc_queue->init(0))
+		errx(1, "invalid directory permissions");
+}
+
 int
 main(int argc, char *argv[])
 {
 	struct sockaddr_un	sun;
 	struct parse_result	*res = NULL;
 	struct imsg		imsg;
+	struct smtpd		smtpd;
 	int			ctl_sock;
 	int			done = 0;
 	int			n, verbose = 0;
@@ -81,12 +105,16 @@ main(int argc, char *argv[])
 	else if (strcmp(__progname, "mailq") == 0) {
 		if (geteuid())
 			errx(1, "need root privileges");
-		show_queue(PATH_QUEUE, 0);
+		setup_env(&smtpd);
+		show_queue(Q_QUEUE, 0);
 		return 0;
 	} else if (strcmp(__progname, "smtpctl") == 0) {
+
 		/* check for root privileges */
 		if (geteuid())
 			errx(1, "need root privileges");
+
+		setup_env(&smtpd);
 
 		if ((res = parse(argc - 1, argv + 1)) == NULL)
 			exit(1);
@@ -94,12 +122,9 @@ main(int argc, char *argv[])
 		/* handle "disconnected" commands */
 		switch (res->action) {
 		case SHOW_QUEUE:
-			show_queue(PATH_QUEUE, 0);
+			show_queue(Q_QUEUE, 0);
 			break;
 		case SHOW_RUNQUEUE:
-			break;
-		case SHOW_SIZES:
-			show_sizes();
 			break;
 		default:
 			goto connected;
@@ -146,6 +171,8 @@ connected:
 			errx(1, "invalid msgid/evpid");
 		if (errno == ERANGE && ulval == ULLONG_MAX)
 			errx(1, "invalid msgid/evpid");
+		if (ulval == 0)
+			errx(1, "invalid msgid/evpid");
 
 		if (res->action == SCHEDULE)
 			imsg_compose(ibuf, IMSG_RUNNER_SCHEDULE, 0, 0, -1, &ulval,
@@ -156,23 +183,31 @@ connected:
 		break;
 	}
 
+	case SCHEDULE_ALL: {
+		u_int64_t ulval = 0;
+
+		imsg_compose(ibuf, IMSG_RUNNER_SCHEDULE, 0, 0, -1, &ulval,
+		    sizeof(ulval));
+		break;
+	}
+
 	case SHUTDOWN:
 		imsg_compose(ibuf, IMSG_CTL_SHUTDOWN, 0, 0, -1, NULL, 0);
 		break;
 	case PAUSE_MDA:
-		imsg_compose(ibuf, IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_QUEUE_PAUSE_MDA, 0, 0, -1, NULL, 0);
 		break;
 	case PAUSE_MTA:
-		imsg_compose(ibuf, IMSG_QUEUE_PAUSE_OUTGOING, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_QUEUE_PAUSE_MTA, 0, 0, -1, NULL, 0);
 		break;
 	case PAUSE_SMTP:
 		imsg_compose(ibuf, IMSG_SMTP_PAUSE, 0, 0, -1, NULL, 0);
 		break;
 	case RESUME_MDA:
-		imsg_compose(ibuf, IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_QUEUE_RESUME_MDA, 0, 0, -1, NULL, 0);
 		break;
 	case RESUME_MTA:
-		imsg_compose(ibuf, IMSG_QUEUE_RESUME_OUTGOING, 0, 0, -1, NULL, 0);
+		imsg_compose(ibuf, IMSG_QUEUE_RESUME_MTA, 0, 0, -1, NULL, 0);
 		break;
 	case RESUME_SMTP:
 		imsg_compose(ibuf, IMSG_SMTP_RESUME, 0, 0, -1, NULL, 0);
@@ -212,9 +247,9 @@ connected:
 			if (n == 0)
 				break;
 			switch(res->action) {
-			/* case RELOAD: */
 			case REMOVE:
 			case SCHEDULE:
+			case SCHEDULE_ALL:
 			case SHUTDOWN:
 			case PAUSE_MDA:
 			case PAUSE_MTA:
@@ -261,31 +296,6 @@ show_command_output(struct imsg *imsg)
 		errx(1, "wrong message in summary: %u", imsg->hdr.type);
 	}
 	return (1);
-}
-
-void
-show_sizes(void)
-{
-	/*
-	 * size _does_ matter.
-	 *
-	 * small changes to ramqueue and diskqueue structures may cause
-	 * large changes to memory and disk usage on busy/large hosts.
-	 *
-	 * this will help developers optimize memory/disk use, and help
-	 * admins understand how the ramqueue.size / ramqueue.size.max
-	 * stats are computed (smtpctl show stats).
-	 *
-	 * -- gilles@
-	 *
-	 */
-	printf("struct ramqueue: %zu\n", sizeof (struct ramqueue));
-	printf("struct ramqueue_host: %zu\n", sizeof (struct ramqueue_host));
-	printf("struct ramqueue_message: %zu\n", sizeof (struct ramqueue_message));
-	printf("struct ramqueue_envelope: %zu\n", sizeof (struct ramqueue_envelope));
-
-	printf("struct envelope: %zu\n", sizeof (struct envelope));
-	printf("struct delivery: %zu\n", sizeof (struct delivery));
 }
 
 static void
@@ -393,17 +403,6 @@ show_stats_output(struct imsg *imsg)
 	stat_print(STATS_RAMQUEUE_MESSAGE, STAT_MAXACTIVE);
 	stat_print(STATS_RAMQUEUE_ENVELOPE, STAT_MAXACTIVE);
 
-	printf("ramqueue.size=%zd\n",
-	    s[STATS_RAMQUEUE_HOST].active * sizeof(struct ramqueue_host) +
-	    s[STATS_RAMQUEUE_BATCH].active * sizeof(struct ramqueue_batch) +
-	    s[STATS_RAMQUEUE_MESSAGE].active * sizeof(struct ramqueue_message) +
-	    s[STATS_RAMQUEUE_ENVELOPE].active * sizeof(struct ramqueue_envelope));
-	printf("ramqueue.size.max=%zd\n",
-	    s[STATS_RAMQUEUE_HOST].maxactive * sizeof(struct ramqueue_host) +
-	    s[STATS_RAMQUEUE_BATCH].maxactive * sizeof(struct ramqueue_batch) +
-	    s[STATS_RAMQUEUE_MESSAGE].maxactive * sizeof(struct ramqueue_message) +
-	    s[STATS_RAMQUEUE_ENVELOPE].maxactive * sizeof(struct ramqueue_envelope));
-
 	printf("smtp.errors.delays=%zd\n", stats->smtp.delays);
 	printf("smtp.errors.linetoolong=%zd\n", stats->smtp.linetoolong);
 	printf("smtp.errors.read_eof=%zd\n", stats->smtp.read_eof);
@@ -437,4 +436,91 @@ show_stats_output(struct imsg *imsg)
 	stat_print(STATS_SMTP_STARTTLS, STAT_MAXACTIVE);
 
 	return (1);
+}
+
+static void
+show_queue(enum queue_kind kind, int flags)
+{
+	struct qwalk	*q;
+	struct envelope	 envelope;
+	u_int64_t	 evpid;
+
+	log_init(1);
+
+	if (chroot(PATH_SPOOL) == -1 || chdir(".") == -1)
+		err(1, "%s", PATH_SPOOL);
+
+	q = qwalk_new(kind, 0);
+
+	while (qwalk(q, &evpid)) {
+		if (! queue_envelope_load(kind, evpid, &envelope))
+			continue;
+		show_envelope(&envelope, flags);
+	}
+
+	qwalk_close(q);
+}
+
+static void
+show_envelope(struct envelope *e, int flags)
+{
+	char	 status[128];
+
+	status[0] = '\0';
+
+	getflag(&e->flags, DF_BOUNCE, "BOUNCE",
+	    status, sizeof(status));
+	getflag(&e->flags, DF_AUTHENTICATED, "AUTH",
+	    status, sizeof(status));
+	getflag(&e->flags, DF_ENQUEUED, "ENQUEUED",
+	    status, sizeof(status));
+	getflag(&e->flags, DF_INTERNAL, "INTERNAL",
+	    status, sizeof(status));
+
+	if (e->flags)
+		errx(1, "%016" PRIx64 ": unexpected flags 0x%04x", e->id,
+		    e->flags);
+	
+	if (status[0])
+		status[strlen(status) - 1] = '\0';
+	else
+		strlcpy(status, "-", sizeof(status));
+
+	switch (e->type) {
+	case D_MDA:
+		printf("MDA");
+		break;
+	case D_MTA:
+		printf("MTA");
+		break;
+	case D_BOUNCE:
+		printf("BOUNCE");
+		break;
+	default:
+		printf("UNKNOWN");
+	}
+	
+	printf("|%016" PRIx64 "|%s|%s@%s|%s@%s|%" PRId64 "|%" PRId64 "|%u",
+	    e->id,
+	    status,
+	    e->sender.user, e->sender.domain,
+	    e->dest.user, e->dest.domain,
+	    (int64_t) e->lasttry,
+	    (int64_t) e->expire,
+	    e->retry);
+	
+	if (e->errorline[0] != '\0')
+		printf("|%s", e->errorline);
+
+	printf("\n");
+}
+
+static void
+getflag(u_int *bitmap, int bit, char *bitstr, char *buf, size_t len)
+{
+	if (*bitmap & bit) {
+		*bitmap &= ~bit;
+		strlcat(buf, bitstr, len);
+		strlcat(buf, ",", len);
+	}
 }
