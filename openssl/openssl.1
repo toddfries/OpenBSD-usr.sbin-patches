@@ -1,4 +1,4 @@
-.\" $OpenBSD: openssl.1,v 1.85 2011/01/20 13:32:19 lum Exp $
+.\" $OpenBSD: openssl.1,v 1.87 2011/09/29 17:57:09 jmc Exp $
 .\" ====================================================================
 .\" Copyright (c) 1998-2002 The OpenSSL Project.  All rights reserved.
 .\"
@@ -112,7 +112,7 @@
 .\"
 .\" OPENSSL
 .\"
-.Dd $Mdocdate: January 20 2011 $
+.Dd $Mdocdate: September 29 2011 $
 .Dt OPENSSL 1
 .Os
 .Sh NAME
@@ -6115,17 +6115,17 @@ Examine and verify a certificate request:
 .Pp
 Create a private key and then generate a certificate request from it:
 .Bd -literal -offset indent
-$ openssl genrsa -out key.pem 1024
+$ openssl genrsa -out key.pem 2048
 $ openssl req -new -key key.pem -out req.pem
 .Ed
 .Pp
 The same but just using req:
 .Pp
-.Dl $ openssl req -newkey rsa:1024 -keyout key.pem -out req.pem
+.Dl $ openssl req -newkey rsa:2048 -keyout key.pem -out req.pem
 .Pp
 Generate a self-signed root certificate:
 .Pp
-.Dl "$ openssl req -x509 -newkey rsa:1024 -keyout key.pem -out req.pem"
+.Dl "$ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out req.pem"
 .Pp
 Example of a file pointed to by the
 .Ar oid_file
@@ -8891,7 +8891,6 @@ $ openssl ts -verify \e
 	-in design2.tsr -CAfile cacert.pem
 .Ed
 .Sh TS BUGS
-.Pp
 No support for time stamps over SMTP, though it is quite easy
 to implement an automatic email-based TSA with
 .Xr procmail
@@ -9254,7 +9253,7 @@ certificate must have extensions compatible with the supplied purpose
 and all other certificates must also be valid CA certificates.
 The precise extensions required are described in more detail in
 the
-.Sx X509 CERTIFICATE EXTENSIONS
+.Sx X.509 CERTIFICATE EXTENSIONS
 section below.
 .Pp
 The third operation is to check the trust settings on the root CA.
@@ -9564,7 +9563,7 @@ This specifies the input
 to read a certificate from, or standard input if this option is not specified.
 .It Fl inform Ar DER | NET | PEM
 This specifies the input format.
-Normally, the command will expect an X509 certificate,
+Normally, the command will expect an X.509 certificate,
 but this can change if other options such as
 .Fl req
 are present.
@@ -9767,7 +9766,7 @@ Clears all the permitted or trusted uses of the certificate.
 This option performs tests on the certificate extensions and outputs
 the results.
 For a more complete description, see the
-.Sx X509 CERTIFICATE EXTENSIONS
+.Sx X.509 CERTIFICATE EXTENSIONS
 section.
 .It Fl setalias Ar arg
 Sets the alias of the certificate.
@@ -10261,7 +10260,7 @@ option searches the subject name and the subject alternative
 name extension.
 Only unique email addresses will be printed out: it will
 not print the same address more than once.
-.Sh X509 CERTIFICATE EXTENSIONS
+.Sh X.509 CERTIFICATE EXTENSIONS
 The
 .Fl purpose
 option checks the certificate extensions and determines

@@ -235,9 +235,18 @@ writepid(struct nsd *nsd)
 void
 unlinkpid(const char* file)
 {
-	if (file && unlink(file) == -1)
-		log_msg(LOG_ERR, "failed to unlink pidfile %s: %s",
-			file, strerror(errno));
+	int fd = -1;
+
+	if (file) {
+		/* truncate pidfile */
+		fd = open(file, O_WRONLY | O_TRUNC, 0644);
+		if (fd != -1)
+			close(fd);
+		/* unlink pidfile */
+		if (unlink(file) == -1)
+			log_msg(LOG_WARNING, "failed to unlink pidfile %s: %s",
+				file, strerror(errno));
+	}
 }
 
 /*
@@ -384,8 +393,9 @@ main(int argc, char *argv[])
 #endif /* HAVE_GETPWNAM */
 
 	/* For initialising the address info structures */
-	struct addrinfo hints[MAX_INTERFACES];
-	const char *nodes[MAX_INTERFACES];
+	/* static so it can get very big without overflowing the stack */
+	static struct addrinfo hints[MAX_INTERFACES];
+	static const char *nodes[MAX_INTERFACES];
 	const char *udp_port = 0;
 	const char *tcp_port = 0;
 
@@ -490,7 +500,7 @@ main(int argc, char *argv[])
 			if (hex_pton(optarg, nsd.nsid, nsd.nsid_len) == -1) {
 				error("hex string cannot be parsed '%s' in NSID.", optarg);
 			}
-                       break;
+			break;
 		case 'l':
 			nsd.log_filename = optarg;
 			break;
@@ -863,8 +873,11 @@ main(int argc, char *argv[])
 	log_open(LOG_PID, FACILITY, nsd.log_filename);
 	if (!nsd.log_filename)
 		log_set_log_function(log_syslog);
-	else if (nsd.uid && nsd.gid)
-		(void) chown(nsd.log_filename, nsd.uid, nsd.gid);
+	else if (nsd.uid && nsd.gid) {
+		if(chown(nsd.log_filename, nsd.uid, nsd.gid) != 0)
+			VERBOSITY(2, (LOG_WARNING, "chown %s failed: %s",
+				nsd.log_filename, strerror(errno)));
+	}
 
 	/* Do we have a running nsd? */
 	if ((oldpid = readpid(nsd.pidfile)) == -1) {

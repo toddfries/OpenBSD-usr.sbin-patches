@@ -1,4 +1,4 @@
-/*	$OpenBSD: print-gtp.c,v 1.3 2010/08/19 15:26:38 jsing Exp $ */
+/*	$OpenBSD: print-gtp.c,v 1.5 2011/09/18 10:25:36 jsing Exp $ */
 /*
  * Copyright (c) 2009, 2010 Joel Sing <jsing@openbsd.org>
  *
@@ -118,7 +118,7 @@ static struct tok gtp_v0_msgtype[] = {
 	{ 241,	"Data Record Transfer Response" },
 	{ 255,	"T-PDU" },
 
-        { 0,	NULL }
+	{ 0,	NULL }
 };
 
 /* GTPv0 causes. */
@@ -150,7 +150,7 @@ static struct tok gtp_v0_cause[] = {
 	{ 208,	"Authentication failure" },
 	{ 209,	"User authentication failed" },
 
-        { 0,	NULL }
+	{ 0,	NULL }
 };
 
 /* GTPv1 message types. */
@@ -223,19 +223,19 @@ static struct tok gtp_v1_msgtype[] = {
 	{ 241,	"Data Record Transfer Response" },
 	{ 255,	"G-PDU" },
 
-        { 0,	NULL }
+	{ 0,	NULL }
 };
 
 /* GTPv1 Causes. */
 static struct tok gtp_v1_cause[] = {
 
 	/* GTPv1-C. */
-        { 0,	"Request IMSI" },
-        { 1,	"Request IMEI" },
-        { 2,	"Request IMSI and IMEI" },
-        { 3,	"No identity needed" },
-        { 4,	"MS refuses" },
-        { 5,	"MS is not GPRS responding" },
+	{ 0,	"Request IMSI" },
+	{ 1,	"Request IMEI" },
+	{ 2,	"Request IMSI and IMEI" },
+	{ 3,	"No identity needed" },
+	{ 4,	"MS refuses" },
+	{ 5,	"MS is not GPRS responding" },
 	{ 128,	"Request accepted" },
 	{ 192,	"Non-existent" },
 	{ 193,	"Invalid message format" },
@@ -287,7 +287,7 @@ static struct tok gtp_v1_cause[] = {
 	{ 254,	"Sequence numbers of released/cancelled packets IE incorrect" },
 	{ 255,	"Request not fulfilled" },
 
-        { 0,	NULL }
+	{ 0,	NULL }
 };
 
 static int gtp_proto = -1;
@@ -487,6 +487,7 @@ gtp_v0_print(const u_char *cp, u_int length, u_short sport, u_short dport)
 {
 	struct gtp_v0_hdr *gh = (struct gtp_v0_hdr *)cp;
 	int len, version;
+	u_int64_t tid;
 
 	gtp_proto = GTP_V0_PROTO;
 
@@ -502,9 +503,10 @@ gtp_v0_print(const u_char *cp, u_int length, u_short sport, u_short dport)
 	TCHECK(*gh);
 	cp += sizeof(struct gtp_v0_hdr);
 	len = ntohs(gh->length);
+	bcopy(&gh->tid, &tid, sizeof(tid));
 	printf(" GTPv0 (len %u, seqno %u, flow %u, N-PDU %u, tid 0x%llx) ",
 	    ntohs(gh->length), ntohs(gh->seqno), ntohs(gh->flow),
-	    ntohs(gh->npduno), betoh64(gh->tid));
+	    ntohs(gh->npduno), betoh64(tid));
 
 	/* Decode GTP message. */
 	printf("%s", tok2str(gtp_v0_msgtype, "Message Type %u", gh->msgtype));

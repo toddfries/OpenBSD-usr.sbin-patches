@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.47 2011/06/24 14:36:16 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.57 2012/02/13 17:32:14 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -444,7 +444,7 @@ sub makesum_plist
 	my $tempname = $state->{mandir}."/".$fullname;
 	require File::Path;
 	File::Path::make_path($state->{mandir}."/".$d);
-	open my $fh, ">", $tempname or $state->error("can't create #1: #2", 
+	open my $fh, ">", $tempname or $state->error("can't create #1: #2",
 	    $tempname, $!);
 	chmod 0444, $fh;
 	if (-d $state->{base}.$d) {
@@ -479,6 +479,7 @@ sub avert_duplicates_and_other_checks
 package OpenBSD::PackingElement::Conflict;
 sub avert_duplicates_and_other_checks
 {
+	$_[1]->{has_conflict}++;
 	&OpenBSD::PackingElement::Depend::avert_duplicates_and_other_checks;
 }
 
@@ -522,6 +523,14 @@ sub avert_duplicates_and_other_checks
 	}
 	$self->SUPER::avert_duplicates_and_other_checks($state);
 }
+
+package OpenBSD::PackingElement::NoDefaultConflict;
+sub avert_duplicates_and_other_checks
+{
+	my ($self, $state) = @_;
+	$state->{has_no_default_conflict}++;
+}
+
 
 # put together file and filename, in order to handle fragments simply
 package MyFile;
@@ -567,14 +576,39 @@ sub solve_all_depends
 {
 	my ($solver, $state) = @_;
 
-
 	while (1) {
 		my @todo = $solver->solve_depends($state);
 		if (@todo == 0) {
 			return;
 		}
+		if ($solver->solve_wantlibs($state, 0)) {
+			return;
+		}
 		$solver->{set}->add_new(@todo);
 	}
+}
+
+sub solve_wantlibs
+{
+	my ($solver, $state, $final) = @_;
+
+	my $okay = 1;
+	my $lib_finder = OpenBSD::lookup::library->new($solver);
+	my $h = $solver->{set}->{new}[0];
+	for my $lib (@{$h->{plist}->{wantlib}}) {
+		$solver->{localbase} = $h->{plist}->localbase;
+		next if $lib_finder->lookup($solver,
+		    $solver->{to_register}->{$h}, $state,
+		    $lib->spec);
+		$okay = 0;
+		OpenBSD::SharedLibs::report_problem($state,
+		    $lib->spec) if $final;
+	}
+	if (!$okay && $final) {
+		$solver->dump($state);
+		$lib_finder->dump($state);
+	}
+	return $okay;
 }
 
 sub really_solve_dependency
@@ -607,12 +641,25 @@ sub solve_from_ports
 	if (defined $cache->{$dep->{pkgpath}}) {
 		$pkgname = $cache->{$dep->{pkgpath}};
 	} else {
-		my $plist = $self->ask_tree($state, $dep, $portsdir,
-		    'print-plist-with-depends', 'wantlib_args=no-wantlib-args');
-		if ($? != 0 || !defined $plist->pkgname) {
-			$state->error("Can't obtain dependency #1 from ports tree",
-			    $dep->{pattern});
-			return undef;
+		my ($plist, $diskcache);
+		if ($ENV{_DEPENDS_CACHE}) {
+			$diskcache = $dep->{pkgpath};
+			$diskcache =~ s/\//--/g;
+			$diskcache = $ENV{_DEPENDS_CACHE}."/pkgcreate-".
+			    $diskcache;
+		}
+		if (defined $diskcache && -f $diskcache) {
+			$plist = OpenBSD::PackingList->fromfile($diskcache);
+		} else {
+			$plist = $self->ask_tree($state, $dep, $portsdir,
+			    'print-plist-libs-with-depends',
+			    'wantlib_args=no-wantlib-args');
+			if ($? != 0 || !defined $plist->pkgname) {
+				$state->error("Can't obtain dependency #1 from ports tree",
+				    $dep->{pattern});
+				return undef;
+			}
+			$plist->tofile($diskcache) if defined $diskcache;
 		}
 		OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
 		$self->add_dep($plist);
@@ -640,6 +687,9 @@ sub ask_tree
 	if ($pid == 0) {
 		chdir $portsdir or exit 2;
 		open STDERR, '>', '/dev/null';
+		$ENV{FULLPATH} = 'Yes';
+		delete $ENV{FLAVOR};
+		delete $ENV{SUBPACKAGE};
 		$ENV{SUBDIR} = $dep->{pkgpath};
 		$ENV{ECHO_MSG} = ':';
 		exec $make ('make', @action);
@@ -648,13 +698,6 @@ sub ask_tree
 	    \&OpenBSD::PackingList::PrelinkStuffOnly);
 	close($fh);
 	return $plist;
-}
-
-sub errsay_library
-{
-	my ($solver, $state, $h) = @_;
-
-	$state->errsay("Can't create #1 because of libraries", $h->pkgname);
 }
 
 # we don't want old libs
@@ -783,6 +826,7 @@ sub read_fragments
 	my $stack = [];
 	my $subst = $state->{subst};
 	push(@$stack, MyFile->new($filename));
+	my $fast = $subst->value("LIBS_ONLY");
 
 	return $plist->read($stack,
 	    sub {
@@ -801,12 +845,15 @@ sub read_fragments
 					$file = handle_fragment($state, $stack,
 					    $file, $not, $frag);
 				} else {
-					&$cont($subst->do($_));
+					$_ = $subst->do($_);
+					if ($fast) {
+						next unless m/^\@(?:cwd|lib|depend|wantlib)\b/o || m/lib.*\.a$/o;
+					}
+					&$cont($_);
 				}
 			}
 		}
-	    }
-	);
+	    });
 }
 
 sub add_special_file
@@ -1055,10 +1102,12 @@ sub check_dependencies
 	my ($self, $plist, $state) = @_;
 
 	my $solver = OpenBSD::Dependencies::CreateSolver->new($plist);
-	$solver->solve_all_depends($state);
+
 	# look for libraries in the "real" tree
 	$state->{destdir} = '/';
-	if (!$solver->solve_wantlibs($state)) {
+
+	$solver->solve_all_depends($state);
+	if (!$solver->solve_wantlibs($state, 1)) {
 		$state->{bad}++;
 	}
 }
@@ -1073,7 +1122,7 @@ sub finish_manpages
 		require OpenBSD::Makewhatis;
 
 		try {
-			OpenBSD::Makewhatis::scan_manpages($state->{manpages}, 
+			OpenBSD::Makewhatis::scan_manpages($state->{manpages},
 			    $state);
 		} catchall {
 			$state->errsay("Error in makewhatis: #1", $_);
@@ -1214,6 +1263,9 @@ sub parse_and_run
 	}
 
 	$plist->avert_duplicates_and_other_checks($state);
+	if ($state->{has_no_default_conflict} && !$state->{has_conflict}) {
+		$state->errsay("Warning: \@option no-default-conflict without \@conflict");
+	}
 	$state->{stash} = {};
 
 	if ($state->{bad} && !$state->defines('REGRESSION_TESTING')) {

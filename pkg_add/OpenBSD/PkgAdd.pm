@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.30 2011/07/23 15:04:27 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.33 2011/08/26 08:46:10 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -104,7 +104,7 @@ sub handle_options
 {
 	my $state = shift;
 	$state->SUPER::handle_options('ruUzl:A:P:Q:',
-	    '[-acIinqrsUuvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
+	    '[-acinqrsUuvxz] [-A arch] [-B pkg-destdir] [-D name[=value]]',
 	    '[-L localbase] [-l file] [-P type] [-Q quick-destdir] pkg-name [...]');
 
 	$state->{do_faked} = 0;
@@ -795,9 +795,6 @@ sub really_add
 
 		try {
 			OpenBSD::Add::perform_installation($handle, $state);
-			if (!$state->{interrupted} && $plist->has(INSTALL)) {
-				$plist->get(INSTALL)->run($state, 'POST-INSTALL');
-			}
 		} catchall {
 			unless ($state->{interrupted}) {
 				$state->errsay($_);
@@ -837,6 +834,7 @@ sub really_add
 		$set->{solver}->repair_dependencies($state);
 	}
 	delete $state->{delete_first};
+	$state->syslog("Added #1", $set->print);
 }
 
 sub newer_has_errors
@@ -1067,7 +1065,7 @@ sub process_parameters
 			if (OpenBSD::PackageName::is_stem($pkgname)) {
 				$l = $state->updater->stem2location($inst, $pkgname, $state);
 			} else {
-				$l = $inst->find($pkgname, $state->{arch});
+				$l = $inst->find($pkgname);
 			}
 			if (!defined $l) {
 				$state->say("Problem finding #1", $pkgname);

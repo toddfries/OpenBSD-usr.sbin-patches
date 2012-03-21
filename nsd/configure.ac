@@ -4,7 +4,7 @@ dnl
 
 sinclude(acx_nlnetlabs.m4)
 
-AC_INIT(NSD,3.2.8,nsd-bugs@nlnetlabs.nl)
+AC_INIT(NSD,3.2.10,nsd-bugs@nlnetlabs.nl)
 AC_CONFIG_HEADER([config.h])
 
 AC_AIX
@@ -65,6 +65,7 @@ AC_SUBST(kill_priority)
 # Default logfile
 #
 logfile=${localstatedir}/log/nsd.log
+AC_SUBST(logfile)
 
 #
 # Database directory
@@ -349,7 +350,7 @@ AC_CACHE_VAL(ac_cv_c_strptime_needs_defs,
 [
 cat >conftest.c <<EOF
 #include <time.h>
-void testing (void) { struct tm t; char *timestr; strptime(timestr, "%Y%m", &t); }
+int testing (void) { struct tm t; const char *timestr="201201"; return strptime(timestr, "%Y%m", &t)!=0; }
 EOF
 if test -z "`$CC -Wall -Werror -c conftest.c 2>&1`"; then
 eval "ac_cv_c_strptime_needs_defs=no"
@@ -606,6 +607,24 @@ case "$enable_nsec3" in
 		;;
         yes|*)
 		AC_DEFINE_UNQUOTED([NSEC3], [], [Define this to enable NSEC3 support.])
+                ;;
+esac
+
+AC_ARG_ENABLE(full-prehash, AC_HELP_STRING([--disable-full-prehash], [Disables NSEC3 full prehashing]))
+case "$enable_full_prehash" in
+        no)
+		;;
+        yes|*)
+		AC_DEFINE_UNQUOTED([FULL_PREHASH], [], [Define this to enable NSEC3 full prehashing.])
+                ;;
+esac
+
+AC_ARG_ENABLE(minimal-responses, AC_HELP_STRING([--disable-minimal-responses], [Disable response minimization. More truncation.]))
+case "$enable_minimal_responses" in
+        no)
+		;;
+        yes|*)
+		AC_DEFINE_UNQUOTED([MINIMAL_RESPONSES], [], [Define this to enable response minimalization to reduce truncation.])
                 ;;
 esac
 

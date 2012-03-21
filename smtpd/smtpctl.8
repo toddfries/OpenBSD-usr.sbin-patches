@@ -1,4 +1,4 @@
-.\" $OpenBSD: smtpctl.8,v 1.20 2011/07/22 06:33:54 jmc Exp $
+.\" $OpenBSD: smtpctl.8,v 1.26 2012/02/09 07:47:43 jmc Exp $
 .\"
 .\" Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: July 22 2011 $
+.Dd $Mdocdate: February 9 2012 $
 .Dt SMTPCTL 8
 .Os
 .Sh NAME
@@ -40,22 +40,24 @@ The following commands are available:
 Disable verbose debug logging.
 .It Cm log verbose
 Enable verbose debug logging.
-.It Cm pause incoming
-Temporarily stop accepting incoming sessions.
-.It Cm pause local
+.It Cm pause mda
 Temporarily stop deliveries to local users.
-.It Cm pause outgoing
+.It Cm pause mta
 Temporarily stop relaying and deliveries to
 remote users.
-.It Cm remove Ar envelope-id
-Removes a single envelope from queue.
-.It Cm resume incoming
-Resume accepting incoming sessions.
-.It Cm resume local
+.It Cm pause smtp
+Temporarily stop accepting incoming sessions.
+.It Cm remove Ar envelope-id | message-id
+Removes a single envelope, or all envelopes with the same message ID.
+.It Cm resume mda
 Resume deliveries to local users.
-.It Cm resume outgoing
+.It Cm resume mta
 Resume relaying and deliveries to remote users.
-.It Cm schedule Ar envelope-id | message-id
+.It Cm resume smtp
+Resume accepting incoming sessions.
+.It Cm schedule-all
+Marks all envelopes as ready for immediate delivery.
+.It Cm schedule-id Ar envelope-id | message-id
 Marks a single envelope, or all envelopes with the same message ID,
 as ready for immediate delivery.
 .It Cm show queue

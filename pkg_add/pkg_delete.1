@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_delete.1,v 1.40 2011/07/18 19:19:08 espie Exp $
+.\"	$OpenBSD: pkg_delete.1,v 1.45 2011/12/02 16:01:17 jmc Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -15,7 +15,7 @@
 .\" Jordan K. Hubbard
 .\"
 .\"
-.Dd $Mdocdate: July 18 2011 $
+.Dd $Mdocdate: December 2 2011 $
 .Dt PKG_DELETE 1
 .Os
 .Sh NAME
@@ -23,7 +23,7 @@
 .Nd delete software package distributions
 .Sh SYNOPSIS
 .Nm pkg_delete
-.Op Fl acIimnqsvx
+.Op Fl acimnqsvXx
 .Op Fl B Ar pkg-destdir
 .Op Fl D Ar name Ns Op = Ns Ar value
 .Ar pkg-name Op Ar ...
@@ -49,6 +49,15 @@ see
 .Pc
 can be omitted, unless the resulting specification is ambiguous.
 .Pp
+.Nm
+will
+.Xr syslog 3
+deletions by default
+.Po
+but see
+.Xr pkg.conf 5
+.Pc .
+.Pp
 The options are as follows:
 .Bl -tag -width BB-pkg-destdir
 .It Fl a
@@ -56,6 +65,9 @@ Delete unused dependencies (packages that are not needed by anything tagged
 as installed manually).
 Can be used without
 .Ar pkgnames .
+If used with
+.Ar pkgnames ,
+it will only delete non manual installs in the list.
 .It Fl B Ar pkg-destdir
 Set
 .Ar pkg-destdir
@@ -83,8 +95,6 @@ uninstall even if not running as root.
 .It Ar scripts
 external scripts may fail.
 .El
-.It Fl I
-If scripts exist for a given package, do not execute them.
 .It Fl i
 Switch on interactive mode.
 .Nm
@@ -126,6 +136,8 @@ shows most internal computations apart from individual file/directory
 additions, and
 .Fl vvvvv
 shows everything.
+.It Fl X
+Delete everything, except the list of packages that follow.
 .It Fl x
 Disable progress meter.
 .El

@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka_session.c,v 1.8 2011/07/04 19:44:31 gilles Exp $	*/
+/*	$OpenBSD: lka_session.c,v 1.16 2011/12/13 22:04:35 eric Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -77,11 +77,11 @@ lka_session_envelope_expand(struct lka_session *lks, struct envelope *ep)
 	char *user;
 	char *sep;
 	struct user_backend *ub;
-	struct user u;
+	struct mta_user u;
 	char username[MAX_LOCALPART_SIZE];
 
 	/* remote delivery, no need to process further */
-	if (ep->delivery.type == D_MTA) {
+	if (ep->type == D_MTA) {
 		lka_session_deliver(lks, ep);
 		return 1;
 	}
@@ -90,10 +90,10 @@ lka_session_envelope_expand(struct lka_session *lks, struct envelope *ep)
 	case C_ALL:
 	case C_NET:
 	case C_DOM: {
-		if (ep->delivery.agent.mda.to.user[0] == '\0')
-			user = ep->delivery.rcpt.user;
+		if (ep->agent.mda.to.user[0] == '\0')
+			user = ep->dest.user;
 		else
-			user = ep->delivery.agent.mda.to.user;
+			user = ep->agent.mda.to.user;
 		lowercase(username, user, sizeof(username));
 
 		/* gilles+hackers@ -> gilles@ */
@@ -109,28 +109,28 @@ lka_session_envelope_expand(struct lka_session *lks, struct envelope *ep)
 		}
 
 		bzero(&u, sizeof (u));
-		ub = user_backend_lookup(USER_GETPWNAM);
+		ub = user_backend_lookup(USER_PWD);
 		if (! ub->getbyname(&u, username))
 			return 0;
 
-		(void)strlcpy(ep->delivery.agent.mda.as_user, u.username,
-		    sizeof (ep->delivery.agent.mda.as_user));
+		(void)strlcpy(ep->agent.mda.as_user, u.username,
+		    sizeof (ep->agent.mda.as_user));
 
-		ep->delivery.type = D_MDA;
+		ep->type = D_MDA;
 		switch (ep->rule.r_action) {
 		case A_MBOX:
-			ep->delivery.agent.mda.method = A_MBOX;
-			(void)strlcpy(ep->delivery.agent.mda.to.user,
+			ep->agent.mda.method = A_MBOX;
+			(void)strlcpy(ep->agent.mda.to.user,
 			    u.username,
-			    sizeof (ep->delivery.agent.mda.to.user));
+			    sizeof (ep->agent.mda.to.user));
 			break;
 		case A_MAILDIR:
 		case A_FILENAME:
-		case A_EXT:
-			ep->delivery.agent.mda.method = ep->rule.r_action;
-			(void)strlcpy(ep->delivery.agent.mda.to.buffer,
+		case A_MDA:
+			ep->agent.mda.method = ep->rule.r_action;
+			(void)strlcpy(ep->agent.mda.to.buffer,
 			    ep->rule.r_value.buffer,
-			    sizeof (ep->delivery.agent.mda.to.buffer));
+			    sizeof (ep->agent.mda.to.buffer));
 			break;
 		default:
 			fatalx("lka_session_envelope_expand: unexpected rule action");
@@ -142,9 +142,9 @@ lka_session_envelope_expand(struct lka_session *lks, struct envelope *ep)
 	}
 
 	case C_VDOM: {
-		if (aliases_virtual_exist(ep->rule.r_condition.c_map, &ep->delivery.rcpt)) {
+		if (aliases_virtual_exist(ep->rule.r_condition.c_map, &ep->dest)) {
 			if (! aliases_virtual_get(ep->rule.r_condition.c_map,
-				&lks->expandtree, &ep->delivery.rcpt))
+				&lks->expandtree, &ep->dest))
 				return 0;
 			return 1;
 		}
@@ -373,15 +373,15 @@ lka_session_deliver(struct lka_session *lks, struct envelope *ep)
 	if (new_ep == NULL)
 		fatal("lka_session_deliver: calloc");
 	*new_ep = *ep;
-	if (new_ep->delivery.type == D_MDA) {
-		d_mda = &new_ep->delivery.agent.mda;
+	if (new_ep->type == D_MDA) {
+		d_mda = &new_ep->agent.mda;
 		if (d_mda->method == A_INVALID)
 			fatalx("lka_session_deliver: mda method == A_INVALID");
 
 		switch (d_mda->method) {
 		case A_MAILDIR:
 		case A_FILENAME:
-		case A_EXT: {
+		case A_MDA: {
 			char *buf = d_mda->to.buffer;
 			size_t bufsz = sizeof(d_mda->to.buffer);
 			if (! lka_session_expand_format(buf, bufsz, new_ep))
@@ -392,9 +392,21 @@ lka_session_deliver(struct lka_session *lks, struct envelope *ep)
 			break;
 		}
 	}
-	else if (new_ep->delivery.type == D_MTA) {
-		if (ep->rule.r_as)
-			new_ep->delivery.from = *ep->rule.r_as;
+	else if (new_ep->type == D_MTA) {
+		if (ep->rule.r_action == A_RELAYVIA)
+			new_ep->agent.mta.relay = ep->rule.r_value.relayhost;
+		if (ep->rule.r_as) {
+			if (ep->rule.r_as->user[0]) {
+				strlcpy(new_ep->sender.user,
+				    ep->rule.r_as->user,
+				    sizeof new_ep->sender.user);
+			}
+			if (ep->rule.r_as->domain[0]) {
+				strlcpy(new_ep->sender.domain,
+				    ep->rule.r_as->domain,
+				    sizeof new_ep->sender.domain);
+			}
+		}
 	}
 	TAILQ_INSERT_TAIL(&lks->deliverylist, new_ep, entry);
 }
@@ -402,12 +414,10 @@ lka_session_deliver(struct lka_session *lks, struct envelope *ep)
 int
 lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
 {
-	struct delivery *dlv;
-	struct delivery olddlv;
+	struct envelope	oldep;
 
-	dlv = &ep->delivery;
-	memcpy(&olddlv, dlv, sizeof (*dlv));
-        bzero(&dlv->agent, sizeof (dlv->agent));
+	memcpy(&oldep, ep, sizeof (*ep));
+        bzero(&ep->agent, sizeof (ep->agent));
 
 	switch (xn->type) {
         case EXPAND_INVALID:
@@ -418,13 +428,13 @@ lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
         case EXPAND_ADDRESS:
                 log_debug("lka_resolve_node: node is address: %s@%s",
 		    xn->u.mailaddr.user, xn->u.mailaddr.domain);
-		dlv->rcpt = xn->u.mailaddr;
+		ep->dest = xn->u.mailaddr;
 
 		/* evaluation of ruleset assumes local source
 		 * since we're expanding on already accepted
 		 * source.
 		 */
-		dlv->flags |= DF_INTERNAL;
+		ep->flags |= DF_INTERNAL;
                 if (! lka_session_rcpt_action(ep))
 			return -1;
 		return 0;
@@ -432,8 +442,8 @@ lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
         case EXPAND_USERNAME:
                 log_debug("lka_resolve_node: node is local username: %s",
 		    xn->u.user);
-		dlv->type  = D_MDA;
-		dlv->agent.mda.to = xn->u;
+		ep->type  = D_MDA;
+		ep->agent.mda.to = xn->u;
 
 		/* overwrite the initial condition before we expand the
 		 * envelope again. if we came from a C_VDOM, not doing
@@ -447,35 +457,35 @@ lka_session_resolve_node(struct envelope *ep, struct expandnode *xn)
 
 		/* if expansion of a user results in same user ... deliver */
 		if (strcmp(xn->u.user, xn->as_user) == 0) {
-			ep->delivery.agent.mda.method = olddlv.agent.mda.method;
+			ep->agent.mda.method = oldep.agent.mda.method;
 			break;
 		}
 
 		/* otherwise rewrite delivery user with expansion result */
-		(void)strlcpy(dlv->agent.mda.to.user, xn->u.user,
-		    sizeof (dlv->agent.mda.to.user));
-		(void)strlcpy(dlv->agent.mda.as_user, xn->u.user,
-		    sizeof (dlv->agent.mda.as_user));
+		(void)strlcpy(ep->agent.mda.to.user, xn->u.user,
+		    sizeof (ep->agent.mda.to.user));
+		(void)strlcpy(ep->agent.mda.as_user, xn->u.user,
+		    sizeof (ep->agent.mda.as_user));
 		return 0;
 
         case EXPAND_FILENAME:
                 log_debug("lka_resolve_node: node is filename: %s",
 		    xn->u.buffer);
-		dlv->type  = D_MDA;
-		dlv->agent.mda.to = xn->u;
-		dlv->agent.mda.method = A_FILENAME;
-		(void)strlcpy(dlv->agent.mda.as_user, xn->as_user,
-		    sizeof (dlv->agent.mda.as_user));
+		ep->type  = D_MDA;
+		ep->agent.mda.to = xn->u;
+		ep->agent.mda.method = A_FILENAME;
+		(void)strlcpy(ep->agent.mda.as_user, xn->as_user,
+		    sizeof (ep->agent.mda.as_user));
                 break;
 
         case EXPAND_FILTER:
                 log_debug("lka_resolve_node: node is filter: %s",
 		    xn->u.buffer);
-		dlv->type  = D_MDA;
-		dlv->agent.mda.to = xn->u;
-		dlv->agent.mda.method = A_EXT;
-		(void)strlcpy(dlv->agent.mda.as_user, xn->as_user,
-		    sizeof (dlv->agent.mda.as_user));
+		ep->type  = D_MDA;
+		ep->agent.mda.to = xn->u;
+		ep->agent.mda.method = A_MDA;
+		(void)strlcpy(ep->agent.mda.as_user, xn->as_user,
+		    sizeof (ep->agent.mda.as_user));
                 break;
 	}
 
@@ -488,9 +498,8 @@ lka_session_expand_format(char *buf, size_t len, struct envelope *ep)
 	char *p, *pbuf;
 	size_t ret, lret = 0;
 	struct user_backend *ub;
-	struct user u;
+	struct mta_user u;
 	char lbuffer[MAX_RULEBUFFER_LEN];
-	struct delivery *dlv = &ep->delivery;
 	
 	bzero(lbuffer, sizeof (lbuffer));
 	pbuf = lbuffer;
@@ -502,8 +511,8 @@ lka_session_expand_format(char *buf, size_t len, struct envelope *ep)
 			if (*(p + 1) == '/' || *(p + 1) == '\0') {
 
 				bzero(&u, sizeof (u));
-				ub = user_backend_lookup(USER_GETPWNAM);
-				if (! ub->getbyname(&u, dlv->agent.mda.as_user))
+				ub = user_backend_lookup(USER_PWD);
+				if (! ub->getbyname(&u, ep->agent.mda.as_user))
 					return 0;
 				
 				lret = strlcat(pbuf, u.directory, len);
@@ -527,7 +536,7 @@ lka_session_expand_format(char *buf, size_t len, struct envelope *ep)
 				*delim = '\0';
 
 				bzero(&u, sizeof (u));
-				ub = user_backend_lookup(USER_GETPWNAM);
+				ub = user_backend_lookup(USER_PWD);
 				if (! ub->getbyname(&u, username))
 					return 0;
 
@@ -548,19 +557,19 @@ lka_session_expand_format(char *buf, size_t len, struct envelope *ep)
 			}
 			switch (*tmp) {
 			case 'U':
-				string = dlv->from.user;
+				string = ep->sender.user;
 				break;
 			case 'D':
-				string = dlv->from.domain;
+				string = ep->sender.domain;
 				break;
 			case 'a':
-				string = dlv->agent.mda.as_user;
+				string = ep->agent.mda.as_user;
 				break;
 			case 'u':
-				string = dlv->rcpt.user;
+				string = ep->dest.user;
 				break;
 			case 'd':
-				string = dlv->rcpt.domain;
+				string = ep->dest.domain;
 				break;
 			default:
 				goto copy;
@@ -603,7 +612,7 @@ lka_session_rcpt_action(struct envelope *ep)
 
 	r = ruleset_match(ep);
 	if (r == NULL) {
-		ep->delivery.type = D_MTA;
+		ep->type = D_MTA;
 		return 0;
 	}
 
@@ -612,11 +621,11 @@ lka_session_rcpt_action(struct envelope *ep)
 	case A_MBOX:
 	case A_MAILDIR:
 	case A_FILENAME:
-	case A_EXT:
-		ep->delivery.type = D_MDA;
+	case A_MDA:
+		ep->type = D_MDA;
 		break;
 	default:
-		ep->delivery.type = D_MTA;
+		ep->type = D_MTA;
 	}
 
 	return 1;
@@ -650,6 +659,5 @@ lka_session_cmp(struct lka_session *s1, struct lka_session *s2)
 
 	return 0;
 }
-
 
 SPLAY_GENERATE(lkatree, lka_session, nodes, lka_session_cmp);

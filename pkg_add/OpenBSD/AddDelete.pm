@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.51 2011/07/17 13:16:15 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.53 2011/10/09 16:43:50 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -179,6 +179,14 @@ sub handle_options
 	$state->{dont_run_scripts} = $state->opt('I');
 	$state->{automatic} = $state->opt('a') // 0;
 	$ENV{'PKG_DELETE_EXTRA'} = $state->{extra} ? "Yes" : "No";
+	if ($state->{not}) {
+		$state->{loglevel} = 0;
+	}
+	$state->{loglevel} //= $state->config->value("loglevel") // 1;
+	if ($state->{loglevel}) {
+		require Sys::Syslog;
+		Sys::Syslog::openlog($state->{cmd}, "nofatal");
+	}
 }
 
 sub init
@@ -192,6 +200,13 @@ sub init
 	$self->{wantntogo} = $self->config->istrue("ntogo");
 	$self->SUPER::init(@_);
 	$self->{export_level}++;
+}
+
+sub syslog
+{
+	my $self = shift;
+	return unless $self->{loglevel};
+	Sys::Syslog::syslog('info', $self->f(@_));
 }
 
 sub ntogo

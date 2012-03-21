@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.149 2011/07/19 20:04:23 espie Exp $
+# $OpenBSD: Update.pm,v 1.151 2012/02/06 17:02:48 espie Exp $
 #
 # Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
@@ -132,6 +132,7 @@ sub process_handle
 	for my $n ($set->newer) {
 		if (($state->{hard_replace} ||
 		    $n->location->update_info->match_pkgpath($plist)) &&
+			defined $n->plist &&
 			$n->plist->conflict_list->conflicts_with($sname)) {
 				$self->add_handle($set, $h, $n);
 				return 1;
@@ -148,7 +149,6 @@ sub process_handle
 		}
 		my @l2 = ();
 		for my $loc (@$l) {
-		    $loc->set_arch($state->{arch});
 		    if (!$loc) {
 			    next;
 		    }

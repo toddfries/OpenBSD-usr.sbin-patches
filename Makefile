@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.159 2011/07/09 01:16:57 halex Exp $
+#	$OpenBSD: Makefile,v 1.161 2012/03/05 11:15:41 dlg Exp $
 
 .include <bsd.own.mk>
 
@@ -9,12 +9,12 @@ SUBDIR=	ac accton acpidump adduser amd apm apmd arp \
 	inetd iostat iscsictl iscsid \
 	kgmon kvm_mkdb ldapd ldapctl ldpd ldpctl lpr mailwrapper map-mbone \
 	memconfig mksuncd mopd mrinfo mrouted mtrace mtree ndp netgroup_mkdb \
-	nsd ntpd openssl ospfctl ospfd ospf6d ospf6ctl pcidump pkg_add popa3d \
-	portmap ppp pppd pppoe procmap pstat pwd_mkdb quot quotaon rarpd \
-	rbootd rdate relayctl relayd repquota rip6query ripctl ripd \
+	nginx nsd ntpd openssl ospfctl ospfd ospf6d ospf6ctl pcidump pkg_add \
+	popa3d portmap ppp pppd pppoe procmap pstat pwd_mkdb quot quotaon \
+	rarpd rbootd rdate relayctl relayd repquota rip6query ripctl ripd \
 	rmt route6d rpc.bootparamd rpc.lockd rpc.statd rtadvd rtsold rwhod \
 	sa sasyncd sensorsd sliplogin slstats smtpd snmpctl snmpd spamdb \
-	spray syslogc syslogd sysmerge tcpdrop tcpdump tokenadm \
+	spray syslogc syslogd sysmerge tcpdrop tcpdump tftpd tokenadm \
 	tokeninit traceroute traceroute6 trpt usbdevs user vipw watchdogd \
 	wsconscfg wsfontload wsmoused zdump zic ztsscale
 

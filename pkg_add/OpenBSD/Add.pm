@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.124 2011/07/12 10:09:52 espie Exp $
+# $OpenBSD: Add.pm,v 1.129 2012/01/16 08:42:38 schwarze Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -36,7 +36,8 @@ sub manpages_index
 		my @l = map { $destdir.$_ } @$v;
 		if ($state->{not}) {
 			$state->say("Merging manpages in #1: #2",
-				$destdir.$k, join(@l)) if $state->verbose >= 2;
+			    $destdir.$k, join(' ', @l))
+				if $state->verbose >= 2;
 		} else {
 			try {
 				OpenBSD::Makewhatis::merge($destdir.$k, \@l,
@@ -355,6 +356,7 @@ sub prepare_for_addition
 	# check for collisions with existing stuff
 	if ($state->vstat->exists($fname)) {
 		push(@{$state->{colliding}}, $self);
+		$self->{newly_found} = $pkgname;
 		$state->{problems}++;
 		return;
 	}
@@ -571,7 +573,7 @@ sub install
 {
 	my ($self, $state) = @_;
 	$self->SUPER::install($state);
-	$self->register_manpage($state) unless $state->{not};
+	$self->register_manpage($state);
 }
 
 package OpenBSD::PackingElement::InfoFile;
@@ -705,13 +707,6 @@ sub copy_info
 	File::Copy::move($self->fullname, $dest) or
 	    $state->errsay("Problem while moving #1 into #2: #3", 
 		$self->fullname, $dest, $!);
-}
-
-package OpenBSD::PackingElement::FINSTALL;
-sub install
-{
-	my ($self, $state) = @_;
-	$self->run($state, 'PRE-INSTALL');
 }
 
 package OpenBSD::PackingElement::FCONTENTS;

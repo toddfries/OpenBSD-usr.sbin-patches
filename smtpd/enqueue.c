@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.44 2011/06/09 03:53:39 deraadt Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.56 2012/03/17 13:10:03 gilles Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -27,14 +27,16 @@
 #include <err.h>
 #include <event.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "smtpd.h"
-#include "client.h"
 
 extern struct imsgbuf	*ibuf;
 
@@ -47,7 +49,7 @@ static void parse_addr_terminal(int);
 static char *qualify_addr(char *);
 static void rcpt_add(char *);
 static int open_connection(void);
-static void enqueue_event(int, short, void *);
+static void get_responses(FILE *, int);
 
 enum headerfields {
 	HDR_NONE,
@@ -57,22 +59,33 @@ enum headerfields {
 	HDR_BCC,
 	HDR_SUBJECT,
 	HDR_DATE,
-	HDR_MSGID
+	HDR_MSGID,
+	HDR_MIME_VERSION,
+	HDR_CONTENT_TYPE,
+	HDR_CONTENT_DISPOSITION,
+	HDR_CONTENT_TRANSFER_ENCODING,
+	HDR_USER_AGENT
 };
 
 struct {
 	char			*word;
 	enum headerfields	 type;
 } keywords[] = {
-	{ "From:",		HDR_FROM },
-	{ "To:",		HDR_TO },
-	{ "Cc:",		HDR_CC },
-	{ "Bcc:",		HDR_BCC },
-	{ "Subject:",		HDR_SUBJECT },
-	{ "Date:",		HDR_DATE },
-	{ "Message-Id:",	HDR_MSGID }
+	{ "From:",			HDR_FROM },
+	{ "To:",			HDR_TO },
+	{ "Cc:",			HDR_CC },
+	{ "Bcc:",			HDR_BCC },
+	{ "Subject:",			HDR_SUBJECT },
+	{ "Date:",			HDR_DATE },
+	{ "Message-Id:",		HDR_MSGID },
+	{ "MIME-Version:",		HDR_MIME_VERSION },
+	{ "Content-Type:",		HDR_CONTENT_TYPE },
+	{ "Content-Disposition:",	HDR_CONTENT_DISPOSITION },
+	{ "Content-Transfer-Encoding:",	HDR_CONTENT_TRANSFER_ENCODING },
+	{ "User-Agent:",		HDR_USER_AGENT },
 };
 
+#define	LINESPLIT		990
 #define	SMTP_LINELEN		1000
 #define	TIMEOUTMSG		"Timeout\n"
 
@@ -89,14 +102,15 @@ struct {
 	char	 *fromname;
 	char	**rcpts;
 	int	  rcpt_cnt;
-	char	 *data;
-	size_t	  len;
+	int	  need_linesplit;
 	int	  saw_date;
 	int	  saw_msgid;
 	int	  saw_from;
-
-	struct smtp_client	*pcb;
-	struct event		 ev;
+	int	  saw_mime_version;
+	int	  saw_content_type;
+	int	  saw_content_disposition;
+	int	  saw_content_transfer_encoding;
+	int	  saw_user_agent;
 } msg;
 
 struct {
@@ -117,13 +131,45 @@ sighdlr(int sig)
 	}
 }
 
+static void
+qp_encoded_write(FILE *fp, char *buf, size_t len)
+{
+	while (len) {
+		if (*buf == '=')
+			fprintf(fp, "=3D");
+		else if (*buf == ' ' || *buf == '\t') {
+			char *p = buf;
+			
+			while (*p != '\n') {
+				if (*p != ' ' && *p != '\t')
+					break;
+				p++;
+			}
+			if (*p == '\n')
+				fprintf(fp, "=%2X", *buf & 0xff);
+			else
+				fprintf(fp, "%c", *buf & 0xff);
+		}
+		else if (! isprint(*buf) && *buf != '\n')
+			fprintf(fp, "=%2X", *buf & 0xff);
+		else
+			fprintf(fp, "%c", *buf);
+		buf++;
+		len--;
+	}
+}
+
 int
 enqueue(int argc, char *argv[])
 {
 	int			 i, ch, tflag = 0, noheader;
-	char			*fake_from = NULL;
+	char			*fake_from = NULL, *buf;
 	struct passwd		*pw;
-	FILE			*fp;
+	FILE			*fp, *fout;
+	size_t			 len;
+	char			*line;
+	int			 dotted;
+	int			 inheaders = 0;
 
 	bzero(&msg, sizeof(msg));
 	time(&timestamp);
@@ -190,89 +236,164 @@ enqueue(int argc, char *argv[])
 		err(1, "tmpfile");
 	noheader = parse_message(stdin, fake_from == NULL, tflag, fp);
 
-	if ((msg.fd = open_connection()) == -1)
-		errx(1, "server too busy");
+	if (msg.rcpt_cnt == 0)
+		errx(1, "no recipients");
 
 	/* init session */
 	rewind(fp);
-	msg.pcb = client_init(msg.fd, fp, "localhost", verbose);
 
-	/* set envelope from */
-	client_sender(msg.pcb, "%s", msg.from);
+	if ((msg.fd = open_connection()) == -1)
+		errx(1, "server too busy");
 
-	/* add recipients */
-	if (msg.rcpt_cnt == 0)
-		errx(1, "no recipients");
-	for (i = 0; i < msg.rcpt_cnt; i++)
-		client_rcpt(msg.pcb, "%s", msg.rcpts[i]);
+	fout = fdopen(msg.fd, "a+");
+	if (fout == NULL)
+		err(1, "fdopen");
+
+	/* 
+	 * We need to call get_responses after every command because we don't
+	 * support PIPELINING on the server-side yet.
+	 */
+
+	/* banner */
+	get_responses(fout, 1);
+
+	fprintf(fout, "EHLO localhost\n");
+	get_responses(fout, 1);
+
+	fprintf(fout, "MAIL FROM: <%s>\n", msg.from);
+	get_responses(fout, 1);
+
+	for (i = 0; i < msg.rcpt_cnt; i++) {
+		fprintf(fout, "RCPT TO: <%s>\n", msg.rcpts[i]);
+		get_responses(fout, 1);
+	}
+
+	fprintf(fout, "DATA\n");
+	get_responses(fout, 1);
 
 	/* add From */
 	if (!msg.saw_from)
-		client_printf(msg.pcb, "From: %s%s<%s>\n",
+		fprintf(fout, "From: %s%s<%s>\n",
 		    msg.fromname ? msg.fromname : "",
 		    msg.fromname ? " " : "", 
 		    msg.from);
 
 	/* add Date */
 	if (!msg.saw_date)
-		client_printf(msg.pcb, "Date: %s\n", time_to_text(timestamp));
+		fprintf(fout, "Date: %s\n", time_to_text(timestamp));
 
 	/* add Message-Id */
 	if (!msg.saw_msgid)
-		client_printf(msg.pcb, "Message-Id: <%llu.enqueue@%s>\n",
+		fprintf(fout, "Message-Id: <%"PRIu64".enqueue@%s>\n",
 		    generate_uid(), host);
+
+	if (msg.need_linesplit) {
+		/* we will always need to mime encode for long lines */
+		if (!msg.saw_mime_version)
+			fprintf(fout, "MIME-Version: 1.0\n");
+		if (!msg.saw_content_type)
+			fprintf(fout, "Content-Type: text/plain; charset=unknown-8bit\n");
+		if (!msg.saw_content_disposition)
+			fprintf(fout, "Content-Disposition: inline\n");
+		if (!msg.saw_content_transfer_encoding)
+			fprintf(fout, "Content-Transfer-Encoding: quoted-printable\n");
+	}
+	if (!msg.saw_user_agent)
+		fprintf(fout, "User-Agent: OpenSMTPD enqueuer (Demoosh)\n");
 
 	/* add separating newline */
 	if (noheader)
-		client_printf(msg.pcb, "\n");
+		fprintf(fout, "\n");
+	else
+		inheaders = 1;
 
-	alarm(0);
-	event_init();
-	session_socket_blockmode(msg.fd, BM_NONBLOCK);
-	event_set(&msg.ev, msg.fd, EV_READ|EV_WRITE, enqueue_event, NULL);
-	event_add(&msg.ev, &msg.pcb->timeout);
+	for (;;) {
+		buf = fgetln(fp, &len);
+		if (buf == NULL && ferror(fp))
+			err(1, "fgetln");
+		if (buf == NULL && feof(fp))
+			break;
+		/* newlines have been normalized on first parsing */
+		if (buf[len-1] != '\n')
+			errx(1, "expect EOL");
 
-	if (event_dispatch() < 0)
-		err(1, "event_dispatch");
+		dotted = 0;
+		if (buf[0] == '.') {
+			fputc('.', fout);
+			dotted = 1;
+		}
 
-	client_close(msg.pcb);
+		line = buf;
+
+		if (msg.saw_content_transfer_encoding || noheader || inheaders || !msg.need_linesplit) {
+			fprintf(fout, "%.*s", (int)len, line);
+			if (inheaders && buf[0] == '\n')
+				inheaders = 0;
+			continue;
+		}
+
+		/* we don't have a content transfer encoding, use our default */
+		do {
+			if (len < LINESPLIT) {
+				qp_encoded_write(fout, line, len);
+				break;
+			}
+			else {
+				qp_encoded_write(fout, line, LINESPLIT - 2 - dotted);
+				fprintf(fout, "=\n");
+				line += LINESPLIT - 2 - dotted;
+				len -= LINESPLIT - 2 - dotted;
+			}
+		} while (len);
+	}
+	fprintf(fout, ".\n");
+	get_responses(fout, 1);	
+
+	fprintf(fout, "QUIT\n");
+	get_responses(fout, 1);	
+
 	fclose(fp);
+	fclose(fout);
+
 	exit(0);
 }
 
 static void
-enqueue_event(int fd, short event, void *p)
+get_responses(FILE *fin, int n)
 {
-	if (event & EV_TIMEOUT)
-		errx(1, "timeout");
+	char	*buf;
+	size_t	 len;
+	int	 e;
 
-	switch (client_talk(msg.pcb, event & EV_WRITE)) {
-	case CLIENT_WANT_WRITE:
-		goto rw;
-	case CLIENT_STOP_WRITE:
-		goto ro;
-	case CLIENT_RCPT_FAIL:
-		errx(1, "%s", msg.pcb->reply);
-	case CLIENT_DONE:
-		break;
-	default:
-		errx(1, "enqueue_event: unexpected code");
+	fflush(fin);
+	if ((e = ferror(fin)))
+		errx(1, "ferror: %i", e);
+
+	while(n) {
+		buf = fgetln(fin, &len);
+		if (buf == NULL && ferror(fin))
+			err(1, "fgetln");
+		if (buf == NULL && feof(fin))
+			break;
+		if (buf == NULL || len < 1)
+			err(1, "fgetln weird");
+
+		/* account for \r\n linebreaks */
+		if (len >= 2 && buf[len - 2] == '\r' && buf[len - 1] == '\n')
+			buf[--len - 1] = '\n';
+
+		if (len < 4)
+			errx(1, "bad response");
+
+		if (verbose)
+			printf(">>> %.*s", (int)len, buf);
+
+		if (buf[3] == '-')
+			continue;
+		if (buf[0] != '2' && buf[0] != '3')
+			errx(1, "command failed: %.*s", (int)len, buf);
+		n--;
 	}
-
-	if (msg.pcb->status[0] != '2')
-		errx(1, "%s", msg.pcb->status);
-
-	event_loopexit(NULL);
-	return;
-
-ro:
-	event_set(&msg.ev, msg.fd, EV_READ, enqueue_event, NULL);
-	event_add(&msg.ev, &msg.pcb->timeout);
-	return;
-
-rw:
-	event_set(&msg.ev, msg.fd, EV_READ|EV_WRITE, enqueue_event, NULL);
-	event_add(&msg.ev, &msg.pcb->timeout);
 }
 
 static void
@@ -350,6 +471,10 @@ parse_message(FILE *fin, int get_from, int tflag, FILE *fout)
 			cur = HDR_NONE;
 		}
 
+		/* not really exact, if we are still in headers */
+		if (len + (buf[len - 1] == '\n' ? 0 : 1) >= LINESPLIT)
+			msg.need_linesplit = 1;
+
 		for (i = 0; !header_done && cur == HDR_NONE &&
 		    i < nitems(keywords); i++)
 			if (len > strlen(keywords[i].word) &&
@@ -385,6 +510,16 @@ parse_message(FILE *fin, int get_from, int tflag, FILE *fout)
 			msg.saw_date++;
 		if (cur == HDR_MSGID)
 			msg.saw_msgid++;
+		if (cur == HDR_MIME_VERSION)
+			msg.saw_mime_version = 1;
+		if (cur == HDR_CONTENT_TYPE)
+			msg.saw_content_type = 1;
+		if (cur == HDR_CONTENT_DISPOSITION)
+			msg.saw_content_disposition = 1;
+		if (cur == HDR_CONTENT_TRANSFER_ENCODING)
+			msg.saw_content_transfer_encoding = 1;
+		if (cur == HDR_USER_AGENT)
+			msg.saw_user_agent = 1;
 	}
 
 	return (!header_seen);
@@ -556,8 +691,11 @@ enqueue_offline(int argc, char *argv[])
 	FILE	*fp;
 	int	 i, fd, ch;
 
-	if (! bsnprintf(path, sizeof(path), "%s%s/%d.XXXXXXXXXX", PATH_SPOOL,
-		PATH_OFFLINE, time(NULL)))
+	if (ckdir(PATH_SPOOL PATH_OFFLINE, 01777, 0, 0, 0) == 0)
+		errx(1, "error in offline directory setup");
+
+	if (! bsnprintf(path, sizeof(path), "%s%s/%lld.XXXXXXXXXX", PATH_SPOOL,
+		PATH_OFFLINE, (long long int) time(NULL)))
 		err(1, "snprintf");
 
 	if ((fd = mkstemp(path)) == -1 || (fp = fdopen(fd, "w+")) == NULL) {

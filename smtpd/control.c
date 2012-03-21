@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.59 2011/07/21 23:29:24 gilles Exp $	*/
+/*	$OpenBSD: control.c,v 1.64 2012/01/12 18:06:18 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <err.h>
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
@@ -64,7 +65,8 @@ void
 control_imsg(struct imsgev *iev, struct imsg *imsg)
 {
 	struct ctl_conn	*c;
-	struct reload	*reload;
+
+	log_imsg(PROC_CONTROL, iev->proc, imsg);
 
 	if (iev->proc == PROC_SMTP) {
 		switch (imsg->hdr.type) {
@@ -78,22 +80,8 @@ control_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	if (iev->proc == PROC_PARENT) {
-		switch (imsg->hdr.type) {
-		case IMSG_CONF_RELOAD:
-			env->sc_flags &= ~SMTPD_CONFIGURING;
-			reload = imsg->data;
-			c = control_connbyfd(reload->fd);
-			if (c == NULL)
-				return;
-			imsg_compose_event(&c->iev,
-			    reload->ret ? IMSG_CTL_OK : IMSG_CTL_FAIL, 0, 0,
-			    -1, NULL, 0);
-			return;
-		}
-	}
-
-	fatalx("control_imsg: unexpected imsg");
+	errx(1, "control_imsg: unexpected %s imsg",
+	    imsg_to_str(imsg->hdr.type));
 }
 
 void
@@ -267,12 +255,7 @@ control_accept(int listenfd, short event, void *arg)
 	event_add(&c->iev.ev, NULL);
 	TAILQ_INSERT_TAIL(&ctl_conns, c, entry);
 
-	env->stats->control.sessions++;
-	env->stats->control.sessions_active++;
-	SET_IF_GREATER(env->stats->control.sessions_active,
-		env->stats->control.sessions_maxactive);
-
-	if (env->stats->control.sessions_active >= env->sc_maxconn) {
+	if (stat_increment(STATS_CONTROL_SESSION) >= env->sc_maxconn) {
 		log_warnx("ctl client limit hit, disabling new connections");
 		event_del(&control_state.ev);
 	}
@@ -305,10 +288,8 @@ control_close(int fd)
 	close(fd);
 	free(c);
 
-	env->stats->control.sessions_active--;
-
-	if (!event_pending(&control_state.ev, EV_READ, NULL) &&
-	    env->stats->control.sessions_active < env->sc_maxconn) {
+	if (stat_decrement(STATS_CONTROL_SESSION) < env->sc_maxconn &&
+	    !event_pending(&control_state.ev, EV_READ, NULL)) {
 		log_warnx("re-enabling ctl connections");
 		event_add(&control_state.ev, NULL);
 	}
@@ -403,7 +384,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		}
-		case IMSG_QUEUE_PAUSE_LOCAL:
+		case IMSG_QUEUE_PAUSE_MDA:
 			if (euid)
 				goto badcred;
 
@@ -414,10 +395,10 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags |= SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_PAUSE_LOCAL, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_PAUSE_MDA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_PAUSE_OUTGOING:
+		case IMSG_QUEUE_PAUSE_MTA:
 			if (euid)
 				goto badcred;
 
@@ -428,7 +409,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags |= SMTPD_MTA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_PAUSE_OUTGOING, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_PAUSE_MTA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 		case IMSG_SMTP_PAUSE:
@@ -445,7 +426,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			    0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_RESUME_LOCAL:
+		case IMSG_QUEUE_RESUME_MDA:
 			if (euid)
 				goto badcred;
 
@@ -456,10 +437,10 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags &= ~SMTPD_MDA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_RESUME_LOCAL, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_RESUME_MDA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
-		case IMSG_QUEUE_RESUME_OUTGOING:
+		case IMSG_QUEUE_RESUME_MTA:
 			if (euid)
 				goto badcred;
 
@@ -470,7 +451,7 @@ control_dispatch_ext(int fd, short event, void *arg)
 			}
 			env->sc_flags &= ~SMTPD_MTA_PAUSED;
 			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_RESUME_OUTGOING, 0, 0, -1, NULL, 0);
+			    IMSG_QUEUE_RESUME_MTA, 0, 0, -1, NULL, 0);
 			imsg_compose_event(&c->iev, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 			break;
 
@@ -520,7 +501,8 @@ control_dispatch_ext(int fd, short event, void *arg)
 		}
 		default:
 			log_debug("control_dispatch_ext: "
-			    "error handling imsg %d", imsg.hdr.type);
+			    "error handling %s imsg",
+			    imsg_to_str(imsg.hdr.type));
 			break;
 		}
 		imsg_free(&imsg);
