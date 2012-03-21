@@ -163,7 +163,7 @@ main_sig_handler(int sig, short event, void *arg)
 	case SIGINT:
 	case SIGHUP:
 		initiator_shutdown(initiator);
-		evtimer_set(&exit_ev, shutdown_cb, NULL);
+		evtimer_set(&exit_ev, shutdown_cb, (void *)sig);
 		timerclear(&tv);
 		if (evtimer_add(&exit_ev, &tv) == -1)
 			fatal("main_sig_handler");
@@ -266,6 +266,7 @@ void
 shutdown_cb(int fd, short event, void *arg)
 {
 	struct timeval tv;
+	log_info("shutdown_cb: signo %d\n",(int)arg);
 
 	if (exit_rounds++ >= ISCSI_EXIT_WAIT || initiator_isdown(initiator))
 		event_loopexit(NULL);
