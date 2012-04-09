@@ -640,6 +640,10 @@ PYUNBOUND_OBJ
 WITH_PYUNBOUND
 PYTHONMOD_UNINSTALL
 PYTHONMOD_INSTALL
+<<<<<<< HEAD
+=======
+PYTHONMOD_HEADER
+>>>>>>> master
 PYTHONMOD_OBJ
 WITH_PYTHONMODULE
 swig
@@ -4148,6 +4152,7 @@ ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
 ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
+<<<<<<< HEAD
 
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking whether $CC supports -g" >&5
@@ -4210,6 +4215,8 @@ $as_echo "no" >&6; }
 
 fi
 
+=======
+>>>>>>> master
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
@@ -15882,6 +15889,11 @@ $as_echo "#define WITH_PYTHONMODULE 1" >>confdefs.h
 
 	    PYTHONMOD_OBJ="pythonmod.lo pythonmod_utils.lo"
 
+<<<<<<< HEAD
+=======
+	    PYTHONMOD_HEADER="$(srcdir)/pythonmod/pythonmod.h"
+
+>>>>>>> master
 	    PYTHONMOD_INSTALL=pythonmod-install
 
 	    PYTHONMOD_UNINSTALL=pythonmod-uninstall

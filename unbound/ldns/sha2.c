@@ -37,7 +37,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
+<<<<<<< HEAD
  * $Id: sha2.c,v 1.1 2001/11/08 00:01:51 adg Exp adg $
+=======
+ * $Id: sha2.c,v 1.1.1.1 2012/03/26 18:08:22 sthen Exp $
+>>>>>>> master
  */
 
 #include <ldns/config.h>
