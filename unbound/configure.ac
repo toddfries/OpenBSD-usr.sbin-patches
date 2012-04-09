@@ -207,11 +207,6 @@ AC_DEFINE_UNQUOTED(RSRC_PACKAGE_VERSION, [$wnvs], [version number for resource f
 # Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST
 AC_LANG_C
-<<<<<<< HEAD
-ACX_CHECK_COMPILER_FLAG(g, [CFLAGS="$CFLAGS -g"])
-ACX_CHECK_COMPILER_FLAG(O2, [CFLAGS="$CFLAGS -O2"])
-=======
->>>>>>> master
 AC_PROG_CC
 ACX_DEPFLAG
 ACX_DETERMINE_EXT_FLAGS_UNBOUND
@@ -475,11 +470,8 @@ if test x_$ub_test_python != x_no; then
             AC_SUBST(WITH_PYTHONMODULE)
 	    PYTHONMOD_OBJ="pythonmod.lo pythonmod_utils.lo"
 	    AC_SUBST(PYTHONMOD_OBJ)
-<<<<<<< HEAD
-=======
 	    PYTHONMOD_HEADER="$(srcdir)/pythonmod/pythonmod.h"
 	    AC_SUBST(PYTHONMOD_HEADER)
->>>>>>> master
 	    PYTHONMOD_INSTALL=pythonmod-install
 	    AC_SUBST(PYTHONMOD_INSTALL)
 	    PYTHONMOD_UNINSTALL=pythonmod-uninstall
