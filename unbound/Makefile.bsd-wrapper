@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile.bsd-wrapper
+#	$OpenBSD: Makefile.bsd-wrapper,v 1.4 2012/03/26 20:32:17 sthen Exp $
 
 .include <bsd.own.mk>
 
@@ -17,6 +17,7 @@ CONFIGURE_OPTS_UNBOUND=	--enable-allsymbols \
 			--with-libexpat=/usr \
 			--with-ldns=ldns \
 			--without-pthreads \
+			--without-pythonmodule \
 			--with-chroot-dir=${CHROOTDIR} \
 			--with-pidfile=${CHROOTDIR}/var/run/unbound.pid \
 			--with-conf-file=${CHROOTDIR}/etc/unbound.conf \
@@ -116,9 +117,11 @@ install: maninstall
 .endfor
 
 BEFOREMAN= ${.OBJDIR}/config.status
+CLEANFILES+= ${MAN} doc/example.conf doc/libunbound.3
 
 clean cleandir:
 	-@if [ -e Makefile ]; then ${MAKE} realclean; fi
+	-@if [ -e ldns/Makefile ]; then cd ldns; ${MAKE} realclean; fi
 	rm -f ${CLEANFILES}
 
 depend:
