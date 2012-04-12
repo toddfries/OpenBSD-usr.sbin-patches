@@ -1043,6 +1043,7 @@ static int xfrd_parse_soa_info(buffer_type* packet, xfrd_soa_t* soa)
 	{
 		return 0;
 	}
+	soa->rdata_count = 7; /* rdata in SOA */
 	soa->serial = htonl(buffer_read_u32(packet));
 	soa->refresh = htonl(buffer_read_u32(packet));
 	soa->retry = htonl(buffer_read_u32(packet));
@@ -1065,8 +1066,7 @@ xfrd_xfr_check_rrs(xfrd_zone_t* zone, buffer_type* packet, size_t count,
 	int *done, xfrd_soa_t* soa)
 {
 	/* first RR has already been checked */
-	uint16_t type, klass, rrlen;
-	uint32_t ttl;
+	uint16_t type, rrlen;
 	size_t i, soapos;
 	for(i=0; i<count; ++i,++zone->msg_rr_count)
 	{
@@ -1076,8 +1076,8 @@ xfrd_xfr_check_rrs(xfrd_zone_t* zone, buffer_type* packet, size_t count,
 			return 0;
 		soapos = buffer_position(packet);
 		type = buffer_read_u16(packet);
-		klass = buffer_read_u16(packet);
-		ttl = buffer_read_u32(packet);
+		(void)buffer_read_u16(packet); /* class */
+		(void)buffer_read_u32(packet); /* ttl */
 		rrlen = buffer_read_u16(packet);
 		if(!buffer_available(packet, rrlen))
 			return 0;

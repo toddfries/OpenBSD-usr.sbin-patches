@@ -1,4 +1,4 @@
-/*	$OpenBSD: parser.c,v 1.19 2011/04/13 20:53:18 gilles Exp $	*/
+/*	$OpenBSD: parser.c,v 1.24 2012/01/12 18:06:18 eric Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -48,19 +48,33 @@ struct token {
 };
 
 static const struct token t_main[];
+static const struct token t_schedule_id[];
 static const struct token t_show[];
 static const struct token t_pause[];
+static const struct token t_remove[];
 static const struct token t_resume[];
 static const struct token t_log[];
 
 static const struct token t_main[] = {
-	{KEYWORD,	"show",		NONE,		t_show},
+	{KEYWORD,	"schedule-id",  	NONE,		t_schedule_id},
+	{KEYWORD,	"schedule-all",   	SCHEDULE_ALL,  	NULL},
+	{KEYWORD,	"show",	       	NONE,		t_show},
 	{KEYWORD,	"monitor",	MONITOR,	NULL},
 	{KEYWORD,	"pause",	NONE,      	t_pause},
-/*	{KEYWORD,	"reload",	RELOAD,		NULL},*/
+	{KEYWORD,	"remove",	NONE,      	t_remove},
 	{KEYWORD,	"resume",	NONE,      	t_resume},
 	{KEYWORD,	"stop",		SHUTDOWN,      	NULL},
 	{KEYWORD,	"log",    	NONE,      	t_log},
+	{ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_remove[] = {
+	{VARIABLE,	"evpid",	REMOVE,		NULL},
+	{ENDTOKEN,	"",		NONE,		NULL}
+};
+
+static const struct token t_schedule_id[] = {
+	{VARIABLE,	"msgid/evpid",	SCHEDULE,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
@@ -68,20 +82,21 @@ static const struct token t_show[] = {
 	{KEYWORD,	"queue",	SHOW_QUEUE,	NULL},
 	{KEYWORD,	"runqueue",	SHOW_RUNQUEUE,	NULL},
 	{KEYWORD,	"stats",	SHOW_STATS,	NULL},
+	{KEYWORD,	"sizes",	SHOW_SIZES,	NULL},
 	{ENDTOKEN,	"",		NONE,		NULL}
 };
 
 static const struct token t_pause[] = {
-	{KEYWORD,	"local",		PAUSE_MDA,	NULL},
-	{KEYWORD,	"outgoing",	        PAUSE_MTA,	NULL},
-	{KEYWORD,	"incoming",	        PAUSE_SMTP,	NULL},
+	{KEYWORD,	"mda",			PAUSE_MDA,	NULL},
+	{KEYWORD,	"mta",		        PAUSE_MTA,	NULL},
+	{KEYWORD,	"smtp",		        PAUSE_SMTP,	NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 
 static const struct token t_resume[] = {
-	{KEYWORD,	"local",		RESUME_MDA,	NULL},
-	{KEYWORD,	"outgoing",	        RESUME_MTA,	NULL},
-	{KEYWORD,	"incoming",	        RESUME_SMTP,	NULL},
+	{KEYWORD,	"mda",			RESUME_MDA,	NULL},
+	{KEYWORD,	"mta",		        RESUME_MTA,	NULL},
+	{KEYWORD,	"smtp",		        RESUME_SMTP,	NULL},
 	{ENDTOKEN,	"",			NONE,      	NULL}
 };
 

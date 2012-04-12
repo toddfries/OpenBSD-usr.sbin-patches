@@ -1,4 +1,4 @@
-/* $OpenBSD: ppp.h,v 1.5 2010/09/24 02:57:43 yasuoka Exp $ */
+/* $OpenBSD: ppp.h,v 1.9 2012/01/23 03:36:22 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -104,6 +104,7 @@
 #define PPP_TUNNEL_L2TP		1	/** L2TP Tunnel Type */
 #define PPP_TUNNEL_PPTP		2	/** PPTP Tunnel Type */
 #define PPP_TUNNEL_PPPOE	3	/** PPPoE Tunnel Type */
+#define PPP_TUNNEL_SSTP		4	/** SSTP Tunnel Type */
 
 /** Default LCP ECHO interval (sec) */
 #define DEFAULT_LCP_ECHO_INTERVAL	300
@@ -380,12 +381,16 @@ typedef int (*npppd_iofunc) (
 
 /** Flag indicates the orignal packet was encrypted by MPPE */
 #define	PPP_IO_FLAGS_MPPE_ENCRYPTED			0x0001
+/** Flag indicates the orignal packet was delayed */
+#define	PPP_IO_FLAGS_DELAYED				0x0002
 
 typedef void (*npppd_voidfunc) (
 	npppd_ppp 	*ppp
 );
 
 #ifdef	USE_NPPPD_MPPE
+
+#define MPPE_NOLDKEY		64
 
 typedef struct _mppe_rc4 {
 	void		*rc4ctx;
@@ -403,6 +408,7 @@ typedef struct _mppe_rc4 {
 
 	uint8_t		master_key[MPPE_KEYLEN];
 	uint8_t		session_key[MPPE_KEYLEN];
+	uint8_t		(*old_session_keys)[MPPE_KEYLEN];
 } mppe_rc4_t;
 
 /** Type for MPPE */
@@ -423,7 +429,7 @@ typedef struct _mppe {
 			reserved	:11;
 	uint16_t	keylenbits;
 
-	mppe_rc4_t	send, recv, keychg;
+	mppe_rc4_t	send, recv;
 } mppe;
 #endif
 
@@ -441,7 +447,7 @@ typedef struct _npppd_phone_number {
 /** Type for PPP */
 struct _npppd_ppp {
 	npppd 		*pppd;
-	int		id;
+	u_int		id;			/** Ppp Id */
 	/* Input and output */
 	uint8_t		*outpacket_buf;		/** buffer space for output */
 	npppd_iofunc	send_packet;		/** send to physical layer */
@@ -459,11 +465,12 @@ struct _npppd_ppp {
 	void		*phy_context;		/** Context of physical layer */
 	char		phy_label[16];		/** Label for physical layer */
 	union {
-		struct sockaddr_in	peer_in;/** {L2TP,PPTP}/IPv4 */
+		struct sockaddr_in  peer_in4;	/** {L2TP,PPTP}/IPv4 */
+		struct sockaddr_in6 peer_in6;	/** {L2TP,PPTP}/IPv6 */
 #if defined(USE_NPPPD_PPPOE)
-		struct sockaddr_dl	peer_dl;/** PPPoE */
+		struct sockaddr_dl  peer_dl;	/** PPPoE */
 #endif
-		npppd_phone_number	peer_pn;/** DialIn */
+		npppd_phone_number  peer_pn;	/** DialIn */
 	} phy_info;				/** Info of physical layer */
 	char		calling_number[NPPPD_PHONE_NUMBER_LEN + 1];
 	npppd_voidfunc	phy_close;		/** close line */
@@ -520,6 +527,9 @@ struct _npppd_ppp {
 	/** Address pool used by IP asssignment */
 	void		*assigned_pool;
 
+	/** Framed-IP-Address for Accounting */
+	struct in_addr	acct_framed_ip_address;
+
 	struct in_addr	realm_framed_ip_address;
 	struct in_addr	realm_framed_ip_netmask;
 
@@ -535,7 +545,9 @@ struct _npppd_ppp {
 			pipex_started:1,
 			/** pipex is enabled? */
 			pipex_enabled:1,
-			reserved:3;
+			/** ingress filter */
+			ingress_filter:1,
+			reserved:2;
 	uint8_t		/** IP address is assigned from dynamic address pool */
 			assign_dynapool:1,
 			/** assigned IP address is enabled? */
@@ -580,6 +592,9 @@ struct _npppd_ppp {
 	uint64_t	ibytes;
 	/** Number of output packet bytes */
 	uint64_t	obytes;
+
+	/** RADIUS Accouting (RFC2866) Terminate Cause */
+	int				terminate_cause;
 
 	/*
 	 * Disconnect cause information for RFC3145
@@ -746,7 +761,8 @@ int          ppp_init (npppd *, npppd_ppp *);
 void         ppp_start (npppd_ppp *);
 int          ppp_dialin_proxy_prepare (npppd_ppp *, dialin_proxy_info *);
 void         ppp_stop (npppd_ppp *, const char *);
-void         ppp_stop_ex (npppd_ppp *, const char *, npppd_ppp_disconnect_code, int, int, const char *);
+void         ppp_set_disconnect_cause (npppd_ppp *, npppd_ppp_disconnect_code, int, int, const char *);
+void         ppp_set_radius_terminate_cause(npppd_ppp *, int);
 
 void         ppp_destroy (void *);
 void         ppp_lcp_up (npppd_ppp *);

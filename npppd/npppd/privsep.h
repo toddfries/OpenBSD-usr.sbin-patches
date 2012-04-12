@@ -1,4 +1,4 @@
-/* $OpenBSD: privsep.h,v 1.1 2010/01/31 05:49:51 yasuoka Exp $ */
+/* $OpenBSD: privsep.h,v 1.3 2012/01/18 03:13:04 yasuoka Exp $ */
 
 /*
  * Copyright (c) 2010 Yasuoka Masahiko <yasuoka@openbsd.org>
@@ -18,12 +18,15 @@
 #ifndef PRIVSEP_H
 #define PRIVSEP_H 1
 
+#define PRIVSEP_BUFSIZE		4092
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 int   privsep_init (void);
 void  privsep_fini (void);
+pid_t privsep_priv_pid (void);
 FILE  *priv_fopen (const char *);
 int   priv_bind (int, const struct sockaddr *, socklen_t);
 int   priv_unlink (const char *);

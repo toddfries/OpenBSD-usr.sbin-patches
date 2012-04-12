@@ -1,4 +1,4 @@
-/*	$OpenBSD: ftp-proxy.c,v 1.22 2011/04/28 00:17:28 mikeb Exp $ */
+/*	$OpenBSD: ftp-proxy.c,v 1.25 2012/04/05 19:08:40 camield Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Camiel Dobbelaar, <cd@sentia.nl>
@@ -93,7 +93,7 @@ void	client_read(struct bufferevent *, void *);
 int	drop_privs(void);
 void	end_session(struct session *);
 void	exit_daemon(void);
-int	getline(char *, size_t *);
+int	get_line(char *, size_t *);
 void	handle_connection(const int, short, void *);
 void	handle_signal(int, short, void *);
 struct session * init_session(void);
@@ -113,6 +113,7 @@ size_t linelen;
 
 char ntop_buf[NTOP_BUFS][INET6_ADDRSTRLEN];
 
+struct event listen_ev, pause_accept_ev;
 struct sockaddr_storage fixed_server_ss, fixed_proxy_ss;
 char *fixed_server, *fixed_server_port, *fixed_proxy, *listen_ip, *listen_port,
     *qname, *tagname;
@@ -239,7 +240,7 @@ client_read(struct bufferevent *bufev, void *arg)
 		    buf_avail);
 		s->cbuf_valid += read;
 
-		while ((n = getline(s->cbuf, &s->cbuf_valid)) > 0) {
+		while ((n = get_line(s->cbuf, &s->cbuf_valid)) > 0) {
 			logmsg(LOG_DEBUG, "#%d client: %s", s->id, linebuf);
 			if (!client_parse(s)) {
 				end_session(s);
@@ -333,7 +334,7 @@ exit_daemon(void)
 }
 
 int
-getline(char *buf, size_t *valid)
+get_line(char *buf, size_t *valid)
 {
 	size_t i;
 
@@ -370,7 +371,7 @@ getline(char *buf, size_t *valid)
 }
 
 void
-handle_connection(const int listen_fd, short event, void *ev)
+handle_connection(const int listen_fd, short event, void *arg)
 {
 	struct sockaddr_storage tmp_ss;
 	struct sockaddr *client_sa, *server_sa, *fixed_server_sa;
@@ -379,6 +380,12 @@ handle_connection(const int listen_fd, short event, void *ev)
 	socklen_t len;
 	int client_fd, fc, on;
 
+	event_add(&listen_ev, NULL);
+
+	if ((event & EV_TIMEOUT))
+		/* accept() is no longer paused. */
+		return;
+
 	/*
 	 * We _must_ accept the connection, otherwise libevent will keep
 	 * coming back, and we will chew up all CPU.
@@ -386,7 +393,18 @@ handle_connection(const int listen_fd, short event, void *ev)
 	client_sa = sstosa(&tmp_ss);
 	len = sizeof(struct sockaddr_storage);
 	if ((client_fd = accept(listen_fd, client_sa, &len)) < 0) {
-		logmsg(LOG_CRIT, "accept failed: %s", strerror(errno));
+		logmsg(LOG_CRIT, "accept() failed: %s", strerror(errno));
+
+		/*
+		 * Pause accept if we are out of file descriptors, or
+		 * libevent will haunt us here too.
+		 */
+		if (errno == ENFILE || errno == EMFILE) {
+			struct timeval pause = { 1, 0 };
+
+			event_del(&listen_ev);
+			evtimer_add(&pause_accept_ev, &pause);
+		}
 		return;
 	}
 
@@ -428,9 +446,8 @@ handle_connection(const int listen_fd, short event, void *ev)
 		goto fail;
 	}
 	len = sizeof(s->client_rd);
-	if (client_sa->sa_family == AF_INET &&
-	    getsockopt(s->client_fd, IPPROTO_IP, SO_RTABLE, &s->client_rd,
-	    &len)) {
+	if (getsockopt(s->client_fd, SOL_SOCKET, SO_RTABLE, &s->client_rd,
+	    &len) && errno != ENOPROTOOPT) {
 		logmsg(LOG_CRIT, "#%d getsockopt failed: %s", s->id,
 		    strerror(errno));
 		goto fail;
@@ -590,7 +607,7 @@ main(int argc, char *argv[])
 {
 	struct rlimit rlp;
 	struct addrinfo hints, *res;
-	struct event ev, ev_sighup, ev_sigint, ev_sigterm;
+	struct event ev_sighup, ev_sigint, ev_sigterm;
 	int ch, error, listenfd, on;
 	const char *errstr;
 
@@ -771,8 +788,9 @@ main(int argc, char *argv[])
 	signal_add(&ev_sigint, NULL);
 	signal_add(&ev_sigterm, NULL);
 
-	event_set(&ev, listenfd, EV_READ | EV_PERSIST, handle_connection, &ev);
-	event_add(&ev, NULL);
+	event_set(&listen_ev, listenfd, EV_READ, handle_connection, NULL);
+	event_add(&listen_ev, NULL);
+	evtimer_set(&pause_accept_ev, handle_connection, NULL);
 
 	logmsg(LOG_NOTICE, "listening on %s port %s", listen_ip, listen_port);
 
@@ -1056,7 +1074,7 @@ server_read(struct bufferevent *bufev, void *arg)
 		    buf_avail);
 		s->sbuf_valid += read;
 
-		while ((n = getline(s->sbuf, &s->sbuf_valid)) > 0) {
+		while ((n = get_line(s->sbuf, &s->sbuf_valid)) > 0) {
 			logmsg(LOG_DEBUG, "#%d server: %s", s->id, linebuf);
 			if (!server_parse(s)) {
 				end_session(s);

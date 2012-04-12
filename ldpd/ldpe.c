@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.c,v 1.14 2011/01/10 12:28:25 claudio Exp $ */
+/*	$OpenBSD: ldpe.c,v 1.16 2012/04/12 17:33:43 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -160,6 +160,7 @@ ldpe(struct ldpd_conf *xconf, int pipe_parent2ldpe[2], int pipe_ldpe2lde[2],
 		fatal("can't drop privileges");
 
 	event_init();
+	accept_init();
 
 	/* setup signal handler */
 	signal_set(&ev_sigint, SIGINT, ldpe_sig_handler, NULL);
@@ -198,10 +199,7 @@ ldpe(struct ldpd_conf *xconf, int pipe_parent2ldpe[2], int pipe_ldpe2lde[2],
 	    EV_READ|EV_PERSIST, disc_recv_packet, leconf);
 	event_add(&leconf->disc_ev, NULL);
 
-	event_set(&leconf->sess_ev, leconf->ldp_session_socket,
-	    EV_READ|EV_PERSIST, session_accept, leconf);
-	event_add(&leconf->sess_ev, NULL);
-
+	accept_add(leconf->ldp_session_socket, session_accept, leconf);
 	/* listen on ldpd control socket */
 	TAILQ_INIT(&ctl_conns);
 	control_listen();
@@ -304,17 +302,12 @@ ldpe_dispatch_main(int fd, short event, void *bula)
 				fatalx("IFINFO imsg with wrong len");
 			kif = imsg.data;
 			link_new = (kif->flags & IFF_UP) &&
-			    (LINK_STATE_IS_UP(kif->link_state) ||
-			    (kif->link_state == LINK_STATE_UNKNOWN &&
-			    kif->media_type != IFT_CARP));
+			    LINK_STATE_IS_UP(kif->link_state);
 
 			LIST_FOREACH(iface, &leconf->iface_list, entry) {
 				if (kif->ifindex == iface->ifindex) {
 					link_old = (iface->flags & IFF_UP) &&
-					    (LINK_STATE_IS_UP(iface->linkstate)
-					    || (iface->linkstate ==
-					    LINK_STATE_UNKNOWN &&
-					    iface->media_type != IFT_CARP));
+					    LINK_STATE_IS_UP(iface->linkstate);
 					iface->flags = kif->flags;
 					iface->linkstate = kif->link_state;
 

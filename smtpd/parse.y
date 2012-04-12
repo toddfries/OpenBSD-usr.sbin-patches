@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.76 2011/06/09 17:41:52 gilles Exp $	*/
+/*	$OpenBSD: parse.y,v 1.84 2011/12/13 21:44:47 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -40,10 +40,12 @@
 #include <event.h>
 #include <ifaddrs.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <netdb.h>
 #include <paths.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <util.h>
 
@@ -123,16 +125,16 @@ typedef struct {
 %token	DNS DB PLAIN EXTERNAL DOMAIN CONFIG SOURCE
 %token  RELAY VIA DELIVER TO MAILDIR MBOX HOSTNAME
 %token	ACCEPT REJECT INCLUDE NETWORK ERROR MDA FROM FOR
-%token	ARROW ENABLE AUTH TLS LOCAL VIRTUAL TAG ALIAS
+%token	ARROW ENABLE AUTH TLS LOCAL VIRTUAL TAG ALIAS FILTER
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.map>		map
-%type	<v.number>	quantifier decision port from auth ssl size expire credentials
+%type	<v.number>	quantifier decision port from auth ssl size expire
 %type	<v.cond>	condition
 %type	<v.tv>		interval
 %type	<v.object>	mapref
 %type	<v.maddr>	relay_as
-%type	<v.string>	certname user tag on alias
+%type	<v.string>	certname user tag on alias credentials
 
 %%
 
@@ -189,7 +191,7 @@ quantifier      : /* empty */                   { $$ = 1; }
 
 interval	: NUMBER quantifier		{
 			if ($1 < 0) {
-				yyerror("invalid interval: %lld", $1);
+				yyerror("invalid interval: %" PRId64, $1);
 				YYERROR;
 			}
 			$$.tv_usec = 0;
@@ -199,7 +201,7 @@ interval	: NUMBER quantifier		{
 
 size		: NUMBER		{
 			if ($1 < 0) {
-				yyerror("invalid size: %lld", $1);
+				yyerror("invalid size: %" PRId64, $1);
 				YYERROR;
 			}
 			$$ = $1;
@@ -231,7 +233,7 @@ port		: PORT STRING			{
 		}
 		| PORT NUMBER			{
 			if ($2 <= 0 || $2 >= (int)USHRT_MAX) {
-				yyerror("invalid port: %lld", $2);
+				yyerror("invalid port: %" PRId64, $2);
 				YYERROR;
 			}
 			$$ = htons($2);
@@ -290,8 +292,7 @@ credentials	: AUTH STRING	{
 				free($2);
 				YYERROR;
 			}
-			free($2);
-			$$ = m->m_id;
+			$$ = $2;
 		}
 		| /* empty */	{ $$ = 0; }
 		;
@@ -379,7 +380,39 @@ main		: QUEUE INTERVAL interval	{
 				YYERROR;
 			}
 			free($2);
+		}/*
+		| FILTER STRING STRING		{
+			struct filter *filter;
+			struct filter *tmp;
+
+			filter = calloc(1, sizeof (*filter));
+			if (filter == NULL ||
+			    strlcpy(filter->name, $2, sizeof (filter->name))
+			    >= sizeof (filter->name) ||
+			    strlcpy(filter->path, $3, sizeof (filter->path))
+			    >= sizeof (filter->path)) {
+				free(filter);
+				free($2);
+				free($3);
+				YYERROR;
+			}
+
+			TAILQ_FOREACH(tmp, conf->sc_filters, f_entry) {
+				if (strcasecmp(filter->name, tmp->name) == 0)
+					break;
+			}
+			if (tmp == NULL)
+				TAILQ_INSERT_TAIL(conf->sc_filters, filter, f_entry);
+			else {
+       				yyerror("ambiguous filter name: %s", filter->name);
+				free($2);
+				free($3);
+				YYERROR;
+			}
+			free($2);
+			free($3);
 		}
+		*/
 		;
 
 maptype		: SINGLE			{ map->m_type = T_SINGLE; }
@@ -957,7 +990,7 @@ action		: DELIVER TO MAILDIR user		{
 		}
 		| DELIVER TO MDA STRING user		{
 			rule->r_user = $5;
-			rule->r_action = A_EXT;
+			rule->r_action = A_MDA;
 			if (strlcpy(rule->r_value.buffer, $4,
 			    sizeof(rule->r_value.buffer))
 			    >= sizeof(rule->r_value.buffer))
@@ -989,7 +1022,9 @@ action		: DELIVER TO MAILDIR user		{
 
 			if ($7) {
 				rule->r_value.relayhost.flags |= F_AUTH;
-				rule->r_value.relayhost.secmapid = $7;
+				strlcpy(rule->r_value.relayhost.authmap, $7,
+				    sizeof(rule->r_value.relayhost.authmap));
+				free($7);
 			}
 
 			if ($6 != NULL) {
@@ -1195,6 +1230,7 @@ lookup(char *s)
 		{ "enable",		ENABLE },
 		{ "expire",		EXPIRE },
 		{ "external",		EXTERNAL },
+		{ "filter",		FILTER },
 		{ "for",		FOR },
 		{ "from",		FROM },
 		{ "hash",		HASH },
@@ -1561,34 +1597,26 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 
 	conf->sc_maxsize = SIZE_MAX;
 
-	if ((conf->sc_maps = calloc(1, sizeof(*conf->sc_maps))) == NULL) {
-		log_warn("cannot allocate memory");
-		return (-1);
-	}
-	if ((conf->sc_rules = calloc(1, sizeof(*conf->sc_rules))) == NULL) {
-		log_warn("cannot allocate memory");
-		free(conf->sc_maps);
-		return (-1);
-	}
-	if ((conf->sc_listeners = calloc(1, sizeof(*conf->sc_listeners))) == NULL) {
-		log_warn("cannot allocate memory");
-		free(conf->sc_maps);
-		free(conf->sc_rules);
-		return (-1);
-	}
-	if ((conf->sc_ssl = calloc(1, sizeof(*conf->sc_ssl))) == NULL) {
-		log_warn("cannot allocate memory");
-		free(conf->sc_maps);
-		free(conf->sc_rules);
-		free(conf->sc_listeners);
-		return (-1);
-	}
-	if ((m = calloc(1, sizeof(*m))) == NULL) {
+	conf->sc_maps = calloc(1, sizeof(*conf->sc_maps));
+	conf->sc_rules = calloc(1, sizeof(*conf->sc_rules));
+	conf->sc_listeners = calloc(1, sizeof(*conf->sc_listeners));
+	conf->sc_ssl = calloc(1, sizeof(*conf->sc_ssl));
+	conf->sc_filters = calloc(1, sizeof(*conf->sc_filters));
+	m = calloc(1, sizeof(*m));
+
+	if (conf->sc_maps == NULL	||
+	    conf->sc_rules == NULL	||
+	    conf->sc_listeners == NULL	||
+	    conf->sc_ssl == NULL	||
+	    conf->sc_filters == NULL	||
+	    m == NULL) {
 		log_warn("cannot allocate memory");
 		free(conf->sc_maps);
 		free(conf->sc_rules);
 		free(conf->sc_listeners);
 		free(conf->sc_ssl);
+		free(conf->sc_filters);
+		free(m);
 		return (-1);
 	}
 
@@ -1601,6 +1629,7 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 	TAILQ_INIT(conf->sc_listeners);
 	TAILQ_INIT(conf->sc_maps);
 	TAILQ_INIT(conf->sc_rules);
+	TAILQ_INIT(conf->sc_filters);
 	SPLAY_INIT(conf->sc_ssl);
 	SPLAY_INIT(&conf->sc_sessions);
 
@@ -1897,6 +1926,8 @@ interface(const char *s, const char *tag, const char *cert,
 		fatal("getifaddrs");
 
 	for (p = ifap; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL)
+			continue;
 		if (strcmp(p->ifa_name, s) != 0 &&
 		    ! is_if_in_group(p->ifa_name, s))
 			continue;
@@ -1959,6 +1990,8 @@ set_localaddrs(void)
 	m = map_findbyname("localhost");
 
 	for (p = ifap; p != NULL; p = p->ifa_next) {
+		if (p->ifa_addr == NULL)
+			continue;
 		switch (p->ifa_addr->sa_family) {
 		case AF_INET:
 			sain = (struct sockaddr_in *)&ss;

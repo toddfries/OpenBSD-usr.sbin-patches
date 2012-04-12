@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.7 2010/09/23 01:45:10 jsg Exp $
+#	$OpenBSD: Makefile,v 1.9 2012/01/18 03:13:04 yasuoka Exp $
 
 NPPPD_COMMON_DIR=	${.CURDIR}/../common
 
@@ -7,17 +7,15 @@ NOMAN=		noman
 #MAN=		npppd.8 npppd.conf.5 npppd-users.csv.5
 CPPFLAGS+=	-I${NPPPD_COMMON_DIR} -I${.CURDIR}
 SRCS=		ccp.c chap.c chap_ms.c fsm.c ipcp.c lcp.c
-SRCS+=		mppe.c pap.c ppp.c radius_req.c
+SRCS+=		mppe.c pap.c ppp.c
 SRCS+=		npppd.c npppd_config.c npppd_subr.c npppd_auth.c npppd_iface.c
 SRCS+=		config_helper.c slist.c hash.c properties.c rtev_common.c
 SRCS+=		rtev_libevent.c bytebuf.c debugutil.c csvreader.c net_utils.c
 SRCS+=		radish.c time_utils.c npppd_pool.c addr_range.c
-SRCS+=		radius+.c
+SRCS+=		radius+.c radius_req.c npppd_radius.c
 SRCS+=		recvfromto.c
 SRCS+=		privsep.c
 #SRCS+=		ipsec_util.c
-
-CPPFLAGS+=	-DUSE_NPPPD_NPPPD_CTL=1
 SRCS+=		npppd_ctl.c
 
 CPPFLAGS+=	-DUSE_NPPPD_PPTP -I${.CURDIR}/../pptp
@@ -32,8 +30,6 @@ CPPFLAGS+=	-DUSE_NPPPD_PPPOE -I${.CURDIR}/../pppoe
 SRCS+=		pppoe_session.c pppoed.c
 .PATH:	${.CURDIR}/../pppoe
 
-#SRCS+=		eap.c radius_common.c
-
 CPPFLAGS+=	-D__COPYRIGHT\(x\)= -D__RCSID\(x\)=
 CPPFLAGS+=	-DUSE_NPPPD_MPPE
 CPPFLAGS+=	-DUSE_NPPPD_PIPEX
@@ -47,7 +43,7 @@ DPADD+=		${LIBEVENT} ${LIBCRYPTO}
 .ifdef	DEBUG
 CPPFLAGS+=	-DDEBUG=1
 CPPFLAGS+=	-DNPPPD_DEBUG=1 -DNPPPD_TUN_DEBUG=1 -DNPPPD_CONFIG_DEBUG=1
-CPPFLAGS+=	-DNPPPD_CTL_DEBUG=1 -DRADIUS_REQ_DEBUG=1 -DPPP_DEBUG=1
+CPPFLAGS+=	-DRADIUS_REQ_DEBUG=1 -DPPP_DEBUG=1
 CPPFLAGS+=	-DLCP_DEBUG=1 -DFSM_DEBUG=1 -DMPPE_DEBUG=1 -DTUNDEV_DEBUG=1
 CPPFLAGS+=	-DIPCP_DEBUG=1 -DNPPPD_INTERFACE_DEBUG=1 -DNPPPD_POOL_DEBUG=1
 CPPFLAGS+=	-DNPPPD_AUTH_DEBUG=1

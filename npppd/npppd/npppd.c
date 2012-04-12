@@ -1,4 +1,4 @@
-/* $OpenBSD: npppd.c,v 1.10 2011/05/15 15:47:52 markus Exp $ */
+/* $OpenBSD: npppd.c,v 1.15 2012/01/23 03:36:22 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -29,7 +29,7 @@
  * Next pppd(nppd). This file provides a npppd daemon process and operations
  * for npppd instance.
  * @author	Yasuoka Masahiko
- * $Id: npppd.c,v 1.10 2011/05/15 15:47:52 markus Exp $
+ * $Id: npppd.c,v 1.15 2012/01/23 03:36:22 yasuoka Exp $
  */
 #include <sys/cdefs.h>
 #include "version.h"
@@ -49,6 +49,7 @@ __COPYRIGHT(
 #include <sys/socket.h>
 #include <sys/param.h>
 #include <sys/sysctl.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
@@ -113,9 +114,10 @@ static uint32_t        str_hash(const void *, int);
 static void            npppd_on_sighup (int, short, void *);
 static void            npppd_on_sigterm (int, short, void *);
 static void            npppd_on_sigint (int, short, void *);
+static void            npppd_on_sigchld (int, short, void *);
 static void            npppd_reset_timer(npppd *);
 static void            npppd_timer(int, short, void *);
-static void	       npppd_auth_finalizer_periodic(npppd *);
+static void            npppd_auth_finalizer_periodic(npppd *);
 static int  rd2slist_walk (struct radish *, void *);
 static int  rd2slist (struct radish_head *, slist *);
 static inline void     seed_random(long *);
@@ -146,11 +148,12 @@ int        main (int, char *[]);
 int
 main(int argc, char *argv[])
 {
-	int ch, retval = 0, ll_adjust = 0, runasdaemon = 0;
+	int ch, retstatus, ll_adjust = 0, runasdaemon = 0;
 	extern char *optarg;
 	const char *npppd_conf0 = DEFAULT_NPPPD_CONF;
 	struct passwd *pw;
 
+	retstatus = EXIT_SUCCESS;
 	while ((ch = getopt(argc, argv, "Dc:dhs")) != -1) {
 		switch (ch) {
 		case 's':
@@ -192,7 +195,7 @@ main(int argc, char *argv[])
 		err(1, "cannot drop privileges");
 
 	if (npppd_init(&s_npppd, npppd_conf0) != 0) {
-		retval = 1;
+		retstatus = EXIT_FAILURE;
 		goto fail;
 	}
 
@@ -209,13 +212,15 @@ main(int argc, char *argv[])
 	/* privileges is dropped */
 
 	npppd_start(&s_npppd);
+	if (s_npppd.stop_by_error != 0)
+		retstatus = EXIT_FAILURE;
 	npppd_fini(&s_npppd);
 	/* FALLTHROUGH */
 fail:
 	privsep_fini();
 	log_printf(LOG_NOTICE, "Terminate npppd.");
 
-	return retval;
+	exit(retstatus);
 }
 
 static void
@@ -287,6 +292,8 @@ npppd_init(npppd *_this, const char *config_file)
 	seed_random(&seed);
 	srandom(seed);
 
+	_this->boot_id = (uint32_t)random();
+
 	/* load configuration */
 	if ((status = npppd_reload_config(_this)) != 0)
 		return status;
@@ -344,9 +351,11 @@ npppd_init(npppd *_this, const char *config_file)
 	signal_set(&_this->ev_sigterm, SIGTERM, npppd_on_sigterm, _this);
 	signal_set(&_this->ev_sigint, SIGINT, npppd_on_sigint, _this);
 	signal_set(&_this->ev_sighup, SIGHUP, npppd_on_sighup, _this);
+	signal_set(&_this->ev_sigchld, SIGCHLD, npppd_on_sigchld, _this);
 	signal_add(&_this->ev_sigterm, NULL);
 	signal_add(&_this->ev_sigint, NULL);
 	signal_add(&_this->ev_sighup, NULL);
+	signal_add(&_this->ev_sigchld, NULL);
 
 	evtimer_set(&_this->ev_timer, npppd_timer, _this);
 
@@ -378,6 +387,9 @@ npppd_init(npppd *_this, const char *config_file)
 	if (npppd_config_str_equali(_this, "arpd.enabled", "true", ARPD_DEFAULT) == 1)
         	arp_sock_init();
 #endif
+	npppd_ctl_init(&_this->ctl, _this, NPPPD_CTL_SOCK_PATH);
+	if ((status = npppd_ctl_start(&_this->ctl)) != 0)
+		return status;
 	return npppd_modules_reload(_this);
 }
 
@@ -491,6 +503,7 @@ npppd_fini(npppd *_this)
 	signal_del(&_this->ev_sigterm);
 	signal_del(&_this->ev_sigint);
 	signal_del(&_this->ev_sighup);
+	signal_del(&_this->ev_sigchld);
 
 	if (_this->properties != NULL)
 		properties_destroy(_this->properties);
@@ -785,7 +798,7 @@ npppd_get_ppp_by_user(npppd *_this, const char *username)
  *		specified ID is found, otherwise it returns NULL.
  */
 npppd_ppp *
-npppd_get_ppp_by_id(npppd *_this, int ppp_id)
+npppd_get_ppp_by_id(npppd *_this, u_int ppp_id)
 {
 	slist users;
 	npppd_ppp *ppp0, *ppp;
@@ -874,10 +887,10 @@ npppd_network_output(npppd *_this, npppd_ppp *ppp, int proto, u_char *pktp,
 		pip = (struct ip *)pktp;
 	}
 
-#ifndef	NO_INGRES_FILTER
-	if ((pip->ip_src.s_addr & ppp->ppp_framed_ip_netmask.s_addr) !=
-	    (ppp->ppp_framed_ip_address.s_addr &
-		    ppp->ppp_framed_ip_netmask.s_addr)) {
+	if (ppp->ingress_filter != 0 &&
+	    (pip->ip_src.s_addr & ppp->ppp_framed_ip_netmask.s_addr)
+		    != (ppp->ppp_framed_ip_address.s_addr &
+			ppp->ppp_framed_ip_netmask.s_addr)) {
 		char logbuf[80];
 		strlcpy(logbuf, inet_ntoa(pip->ip_dst), sizeof(logbuf));
 		ppp_log(ppp, LOG_INFO,
@@ -886,7 +899,6 @@ npppd_network_output(npppd *_this, npppd_ppp *ppp, int proto, u_char *pktp,
 
 		return;
 	}
-#endif
 	if (ppp->timeout_sec > 0 && !ip_is_idle_packet(pip, lbuf))
 		ppp_reset_idle_timeout(ppp);
 
@@ -929,6 +941,8 @@ pipex_setup_common(npppd_ppp *ppp, struct pipex_session_req *req)
 
 	if (ppp->adjust_mss != 0)
 		req->pr_ppp_flags |= PIPEX_PPP_ADJUST_TCPMSS;
+	if (ppp->ingress_filter != 0)
+		req->pr_ppp_flags |= PIPEX_PPP_INGRESS_FILTER;
 
 	req->pr_ip_srcaddr = ppp->pppd->iface[0].ip4addr;
 	req->pr_ip_address = ppp->ppp_framed_ip_address;
@@ -1233,7 +1247,8 @@ pipex_periodic(npppd *_this)
 {
 	struct pipex_session_list_req req;
 	npppd_ppp *ppp;
-	int i, error, ppp_id;
+	int i, error;
+	u_int ppp_id;
 	slist dlist, users;
 
 	slist_init(&dlist);
@@ -1248,7 +1263,7 @@ pipex_periodic(npppd *_this)
 		}
 		for (i = 0; i < req.plr_ppp_id_count; i++) {
 			ppp_id = req.plr_ppp_id[i];
-			slist_add(&dlist, (void *)ppp_id);
+			slist_add(&dlist, (void *)(uintptr_t)ppp_id);
 		}
 	} while (req.plr_flags & PIPEX_LISTREQ_MORE);
 
@@ -1265,7 +1280,7 @@ pipex_periodic(npppd *_this)
 	slist_itr_first(&dlist);
 	while (slist_itr_has_next(&dlist)) {
 		/* FIXME: Linear search by PPP Id eats CPU */
-		ppp_id = (int)slist_itr_next(&dlist);
+		ppp_id = (uintptr_t)slist_itr_next(&dlist);
 		slist_itr_first(&users);
 		ppp = NULL;
 		while (slist_itr_has_next(&users)) {
@@ -1284,6 +1299,11 @@ pipex_periodic(npppd *_this)
 			continue;
 		}
 		ppp_log(ppp, LOG_INFO, "Stop requested by the kernel");
+		/* TODO: PIPEX doesn't return the disconect reason */
+#ifdef USE_NPPPD_RADIUS
+		ppp_set_radius_terminate_cause(ppp,
+		    RADIUS_TERMNATE_CAUSE_IDLE_TIMEOUT);
+#endif
 		ppp_stop(ppp, NULL);
 	}
 pipex_done:
@@ -1916,6 +1936,28 @@ npppd_on_sigint(int fd, short ev_type, void *ctx)
 	npppd_stop(_this);
 }
 
+static void
+npppd_on_sigchld(int fd, short ev_type, void *ctx)
+{
+	int status;
+	pid_t wpid;
+	npppd *_this;
+
+	_this = ctx;
+	wpid = privsep_priv_pid();
+	if (wait4(wpid, &status, WNOHANG, NULL) == wpid) {
+		if (WIFSIGNALED(status))
+			log_printf(LOG_WARNING,
+			    "priviledged process exits abnormaly.  signal=%d",
+			    WTERMSIG(status));
+		else
+			log_printf(LOG_WARNING,
+			    "priviledged process exits abnormaly.  status=%d",
+			    WEXITSTATUS(status));
+		_this->stop_by_error = 1;
+		npppd_stop(_this);
+	}
+}
 /***********************************************************************
  * Miscellaneous functions
  ***********************************************************************/
@@ -2020,10 +2062,10 @@ npppd_ppp_bind_realm(npppd *_this, npppd_ppp *ppp, const char *username, int
 			    strcmp(username + lusername - lsuffix,
 				npppd_auth_get_suffix(realm0)) == 0))) {
 				/* check prefix */
-				lprefix = strlen(npppd_auth_get_suffix(realm0));
+				lprefix = strlen(npppd_auth_get_prefix(realm0));
 				if (lprefix > 0 &&
 				    strncmp(username,
-					    npppd_auth_get_suffix(realm0),
+					    npppd_auth_get_prefix(realm0),
 					    lprefix) != 0)
 					continue;
 
@@ -2218,7 +2260,7 @@ npppd_rd_walktree_delete(struct radish_head *rh)
  * @return return NULL if no usable RADIUS setting.
  */
 void *
-npppd_get_radius_req_setting(npppd *_this, npppd_ppp *ppp)
+npppd_get_radius_auth_setting(npppd *_this, npppd_ppp *ppp)
 {
 	NPPPD_ASSERT(_this != NULL);
 	NPPPD_ASSERT(ppp != NULL);
@@ -2228,21 +2270,7 @@ npppd_get_radius_req_setting(npppd *_this, npppd_ppp *ppp)
 	if (!npppd_ppp_is_realm_radius(_this, ppp))
 		return NULL;
 
-	return npppd_auth_radius_get_radius_req_setting(
-	    (npppd_auth_radius *)ppp->realm);
-}
-
-/** Notice a failure on RAIDUS request/response */
-void
-npppd_radius_server_failure_notify(npppd *_this, npppd_ppp *ppp, void *rad_ctx,
-    const char *reason)
-{
-	NPPPD_ASSERT(rad_ctx != NULL);
-	NPPPD_ASSERT(ppp != NULL);
-
-	npppd_auth_radius_server_failure_notify(
-	    (npppd_auth_radius *)ppp->realm, radius_get_server_address(rad_ctx),
-	    reason);
+	return npppd_auth_radius_get_radius_auth_setting(ppp->realm);
 }
 #endif
 
@@ -2288,8 +2316,10 @@ npppd_auth_finalizer_periodic(npppd *_this)
 				slist_itr_remove(&users);
 			}
 		}
-		if (refcnt == 0)
+		if (refcnt == 0) {
 			npppd_auth_destroy(auth_base);
+			slist_itr_remove(&_this->realms);
+		}
 	}
 	if (ndisposing > 0)
 		slist_fini(&users);
@@ -2341,4 +2371,24 @@ seed_random(long *seed)
 #endif
 	gettimeofday(&t, NULL);
 	*seed = gethostid() ^ t.tv_sec ^ t.tv_usec ^ getpid();
+}
+
+const char *
+npppd_ppp_tunnel_protocol_name(npppd *_this, npppd_ppp *ppp)
+{
+	switch (ppp->tunnel_type) {
+	case PPP_TUNNEL_NONE:
+		return "None";
+	case PPP_TUNNEL_L2TP:
+		return "L2TP";
+	case PPP_TUNNEL_PPTP:
+		return "PPTP";
+	case PPP_TUNNEL_PPPOE:
+		return "PPPoE";
+	case PPP_TUNNEL_SSTP:
+		return "SSTP";
+	}
+
+	NPPPD_ASSERT(0);
+	return "Error";
 }

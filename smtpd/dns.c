@@ -1,4 +1,4 @@
-/*	$OpenBSD: dns.c,v 1.42 2011/05/06 19:21:43 eric Exp $	*/
+/*	$OpenBSD: dns.c,v 1.47 2012/01/11 21:22:26 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -21,6 +21,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/tree.h>
+#include <sys/queue.h>
+#include <sys/uio.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -67,9 +69,11 @@ static void dnssession_destroy(struct dnssession *);
 static void dnssession_mx_insert(struct dnssession *, const char *, int);
 static void dns_asr_event_set(struct dnssession *, struct asr_result *);
 static void dns_asr_handler(int, short, void *);
+static int  dns_asr_error(int);
 static void dns_asr_dispatch_host(struct dnssession *);
 static void dns_asr_dispatch_mx(struct dnssession *);
 static void dns_asr_dispatch_cname(struct dnssession *);
+static void dns_reply(struct dns *, int);
 
 struct asr *asr = NULL;
 
@@ -135,14 +139,24 @@ dns_async(struct imsgev *asker, int type, struct dns *query)
 
 	switch (type) {
 	case IMSG_DNS_HOST:
+		log_debug("dns: lookup host \"%s\"", query->host);
+		if (sockaddr_from_str((struct sockaddr*)&query->ss, PF_UNSPEC,
+		    query->host) == 0) {
+			log_debug("dns:  \"%s\" is an IP address", query->host);
+			query->error = DNS_OK;
+			dns_reply(query, IMSG_DNS_HOST);
+			dns_reply(query, IMSG_DNS_HOST_END);
+			dnssession_destroy(dnssession);
+			return;
+		}
 		dnssession_mx_insert(dnssession, query->host, 0);
-		env->stats->lka.queries_host++;
+		stat_increment(STATS_LKA_SESSION_HOST);
 		dns_asr_dispatch_host(dnssession);
 		return;
 	case IMSG_DNS_PTR:
 		dnssession->aq = asr_query_cname(asr,
 		    (struct sockaddr*)&query->ss, query->ss.ss_len);
-		env->stats->lka.queries_cname++;
+		stat_increment(STATS_LKA_SESSION_CNAME);
 		if (dnssession->aq == NULL) {
 			log_debug("dns_async: asr_query_cname error");
 			break;
@@ -150,8 +164,9 @@ dns_async(struct imsgev *asker, int type, struct dns *query)
 		dns_asr_dispatch_cname(dnssession);
 		return;
 	case IMSG_DNS_MX:
+		log_debug("dns: lookup mx \"%s\"", query->host);
 		dnssession->aq = asr_query_dns(asr, T_MX, C_IN, query->host, 0);
-		env->stats->lka.queries_mx++;
+		stat_increment(STATS_LKA_SESSION_MX);
 		if (dnssession->aq == NULL) {
 			log_debug("dns_async: asr_query_dns error");
 			break;
@@ -163,13 +178,17 @@ dns_async(struct imsgev *asker, int type, struct dns *query)
 		break;
 	}
 
-	env->stats->lka.queries_failure++;
+	stat_increment(STATS_LKA_FAILURE);
 	dnssession_destroy(dnssession);
 noasr:
-	query->error = EAI_AGAIN;
-	if (type != IMSG_DNS_PTR)
-		type = IMSG_DNS_HOST_END;
-	imsg_compose_event(asker, type, 0, 0, -1, query, sizeof(*query));
+	query->error = DNS_RETRY;
+	dns_reply(query, type != IMSG_DNS_PTR ? IMSG_DNS_HOST_END : type);
+}
+
+static void
+dns_reply(struct dns *query, int type)
+{
+	imsg_compose_event(query->asker, type, 0, 0, -1, query, sizeof(*query));
 }
 
 static void
@@ -204,6 +223,21 @@ dns_asr_handler(int fd, short event, void *arg)
 	}
 }
 
+static int
+dns_asr_error(int ar_err)
+{
+	switch (ar_err) {
+	case ASR_OK:
+		return DNS_OK;
+	case EASR_FAMILY:
+	case EASR_NAME:
+		stat_increment(STATS_LKA_FAILURE);
+		return DNS_EINVAL;
+	default:
+		return DNS_RETRY;
+	}
+}
+
 static void
 dns_asr_dispatch_mx(struct dnssession *dnssession)
 {
@@ -220,12 +254,25 @@ dns_asr_dispatch_mx(struct dnssession *dnssession)
 		return;
 	}
 
-	if (ar.ar_err)
-		goto hosts;  /* empty list */
+	if (ar.ar_err) {
+		query->error = dns_asr_error(ar.ar_err);
+		dns_reply(query, IMSG_DNS_HOST_END);
+		dnssession_destroy(dnssession);
+		return;
+	}
 
 	packed_init(&pack, ar.ar_data, ar.ar_datalen);
 	unpack_header(&pack, &h);
 	unpack_query(&pack, &q);
+
+	/* check if the domain name exists */
+	/* XXX what about other DNS error codes? */
+	if (RCODE(h.flags) == ERR_NAME) {
+		query->error = DNS_ENONAME;
+		dns_reply(query, IMSG_DNS_HOST_END);
+		dnssession_destroy(dnssession);
+		return;
+	}
 
 	if (h.ancount == 0)
 		/* fallback to host if no MX is found. */
@@ -241,7 +288,6 @@ dns_asr_dispatch_mx(struct dnssession *dnssession)
 	free(ar.ar_data);
 	ar.ar_data = NULL;
 
-hosts:
 	/* Now we have a sorted list of MX to resolve. Simply "turn" this
 	 * MX session into a regular host session.
 	 */
@@ -258,15 +304,17 @@ dns_asr_dispatch_host(struct dnssession *dnssession)
 	struct asr_result	 ar;
 	int			 ret;
 
+	/* default to notfound, override with retry or ok later */
+	if (dnssession->mxcurrent == 0)
+		query->error = DNS_ENOTFOUND;
+
 next:
 	/* query all listed hosts in turn */
 	while (dnssession->aq == NULL) {
 		if (dnssession->mxcurrent == dnssession->mxarraysz) {
-			query->error = (dnssession->mxfound) ? 0 : EAI_NONAME;
-			if (query->error)
-				env->stats->lka.queries_failure++;
-			imsg_compose_event(query->asker, IMSG_DNS_HOST_END, 0,
-			    0, -1, query, sizeof(*query));
+			if (dnssession->mxfound)
+				query->error = DNS_OK;
+			dns_reply(query, IMSG_DNS_HOST_END);
 			dnssession_destroy(dnssession);
 			return;
 		}
@@ -277,9 +325,7 @@ next:
 	while ((ret = asr_run(dnssession->aq, &ar)) == ASR_YIELD) {
 		free(ar.ar_cname);
 		memcpy(&query->ss, &ar.ar_sa.sa, ar.ar_sa.sa.sa_len);
-		query->error = 0;
-		imsg_compose_event(query->asker, IMSG_DNS_HOST, 0, 0, -1, query,
-		    sizeof(*query));
+		dns_reply(query, IMSG_DNS_HOST);
 		dnssession->mxfound++;
 	}
 
@@ -287,6 +333,9 @@ next:
 		dns_asr_event_set(dnssession, &ar);
 		return;
 	}
+
+	if (dns_asr_error(ar.ar_err) == DNS_RETRY)
+		query->error = DNS_RETRY;
 
 	dnssession->aq  = NULL;
 	goto next;
@@ -304,19 +353,16 @@ dns_asr_dispatch_cname(struct dnssession *dnssession)
 		return;
 	case ASR_YIELD:
 		/* Only return the first answer */
-		query->error = 0;
+		query->error = DNS_OK;
 		strlcpy(query->host, ar.ar_cname, sizeof (query->host));
 		asr_abort(dnssession->aq);
 		free(ar.ar_cname);
 		break;
 	case ASR_DONE:
-		/* This is necessarily an error */
-		env->stats->lka.queries_failure++;
-		query->error = ar.ar_err;
+		query->error = dns_asr_error(ar.ar_err);
 		break;
 	}
-	imsg_compose_event(query->asker, IMSG_DNS_PTR, 0, 0, -1, query,
-	    sizeof(*query));
+	dns_reply(query, IMSG_DNS_PTR);
 	dnssession_destroy(dnssession);
 }
 
@@ -329,11 +375,7 @@ dnssession_init(struct dns *query)
 	if (dnssession == NULL)
 		fatal("dnssession_init: calloc");
 
-	env->stats->lka.queries++;
-	env->stats->lka.queries_active++;
-	if (env->stats->lka.queries_active > env->stats->lka.queries_maxactive)
-		env->stats->lka.queries_maxactive = \
-		    env->stats->lka.queries_active;
+	stat_increment(STATS_LKA_SESSION);
 
 	dnssession->id = query->id;
 	dnssession->query = *query;
@@ -344,7 +386,7 @@ dnssession_init(struct dns *query)
 static void
 dnssession_destroy(struct dnssession *dnssession)
 {
-	env->stats->lka.queries_active--;
+	stat_decrement(STATS_LKA_SESSION);
 	SPLAY_REMOVE(dnstree, &dns_sessions, dnssession);
 	event_del(&dnssession->ev);
 	free(dnssession);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.56 2011/05/16 21:05:51 gilles Exp $	*/
+/*	$OpenBSD: mda.c,v 1.67 2012/01/13 14:01:57 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -24,12 +24,16 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include <err.h>
 #include <event.h>
 #include <imsg.h>
+#include <inttypes.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <vis.h>
 
@@ -51,9 +55,12 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 	char			 output[128], *error, *parent_error;
 	struct deliver		 deliver;
 	struct mda_session	*s;
-	struct delivery		*d;
 	struct delivery_mda	*d_mda;
 	struct mailaddr		*maddr;
+	struct envelope		*ep;
+	u_int16_t		 msg;
+
+	log_imsg(PROC_MDA, iev->proc, imsg);
 
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
@@ -64,7 +71,6 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 				fatal(NULL);
 			msgbuf_init(&s->w);
 			s->msg = *(struct envelope *)imsg->data;
-			s->msg.delivery.status = DS_TEMPFAILURE;
 			s->id = mda_id++;
 			s->datafp = fdopen(imsg->fd, "r");
 			if (s->datafp == NULL)
@@ -72,11 +78,11 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 			LIST_INSERT_HEAD(&env->mda_sessions, s, entry);
 
 			/* request parent to fork a helper process */
-			d     = &s->msg.delivery;
-			d_mda = &s->msg.delivery.agent.mda;
+			ep    = &s->msg;
+			d_mda = &s->msg.agent.mda;
 			switch (d_mda->method) {
-			case A_EXT:
-				deliver.mode = A_EXT;
+			case A_MDA:
+				deliver.mode = A_MDA;
 				strlcpy(deliver.user, d_mda->as_user,
 				    sizeof (deliver.user));
 				strlcpy(deliver.to, d_mda->to.buffer,
@@ -84,14 +90,14 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 				break;
 				
 			case A_MBOX:
-				deliver.mode = A_EXT;
+				deliver.mode = A_MBOX;
 				strlcpy(deliver.user, "root",
 				    sizeof (deliver.user));
-				snprintf(deliver.to, sizeof (deliver.to),
-				    "%s -f %s@%s %s", PATH_MAILLOCAL,
-				    d->from.user,
-				    d->from.domain,
-				    d_mda->to.user);
+				strlcpy(deliver.to, d_mda->to.user,
+				    sizeof (deliver.to));
+				snprintf(deliver.from, sizeof(deliver.from),
+				    "%s@%s", ep->sender.user,
+				    ep->sender.domain);
 				break;
 
 			case A_MAILDIR:
@@ -192,14 +198,13 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 			}
 
 			/* update queue entry */
-			if (error == NULL)
-				s->msg.delivery.status = DS_ACCEPTED;
-			else
-				strlcpy(s->msg.delivery.errorline, error,
-				    sizeof s->msg.delivery.errorline);
-			imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-			    IMSG_QUEUE_MESSAGE_UPDATE, 0, 0, -1, &s->msg,
-			    sizeof s->msg);
+			msg = IMSG_QUEUE_DELIVERY_OK;
+			if (error) {
+				msg = IMSG_QUEUE_DELIVERY_TEMPFAIL;
+				envelope_set_errormsg(&s->msg, "%s", error);
+			}
+			imsg_compose_event(env->sc_ievs[PROC_QUEUE], msg,
+			    0, 0, -1, &s->msg, sizeof s->msg);
 
 			/*
 			 * XXX: which struct path gets used for logging depends
@@ -209,16 +214,16 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 			 */
 			if (s->msg.rule.r_action == A_MAILDIR ||
 			    s->msg.rule.r_action == A_MBOX)
-				maddr = &s->msg.delivery.rcpt;
+				maddr = &s->msg.dest;
 			else
-				maddr = &s->msg.delivery.rcpt_orig;
+				maddr = &s->msg.rcpt;
 
 			/* log status */
 			if (error && asprintf(&error, "Error (%s)", error) < 0)
 				fatal("mda: asprintf");
-			log_info("%016llx: to=<%s@%s>, delay=%d, stat=%s",
-			    s->msg.delivery.id, maddr->user, maddr->domain,
-			    time(NULL) - s->msg.delivery.creation,
+			log_info("%016" PRIx64 ": to=<%s@%s>, delay=%" PRId64 ", stat=%s",
+			    s->msg.id, maddr->user, maddr->domain,
+			    (int64_t) (time(NULL) - s->msg.creation),
 			    error ? error : "Sent");
 			free(error);
 
@@ -243,7 +248,7 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 		}
 	}
 
-	fatalx("mda_imsg: unexpected imsg");
+	errx(1, "mda_imsg: unexpected %s imsg", imsg_to_str(imsg->hdr.type));
 }
 
 static void
@@ -335,16 +340,16 @@ mda_store(struct mda_session *s)
 	struct ibuf	*buf;
 	int		 len;
 
-	if (s->msg.delivery.from.user[0] && s->msg.delivery.from.domain[0])
+	if (s->msg.sender.user[0] && s->msg.sender.domain[0])
 		/* XXX: remove user provided Return-Path, if any */
 		len = asprintf(&p, "Return-Path: %s@%s\nDelivered-To: %s@%s\n",
-		    s->msg.delivery.from.user, s->msg.delivery.from.domain,
-		    s->msg.delivery.rcpt_orig.user,
-		    s->msg.delivery.rcpt_orig.domain);
+		    s->msg.sender.user, s->msg.sender.domain,
+		    s->msg.rcpt.user,
+		    s->msg.rcpt.domain);
 	else
 		len = asprintf(&p, "Delivered-To: %s@%s\n",
-		    s->msg.delivery.rcpt_orig.user,
-		    s->msg.delivery.rcpt_orig.domain);
+		    s->msg.rcpt.user,
+		    s->msg.rcpt.domain);
 
 	if (len == -1)
 		fatal("mda_store: asprintf");

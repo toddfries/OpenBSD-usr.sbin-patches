@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCheck.pm,v 1.28 2010/12/29 13:03:05 espie Exp $
+# $OpenBSD: PkgCheck.pm,v 1.33 2012/01/07 16:28:16 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -100,7 +100,11 @@ sub thorough_check
 		$state->log("can't read #1", $name);
 		return;
 	}
-	my $d = $self->compute_digest($name);
+	if (!defined $self->{d}) {
+		$state->log("no checksum for #1", $name);
+		return;
+	}
+	my $d = $self->compute_digest($name, ref($self->{d}));
 	if (!$d->equals($self->{d})) {
 		$state->log("checksum for #1 does not match", $name);
 	}
@@ -137,7 +141,9 @@ sub basic_check
 	my ($self, $state) = @_;
 	$self->SUPER::basic_check($state);
 	my $name = $state->{destdir}.$self->fullname;
-	$state->{known}{$name}{'whatis.db'} = 1;
+	for my $file (OpenBSD::Paths::man_cruft()) {
+		$state->{known}{$name}{$file} = 1;
+	}
 }
 
 package OpenBSD::PackingElement::Fontdir;
@@ -503,12 +509,18 @@ sub sanity_check
 			$self->may_remove($state, $name);
 			return;
 		}
+		if (!defined $plist->pkgname) {
+			$state->errsay("#1: no pkgname in plist",
+			    $state->safe($name));
+			$self->may_remove($state, $name);
+			return;
+		}
 		if ($plist->pkgname ne $name) {
 			$state->errsay("#1: pkgname does not match",
 			    $state->safe($name));
 			$self->may_remove($state, $name);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 		$state->{exists}{$plist->pkgname} = 1;
 	});
 }
@@ -565,7 +577,7 @@ sub package_files_check
 		} else {
 			$plist->thorough_check($state);
 		}
-		$plist->mark_available_lib($plist->pkgname);
+		$plist->mark_available_lib($plist->pkgname, $state);
 	});
 }
 
@@ -574,7 +586,9 @@ sub localbase_check
 	my ($self, $state) = @_;
 	$state->{known} //= {};
 	my $base = $state->{destdir}.OpenBSD::Paths->localbase;
-	$state->{known}{$base."/man"}{'whatis.db'} = 1;
+	for my $file (OpenBSD::Paths::man_cruft()) {
+		$state->{known}{$base."/man"}{$file} = 1;
+	}
 	$state->{known}{$base."/info"}{'dir'} = 1;
 	$state->{known}{$base."/lib/X11"}{'app-defaults'} = 1;
 	$state->{known}{$base."/libdata"} = {};

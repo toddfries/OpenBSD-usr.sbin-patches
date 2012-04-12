@@ -1,4 +1,4 @@
-/*	$OpenBSD: iscsid.c,v 1.7 2011/05/04 21:00:04 claudio Exp $ */
+/*	$OpenBSD: iscsid.c,v 1.8 2011/08/20 19:03:39 sthen Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -68,11 +68,12 @@ main(int argc, char *argv[])
 	struct passwd *pw;
 	char *ctrlsock = ISCSID_CONTROL;
 	char *vscsidev = ISCSID_DEVICE;
-	int ch, debug = 0;
+	int ch, debug = 0, verbose = 0;
 
 	log_init(1);    /* log to stderr until daemonized */
+	log_verbose(1);
 
-	while ((ch = getopt(argc, argv, "dn:s:")) != -1) {
+	while ((ch = getopt(argc, argv, "dn:s:v")) != -1) {
 		switch (ch) {
 		case 'd':
 			debug = 1;
@@ -82,6 +83,9 @@ main(int argc, char *argv[])
 			break;
 		case 's':
 			ctrlsock = optarg;
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		default:
 			usage();
@@ -100,6 +104,8 @@ main(int argc, char *argv[])
 		errx(1, "need root privileges");
 
 	log_init(debug);
+	log_verbose(verbose);
+
 	if (!debug)
 		daemon(1, 0);
 	log_info("startup");
@@ -157,7 +163,7 @@ main_sig_handler(int sig, short event, void *arg)
 	case SIGINT:
 	case SIGHUP:
 		initiator_shutdown(initiator);
-		evtimer_set(&exit_ev, shutdown_cb, NULL);
+		evtimer_set(&exit_ev, shutdown_cb, (void *)sig);
 		timerclear(&tv);
 		if (evtimer_add(&exit_ev, &tv) == -1)
 			fatal("main_sig_handler");
@@ -173,7 +179,7 @@ usage(void)
 {
 	extern char *__progname;
 
-	fprintf(stderr, "usage: %s [-d] [-n device] [-s socket]\n",
+	fprintf(stderr, "usage: %s [-dv] [-n device] [-s socket]\n",
 	    __progname);
 	exit(1);
 }
@@ -260,6 +266,7 @@ void
 shutdown_cb(int fd, short event, void *arg)
 {
 	struct timeval tv;
+	log_info("shutdown_cb: signo %d\n",(int)arg);
 
 	if (exit_rounds++ >= ISCSI_EXIT_WAIT || initiator_isdown(initiator))
 		event_loopexit(NULL);

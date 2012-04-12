@@ -1,4 +1,4 @@
-.\" $OpenBSD: bgpd.conf.5,v 1.114 2011/04/30 07:52:33 sthen Exp $
+.\" $OpenBSD: bgpd.conf.5,v 1.117 2012/04/07 17:25:51 claudio Exp $
 .\"
 .\" Copyright (c) 2004 Claudio Jeker <claudio@openbsd.org>
 .\" Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -16,7 +16,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: April 30 2011 $
+.Dd $Mdocdate: April 7 2012 $
 .Dt BGPD.CONF 5
 .Os
 .Sh NAME
@@ -56,9 +56,13 @@ the sections should be grouped and appear in
 .Nm
 in the order shown above.
 .Pp
+The current line can be extended over multiple lines using a backslash
+.Pq Sq \e .
 Comments can be put anywhere in the file using a hash mark
 .Pq Sq # ,
 and extend to the end of the current line.
+Care should be taken when commenting out multi-line text:
+the comment is effective until the end of the entire block.
 .Pp
 Additional configuration files can be included with the
 .Ic include
@@ -145,7 +149,7 @@ The default is 120 seconds.
 .It Xo
 .Ic dump
 .Op Ic rib Ar name
-.Pq Ic table Ns | Ns Ic table-mp
+.Pq Ic table Ns | Ns Ic table-mp Ns | Ns Ic table-v2
 .Ar file Op Ar timeout
 .Xc
 .It Xo
@@ -157,17 +161,21 @@ The default is 120 seconds.
 Dump the RIB, a.k.a. the
 .Em routing information base ,
 and all BGP messages in Multi-threaded Routing Toolkit (MRT) format.
-Dumping the RIB is normally an expensive operation,
-but it should not influence the session handling.
 It is possible to dump alternate RIB with the use of
 .Ar name .
 .Pp
 For example, the following will dump the entire table to the
 .Xr strftime 3 Ns -expanded
 filename.
-The
+Only the
+.Ic table-v2
+format is able to dump a multi-protocol RIB correctly.
+Both
+.Ic table
+and
 .Ic table-mp
-format is multi-protocol capable but often not supported by 3rd-party tools.
+formats are more or less limited when handling multi-protocol entries and
+are only left around to support 3rd party tools not handling the new format.
 The timeout is optional:
 .Bd -literal -offset indent
 dump table "/tmp/rib-dump-%H%M" 300
@@ -486,13 +494,13 @@ for further information about the arguments.
 .Pp
 .It Ic rd Ar as-number Ns Li : Ns Ar local
 .It Ic rd Ar IP Ns Li : Ns Ar local
-The Route Distinguishers uniquely identifies a set of VPN prefixes.
-Only prefixes matching the
+The sole purpose of the Route Distinguisher
 .Ic rd
-will be imported into the routing domain.
-The purpose of the
+is to ensure that possible common prefixes are destinct between VPNs.
+The
 .Ic rd
-is solely to allow one to create distinct routes to a common address prefix.
+is neither used to identify the origin of the prefix nor to control into
+which VPNs the prefix is distributed to.
 The
 .Ar as-number
 or

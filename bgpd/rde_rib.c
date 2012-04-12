@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.128 2011/01/14 20:07:00 henning Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.131 2011/09/21 08:59:01 claudio Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -627,66 +627,6 @@ static void		 prefix_link(struct prefix *, struct rib_entry *,
 			     struct rde_aspath *);
 static void		 prefix_unlink(struct prefix *);
 
-int
-prefix_compare(const struct bgpd_addr *a, const struct bgpd_addr *b,
-    int prefixlen)
-{
-	in_addr_t	mask, aa, ba;
-	int		i;
-	u_int8_t	m;
-
-	if (a->aid != b->aid)
-		return (a->aid - b->aid);
-
-	switch (a->aid) {
-	case AID_INET:
-		if (prefixlen > 32)
-			fatalx("prefix_cmp: bad IPv4 prefixlen");
-		mask = htonl(prefixlen2mask(prefixlen));
-		aa = ntohl(a->v4.s_addr & mask);
-		ba = ntohl(b->v4.s_addr & mask);
-		if (aa != ba)
-			return (aa - ba);
-		return (0);
-	case AID_INET6:
-		if (prefixlen > 128)
-			fatalx("prefix_cmp: bad IPv6 prefixlen");
-		for (i = 0; i < prefixlen / 8; i++)
-			if (a->v6.s6_addr[i] != b->v6.s6_addr[i])
-				return (a->v6.s6_addr[i] - b->v6.s6_addr[i]);
-		i = prefixlen % 8;
-		if (i) {
-			m = 0xff00 >> i;
-			if ((a->v6.s6_addr[prefixlen / 8] & m) !=
-			    (b->v6.s6_addr[prefixlen / 8] & m))
-				return ((a->v6.s6_addr[prefixlen / 8] & m) -
-				    (b->v6.s6_addr[prefixlen / 8] & m));
-		}
-		return (0);
-	case AID_VPN_IPv4:
-		if (prefixlen > 32)
-			fatalx("prefix_cmp: bad IPv4 VPN prefixlen");
-		if (betoh64(a->vpn4.rd) > betoh64(b->vpn4.rd))
-			return (1);
-		if (betoh64(a->vpn4.rd) < betoh64(b->vpn4.rd))
-			return (-1);
-		mask = htonl(prefixlen2mask(prefixlen));
-		aa = ntohl(a->vpn4.addr.s_addr & mask);
-		ba = ntohl(b->vpn4.addr.s_addr & mask);
-		if (aa != ba)
-			return (aa - ba);
-		if (a->vpn4.labellen > b->vpn4.labellen)
-			return (1);
-		if (a->vpn4.labellen < b->vpn4.labellen)
-			return (-1);
-		return (memcmp(a->vpn4.labelstack, b->vpn4.labelstack,
-		    a->vpn4.labellen));
-	default:
-		fatalx("prefix_cmp: unknown af");
-	}
-	return (-1);
-}
-
 /*
  * search for specified prefix of a peer. Returns NULL if not found.
  */
@@ -854,6 +794,31 @@ prefix_write(u_char *buf, int len, struct bgpd_addr *prefix, u_int8_t plen)
 	default:
 		return (-1);
 	}
+}
+
+int
+prefix_writebuf(struct ibuf *buf, struct bgpd_addr *prefix, u_int8_t plen)
+{
+	int	 totlen;
+	void	*bptr;
+
+	switch (prefix->aid) {
+	case AID_INET:
+	case AID_INET6:
+		totlen = PREFIX_SIZE(plen);
+		break;
+	case AID_VPN_IPv4:
+		totlen = PREFIX_SIZE(plen) + sizeof(prefix->vpn4.rd) +
+		    prefix->vpn4.labellen;
+	default:
+		return (-1);
+	}
+
+	if ((bptr = ibuf_reserve(buf, totlen)) == NULL)
+		return (-1);
+	if (prefix_write(bptr, totlen, prefix, plen) == -1)
+		return (-1);
+	return (0);
 }
 
 /*
@@ -1141,31 +1106,34 @@ nexthop_modify(struct rde_aspath *asp, struct bgpd_addr *nexthop,
 {
 	struct nexthop	*nh;
 
-	if (type == ACTION_SET_NEXTHOP_REJECT) {
-		asp->flags |= F_NEXTHOP_REJECT;
-		return;
-	}
-	if (type  == ACTION_SET_NEXTHOP_BLACKHOLE) {
-		asp->flags |= F_NEXTHOP_BLACKHOLE;
-		return;
-	}
-	if (type == ACTION_SET_NEXTHOP_NOMODIFY) {
-		asp->flags |= F_NEXTHOP_NOMODIFY;
-		return;
-	}
-	if (type == ACTION_SET_NEXTHOP_SELF) {
-		asp->flags |= F_NEXTHOP_SELF;
-		return;
-	}
-	if (aid != nexthop->aid)
+	if (type == ACTION_SET_NEXTHOP && aid != nexthop->aid)
 		return;
 
-	nh = nexthop_get(nexthop);
-	if (asp->flags & F_ATTR_LINKED)
-		nexthop_unlink(asp);
-	asp->nexthop = nh;
-	if (asp->flags & F_ATTR_LINKED)
-		nexthop_link(asp);
+	asp->flags &= ~F_NEXTHOP_MASK;
+	switch (type) {
+	case ACTION_SET_NEXTHOP_REJECT:
+		asp->flags |= F_NEXTHOP_REJECT;
+		break;
+	case ACTION_SET_NEXTHOP_BLACKHOLE:
+		asp->flags |= F_NEXTHOP_BLACKHOLE;
+		break;
+	case ACTION_SET_NEXTHOP_NOMODIFY:
+		asp->flags |= F_NEXTHOP_NOMODIFY;
+		break;
+	case ACTION_SET_NEXTHOP_SELF:
+		asp->flags |= F_NEXTHOP_SELF;
+		break;
+	case ACTION_SET_NEXTHOP:
+		nh = nexthop_get(nexthop);
+		if (asp->flags & F_ATTR_LINKED)
+			nexthop_unlink(asp);
+		asp->nexthop = nh;
+		if (asp->flags & F_ATTR_LINKED)
+			nexthop_link(asp);
+		break;
+	default:
+		break;
+	}
 }
 
 void

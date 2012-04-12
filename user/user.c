@@ -1,4 +1,4 @@
-/* $OpenBSD: user.c,v 1.81 2011/04/16 07:41:08 sobrado Exp $ */
+/* $OpenBSD: user.c,v 1.90 2012/01/29 08:38:54 ajacoutot Exp $ */
 /* $NetBSD: user.c,v 1.69 2003/04/14 17:40:07 agc Exp $ */
 
 /*
@@ -40,9 +40,7 @@
 #include <err.h>
 #include <fcntl.h>
 #include <grp.h>
-#ifdef EXTENSIONS
 #include <login_cap.h>
-#endif
 #include <paths.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -101,7 +99,8 @@ enum {
 	F_SHELL		= 0x0200,
 	F_UID		= 0x0400,
 	F_USERNAME	= 0x0800,
-	F_CLASS		= 0x1000
+	F_CLASS		= 0x1000,
+	F_SETSECGROUP	= 0x4000
 };
 
 #define CONFFILE	"/etc/usermgmt.conf"
@@ -490,17 +489,26 @@ static int
 append_group(char *user, int ngroups, const char **groups)
 {
 	struct group	*grp;
+	struct passwd	*pwp;
 	struct stat	st;
 	FILE		*from;
 	FILE		*to;
 	char		buf[LINE_MAX];
 	char		f[MaxFileNameLen];
 	char		*colon;
+	char		*ugid = NULL;
 	int		fd;
 	int		cc;
 	int		i;
 	int		j;
 
+	if ((pwp = getpwnam(user))) {
+		if ((ugid = group_from_gid(pwp->pw_gid, 1)) == NULL) {
+			warnx("can't get primary group for user `%s'", user);
+			return 0;
+		}
+	}
+		
 	for (i = 0 ; i < ngroups ; i++) {
 		if ((grp = getgrnam(groups[i])) == NULL) {
 			warnx("can't append group `%s' for user `%s'",
@@ -551,6 +559,12 @@ append_group(char *user, int ngroups, const char **groups)
 		}
 		for (i = 0 ; i < ngroups ; i++) {
 			j = (int)(colon - buf);
+			if (ugid) {
+				if (strcmp(ugid, groups[i]) == 0) {
+					/* user's primary group, no need to append */
+					groups[i] = "";
+				}
+			}
 			if (strncmp(groups[i], buf, j) == 0 &&
 			    groups[i][j] == '\0') {
 				while (isspace(buf[cc - 1]))
@@ -630,7 +644,6 @@ valid_group(char *group)
 	return 1;
 }
 
-#ifdef EXTENSIONS
 /* return 1 if `class' exists */
 static int
 valid_class(char *class)
@@ -641,7 +654,6 @@ valid_class(char *class)
 		login_close(lc);
 	return lc != NULL;
 }
-#endif
 
 /* find the next gid in the range lo .. hi */
 static int
@@ -655,7 +667,6 @@ getnextgid(uid_t *gidp, uid_t lo, uid_t hi)
 	return 0;
 }
 
-#ifdef EXTENSIONS
 /* save a range of uids */
 static int
 save_range(user_t *up, char *cp)
@@ -688,7 +699,6 @@ save_range(user_t *up, char *cp)
 	}
 	return 1;
 }
-#endif
 
 /* set the defaults in the defaults file */
 static int
@@ -698,9 +708,7 @@ setdefaults(user_t *up)
 	FILE	*fp;
 	int	ret;
 	int	fd;
-#ifdef EXTENSIONS
 	int	i;
-#endif
 
 	(void) snprintf(template, sizeof(template), "%s.XXXXXXXX", CONFFILE);
 	if ((fd = mkstemp(template)) < 0) {
@@ -716,23 +724,19 @@ setdefaults(user_t *up)
 	    fprintf(fp, "base_dir\t%s\n", up->u_basedir) <= 0 ||
 	    fprintf(fp, "skel_dir\t%s\n", up->u_skeldir) <= 0 ||
 	    fprintf(fp, "shell\t\t%s\n", up->u_shell) <= 0 ||
-#ifdef EXTENSIONS
 	    fprintf(fp, "class\t\t%s\n", up->u_class) <= 0 ||
-#endif
 	    fprintf(fp, "inactive\t%s\n", (up->u_inactive == NULL) ? UNSET_INACTIVE : up->u_inactive) <= 0 ||
 	    fprintf(fp, "expire\t\t%s\n", (up->u_expire == NULL) ? UNSET_EXPIRY : up->u_expire) <= 0 ||
 	    fprintf(fp, "preserve\t%s\n", (up->u_preserve == 0) ? "false" : "true") <= 0) {
 		warn("can't write to `%s'", CONFFILE);
 		ret = 0;
 	}
-#ifdef EXTENSIONS
 	for (i = (up->u_defrc != up->u_rc) ? up->u_defrc : 0 ; i < up->u_rc ; i++) {
 		if (fprintf(fp, "range\t\t%d..%d\n", up->u_rv[i].r_from, up->u_rv[i].r_to) <= 0) {
 			warn("can't write to `%s'", CONFFILE);
 			ret = 0;
 		}
 	}
-#endif
 	if (fclose(fp) == EOF) {
 		warn("can't write to `%s'", CONFFILE);
 		ret = 0;
@@ -759,9 +763,7 @@ read_defaults(user_t *up)
 	memsave(&up->u_skeldir, DEF_SKELDIR, strlen(DEF_SKELDIR));
 	memsave(&up->u_shell, DEF_SHELL, strlen(DEF_SHELL));
 	memsave(&up->u_comment, DEF_COMMENT, strlen(DEF_COMMENT));
-#ifdef EXTENSIONS
 	memsave(&up->u_class, DEF_CLASS, strlen(DEF_CLASS));
-#endif
 	up->u_rsize = 16;
 	up->u_defrc = 0;
 	NEWARRAY(range_t, up->u_rv, up->u_rsize, exit(1));
@@ -795,12 +797,10 @@ read_defaults(user_t *up)
 				for (cp = s + 8 ; isspace(*cp) ; cp++) {
 				}
 				memsave(&up->u_password, cp, strlen(cp));
-#ifdef EXTENSIONS
 			} else if (strncmp(s, "class", 5) == 0) {
 				for (cp = s + 5 ; isspace(*cp) ; cp++) {
 				}
 				memsave(&up->u_class, cp, strlen(cp));
-#endif
 			} else if (strncmp(s, "inactive", 8) == 0) {
 				for (cp = s + 8 ; isspace(*cp) ; cp++) {
 				}
@@ -812,20 +812,16 @@ read_defaults(user_t *up)
 				} else {
 					memsave(&up->u_inactive, cp, strlen(cp));
 				}
-#ifdef EXTENSIONS
 			} else if (strncmp(s, "range", 5) == 0) {
 				for (cp = s + 5 ; isspace(*cp) ; cp++) {
 				}
 				(void) save_range(up, cp);
-#endif
-#ifdef EXTENSIONS
 			} else if (strncmp(s, "preserve", 8) == 0) {
 				for (cp = s + 8 ; isspace(*cp) ; cp++) {
 				}
 				up->u_preserve = (strncmp(cp, "true", 4) == 0) ? 1 :
 						  (strncmp(cp, "yes", 3) == 0) ? 1 :
 						   atoi(cp);
-#endif
 			} else if (strncmp(s, "expire", 6) == 0) {
 				for (cp = s + 6 ; isspace(*cp) ; cp++) {
 				}
@@ -969,11 +965,9 @@ adduser(char *login_name, user_t *up)
 	if (!valid_login(login_name)) {
 		errx(EXIT_FAILURE, "`%s' is not a valid login name", login_name);
 	}
-#ifdef EXTENSIONS
 	if (!valid_class(up->u_class)) {
 		errx(EXIT_FAILURE, "No such login class `%s'", up->u_class);
 	}
-#endif
 	if ((masterfd = open(_PATH_MASTERPASSWD, O_RDONLY)) < 0) {
 		err(EXIT_FAILURE, "can't open `%s'", _PATH_MASTERPASSWD);
 	}
@@ -1121,11 +1115,7 @@ adduser(char *login_name, user_t *up)
 	    password,
 	    up->u_uid,
 	    gid,
-#ifdef EXTENSIONS
 	    up->u_class,
-#else
-	    "",
-#endif
 	    (long) inactive,
 	    (long) expire,
 	    up->u_comment,
@@ -1189,7 +1179,7 @@ adduser(char *login_name, user_t *up)
 	}
 	if (strcmp(up->u_primgrp, "=uid") == 0 &&
 	    getgrnam(login_name) == NULL &&
-	    !creategid(login_name, gid, login_name)) {
+	    !creategid(login_name, gid, "")) {
 		(void) close(ptmpfd);
 		pw_abort();
 		errx(EXIT_FAILURE, "can't create gid %d for login name %s",
@@ -1248,7 +1238,7 @@ rm_user_from_groups(char *login_name)
 		    login_name, f);
 		return 0;
 	}
-	while (fgets(buf, sizeof(buf), from) > 0) {
+	while (fgets(buf, sizeof(buf), from) != NULL) {
 		cc = strlen(buf);
 		if (cc > 0 && buf[cc - 1] != '\n' && !feof(from)) {
 			while (fgetc(from) != '\n' && !feof(from))
@@ -1358,6 +1348,7 @@ moduser(char *login_name, char *newlogin, user_t *up)
 	int		masterfd;
 	int		ptmpfd;
 	int		rval;
+	int		i;
 
 	if (!valid_login(newlogin)) {
 		errx(EXIT_FAILURE, "`%s' is not a valid login name", login_name);
@@ -1466,7 +1457,6 @@ moduser(char *login_name, char *newlogin, user_t *up)
 			pwp->pw_dir = up->u_home;
 		if (up->u_flags & F_SHELL)
 			pwp->pw_shell = up->u_shell;
-#ifdef EXTENSIONS
 		if (up->u_flags & F_CLASS) {
 			if (!valid_class(up->u_class)) {
 				(void) close(ptmpfd);
@@ -1476,7 +1466,6 @@ moduser(char *login_name, char *newlogin, user_t *up)
 			}
 			pwp->pw_class = up->u_class;
 		}
-#endif
 	}
 	loginc = strlen(login_name);
 	while (fgets(buf, sizeof(buf), master) != NULL) {
@@ -1493,11 +1482,7 @@ moduser(char *login_name, char *newlogin, user_t *up)
 				    pwp->pw_passwd,
 				    pwp->pw_uid,
 				    pwp->pw_gid,
-#ifdef EXTENSIONS
 				    pwp->pw_class,
-#else
-				    "",
-#endif
 				    (long)pwp->pw_change,
 				    (long)pwp->pw_expire,
 				    pwp->pw_gecos,
@@ -1508,7 +1493,7 @@ moduser(char *login_name, char *newlogin, user_t *up)
 					(void) close(ptmpfd);
 					pw_abort();
 					errx(EXIT_FAILURE, "can't add `%s', "
-					    "line too long (%d bytes)", buf,
+					    "line too long (%zu bytes)", buf,
 					    len + expand_len(pwp->pw_gecos,
 					    newlogin));
 				}
@@ -1537,12 +1522,28 @@ moduser(char *login_name, char *newlogin, user_t *up)
 			err(EXIT_FAILURE, "can't move `%s' to `%s'",
 			    homedir, pwp->pw_dir);
 		}
-		if (up->u_groupc > 0 &&
-		    !append_group(newlogin, up->u_groupc, up->u_groupv)) {
+		if (up->u_flags & F_SETSECGROUP) {
+		    for (i = 0 ; i < up->u_groupc ; i++) {
+		        if (getgrnam(up->u_groupv[i]) == NULL) {
+		            (void) close(ptmpfd);
+		            pw_abort();
+		            errx(EXIT_FAILURE, "aborting, group `%s' does not exist",
+			        up->u_groupv[i]);
+		        }
+		    }
+		    if (!rm_user_from_groups(newlogin)) {
+		        (void) close(ptmpfd);
+		        pw_abort();
+		        errx(EXIT_FAILURE, "can't reset groups for `%s'", newlogin);
+		    }
+		}
+		if (up->u_groupc > 0) {
+		    if (!append_group(newlogin, up->u_groupc, up->u_groupv)) {
 			(void) close(ptmpfd);
 			pw_abort();
 			errx(EXIT_FAILURE, "can't append `%s' to new groups",
 			    newlogin);
+		    }
 		}
 	}
 	(void) close(ptmpfd);
@@ -1567,7 +1568,6 @@ moduser(char *login_name, char *newlogin, user_t *up)
 }
 
 
-#ifdef EXTENSIONS
 /* see if we can find out the user struct */
 static struct passwd *
 find_user_info(char *name)
@@ -1582,9 +1582,7 @@ find_user_info(char *name)
 	}
 	return NULL;
 }
-#endif
 
-#ifdef EXTENSIONS
 /* see if we can find out the group struct */
 static struct group *
 find_group_info(char *name)
@@ -1599,7 +1597,6 @@ find_group_info(char *name)
 	}
 	return NULL;
 }
-#endif
 
 /* print out usage message, and then exit */
 void
@@ -1626,16 +1623,17 @@ usermgmt_usage(const char *prog)
 		    "[-G secondary-group[,group,...]]\n"
 		    "               [-g gid | name | =uid] [-L login-class] "
 		    "[-l new-login]\n"
-		    "               [-p password] [-s shell] [-u uid] user\n",
+		    "               [-p password] "
+		    "[-S secondary-group[,group,...]]\n"
+		    "               [-s shell] [-u uid] user\n",
 		    prog);
 	} else if (strcmp(prog, "userdel") == 0) {
 		(void) fprintf(stderr, "usage: %s -D [-p preserve-value]\n",
 		    prog);
-		(void) fprintf(stderr, "       %s [-prv] user\n", prog);
-#ifdef EXTENSIONS
+		(void) fprintf(stderr, "       %s [-rv] [-p preserve-value] "
+		    "user\n", prog);
 	} else if (strcmp(prog, "userinfo") == 0) {
 		(void) fprintf(stderr, "usage: %s [-e] user\n", prog);
-#endif
 	} else if (strcmp(prog, "groupadd") == 0) {
 		(void) fprintf(stderr, "usage: %s [-ov] [-g gid] group\n",
 		    prog);
@@ -1646,27 +1644,17 @@ usermgmt_usage(const char *prog)
 		    "group\n", prog);
 	} else if (strcmp(prog, "user") == 0 || strcmp(prog, "group") == 0) {
 		(void) fprintf(stderr, "usage: %s [add | del | mod"
-#ifdef EXTENSIONS
 		" | info"
-#endif
 		"] ...\n",
 		    prog);
-#ifdef EXTENSIONS
 	} else if (strcmp(prog, "groupinfo") == 0) {
 		(void) fprintf(stderr, "usage: %s [-e] group\n", prog);
-#endif
 	} else {
 		(void) fprintf(stderr, "This program must be called as {user,group}{add,del,mod,info},\n%s is not an understood name.\n", prog);
 	}
 	exit(EXIT_FAILURE);
 	/* NOTREACHED */
 }
-
-#ifdef EXTENSIONS
-#define ADD_OPT_EXTENSIONS	"p:r:vL:"
-#else
-#define ADD_OPT_EXTENSIONS	
-#endif
 
 int
 useradd(int argc, char **argv)
@@ -1675,15 +1663,13 @@ useradd(int argc, char **argv)
 	int	defaultfield;
 	int	bigD;
 	int	c;
-#ifdef EXTENSIONS
 	int	i;
-#endif
 
 	(void) memset(&u, 0, sizeof(u));
 	read_defaults(&u);
 	u.u_uid = UID_MAX;
 	defaultfield = bigD = 0;
-	while ((c = getopt(argc, argv, "DG:b:c:d:e:f:g:k:mou:s:" ADD_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "DG:L:b:c:d:e:f:g:k:mop:r:s:u:v")) != -1) {
 		switch(c) {
 		case 'D':
 			bigD = 1;
@@ -1726,30 +1712,24 @@ useradd(int argc, char **argv)
 			defaultfield = 1;
 			memsave(&u.u_skeldir, optarg, strlen(optarg));
 			break;
-#ifdef EXTENSIONS
 		case 'L':
 			defaultfield = 1;
 			memsave(&u.u_class, optarg, strlen(optarg));
 			break;
-#endif
 		case 'm':
 			u.u_flags |= F_MKDIR;
 			break;
 		case 'o':
 			u.u_flags |= F_DUPUID;
 			break;
-#ifdef EXTENSIONS
 		case 'p':
 			memsave(&u.u_password, optarg, strlen(optarg));
 			memset(optarg, 'X', strlen(optarg));
 			break;
-#endif
-#ifdef EXTENSIONS
 		case 'r':
 			defaultfield = 1;
 			(void) save_range(&u, optarg);
 			break;
-#endif
 		case 's':
 			defaultfield = 1;
 			memsave(&u.u_shell, optarg, strlen(optarg));
@@ -1760,11 +1740,9 @@ useradd(int argc, char **argv)
 			}
 			u.u_uid = atoi(optarg);
 			break;
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("useradd");
 			/* NOTREACHED */
@@ -1779,16 +1757,12 @@ useradd(int argc, char **argv)
 		(void) printf("base_dir\t%s\n", u.u_basedir);
 		(void) printf("skel_dir\t%s\n", u.u_skeldir);
 		(void) printf("shell\t\t%s\n", u.u_shell);
-#ifdef EXTENSIONS
 		(void) printf("class\t\t%s\n", u.u_class);
-#endif
 		(void) printf("inactive\t%s\n", (u.u_inactive == NULL) ? UNSET_INACTIVE : u.u_inactive);
 		(void) printf("expire\t\t%s\n", (u.u_expire == NULL) ? UNSET_EXPIRY : u.u_expire);
-#ifdef EXTENSIONS
 		for (i = 0 ; i < u.u_rc ; i++) {
 			(void) printf("range\t\t%d..%d\n", u.u_rv[i].r_from, u.u_rv[i].r_to);
 		}
-#endif
 		return EXIT_SUCCESS;
 	}
 	argc -= optind;
@@ -1800,12 +1774,6 @@ useradd(int argc, char **argv)
 	openlog("useradd", LOG_PID, LOG_USER);
 	return adduser(*argv, &u) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-
-#ifdef EXTENSIONS
-#define MOD_OPT_EXTENSIONS	"p:vL:"
-#else
-#define MOD_OPT_EXTENSIONS	
-#endif
 
 int
 usermod(int argc, char **argv)
@@ -1820,7 +1788,7 @@ usermod(int argc, char **argv)
 	free(u.u_primgrp);
 	u.u_primgrp = NULL;
 	have_new_user = 0;
-	while ((c = getopt(argc, argv, "G:c:d:e:f:g:l:mos:u:" MOD_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "G:L:S:c:d:e:f:g:l:mop:s:u:v")) != -1) {
 		switch(c) {
 		case 'G':
 			while ((u.u_groupv[u.u_groupc] = strsep(&optarg, ",")) != NULL &&
@@ -1833,6 +1801,18 @@ usermod(int argc, char **argv)
 			  	warnx("Truncated list of secondary groups to %d entries", NGROUPS_MAX - 2);
 			}
 			u.u_flags |= F_SECGROUP;
+			break;
+		case 'S':
+			while ((u.u_groupv[u.u_groupc] = strsep(&optarg, ",")) != NULL &&
+			    u.u_groupc < NGROUPS_MAX - 2) {
+				if (u.u_groupv[u.u_groupc][0] != 0) {
+					u.u_groupc++;
+				}
+			}
+			if (optarg != NULL) {
+			  	warnx("Truncated list of secondary groups to %d entries", NGROUPS_MAX - 2);
+			}
+			u.u_flags |= F_SETSECGROUP;
 			break;
 		case 'c':
 			memsave(&u.u_comment, optarg, strlen(optarg));
@@ -1862,25 +1842,21 @@ usermod(int argc, char **argv)
 			have_new_user = 1;
 			u.u_flags |= F_USERNAME;
 			break;
-#ifdef EXTENSIONS
 		case 'L':
 			memsave(&u.u_class, optarg, strlen(optarg));
 			u.u_flags |= F_CLASS;
 			break;
-#endif
 		case 'm':
 			u.u_flags |= F_MKDIR;
 			break;
 		case 'o':
 			u.u_flags |= F_DUPUID;
 			break;
-#ifdef EXTENSIONS
 		case 'p':
 			memsave(&u.u_password, optarg, strlen(optarg));
 			memset(optarg, 'X', strlen(optarg));
 			u.u_flags |= F_PASSWORD;
 			break;
-#endif
 		case 's':
 			memsave(&u.u_shell, optarg, strlen(optarg));
 			u.u_flags |= F_SHELL;
@@ -1892,11 +1868,9 @@ usermod(int argc, char **argv)
 			u.u_uid = atoi(optarg);
 			u.u_flags |= F_UID;
 			break;
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("usermod");
 			/* NOTREACHED */
@@ -1907,6 +1881,8 @@ usermod(int argc, char **argv)
 		warnx("option 'm' useless without 'd' or 'l' -- ignored");
 		u.u_flags &= ~F_MKDIR;
 	}
+	if ((u.u_flags & F_SECGROUP) && (u.u_flags & F_SETSECGROUP))
+		errx(EXIT_FAILURE, "options 'G' and 'S' are mutually exclusive");
 	argc -= optind;
 	argv += optind;
 	if (argc != 1) {
@@ -1917,12 +1893,6 @@ usermod(int argc, char **argv)
 	return moduser(*argv, (have_new_user) ? newuser : *argv, &u) ?
 	    EXIT_SUCCESS : EXIT_FAILURE;
 }
-
-#ifdef EXTENSIONS
-#define DEL_OPT_EXTENSIONS	"Dp:v"
-#else
-#define DEL_OPT_EXTENSIONS	
-#endif
 
 int
 userdel(int argc, char **argv)
@@ -1938,35 +1908,28 @@ userdel(int argc, char **argv)
 	(void) memset(&u, 0, sizeof(u));
 	read_defaults(&u);
 	defaultfield = bigD = rmhome = 0;
-	while ((c = getopt(argc, argv, "r" DEL_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "Dp:rv")) != -1) {
 		switch(c) {
-#ifdef EXTENSIONS
 		case 'D':
 			bigD = 1;
 			break;
-#endif
-#ifdef EXTENSIONS
 		case 'p':
 			defaultfield = 1;
 			u.u_preserve = (strcmp(optarg, "true") == 0) ? 1 :
 					(strcmp(optarg, "yes") == 0) ? 1 :
 					 atoi(optarg);
 			break;
-#endif
 		case 'r':
 			rmhome = 1;
 			break;
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("userdel");
 			/* NOTREACHED */
 		}
 	}
-#ifdef EXTENSIONS
 	if (bigD) {
 		if (defaultfield) {
 			checkeuid();
@@ -1975,7 +1938,6 @@ userdel(int argc, char **argv)
 		(void) printf("preserve\t%s\n", (u.u_preserve) ? "true" : "false");
 		return EXIT_SUCCESS;
 	}
-#endif
 	argc -= optind;
 	argv += optind;
 	if (argc != 1) {
@@ -2005,12 +1967,6 @@ userdel(int argc, char **argv)
 	return moduser(*argv, *argv, NULL) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-#ifdef EXTENSIONS
-#define GROUP_ADD_OPT_EXTENSIONS	"v"
-#else
-#define GROUP_ADD_OPT_EXTENSIONS	
-#endif
-
 /* add a group */
 int
 groupadd(int argc, char **argv)
@@ -2021,7 +1977,7 @@ groupadd(int argc, char **argv)
 
 	gid = GID_MAX;
 	dupgid = 0;
-	while ((c = getopt(argc, argv, "g:o" GROUP_ADD_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "g:ov")) != -1) {
 		switch(c) {
 		case 'g':
 			if (!is_number(optarg)) {
@@ -2032,11 +1988,9 @@ groupadd(int argc, char **argv)
 		case 'o':
 			dupgid = 1;
 			break;
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("groupadd");
 			/* NOTREACHED */
@@ -2065,25 +2019,17 @@ groupadd(int argc, char **argv)
 	return EXIT_SUCCESS;
 }
 
-#ifdef EXTENSIONS
-#define GROUP_DEL_OPT_EXTENSIONS	"v"
-#else
-#define GROUP_DEL_OPT_EXTENSIONS	
-#endif
-
 /* remove a group */
 int
 groupdel(int argc, char **argv)
 {
 	int	c;
 
-	while ((c = getopt(argc, argv, "" GROUP_DEL_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "v")) != -1) {
 		switch(c) {
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("groupdel");
 			/* NOTREACHED */
@@ -2106,12 +2052,6 @@ groupdel(int argc, char **argv)
 	return EXIT_SUCCESS;
 }
 
-#ifdef EXTENSIONS
-#define GROUP_MOD_OPT_EXTENSIONS	"v"
-#else
-#define GROUP_MOD_OPT_EXTENSIONS	
-#endif
-
 /* modify a group */
 int
 groupmod(int argc, char **argv)
@@ -2128,7 +2068,7 @@ groupmod(int argc, char **argv)
 	gid = GID_MAX;
 	dupgid = 0;
 	newname = NULL;
-	while ((c = getopt(argc, argv, "g:on:" GROUP_MOD_OPT_EXTENSIONS)) != -1) {
+	while ((c = getopt(argc, argv, "g:n:ov")) != -1) {
 		switch(c) {
 		case 'g':
 			if (!is_number(optarg)) {
@@ -2142,11 +2082,9 @@ groupmod(int argc, char **argv)
 		case 'n':
 			memsave(&newname, optarg, strlen(optarg));
 			break;
-#ifdef EXTENSIONS
 		case 'v':
 			verbose = 1;
 			break;
-#endif
 		default:
 			usermgmt_usage("groupmod");
 			/* NOTREACHED */
@@ -2198,7 +2136,6 @@ groupmod(int argc, char **argv)
 	return EXIT_SUCCESS;
 }
 
-#ifdef EXTENSIONS
 /* display user information */
 int
 userinfo(int argc, char **argv)
@@ -2251,18 +2188,14 @@ userinfo(int argc, char **argv)
 	}
 	(void) fputc('\n', stdout);
 	(void) printf("change\t%s", pwp->pw_change ? ctime(&pwp->pw_change) : "NEVER\n");
-#ifdef EXTENSIONS
 	(void) printf("class\t%s\n", pwp->pw_class);
-#endif
 	(void) printf("gecos\t%s\n", pwp->pw_gecos);
 	(void) printf("dir\t%s\n", pwp->pw_dir);
 	(void) printf("shell\t%s\n", pwp->pw_shell);
 	(void) printf("expire\t%s", pwp->pw_expire ? ctime(&pwp->pw_expire) : "NEVER\n");
 	return EXIT_SUCCESS;
 }
-#endif
 
-#ifdef EXTENSIONS
 /* display user information */
 int
 groupinfo(int argc, char **argv)
@@ -2308,4 +2241,3 @@ groupinfo(int argc, char **argv)
 	(void) fputc('\n', stdout);
 	return EXIT_SUCCESS;
 }
-#endif

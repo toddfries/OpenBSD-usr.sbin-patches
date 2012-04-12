@@ -1,4 +1,4 @@
-/*	$OpenBSD: mkioconf.c,v 1.29 2011/06/01 04:35:21 matthew Exp $	*/
+/*	$OpenBSD: mkioconf.c,v 1.31 2011/10/02 22:20:50 edd Exp $	*/
 /*	$NetBSD: mkioconf.c,v 1.41 1996/11/11 14:18:49 mycroft Exp $	*/
 
 /*
@@ -42,10 +42,12 @@
  */
 
 #include <sys/param.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include "config.h"
 
 /*
@@ -336,7 +338,7 @@ emitcfdata(FILE *fp)
 {
 	struct devi **p, *i;
 	int unit, v;
-	const char *vs, *state, *basename, *attachment;
+	const char *state, *basename, *attachment;
 	struct nvlist *nv;
 	struct attr *a;
 	char *loc;

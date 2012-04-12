@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.147 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: Update.pm,v 1.151 2012/02/06 17:02:48 espie Exp $
 #
 # Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
 #
@@ -132,6 +132,7 @@ sub process_handle
 	for my $n ($set->newer) {
 		if (($state->{hard_replace} ||
 		    $n->location->update_info->match_pkgpath($plist)) &&
+			defined $n->plist &&
 			$n->plist->conflict_list->conflicts_with($sname)) {
 				$self->add_handle($set, $h, $n);
 				return 1;
@@ -148,7 +149,6 @@ sub process_handle
 		}
 		my @l2 = ();
 		for my $loc (@$l) {
-		    $loc->set_arch($state->{arch});
 		    if (!$loc) {
 			    next;
 		    }
@@ -254,6 +254,7 @@ sub process_hint
 	my $r = $state->choose_location($hint_name, $l);
 	if (defined $r) {
 		$self->add_location($set, $hint, $r);
+		OpenBSD::Add::tag_user_packages($set);
 		return 1;
 	} else {
 		return 0;
@@ -302,7 +303,7 @@ sub process_set
 	if (@problems > 0) {
 		$state->tracker->cant($set) if !$set->{quirks};
 		if ($set->{updates} != 0) {
-			$state->say("Can't update #1: no update found for ",
+			$state->say("Can't update #1: no update found for #2",
 			    $set->print, join(',', @problems));
 		}
 		return 0;

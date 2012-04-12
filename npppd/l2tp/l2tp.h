@@ -1,4 +1,4 @@
-/* $OpenBSD: l2tp.h,v 1.4 2010/09/24 14:50:30 yasuoka Exp $	*/
+/* $OpenBSD: l2tp.h,v 1.6 2012/01/18 02:53:56 yasuoka Exp $	*/
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -30,7 +30,7 @@
 /*@file
  * header file for the L2TP module
  */
-/* $Id: l2tp.h,v 1.4 2010/09/24 14:50:30 yasuoka Exp $ */
+/* $Id: l2tp.h,v 1.6 2012/01/18 02:53:56 yasuoka Exp $ */
 
 /************************************************************************
  * Protocol Constants
@@ -283,6 +283,7 @@
 	((l2tpd_listener *)slist_get(&(ctrl)->l2tpd->listener, \
 	    (ctrl)->listener_index))->phy_label
 
+#define L2TP_CALL_DELAY_LIMIT 64
 
 /** datatype represents L2TP daemon */
 struct _l2tpd;
@@ -312,7 +313,7 @@ typedef struct _l2tpd {
 	/** timeout event context */
 	struct event ev_timeout;
 	/** instance ID */
-	unsigned id;
+	u_int id;
 	/** listener list */
 	slist listener;
 	/** state */
@@ -346,7 +347,7 @@ typedef struct _l2tpd {
 typedef struct _l2tp_ctrl {
 	struct event ev_timeout;
 	/** ID */
-	unsigned id;
+	u_int id;
 	/** parent L2TPD */
 	l2tpd 	*l2tpd;
 	/** listener index number */
@@ -424,7 +425,7 @@ typedef struct _l2tp_ctrl {
  */
 typedef struct _l2tp_call {
 	/** ID */
-	unsigned	id;
+	u_int		id;
 	/** state */
 	int		state;
 	/** parent control connection */
@@ -457,7 +458,7 @@ int              l2tp_call_init (l2tp_call *, l2tp_ctrl *);
 void             l2tp_call_destroy (l2tp_call *, int);
 void             l2tp_call_admin_disconnect(l2tp_call *);
 int              l2tp_call_recv_packet (l2tp_ctrl *, l2tp_call *, int, u_char *, int);
-void             l2tp_call_ppp_input (l2tp_call *, u_char *, int);
+void             l2tp_call_ppp_input (l2tp_call *, u_char *, int, int);
 
 void             l2tp_ctrl_destroy (l2tp_ctrl *);
 l2tp_ctrl        *l2tp_ctrl_create (void);
@@ -474,10 +475,10 @@ void             l2tpd_release_call (l2tpd *, l2tp_call *);
 int              l2tpd_start (l2tpd *);
 void             l2tpd_stop (l2tpd *);
 void             l2tpd_stop_immediatly (l2tpd *);
-l2tp_ctrl        *l2tpd_get_ctrl (l2tpd *, int);
+l2tp_ctrl        *l2tpd_get_ctrl (l2tpd *, u_int);
 void             l2tpd_add_ctrl (l2tpd *, l2tp_ctrl *);
 void             l2tpd_ctrl_finished_notify(l2tpd *);
-void             l2tpd_remove_ctrl (l2tpd *, int);
+void             l2tpd_remove_ctrl (l2tpd *, u_int);
 int              l2tpd_add_listener (l2tpd *, int, const char *, struct sockaddr *);
 void             l2tpd_log (l2tpd *, int, const char *, ...) __attribute__((__format__ (__printf__, 3, 4)));
 

@@ -1,4 +1,4 @@
-/* $OpenBSD: npppd.h,v 1.5 2010/07/02 21:20:57 yasuoka Exp $ */
+/* $OpenBSD: npppd.h,v 1.8 2012/01/18 03:13:04 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -28,17 +28,18 @@
 #ifndef	NPPPD_H
 #define	NPPPD_H 1
 
-#define	NPPPD_USER			"_npppd"
+#define	NPPPD_USER			"_ppp"
 
 #ifndef	NPPPD_DEFAULT_TUN_IFNAME
 #define	NPPPD_DEFAULT_TUN_IFNAME	"tun0"
 #endif
 
 
-#define	DEFAULT_RADIUS_AUTH_IPADDR	"127.0.0.1"
 #define	DEFAULT_RADIUS_AUTH_PORT	1812
-#define	DEFAULT_RADIUS_AUTH_TIMEOUT	9
-
+#define	DEFAULT_RADIUS_ACCT_PORT	1813
+#define	DEFAULT_RADIUS_TIMEOUT		9
+#define	DEFAULT_RADIUS_MAX_TRIES	3
+#define	DEFAULT_RADIUS_MAX_FAILOVERS	1
 #define	DEFAULT_AUTH_TIMEOUT		30
 
 /** assign fixed IP address */
@@ -97,7 +98,7 @@ int        npppd_get_all_users (npppd *, slist *);
 int        npppd_set_radish (npppd *, void *);
 int        npppd_ppp_iface_is_ready(npppd *, npppd_ppp *);
 int        sockaddr_npppd_match(void *, void *);
-npppd_ppp  *npppd_get_ppp_by_id(npppd *, int);
+npppd_ppp  *npppd_get_ppp_by_id(npppd *, u_int);
 
 const char  *npppd_config_str (npppd *, const char *);
 int         npppd_config_int (npppd *, const char *, int);
@@ -117,8 +118,10 @@ const char *npppd_ppp_get_realm_name(npppd *, npppd_ppp *);
 int        npppd_ppp_bind_iface(npppd *, npppd_ppp *);
 void       npppd_ppp_unbind_iface(npppd *, npppd_ppp *);
 const char *npppd_ppp_get_iface_name(npppd *, npppd_ppp *);
-void *     npppd_get_radius_req_setting(npppd *, npppd_ppp *);
-void       npppd_radius_server_failure_notify(npppd *, npppd_ppp *, void *, const char *);
+void *     npppd_get_radius_auth_setting(npppd *, npppd_ppp *);
+const char *npppd_ppp_tunnel_protocol_name(npppd *, npppd_ppp *);
+
+void       npppd_radius_auth_server_failure_notify(npppd *, npppd_ppp *, void *, const char *);
 int        npppd_ppp_pipex_enable(npppd *, npppd_ppp *);
 int        npppd_ppp_pipex_disable(npppd *, npppd_ppp *);
 const char *npppd_ppp_get_username_for_auth(npppd *, npppd_ppp *, const char *, char *);

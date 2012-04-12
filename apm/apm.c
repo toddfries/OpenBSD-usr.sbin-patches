@@ -1,4 +1,4 @@
-/*	$OpenBSD: apm.c,v 1.24 2009/10/30 19:41:10 sobrado Exp $	*/
+/*	$OpenBSD: apm.c,v 1.26 2012/03/30 06:40:36 jmc Exp $	*/
 
 /*
  *  Copyright (c) 1996 John T. Kohl
@@ -59,7 +59,7 @@ int send_command(int fd, struct apm_command *cmd, struct apm_reply *reply);
 void
 usage(void)
 {
-	fprintf(stderr,"usage: %s [-AabCHLlmPSvz] [-f sockname]\n",
+	fprintf(stderr,"usage: %s [-AabCHLlmPSvZz] [-f sockname]\n",
 	    __progname);
 	exit(1);
 }
@@ -67,7 +67,7 @@ usage(void)
 void
 zzusage(void)
 {
-	fprintf(stderr,"usage: %s [-Sz] [-f sockname]\n",
+	fprintf(stderr,"usage: %s [-SZz] [-f sockname]\n",
 	    __progname);
 	exit(1);
 }
@@ -103,6 +103,9 @@ do_zzz(int fd, enum apm_action action)
 		break;
 	case STANDBY:
 		command.action = STANDBY;
+		break;
+	case HIBERNATE:
+		command.action = HIBERNATE;
 		break;
 	default:
 		zzusage();
@@ -151,7 +154,7 @@ main(int argc, char *argv[])
 	int cpuspeed_mib[] = { CTL_HW, HW_CPUSPEED }, cpuspeed;
 	size_t cpuspeed_sz = sizeof(cpuspeed);
 
-	while ((ch = getopt(argc, argv, "ACHLlmbvaPSzf:")) != -1) {
+	while ((ch = getopt(argc, argv, "ACHLlmbvaPSzZf:")) != -1) {
 		switch (ch) {
 		case 'v':
 			verbose = TRUE;
@@ -168,6 +171,11 @@ main(int argc, char *argv[])
 			if (action != NONE)
 				usage();
 			action = STANDBY;
+			break;
+		case 'Z':
+			if (action != NONE)
+				usage();
+			action = HIBERNATE;
 			break;
 		case 'A':
 			if (action != NONE)
@@ -220,7 +228,7 @@ main(int argc, char *argv[])
 			action = GETSTATUS;
 			break;
 		default:
-			if (!strcmp(__progname, "zzz"))
+			if (!strcmp(__progname, "zzz") || !strcmp(__progname, "ZZZ"))
 				zzusage();
 			else
 				usage();
@@ -234,7 +242,13 @@ main(int argc, char *argv[])
 			err(1, "cannot connect to apmd");
 		else
 			return (do_zzz(fd, action));
+	} else if (!strcmp(__progname, "ZZZ")) {
+		if (fd < 0)
+			err(1, "cannot connect to apmd");
+		else
+			return (do_zzz(fd, HIBERNATE));
 	}
+
 
 	bzero(&reply, sizeof reply);
 	reply.batterystate.battery_state = APM_BATT_UNKNOWN;
@@ -270,6 +284,7 @@ main(int argc, char *argv[])
 balony:
 	case SUSPEND:
 	case STANDBY:
+	case HIBERNATE:
 		command.action = action;
 		break;
 	default:
@@ -383,6 +398,9 @@ balony:
 		break;
 	case STANDBY:
 		printf("System will enter standby mode momentarily.\n");
+		break;
+	case HIBERNATE:
+		printf("System will enter hibernate mode momentarily.\n");
 		break;
 	default:
 		break;

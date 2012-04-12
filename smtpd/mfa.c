@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.59 2011/05/16 21:05:52 gilles Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.67 2012/01/18 13:41:54 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -18,14 +18,18 @@
  */
 
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 
+#include <err.h>
+#include <errno.h>
 #include <event.h>
 #include <imsg.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,22 +41,51 @@
 static void mfa_imsg(struct imsgev *, struct imsg *);
 static void mfa_shutdown(void);
 static void mfa_sig_handler(int, short, void *);
+static void mfa_test_connect(struct envelope *);
+static void mfa_test_helo(struct envelope *);
 static void mfa_test_mail(struct envelope *);
 static void mfa_test_rcpt(struct envelope *);
 static void mfa_test_rcpt_resume(struct submit_status *);
+static void mfa_test_dataline(struct submit_status *);
+static void mfa_test_quit(struct envelope *);
+static void mfa_test_close(struct envelope *);
+static void mfa_test_rset(struct envelope *);
 static int mfa_strip_source_route(char *, size_t);
+static int mfa_fork_filter(struct filter *);
+void mfa_session(struct submit_status *, enum session_state);
 
 static void
 mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 {
+	struct filter *filter;
+
+	log_imsg(PROC_MFA, iev->proc, imsg);
+
 	if (iev->proc == PROC_SMTP) {
 		switch (imsg->hdr.type) {
+		case IMSG_MFA_CONNECT:
+			mfa_test_connect(imsg->data);
+			return;
+		case IMSG_MFA_HELO:
+			mfa_test_helo(imsg->data);
+			return;
 		case IMSG_MFA_MAIL:
 			mfa_test_mail(imsg->data);
 			return;
-
 		case IMSG_MFA_RCPT:
 			mfa_test_rcpt(imsg->data);
+			return;
+		case IMSG_MFA_DATALINE:
+			mfa_test_dataline(imsg->data);
+			return;
+		case IMSG_MFA_QUIT:
+			mfa_test_quit(imsg->data);
+			return;
+		case IMSG_MFA_CLOSE:
+			mfa_test_close(imsg->data);
+			return;
+		case IMSG_MFA_RSET:
+			mfa_test_rset(imsg->data);
 			return;
 		}
 	}
@@ -74,13 +107,36 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 
 	if (iev->proc == PROC_PARENT) {
 		switch (imsg->hdr.type) {
+		case IMSG_CONF_START:
+			env->sc_filters = calloc(1, sizeof *env->sc_filters);
+			if (env->sc_filters == NULL)
+				fatal(NULL);
+			TAILQ_INIT(env->sc_filters);
+			return;
+
+		case IMSG_CONF_FILTER:
+			filter = calloc(1, sizeof *filter);
+			if (filter == NULL)
+				fatal(NULL);
+			memcpy(filter, (struct filter *)imsg->data, sizeof (*filter));
+			TAILQ_INSERT_TAIL(env->sc_filters, filter, f_entry);
+			return;
+
+		case IMSG_CONF_END:
+			TAILQ_FOREACH(filter, env->sc_filters, f_entry) {
+				log_info("forking filter: %s", filter->name);
+				if (! mfa_fork_filter(filter))
+					fatalx("could not fork filter");
+			}
+			return;
+
 		case IMSG_CTL_VERBOSE:
 			log_verbose(*(int *)imsg->data);
 			return;
 		}
 	}
 
-	fatalx("mfa_imsg: unexpected imsg");
+	errx(1, "mfa_imsg: unexpected %s imsg", imsg_to_str(imsg->hdr.type));
 }
 
 static void
@@ -91,6 +147,11 @@ mfa_sig_handler(int sig, short event, void *p)
 	case SIGTERM:
 		mfa_shutdown();
 		break;
+
+	case SIGCHLD:
+		fatalx("unexpected SIGCHLD");
+		break;
+
 	default:
 		fatalx("mfa_sig_handler: unexpected signal");
 	}
@@ -99,6 +160,17 @@ mfa_sig_handler(int sig, short event, void *p)
 static void
 mfa_shutdown(void)
 {
+	pid_t pid;
+	struct filter *filter;
+
+	TAILQ_FOREACH(filter, env->sc_filters, f_entry) {
+		kill(filter->pid, SIGTERM);
+	}
+
+	do {
+		pid = waitpid(WAIT_MYPGRP, NULL, 0);
+	} while (pid != -1 || (pid == -1 && errno == EINTR));
+
 	log_info("mail filter exiting");
 	_exit(0);
 }
@@ -112,6 +184,7 @@ mfa(void)
 
 	struct event	 ev_sigint;
 	struct event	 ev_sigterm;
+	struct event	 ev_sigchld;
 
 	struct peer peers[] = {
 		{ PROC_PARENT,	imsg_dispatch },
@@ -131,12 +204,10 @@ mfa(void)
 
 	purge_config(PURGE_EVERYTHING);
 
+	if ((env->sc_pw =  getpwnam(SMTPD_FILTER_USER)) == NULL)
+		if ((env->sc_pw =  getpwnam(SMTPD_USER)) == NULL)
+			fatalx("unknown user " SMTPD_FILTER_USER);
 	pw = env->sc_pw;
-
-	if (chroot(pw->pw_dir) == -1)
-		fatal("mfa: chroot");
-	if (chdir("/") == -1)
-		fatal("mfa: chdir(\"/\")");
 
 	smtpd_process = PROC_MFA;
 	setproctitle("%s", env->sc_title[smtpd_process]);
@@ -149,10 +220,15 @@ mfa(void)
 	imsg_callback = mfa_imsg;
 	event_init();
 
+	SPLAY_INIT(&env->mfa_sessions);
+	TAILQ_INIT(env->sc_filters);
+
 	signal_set(&ev_sigint, SIGINT, mfa_sig_handler, NULL);
 	signal_set(&ev_sigterm, SIGTERM, mfa_sig_handler, NULL);
+	signal_set(&ev_sigchld, SIGCHLD, mfa_sig_handler, NULL);
 	signal_add(&ev_sigint, NULL);
 	signal_add(&ev_sigterm, NULL);
+	signal_add(&ev_sigchld, NULL);
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
@@ -166,14 +242,38 @@ mfa(void)
 	return (0);
 }
 
-void
+static void
+mfa_test_connect(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_CONNECTED);
+}
+
+static void
+mfa_test_helo(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_HELO);
+}
+
+static void
 mfa_test_mail(struct envelope *e)
 {
 	struct submit_status	 ss;
 
 	ss.id = e->session_id;
 	ss.code = 530;
-	ss.u.maddr = e->delivery.from;
+	ss.u.maddr = e->sender;
 
 	if (mfa_strip_source_route(ss.u.maddr.user, sizeof(ss.u.maddr.user)))
 		goto refuse;
@@ -187,18 +287,13 @@ mfa_test_mail(struct envelope *e)
 			goto refuse;
 	}
 
-	/* Current policy is to allow all well-formed addresses. */
-	goto accept;
+	mfa_session(&ss, S_MAIL_MFA);
+	return;
 
 refuse:
 	imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_MAIL, 0, 0, -1, &ss,
 	    sizeof(ss));
 	return;
-
-accept:
-	ss.code = 250;
-	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_MAIL, 0,
-	    0, -1, &ss, sizeof(ss));
 }
 
 static void
@@ -208,11 +303,11 @@ mfa_test_rcpt(struct envelope *e)
 
 	ss.id = e->session_id;
 	ss.code = 530;
-	ss.u.maddr = e->delivery.rcpt_orig;
-	ss.ss = e->delivery.ss;
+	ss.u.maddr = e->rcpt;
+	ss.ss = e->ss;
 	ss.envelope = *e;
-	ss.envelope.delivery.rcpt = e->delivery.rcpt_orig;
-	ss.flags = e->delivery.flags;
+	ss.envelope.dest = e->rcpt;
+	ss.flags = e->flags;
 
 	mfa_strip_source_route(ss.u.maddr.user, sizeof(ss.u.maddr.user));
 	
@@ -220,27 +315,71 @@ mfa_test_rcpt(struct envelope *e)
 	    ! valid_domainpart(ss.u.maddr.domain))
 		goto refuse;
 
-	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RULEMATCH, 0, 0, -1,
-	    &ss, sizeof(ss));
-
+	mfa_session(&ss, S_RCPT_MFA);
 	return;
+
 refuse:
 	imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, &ss,
 	    sizeof(ss));
 }
 
 static void
-mfa_test_rcpt_resume(struct submit_status *ss) {
+mfa_test_rcpt_resume(struct submit_status *ss)
+{
 	if (ss->code != 250) {
 		imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_MFA_RCPT, 0, 0, -1, ss,
 		    sizeof(*ss));
 		return;
 	}
 
-	ss->envelope.delivery.rcpt = ss->u.maddr;
-	ss->envelope.delivery.expire = ss->envelope.rule.r_qexpire;
+	ss->envelope.dest = ss->u.maddr;
+	ss->envelope.expire = ss->envelope.rule.r_qexpire;
 	imsg_compose_event(env->sc_ievs[PROC_LKA], IMSG_LKA_RCPT, 0, 0, -1,
 	    ss, sizeof(*ss));
+}
+
+static void
+mfa_test_dataline(struct submit_status *ss)
+{
+	ss->code = 250;
+
+	mfa_session(ss, S_DATACONTENT);
+}
+
+static void
+mfa_test_quit(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_QUIT);
+}
+
+static void
+mfa_test_close(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_CLOSE);
+}
+
+static void
+mfa_test_rset(struct envelope *e)
+{
+	struct submit_status	 ss;
+
+	ss.id = e->session_id;
+	ss.code = 530;
+	ss.envelope = *e;
+
+	mfa_session(&ss, S_RSET);
 }
 
 static int
@@ -255,5 +394,49 @@ mfa_strip_source_route(char *buf, size_t len)
 		return 1;
 	}
 
+	return 0;
+}
+
+static int
+mfa_fork_filter(struct filter *filter)
+{
+	pid_t	pid;
+	int	sockpair[2];
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, sockpair) < 0)
+		return 0;
+
+	session_socket_blockmode(sockpair[0], BM_NONBLOCK);
+	session_socket_blockmode(sockpair[1], BM_NONBLOCK);
+
+	filter->ibuf = calloc(1, sizeof(struct imsgbuf));
+	if (filter->ibuf == NULL)
+		goto err;
+
+	pid = fork();
+	if (pid == -1)
+		goto err;
+
+	if (pid == 0) {
+		/* filter */
+		dup2(sockpair[0], STDIN_FILENO);
+		
+		if (closefrom(STDERR_FILENO + 1) < 0)
+			exit(1);
+
+		execl(filter->path, filter->name, NULL);
+		exit(1);
+	}
+
+	/* in parent */
+	close(sockpair[0]);
+	imsg_init(filter->ibuf, sockpair[1]);
+
+	return 1;
+
+err:
+	free(filter->ibuf);
+	close(sockpair[0]);
+	close(sockpair[1]);
 	return 0;
 }

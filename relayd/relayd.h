@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.150 2011/05/26 14:48:20 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.153 2012/04/11 08:25:26 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -169,7 +169,7 @@ struct ctl_relay_event {
 
 	off_t			 splicelen;
 	int			 line;
-	size_t			 toread;
+	off_t			 toread;
 	int			 chunked;
 	int			 done;
 	enum httpmethod		 method;
@@ -474,11 +474,11 @@ enum noderesult {
 };
 
 struct protonode_config {
-	objid_t			 	 protoid;
-	size_t			 	 keylen;
-	size_t			 	 valuelen;
-	size_t			 	 len;
-	u_int			 	 dir;
+	objid_t				 protoid;
+	size_t				 keylen;
+	size_t				 valuelen;
+	size_t				 len;
+	u_int				 dir;
 };
 
 struct protonode {
@@ -607,6 +607,7 @@ struct relay {
 	int			 rl_dstnhosts;
 
 	struct event		 rl_ev;
+	struct event		 rl_evt;
 
 	SSL_CTX			*rl_ssl_ctx;
 	char			*rl_ssl_cert;
@@ -677,6 +678,7 @@ struct ctl_netroute {
 struct control_sock {
 	const char	*cs_name;
 	struct event	 cs_ev;
+	struct event	 cs_evt;
 	int		 cs_fd;
 	int		 cs_restricted;
 	void		*cs_env;
@@ -713,7 +715,7 @@ struct ctl_conn {
 	u_int8_t		 flags;
 	u_int			 waiting;
 #define CTL_CONN_NOTIFY		 0x01
-	struct imsgev	 	 iev;
+	struct imsgev		 iev;
 
 };
 TAILQ_HEAD(ctl_connlist, ctl_conn);
@@ -742,6 +744,7 @@ enum imsg_type {
 	IMSG_CTL_HOST_ENABLE,
 	IMSG_CTL_HOST_DISABLE,
 	IMSG_CTL_SHUTDOWN,
+	IMSG_CTL_START,
 	IMSG_CTL_RELOAD,
 	IMSG_CTL_RESET,
 	IMSG_CTL_POLL,
@@ -1020,7 +1023,7 @@ int		 protonode_load(enum direction, struct protocol *,
 int		 map6to4(struct sockaddr_storage *);
 int		 map4to6(struct sockaddr_storage *, struct sockaddr_storage *);
 void		 imsg_event_add(struct imsgev *);
-int	 	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+int		 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
 		    pid_t, int, void *, u_int16_t);
 void		 socket_rlimit(int);
 char		*get_string(u_int8_t *, size_t);
