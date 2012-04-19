@@ -1,4 +1,4 @@
-/*	$OpenBSD: net.c,v 1.16 2010/06/29 18:10:04 kjell Exp $	*/
+/*	$OpenBSD: net.c,v 1.19 2012/04/15 03:25:27 jsg Exp $	*/
 
 /*
  * Copyright (c) 2005 Håkan Olsson.  All rights reserved.
@@ -363,7 +363,7 @@ net_queue(struct syncpeer *p0, u_int32_t msgtype, u_int8_t *buf, u_int32_t len)
 	}
 
 	/* Get random IV */
-	for (i = 0; i <= sizeof iv - sizeof v; i += sizeof v) {
+	for (i = 0; (size_t)i <= sizeof iv - sizeof v; i += sizeof v) {
 		v = arc4random();
 		memcpy(&iv[i], &v, sizeof v);
 	}
@@ -667,7 +667,8 @@ net_read(struct syncpeer *p, u_int32_t *msgtype, u_int32_t *msglen)
 {
 	u_int8_t	*msg, *blob, *rhash, *iv, hash[SHA_DIGEST_LENGTH];
 	u_int32_t	 v, blob_len, pos = 0;
-	int		 padlen = 0, offset = 0, r;
+	int		 padlen = 0, offset = 0;
+	ssize_t 	 r;
 	SHA_CTX		 ctx;
 
 	/* Read blob length */
@@ -745,6 +746,7 @@ net_read(struct syncpeer *p, u_int32_t *msgtype, u_int32_t *msglen)
 
 	if (memcmp(hash, rhash, sizeof hash) != 0) {
 		free(blob);
+		free(msg);
 		log_msg(0, "net_read: got bad message (typo in shared key?)");
 		return NULL;
 	}
