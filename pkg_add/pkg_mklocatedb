@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # Copyright (c) 2005-2010 Marc Espie <espie@openbsd.org>
-# $OpenBSD: pkg_mklocatedb,v 1.30 2011/09/10 08:46:37 espie Exp $
+# $OpenBSD: pkg_mklocatedb,v 1.33 2012/04/29 08:46:02 espie Exp $
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -23,7 +23,6 @@ use OpenBSD::Getopt;
 use OpenBSD::Error;
 use OpenBSD::Paths;
 use OpenBSD::AddCreateDelete;
-use File::Path;
 
 package OpenBSD::Pkgmklocatedb::State;
 our @ISA = qw(OpenBSD::AddCreateDelete::State);
@@ -76,8 +75,14 @@ sub print_name
 	print {$state->{out}} $state->{currentheader}, $self->fullname, "\n";
 }
 
-package main;
+package OpenBSD::PackingElement::DirBase;
+sub print_name
+{
+	my ($self, $state) = @_;
+	print {$state->{out}} $state->{currentheader}, $self->fullname, "/\n";
+}
 
+package main;
 sub tag
 {
 	my ($state, $dir, $set, $rev) = @_;
@@ -117,7 +122,7 @@ sub open_output
 	}
 }
 
-sub do_src
+sub do_source
 {
 	my ($state, $src, $tag, @sets) = @_;
 	findos() if !defined $arch;
@@ -172,6 +177,8 @@ sub do_portsdir
 	my $make = $ENV{MAKE} || 'make';
 	my $target = defined $ENV{SUBDIRLIST} ? 
 	    'print-plist' : 'print-plist-all';
+	delete $ENV{FLAVOR};
+	delete $ENV{SUBPACKAGE};
 	open my $in, "cd $state->{portsdir} && $make $target |";
 	my $done = 0;
 	while (!$done) {
@@ -217,7 +224,7 @@ open_output($state);
 
 if ($state->{srcdir}) {
 	do_source($state, $state->{srcdir}, 'src', 
-	    qw(base comp etc game misc));
+	    qw(base comp etc game));
 }
 if ($state->{xdir}) {
 	do_source($state, $state->{xdir}, 'xenocara', 

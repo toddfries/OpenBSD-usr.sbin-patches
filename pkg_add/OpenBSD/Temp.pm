@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Temp.pm,v 1.23 2011/03/07 09:26:47 espie Exp $
+# $OpenBSD: Temp.pm,v 1.25 2012/04/28 15:22:49 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -20,7 +20,7 @@ use warnings;
 
 package OpenBSD::Temp;
 
-use File::Temp;
+use OpenBSD::MkTemp;
 use OpenBSD::Paths;
 use OpenBSD::Error;
 
@@ -30,13 +30,11 @@ my $dirs = {};
 my $files = {};
 
 my $cleanup = sub {
-	require File::Path;
-
 	while (my ($name, $pid) = each %$files) {
 		unlink($name) if $pid == $$;
 	}
 	while (my ($dir, $pid) = each %$dirs) {
-		File::Path::rmtree([$dir]) if $pid == $$;
+		OpenBSD::Error->rmtree([$dir]) if $pid == $$;
 	}
 };
 
@@ -94,7 +92,7 @@ sub permanent_file
 	if (defined $dir) {
 		$template = "$dir/$template";
 	}
-	return File::Temp::mkstemp($template);
+	return OpenBSD::MkTemp::mkstemp($template);
 }
 
 sub permanent_dir
@@ -104,7 +102,7 @@ sub permanent_dir
 	if (defined $dir) {
 		$template = "$dir/$template";
 	}
-	return File::Temp::mkdtemp($template);
+	return OpenBSD::MkTemp::mkdtemp($template);
 }
 
 1;
