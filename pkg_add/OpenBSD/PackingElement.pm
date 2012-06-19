@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.202 2012/04/28 12:00:10 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.206 2012/06/08 15:01:00 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -63,6 +63,12 @@ sub new
 {
 	my ($class, $args) = @_;
 	bless { name => $args }, $class;
+}
+
+sub remove
+{
+	my ($self, $plist) = @_;
+	$self->{deleted} = 1;
 }
 
 sub clone
@@ -206,15 +212,20 @@ sub compute_fullname
 	}
 }
 
+sub make_full
+{
+	my ($self, $path) = @_;
+	if ($path !~ m|^/|o && $self->cwd ne '.') {
+		$path = $self->cwd."/".$path;
+		$path =~ s,^//,/,;
+	}
+	return $path;
+}
+
 sub fullname
 {
-	my $self = $_[0];
-	my $fullname = $self->name;
-	if ($fullname !~ m|^/|o && $self->cwd ne '.') {
-		$fullname = $self->cwd."/".$fullname;
-		$fullname =~ s,^//,/,;
-	}
-	return $fullname;
+	my $self = shift;
+	return $self->make_full($self->name);
 }
 
 sub compute_modes
@@ -315,6 +326,12 @@ sub add_object
 	$self->destate($plist->{state});
 	$plist->addunique($self);
 	return $self;
+}
+
+sub remove
+{
+	my ($self, $plist) = @_;
+	delete $plist->{$self->category};
 }
 
 sub category
@@ -667,7 +684,7 @@ sub add
 
 	if ($args =~ m/^\$OpenBSD.*\$\s*$/o) {
 		return OpenBSD::PackingElement::CVSTag->add($plist, $args);
-	} elsif ($args =~ m/^subdir\=(.*?)\s+cdrom\=(.*?)\s+ftp\=(.*?)\s*$/o) {
+	} elsif ($args =~ m/^(?:subdir|pkgpath)\=(.*?)\s+cdrom\=(.*?)\s+ftp\=(.*?)\s*$/o) {
 		return OpenBSD::PackingElement::ExtraInfo->add($plist, $1, $2, $3);
 	} elsif ($args eq 'no checksum') {
 		$plist->{state}->{nochecksum} = 1;
@@ -923,7 +940,7 @@ sub stringize
 {
 	my $self = shift;
 	return join(' ',
-	    "subdir=".$self->{subdir},
+	    "pkgpath=".$self->{subdir},
 	    "cdrom=".may_quote($self->{cdrom}),
 	    "ftp=".may_quote($self->{ftp}));
 }
@@ -1631,6 +1648,14 @@ sub category() { OpenBSD::PackageInfo::CONTENTS }
 sub write
 {}
 
+sub copy_shallow_if
+{
+}
+
+sub copy_deep_if
+{
+}
+
 package OpenBSD::PackingElement::FCOMMENT;
 our @ISA=qw(OpenBSD::PackingElement::SpecialFile);
 sub category() { OpenBSD::PackageInfo::COMMENT }
@@ -1806,6 +1831,7 @@ sub add
 	my $o2 = OpenBSD::PackingElement::Old->new($keyword, $args);
 	$o2->add_object($plist);
 	$plist->{deprecated} = 1;
+	return undef;
 }
 
 sub keyword

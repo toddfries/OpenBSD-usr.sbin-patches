@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # Copyright (c) 2005-2010 Marc Espie <espie@openbsd.org>
-# $OpenBSD: pkg_mklocatedb,v 1.33 2012/04/29 08:46:02 espie Exp $
+# $OpenBSD: pkg_mklocatedb,v 1.38 2012/05/28 10:14:33 espie Exp $
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -31,8 +31,8 @@ sub handle_options
 {
 	my $state = shift;
 	$state->{no_exports} = 1;
-	$state->SUPER::handle_options('ad:nqs:x:r:p:P', 
-	    '[-anPq] [-d repository] [-p portsdir] [-r release] [-s src] ',
+	$state->SUPER::handle_options('aCd:nqs:x:r:p:P', 
+	    '[-aCnPq] [-d repository] [-p portsdir] [-r release] [-s src] ',
 	    '[-x X11src] [pkg-name [...]]');
 	$state->{srcdir} = $state->opt('s');
 	$state->{xdir} = $state->opt('x');
@@ -43,21 +43,28 @@ sub handle_options
 	$state->{pkgpath} = $state->opt('P');
 	$state->{allinfo} = $state->opt('a');
 	$state->{nopipe} = $state->opt('n');
+	$state->{check} = $state->opt('C');
+	if ($state->{check}) {
+		unless ($state->{srcdir} or $state->{portsdir}) {
+			$state->usage("-C without -s dir or -x dir");
+		}
+	}
 }
 
 
 package OpenBSD::PackingElement;
 sub print_name {}
+sub set_header {}
 
 package OpenBSD::PackingElement::Name;
-sub print_name
+sub set_header
 {
 	my ($self, $state) = @_;
 	$state->{currentheader} = $self->{name}.':';
 }
 
 package OpenBSD::PackingElement::ExtraInfo;
-sub print_name
+sub set_header
 {
 	my ($self, $state) = @_;
 	if ($state->{allinfo}) {
@@ -73,6 +80,21 @@ sub print_name
 {
 	my ($self, $state) = @_;
 	print {$state->{out}} $state->{currentheader}, $self->fullname, "\n";
+}
+
+package OpenBSD::PackingElement::Action;
+sub print_name
+{
+	my ($self, $state) = @_;
+	print {$state->{out}} $state->{currentheader}, $self->fullstring, "\n";
+}
+
+package OpenBSD::PackingElement::ExeclikeAction;
+sub print_name
+{
+	my ($self, $state) = @_;
+	print {$state->{out}} $state->{currentheader}, "\@". 
+	    $self->keyword, " ", $self->{expanded}, "\n";
 }
 
 package OpenBSD::PackingElement::DirBase;
@@ -122,6 +144,16 @@ sub open_output
 	}
 }
 
+sub sync_error
+{
+	my ($state, $e, $set) = @_;
+	if ($set =~ m/etc/) {
+		$state->errsay("Couldn't find #1 from set #2:\n\tDid you run sysmerge recently ?", $e, $set);
+	} else {
+		$state->fatal("Couldn't find #1 from set #2:\n\tsrc and installation out of synch ?", $e, $set);
+	}
+}
+
 sub do_source
 {
 	my ($state, $src, $tag, @sets) = @_;
@@ -135,6 +167,9 @@ sub do_source
 			while (my $e = <$l>) {
 				chomp $e;
 				$e =~ s/^\.//;
+				if ($state->{check} && !-e $e) {
+					sync_error($state, $e, $set);
+				}
 				print {$state->{out}} "$tag:$e\n";
 				$output = 1;
 			}
@@ -171,6 +206,14 @@ sub do_release
 	closedir($dir);
 }
 
+sub print_out
+{
+	my ($plist, $state) = @_;
+
+	$plist->set_header($state);
+	$plist->print_name($state);
+}
+
 sub do_portsdir
 {
 	my $state = shift;
@@ -188,13 +231,12 @@ sub do_portsdir
 			my $_;
 			while (<$fh>) {
 				return if m/^\=\=\=\> /o;
-				next unless m/^\@(?:bin|cwd|name|info|man|file|lib|shell|comment\s+subdir\=)\b/o || !m/^\@/o;
 				&$cont($_);
 			}
 			$done = 1;
 		    });
 		if (defined $plist && defined $plist->pkgname) {
-			$plist->print_name($state);
+			print_out($plist, $state);
 		}
 	}
 	close($in);
@@ -213,7 +255,7 @@ sub do_pkgdir
 		return unless -f $_;
 		my $plist = $state->repo->grabPlist($File::Find::name);
 		return unless defined $plist;
-		$plist->print_name($state);
+		print_out($plist, $state);
 	    }, $state->{pkgdir});
 }
 
@@ -244,7 +286,7 @@ if ($state->{portsdir}) {
 	    	my $pkgname = shift;
 		my $plist = OpenBSD::PackingList->from_installation($pkgname);
 		return unless defined $plist;
-		$plist->print_name($state);
+	    	print_out($plist, $state);
 	    });
 } else {
 	$state->progress->for_list("Scanning packages", \@ARGV,
@@ -252,6 +294,6 @@ if ($state->{portsdir}) {
 	    	my $pkgname = shift;
 		my $plist = $state->repo->grabPlist($pkgname);
 		next unless $plist;
-		$plist->print_name($state);
+		print_out($plist, $state);
 	    });
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcidump.c,v 1.29 2011/01/13 14:29:26 jsg Exp $	*/
+/*	$OpenBSD: pcidump.c,v 1.31 2012/05/16 13:01:50 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 David Gwynne <loki@animata.net>
@@ -289,6 +289,9 @@ print_pcie_ls(uint8_t speed)
 	case 2:
 		printf("5.0");
 		break;
+	case 3:
+		printf("8.0");
+		break;
 	default:
 		printf("unknown (%d)", speed);
 	}
@@ -320,7 +323,7 @@ dump_pcie_linkspeed(int bus, int dev, int func, uint8_t ptr)
 	printf(" / ");
 	print_pcie_ls(cspeed);
 
-	printf(" Gb/s Link Width: x%d / x%d\n", swidth, cwidth);
+	printf(" GT/s Link Width: x%d / x%d\n", swidth, cwidth);
 }
 
 void

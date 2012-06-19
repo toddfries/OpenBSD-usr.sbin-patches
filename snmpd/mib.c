@@ -1,4 +1,4 @@
-/*	$OpenBSD: mib.c,v 1.52 2012/03/20 03:01:26 joel Exp $	*/
+/*	$OpenBSD: mib.c,v 1.54 2012/06/14 17:31:32 matthew Exp $	*/
 
 /*
  * Copyright (c) 2012 Joel Knight <joel@openbsd.org>
@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <sys/mount.h>
 #include <sys/ioctl.h>
+#include <sys/disk.h>
 
 #include <net/if.h>
 #include <net/if_types.h>
@@ -1360,7 +1361,7 @@ int	 mib_carpstats(struct oid *, struct ber_oid *, struct ber_element **);
 int	 mib_carpiftable(struct oid *, struct ber_oid *, struct ber_element **);
 int	 mib_carpifnum(struct oid *, struct ber_oid *, struct ber_element **);
 struct carpif
-	*mib_carpifget(struct carpif *, u_int);
+	*mib_carpifget(u_int);
 int	 mib_memiftable(struct oid *, struct ber_oid *, struct ber_element **);
 
 static struct oid openbsd_mib[] = {
@@ -2647,9 +2648,10 @@ mib_carpifnum(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 }
 
 struct carpif *
-mib_carpifget(struct carpif *cif, u_int idx)
+mib_carpifget(u_int idx)
 {
 	struct kif	*kif;
+	struct carpif	*cif;
 	int		 s;
 	struct ifreq	 ifr;
 	struct carpreq	 carpr;
@@ -2689,12 +2691,17 @@ mib_carpifget(struct carpif *cif, u_int idx)
 	memset((char *)&carpr, 0, sizeof(carpr));
 	ifr.ifr_data = (caddr_t)&carpr;
 
-	if (ioctl(s, SIOCGVH, (caddr_t)&ifr) == -1)
+	if (ioctl(s, SIOCGVH, (caddr_t)&ifr) == -1) {
+		close(s);
 		return (NULL);
+	}
 
-	memset(cif, 0, sizeof(struct carpif));
-	memcpy(&cif->carpr, &carpr, sizeof(struct carpreq));
-	memcpy(&cif->kif, kif, sizeof(struct kif));
+	cif = malloc(sizeof(struct carpif));
+	if (cif != NULL) {
+		memset(cif, 0, sizeof(struct carpif));
+		memcpy(&cif->carpr, &carpr, sizeof(struct carpreq));
+		memcpy(&cif->kif, kif, sizeof(struct kif));
+	}
 
 	close(s);
 
@@ -2707,16 +2714,11 @@ mib_carpiftable(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 	u_int32_t		 idx;
 	struct carpif 		*cif;
 
-	if ((cif = malloc(sizeof(struct carpif))) == NULL)
-		return (1);
-
 	/* Get and verify the current row index */
 	idx = o->bo_id[OIDIDX_carpIfEntry];
 
-	if ((cif = mib_carpifget(cif, idx)) == NULL) {
-		free(cif);
+	if ((cif = mib_carpifget(idx)) == NULL)
 		return (1);
-	}
 
 	/* Tables need to prepend the OID on their own */
 	o->bo_id[OIDIDX_carpIfEntry] = cif->kif.if_index;
@@ -3362,6 +3364,99 @@ mib_ipfroute(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
 }
 
 /*
+ * Defined in UCD-DISKIO-MIB.txt.
+ */
+
+int	mib_diskio(struct oid *oid, struct ber_oid *o, struct ber_element **elm);
+
+static struct oid diskio_mib[] = {
+	{ MIB(ucdDiskIOMIB),			OID_MIB },
+	{ MIB(diskIOIndex),			OID_TRD, mib_diskio },
+	{ MIB(diskIODevice),			OID_TRD, mib_diskio },
+	{ MIB(diskIONRead),			OID_TRD, mib_diskio },
+	{ MIB(diskIONWritten),			OID_TRD, mib_diskio },
+	{ MIB(diskIOReads),			OID_TRD, mib_diskio },
+	{ MIB(diskIOWrites),			OID_TRD, mib_diskio },
+	{ MIB(diskIONReadX),			OID_TRD, mib_diskio },
+	{ MIB(diskIONWrittenX),			OID_TRD, mib_diskio },
+	{ MIBEND }
+};
+
+int
+mib_diskio(struct oid *oid, struct ber_oid *o, struct ber_element **elm)
+{
+	struct ber_element	*ber = *elm;
+	u_int32_t		 idx;
+	int			 mib[] = { CTL_HW, 0 };
+	unsigned int		 diskcount;
+	struct diskstats	*stats;
+	size_t			 len;
+
+	len = sizeof(diskcount);
+	mib[1] = HW_DISKCOUNT;
+	if (sysctl(mib, sizeofa(mib), &diskcount, &len, NULL, 0) == -1)
+		return (-1);
+
+	/* Get and verify the current row index */
+	idx = o->bo_id[OIDIDX_diskIOEntry];
+	if (idx > diskcount)
+		return (1);
+
+	/* Tables need to prepend the OID on their own */
+	o->bo_id[OIDIDX_diskIOEntry] = idx;
+	ber = ber_add_oid(ber, o);
+
+	len = diskcount * sizeof(*stats);
+	stats = malloc(len);
+	if (stats == NULL)
+		return (-1);
+	mib[1] = HW_DISKSTATS;
+	if (sysctl(mib, sizeofa(mib), stats, &len, NULL, 0) == -1) {
+		free(stats);
+		return (-1);
+	}
+
+	switch (o->bo_id[OIDIDX_diskIO]) {
+	case 1: /* diskIOIndex */
+		ber = ber_add_integer(ber, idx);
+		break;
+	case 2: /* diskIODevice */
+		ber = ber_add_string(ber, stats[idx - 1].ds_name);
+		break;
+	case 3: /* diskIONRead */
+		ber = ber_add_integer(ber, (u_int32_t)stats[idx - 1].ds_rbytes);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER32);
+		break;
+	case 4: /* diskIONWritten */
+		ber = ber_add_integer(ber, (u_int32_t)stats[idx - 1].ds_wbytes);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER32);
+		break;
+	case 5: /* diskIOReads */
+		ber = ber_add_integer(ber, (u_int32_t)stats[idx - 1].ds_rxfer);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER32);
+		break;
+	case 6: /* diskIOWrites */
+		ber = ber_add_integer(ber, (u_int32_t)stats[idx - 1].ds_wxfer);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER32);
+		break;
+	case 12: /* diskIONReadX */
+		ber = ber_add_integer(ber, stats[idx - 1].ds_rbytes);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER64);
+		break;
+	case 13: /* diskIONWrittenX */
+		ber = ber_add_integer(ber, stats[idx - 1].ds_wbytes);
+		ber_set_header(ber, BER_CLASS_APPLICATION, SNMP_T_COUNTER64);
+		break;
+	default:
+		free(stats);
+		return (-1);
+	}
+
+	free(stats);
+	return (0);
+}
+
+/*
  * Defined in BRIDGE-MIB.txt (rfc1493)
  *
  * This MIB is required by some NMS to accept the device because
@@ -3451,6 +3546,9 @@ mib_init(void)
 
 	/* BRIDGE-MIB */
 	smi_mibtree(bridge_mib);
+
+	/* UCD-DISKIO-MIB */
+	smi_mibtree(diskio_mib);
 
 	/* OPENBSD-MIB */
 	smi_mibtree(openbsd_mib);
