@@ -1,7 +1,7 @@
-/*	$OpenBSD: auth_bsd.c,v 1.2 2012/07/08 13:42:09 gilles Exp $	*/
+/*	$OpenBSD: scheduler_backend.c,v 1.1 2012/07/09 09:57:53 gilles Exp $	*/
 
 /*
- * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
+ * Copyright (c) 2012 Gilles Chehade <gilles@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -21,23 +21,38 @@
 #include <sys/tree.h>
 #include <sys/param.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 
-#include <bsd_auth.h>
+#include <ctype.h>
+#include <err.h>
 #include <event.h>
+#include <fcntl.h>
 #include <imsg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "smtpd.h"
+#include "log.h"
 
-static int auth_bsd(char *, char *);
+extern struct scheduler_backend scheduler_backend_ramqueue;
 
-struct auth_backend	auth_backend_bsd = {
-	auth_bsd,
-};
-
-static int
-auth_bsd(char *username, char *password)
+struct scheduler_backend *
+scheduler_backend_lookup(const char *name)
 {
-	return auth_userokay(username, NULL, "auth-smtp", password);
+	if (!strcmp(name, "ramqueue"))
+		return &scheduler_backend_ramqueue;
+
+	return NULL;
+}
+
+void
+scheduler_info(struct scheduler_info *sched, struct envelope *evp)
+{
+	strlcpy(sched->destination, evp->dest.domain, sizeof sched->destination);
+
+	sched->evpid = evp->id;
+	sched->creation = evp->creation;
+	sched->lasttry  = evp->lasttry;
+	sched->expire   = evp->expire;
+	sched->retry    = evp->retry;
 }
