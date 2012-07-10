@@ -1,4 +1,4 @@
-/*	$OpenBSD: pcidump.c,v 1.29 2011/01/13 14:29:26 jsg Exp $	*/
+/*	$OpenBSD: pcidump.c,v 1.32 2012/07/03 13:09:25 jsg Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 David Gwynne <loki@animata.net>
@@ -289,6 +289,9 @@ print_pcie_ls(uint8_t speed)
 	case 2:
 		printf("5.0");
 		break;
+	case 3:
+		printf("8.0");
+		break;
 	default:
 		printf("unknown (%d)", speed);
 	}
@@ -320,7 +323,7 @@ dump_pcie_linkspeed(int bus, int dev, int func, uint8_t ptr)
 	printf(" / ");
 	print_pcie_ls(cspeed);
 
-	printf(" Gb/s Link Width: x%d / x%d\n", swidth, cwidth);
+	printf(" GT/s Link Width: x%d / x%d\n", swidth, cwidth);
 }
 
 void
@@ -758,8 +761,12 @@ dump_vga_bios(void)
 	if (pread(fd, bios, VGA_BIOS_LEN, VGA_BIOS_ADDR) == -1)
 		err(1, "%s", _PATH_MEM);
 
-	if (write(romfd, bios, VGA_BIOS_LEN) == -1)
+	if (write(romfd, bios, VGA_BIOS_LEN) == -1) {
+		free(bios);
 		return (errno);
+	}
+
+	free(bios);
 
 	return (0);
 #else

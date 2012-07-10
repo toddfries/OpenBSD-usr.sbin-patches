@@ -1,4 +1,4 @@
-.\"	$OpenBSD: smtpd.conf.5,v 1.47 2011/12/13 23:55:00 gilles Exp $
+.\"	$OpenBSD: smtpd.conf.5,v 1.52 2012/05/13 13:58:31 jmc Exp $
 .\"
 .\" Copyright (c) 2008 Janne Johansson <jj@openbsd.org>
 .\" Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -16,7 +16,7 @@
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
 .\"
-.Dd $Mdocdate: December 13 2011 $
+.Dd $Mdocdate: May 13 2012 $
 .Dt SMTPD.CONF 5
 .Os
 .Sh NAME
@@ -35,12 +35,14 @@ and extend to the end of the current line.
 Care should be taken when commenting out multi-line text:
 the comment is effective until the end of the entire block.
 .Pp
+Argument names not beginning with a letter, digit, or underscore
+must be quoted.
 Arguments containing whitespace should be surrounded by double quotes
 .Pq \&" .
 .Pp
 Macros can be defined that will later be expanded in context.
-Macro names must start with a letter, and may contain letters, digits
-and underscores.
+Macro names must start with a letter, digit, or underscore,
+and may contain any of those characters.
 Macro names may not be reserved words (for example
 .Ar listen ,
 .Ar accept ,
@@ -90,7 +92,7 @@ expire 4d	# expire after 4 days
 expire 10h	# expire after 10 hours
 .Ed
 .It Ic hostname Ar name
-Specify the domain name of the server.
+Specify the fully qualified domain name (FQDN) of the server.
 By default the current host name is used,
 as returned by
 .Xr hostname 1 .
@@ -155,9 +157,7 @@ it was the server's local user that was sending the mail.
 This means that filter rules using "from local" will be matched.
 .It Xo
 .Ic map Ar map
-.No {
 .Ic source Ar type Ar source
-.No }
 .Xc
 Maps are used to provide additional configuration information for
 .Xr smtpd 8 .
@@ -173,8 +173,6 @@ may be one of the following:
 Mappings are stored in a file created using
 .Xr makemap 8 .
 This is the default type if none is specified.
-.It dns
-Not implemented yet.
 .It plain
 Mappings are stored in a plain text file using the
 same format as used to generate
@@ -185,13 +183,10 @@ mappings.
 .Ar source
 specifies the source of the map data.
 It must be an absolute path to a file for the
-.Dq file
+.Dq plain
 and
 .Dq db
-map types,
-or a domain name for the
-.Dq dns
-map type.
+map types.
 .It Ic size Ar n
 Specify a maximum message size of
 .Ar n
@@ -227,11 +222,17 @@ specified in CIDR notation.
 .Pp
 Next comes the selection based on the domain the message is sent to:
 .Bl -tag -width Ds
-.It Ic for all
+.It Xo
+.Ic for all
+.Op Ic alias Ar aliases
+.Xc
 Make the rule match regardless of the domain it is sent to.
+If specified,
+.Ar aliases
+is used for looking up alternative destinations for all addresses.
 .It Xo
 .Ic for domain Ar domain
-.Op Ic alias Ar map
+.Op Ic alias Ar aliases
 .Xc
 This rule applies to mail destined for the specified
 .Ar domain .
@@ -244,9 +245,20 @@ accept for domain "*.example.com" deliver to mbox
 .Ed
 .Pp
 If specified,
-.Ar map
+.Ar aliases
 is used for looking up alternative destinations for addresses in this
 .Ar domain .
+.It Xo
+.Ic for domain map Ar domains
+.Op Ic alias Ar aliases
+.Xc
+This rule applies to mail destined to domains which are part of the map
+.Ar domains .
+.Pp
+If specified,
+.Ar aliases
+is used for looking up alternative destinations for addresses in these
+.Ar domains .
 .It Xo
 .Ic for local
 .Op Ic alias Ar map
@@ -256,10 +268,10 @@ This rule applies to mail destined to
 and to the server's fully qualified domain name,
 as returned by
 .Xr hostname 1 .
-.It Ic for virtual Ar map
+.It Ic for virtual map Ar vmap
 This rule applies to mail destined for the virtual domains specified
 in the map
-.Ar map .
+.Ar vmap .
 For an example of how to configure a virtual map, see
 .Xr makemap 8 .
 .El
@@ -395,8 +407,8 @@ A secrets file is needed to specify a username and password:
 would look like this:
 .Bd -literal -offset indent
 listen on lo0
-map aliases { source db "/etc/mail/aliases.db" }
-map secrets { source db "/etc/mail/secrets.db" }
+map aliases source db "/etc/mail/aliases.db"
+map secrets source db "/etc/mail/secrets.db"
 accept for local deliver to mbox
 accept for all relay via smtp.example.com tls auth "secrets"
 .Ed
@@ -421,7 +433,7 @@ The configuration file would look like this:
 .Bd -literal -offset indent
 listen on lo0
 listen on bnx0 tls certificate "mail.example.com" enable auth
-map aliases { source db "/etc/mail/aliases.db" }
+map aliases source db "/etc/mail/aliases.db"
 accept for local deliver to mda "/path/to/mda -f -"
 accept from all for domain example.org deliver to mda "/path/to/mda -f -"
 accept for all relay
