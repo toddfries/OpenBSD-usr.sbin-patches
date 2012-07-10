@@ -1,4 +1,4 @@
-/* $OpenBSD: pptp_ctrl.c,v 1.4 2011/03/16 09:48:45 okan Exp $	*/
+/*	$OpenBSD: pptp_ctrl.c,v 1.6 2012/05/08 13:18:37 yasuoka Exp $	*/
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -29,7 +29,7 @@
  * PPTP(RFC 2637) control connection implementation.
  * currently it only support PAC part
  */
-/* $Id: pptp_ctrl.c,v 1.4 2011/03/16 09:48:45 okan Exp $ */
+/* $Id: pptp_ctrl.c,v 1.6 2012/05/08 13:18:37 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -405,7 +405,7 @@ pptp_ctrl_io_event(int fd, short evmask, void *ctx)
 		sz = read(_this->sock, bytebuffer_pointer(_this->recv_buf),
 		    bytebuffer_remaining(_this->recv_buf));
 		if (sz <= 0) {
-			if (errno == ECONNRESET || sz == 0) {
+			if (sz == 0 || errno == ECONNRESET) {
 				pptp_ctrl_log(_this, LOG_INFO,
 				    "Connection closed by foreign host");
 				pptp_ctrl_fini(_this);
@@ -1148,7 +1148,7 @@ pptp_ctrl_log(pptp_ctrl *_this, int prio, const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-#ifdef	PPTPD_MULITPLE
+#ifdef	PPTPD_MULTIPLE
 	snprintf(logbuf, sizeof(logbuf), "pptpd id=%u ctrl=%u %s",
 	    _this->pptpd->id, _this->id, fmt);
 #else
