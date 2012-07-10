@@ -1,4 +1,4 @@
-/*	$OpenBSD: pf.c,v 1.1 2012/02/23 03:54:38 joel Exp $	*/
+/*	$OpenBSD: pf.c,v 1.4 2012/05/28 20:55:40 joel Exp $	*/
 
 /*
  * Copyright (c) 2012 Joel Knight <joel@openbsd.org>
@@ -59,13 +59,11 @@ size_t 	 buf_esize[PFRB_MAX] = { 0,
 	sizeof(struct pfi_kif), sizeof(struct pfioc_trans_e)
 };
 
-int
+void
 pf_init(void)
 {
 	if ((devpf = open("/dev/pf", O_RDONLY)) == -1)
-		return (1);
-
-	return (0);
+		fatal("pf_init");
 }
 
 int
@@ -73,7 +71,7 @@ pf_get_stats(struct pf_status *s)
 {
 	extern int	 devpf;
 
-	memset(s, 0, sizeof(s));
+	memset(s, 0, sizeof(*s));
 	if (ioctl(devpf, DIOCGETSTATUS, s)) {
 		log_warn("DIOCGETSTATUS");
 		return (-1);
@@ -228,8 +226,10 @@ pfi_count(void)
 	struct pfi_kif 		*p;
 	int			 c = 0;
 
-	if (pfi_get(&b, NULL))
+	if (pfi_get(&b, NULL)) {
+		free(b.pfrb_caddr);
 		return (-1);
+	}
 
 	PFRB_FOREACH(p, &b)
 		c++;
@@ -245,8 +245,10 @@ pfi_get_if(struct pfi_kif *rp, int idx)
 	struct pfi_kif		*p;
 	int			 i = 1;
 
-	if (pfi_get(&b, NULL))
+	if (pfi_get(&b, NULL)) {
+		free(b.pfrb_caddr);
 		return (-1);
+	}
 
 	PFRB_FOREACH(p, &b) {
 		if (i == idx)
@@ -290,9 +292,11 @@ pft_get_table(struct pfr_tstats *rts, int idx)
 	struct pfr_tstats	*ts;
 	int			 i = 1;
 
-	if (pft_get(&b, NULL))
+	if (pft_get(&b, NULL)) {
+		free(b.pfrb_caddr);
 		return (-1);
-
+	}
+ 
 	PFRB_FOREACH(ts, &b) {
 		if (!(ts->pfrts_flags & PFR_TFLAG_ACTIVE))
 			continue;
@@ -319,8 +323,10 @@ pft_count(void)
 	struct pfr_tstats	*ts;
 	int			 c = 0;
 
-	if (pft_get(&b, NULL))
+	if (pft_get(&b, NULL)) {
+		free(b.pfrb_caddr);
 		return (-1);
+	}
 
 	PFRB_FOREACH(ts, &b) {
 		if (!(ts->pfrts_flags & PFR_TFLAG_ACTIVE))

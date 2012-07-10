@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.57 2012/02/13 17:32:14 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.68 2012/06/08 15:02:10 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -74,6 +74,49 @@ sub end_status
 	} else {
 		$self->progress->clear;
 	}
+}
+
+sub handle_options
+{
+	my $state = shift;
+
+	$state->{opt} = {
+	    'f' =>
+		    sub {
+			    push(@{$state->{contents}}, shift);
+		    },
+	    'p' => 
+		    sub {
+			    $state->{prefix} = shift;
+		    },
+	    'P' => sub {
+			    my $d = shift;
+			    $state->{dependencies}{$d} = 1;
+		    },
+	    'W' => sub {
+			    my $w = shift;
+			    $state->{wantlib}{$w} = 1;
+		    },
+	    's' => sub {
+			    push(@{$state->{signature_params}}, shift);
+		    },
+	};
+	$state->{no_exports} = 1;
+	$state->SUPER::handle_options('p:f:d:M:U:s:A:B:P:W:qQ',
+	    '[-nQqvx] [-A arches] [-B pkg-destdir] [-D name[=value]]',
+	    '[-L localbase] [-M displayfile] [-P pkg-dependency]',
+	    '[-s x509 -s cert -s priv] [-U undisplayfile] [-W wantedlib]',
+	    '-d desc -D COMMENT=value -f packinglist -p prefix pkg-name');
+
+	my $base = '/';
+	if (defined $state->opt('B')) {
+		$base = $state->opt('B');
+	} elsif (defined $ENV{'PKG_PREFIX'}) {
+		$base = $ENV{'PKG_PREFIX'};
+	}
+
+	$state->{base} = $base;
+
 }
 
 package OpenBSD::PkgCreate;
@@ -248,6 +291,14 @@ sub discover_directories
 {
 }
 
+sub check_version
+{
+}
+
+sub find_every_library
+{
+}
+
 package OpenBSD::PackingElement::RcScript;
 sub archive
 {
@@ -392,6 +443,14 @@ sub copy_over
 	$e->copy_long($wrarc);
 }
 
+sub find_every_library
+{
+	my ($self, $h) = @_;
+	if ($self->fullname =~ m,/lib([^/]+)\.a$,) {
+		$h->{$1}{static} = 1;
+	}
+}
+
 package OpenBSD::PackingElement::Dir;
 sub discover_directories
 {
@@ -532,6 +591,46 @@ sub avert_duplicates_and_other_checks
 }
 
 
+package OpenBSD::PackingElement::Lib;
+sub check_version
+{
+	my ($self, $state, $unsubst) = @_;
+	my @l  = $self->parse($self->name);
+	if (defined $l[0]) {
+		if (!$unsubst =~ m/\$\{LIB$l[0]_VERSION\}/) {
+			$state->error("Incorrectly versioned shared library: #1", $unsubst);
+		}
+	} else {
+		$state->error("Invalid shared library #1", $unsubst);
+	}
+	$state->{has_libraries} = 1;
+}
+
+sub find_every_library
+{
+	my ($self, $h) = @_;
+	my @l = $self->parse($self->fullname);
+	push(@{$h->{$l[0]}{dynamic}}, $self);
+}
+
+package OpenBSD::PackingElement::Fragment;
+our @ISA=qw(OpenBSD::PackingElement);
+
+sub needs_keyword() { 0 }
+
+sub stringize
+{
+	return '%%'.shift->{name}.'%%';
+}
+
+package OpenBSD::PackingElement::NoFragment;
+our @ISA=qw(OpenBSD::PackingElement::Fragment);
+sub stringize
+{
+	return '!%%'.shift->{name}.'%%';
+}
+
+
 # put together file and filename, in order to handle fragments simply
 package MyFile;
 sub new
@@ -540,7 +639,7 @@ sub new
 
 	open(my $fh, '<', $filename) or die "Missing file $filename";
 
-	bless { fh => $fh, name => $filename }, $class;
+	bless { fh => $fh, name => $filename }, (ref($class) || $class);
 }
 
 sub readline
@@ -559,6 +658,30 @@ sub close
 {
 	my $self = shift;
 	close($self->{fh});
+}
+
+sub deduce_name
+{
+	my ($self, $frag, $not) = @_;
+
+	my $o = $self->name;
+	my $noto = $o;
+	my $nofrag = "no-$frag";
+
+	$o =~ s/PFRAG\./PFRAG.$frag-/o or
+	    $o =~ s/PLIST/PFRAG.$frag/o;
+
+	$noto =~ s/PFRAG\./PFRAG.no-$frag-/o or
+	    $noto =~ s/PLIST/PFRAG.no-$frag/o;
+	unless (-e $o or -e $noto) {
+		die "Missing fragments for $frag: $o and $noto don't exist";
+	}
+	if ($not) {
+		return $noto if -e $noto;
+    	} else {
+		return $o if -e $o;
+	}
+	return;
 }
 
 # special solver class for PkgCreate
@@ -773,59 +896,40 @@ sub print
 package OpenBSD::PkgCreate;
 our @ISA = qw(OpenBSD::AddCreateDelete);
 
-sub deduce_name
-{
-	my ($state, $o, $frag, $not) = @_;
-
-	my $noto = $o;
-	my $nofrag = "no-$frag";
-
-	$o =~ s/PFRAG\./PFRAG.$frag-/o or
-	    $o =~ s/PLIST/PFRAG.$frag/o;
-
-	$noto =~ s/PFRAG\./PFRAG.no-$frag-/o or
-	    $noto =~ s/PLIST/PFRAG.no-$frag/o;
-	unless (-e $o or -e $noto) {
-		die "Missing fragments for $frag: $o and $noto don't exist";
-	}
-	if ($not) {
-		return $noto if -e $noto;
-    	} else {
-		return $o if -e $o;
-	}
-	return;
-}
-
 sub handle_fragment
 {
-	my ($state, $stack, $file, $not, $frag) = @_;
+	my ($self, $state, $old, $not, $frag, $_, $cont) = @_;
 	my $def = $frag;
 	if ($frag eq 'SHARED') {
 		$def = 'SHARED_LIBS';
 		$frag = 'shared';
 	}
-	my $newname = deduce_name($state, $file->name, $frag, $not);
 	if ($state->{subst}->has_fragment($def, $frag)) {
-		return $file if defined $not;
+		return undef if defined $not;
 	} else {
-		return $file unless defined $not;
+		return undef unless defined $not;
 	}
+	my $newname = $old->deduce_name($frag, $not);
 	if (defined $newname) {
 		$state->set_status("switching to $newname")
 		    if !defined $state->opt('q');
-		push(@$stack, $file);
-		$file = MyFile->new($newname);
+		return $old->new($newname);
 	}
-	return $file;
+	return undef;
+}
+
+sub FileClass
+{
+	return "MyFile";
 }
 
 sub read_fragments
 {
-	my ($state, $plist, $filename) = @_;
+	my ($self, $state, $plist, $filename) = @_;
 
 	my $stack = [];
 	my $subst = $state->{subst};
-	push(@$stack, MyFile->new($filename));
+	push(@$stack, $self->FileClass->new($filename));
 	my $fast = $subst->value("LIBS_ONLY");
 
 	return $plist->read($stack,
@@ -837,23 +941,30 @@ sub read_fragments
 				if (m/^(\@comment\s+\$(?:Open)BSD\$)$/o) {
 					$_ = '@comment $'.'OpenBSD: '.basename($file->name).',v$';
 				}
-				if (m/^\@lib\s+(.*)$/o &&
-				    OpenBSD::PackingElement::Lib->parse($1)) {
-				    	$state->error("shared library without SHARED_LIBS: #1", $_);
-				}
-				if (my ($not, $frag) = m/^(\!)?\%\%(.*)\%\%$/) {
-					$file = handle_fragment($state, $stack,
-					    $file, $not, $frag);
-				} else {
-					$_ = $subst->do($_);
-					if ($fast) {
-						next unless m/^\@(?:cwd|lib|depend|wantlib)\b/o || m/lib.*\.a$/o;
+				if (m/^(\!)?\%\%(.*)\%\%$/) {
+					if (my $f2 = $self->handle_fragment($state, $file, $1, $2, $_, $cont)) {
+						push(@$stack, $file);
+						$file = $f2;
 					}
-					&$cont($_);
+					next;
+				}
+				my $s = $subst->do($_);
+				if ($fast) {
+					next unless $s =~ m/^\@(?:cwd|lib|depend|wantlib)\b/o || $s =~ m/lib.*\.a$/o;
+				}
+	# XXX some things, like @comment no checksum, don't produce an object
+				my $o = &$cont($s);
+				if (defined $o) {
+					$o->check_version($state, $s);
+					$self->annotate($o, $_, $file);
 				}
 			}
 		}
 	    });
+}
+
+sub annotate
+{
 }
 
 sub add_special_file
@@ -973,22 +1084,17 @@ sub add_extra_info
 
 sub add_elements
 {
-	my ($self, $plist, $state, $dep, $want) = @_;
+	my ($self, $plist, $state) = @_;
 
 	my $subst = $state->{subst};
 	add_description($state, $plist, DESC, $state->opt('d'));
 	add_special_file($subst, $plist, DISPLAY, $state->opt('M'));
 	add_special_file($subst, $plist, UNDISPLAY, $state->opt('U'));
-	if (defined $state->opt('p')) {
-		OpenBSD::PackingElement::Cwd->add($plist, $state->opt('p'));
-	} else {
-		$state->usage("Prefix required");
-	}
-	for my $d (sort keys %$dep) {
+	for my $d (sort keys %{$state->{dependencies}}) {
 		OpenBSD::PackingElement::Dependency->add($plist, $d);
 	}
 
-	for my $w (sort keys %$want) {
+	for my $w (sort keys %{$state->{wantlib}}) {
 		OpenBSD::PackingElement::Wantlib->add($plist, $w);
 	}
 
@@ -1002,9 +1108,30 @@ sub add_elements
 	$self->add_extra_info($plist, $state);
 }
 
+sub cant_read_fragment
+{
+	my ($self, $state, $frag) = @_;
+	$state->fatal("can't read packing-list #1", $frag);
+}
+
+sub read_all_fragments
+{
+	my ($self, $state, $plist) = @_;
+
+	if (defined $state->{prefix}) {
+		OpenBSD::PackingElement::Cwd->add($plist, $state->{prefix});
+	} else {
+		$state->usage("Prefix required");
+	}
+	for my $contentsfile (@{$state->{contents}}) {
+		$self->read_fragments($state, $plist, $contentsfile) or
+		    $self->cant_read_fragment($state, $contentsfile);
+	}
+}
+
 sub create_plist
 {
-	my ($self, $state, $pkgname, $frags, $dep, $want) = @_;
+	my ($self, $state, $pkgname) = @_;
 
 	my $plist = OpenBSD::PackingList->new;
 
@@ -1019,14 +1146,11 @@ sub create_plist
 		$plist->set_infodir(OpenBSD::Temp->dir);
 	}
 
-	$self->add_elements($plist, $state, $dep, $want);
+	$self->add_elements($plist, $state);
 	unless (defined $state->opt('q') && defined $state->opt('n')) {
 		$state->set_status("reading plist");
 	}
-	for my $contentsfile (@$frags) {
-		read_fragments($state, $plist, $contentsfile) or
-		    $state->fatal("can't read packing-list #1", $contentsfile);
-	}
+	$self->read_all_fragments($state, $plist);
 	return $plist;
 }
 
@@ -1136,6 +1260,28 @@ sub finish_manpages
 	}
 }
 
+# This converts shared libraries into non-shared libraries if necessary
+sub tweak_libraries
+{
+	my ($self, $state, $plist) = @_;
+	return unless $state->{has_libraries};
+	return if $state->{subst}->has_fragment('SHARED_LIBS', 'shared');
+	my $h = {};
+	$plist->find_every_library($h);
+	# now we have each library recorded by "stem"
+	while (my ($k, $v) = each %$h) {
+		# need a static one: convert the first dynamic library to static
+		if (!defined $v->{static}) {
+			my $lib = pop @{$v->{dynamic}};
+			$lib->{name} = "lib/lib$k.a";
+			bless $lib, "OpenBSD::PackingElement::File";
+		}
+		for my $lib (@{$v->{dynamic}}) {
+			$lib->remove($plist);
+		}
+	}
+}
+
 sub parse_and_run
 {
 	my ($self, $cmd) = @_;
@@ -1143,59 +1289,35 @@ sub parse_and_run
 	my ($cert, $privkey);
 	my $regen_package = 0;
 	my $sign_only = 0;
-	my (@contents, %dependencies, %wantlib, @signature_params);
-
 
 	my $state = OpenBSD::PkgCreate::State->new($cmd);
-
-	$state->{opt} = {
-	    'f' =>
-		    sub {
-			    push(@contents, shift);
-		    },
-	    'P' => sub {
-			    my $d = shift;
-			    $dependencies{$d} = 1;
-		    },
-	    'W' => sub {
-			    my $w = shift;
-			    $wantlib{$w} = 1;
-		    },
-	    's' => sub {
-			    push(@signature_params, shift);
-		    }
-	};
-	$state->{no_exports} = 1;
-	$state->handle_options('p:f:d:M:U:s:A:B:P:W:qQ',
-	    '[-nQqvx] [-A arches] [-B pkg-destdir] [-D name[=value]]',
-	    '[-L localbase] [-M displayfile] [-P pkg-dependency]',
-	    '[-s x509 -s cert -s priv] [-U undisplayfile] [-W wantedlib]',
-	    '-d desc -D COMMENT=value -f packinglist -p prefix pkg-name');
+	$state->handle_options;
 
 	if (@ARGV == 0) {
 		$regen_package = 1;
 	} elsif (@ARGV != 1) {
-		if (@contents || @signature_params == 0) {
+		if (defined $state->{contents} || 
+		    !defined $state->{signature_params}) {
 			$state->usage("Exactly one single package name is required: #1", join(' ', @ARGV));
 		}
 	}
 
 	try {
-	if (@signature_params > 0) {
-		if (@signature_params != 3 || $signature_params[0] ne 'x509' ||
-		    !-f $signature_params[1] || !-f $signature_params[2]) {
+	if (defined $state->{signature_params}) {
+		my @p = @{$state->{signature_params}};
+		if (@p != 3 || $p[0] ne 'x509' || !-f $p[1] || !-f $p[2]) {
 			$state->usage("Signature only works as -s x509 -s cert -s privkey");
 		}
-		$cert = $signature_params[1];
-		$privkey = $signature_params[2];
+		$cert = $p[1];
+		$privkey = $p[2];
 	}
 
 	if (defined $state->opt('Q')) {
 		$state->{opt}{q} = 1;
 	}
 
-	if (!@contents) {
-		if (@signature_params > 0) {
+	if (!defined $state->{contents}) {
+		if (defined $cert) {
 			$sign_only = 1;
 		} else {
 			$state->usage("Packing-list required");
@@ -1204,10 +1326,11 @@ sub parse_and_run
 
 	my $plist;
 	if ($regen_package) {
-		if (@contents != 1) {
+		if (!defined $state->{contents} || @{$state->{contents}} > 1) {
 			$state->usage("Exactly one single packing-list is required");
 		}
-		$plist = $self->read_existing_plist($state, $contents[0]);
+		$plist = $self->read_existing_plist($state, 
+		    $state->{contents}[0]);
 	} elsif ($sign_only) {
 		if ($state->not) {
 			$state->fatal("can't pretend to sign existing packages");
@@ -1217,21 +1340,12 @@ sub parse_and_run
 		}
 		return 0;
 	} else {
-		$plist = $self->create_plist($state, $ARGV[0], \@contents,
-		    \%dependencies, \%wantlib);
+		$plist = $self->create_plist($state, $ARGV[0]);
 	}
 
-
-	my $base = '/';
-	if (defined $state->opt('B')) {
-		$base = $state->opt('B');
-	} elsif (defined $ENV{'PKG_PREFIX'}) {
-		$base = $ENV{'PKG_PREFIX'};
-	}
-
-	$state->{base} = $base;
 
 	$plist->discover_directories($state);
+	$self->tweak_libraries($state, $plist);
 	unless (defined $state->opt('q') && defined $state->opt('n')) {
 		$state->set_status("checking dependencies");
 		$self->check_dependencies($plist, $state);

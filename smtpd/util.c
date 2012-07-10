@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.57 2012/01/28 16:54:10 gilles Exp $	*/
+/*	$OpenBSD: util.c,v 1.61 2012/07/02 10:32:28 eric Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -27,6 +27,7 @@
 #include <sys/resource.h>
 
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <ctype.h>
 #include <err.h>
@@ -50,6 +51,8 @@
 
 const char *log_in6addr(const struct in6_addr *);
 const char *log_sockaddr(struct sockaddr *);
+
+static int temp_inet_net_pton_ipv6(const char *, void *, size_t);
 
 int
 bsnprintf(char *str, size_t size, const char *format, ...)
@@ -392,6 +395,132 @@ time_to_text(time_t when)
 	return buf;
 }
 
+int
+text_to_netaddr(struct netaddr *netaddr, char *s)
+{
+	struct sockaddr_storage	ss;
+	struct sockaddr_in	ssin;
+	struct sockaddr_in6	ssin6;
+	int			bits;
+
+	if (strncmp("IPv6:", s, 5) == 0)
+		s += 5;
+
+	if (strchr(s, '/') != NULL) {
+		/* dealing with netmask */
+
+		bzero(&ssin, sizeof(struct sockaddr_in));
+		bits = inet_net_pton(AF_INET, s, &ssin.sin_addr,
+		    sizeof(struct in_addr));
+
+		if (bits != -1) {
+			ssin.sin_family = AF_INET;
+			memcpy(&ss, &ssin, sizeof(ssin));
+			ss.ss_len = sizeof(struct sockaddr_in);
+		}
+		else {
+			bzero(&ssin6, sizeof(struct sockaddr_in6));
+			bits = inet_net_pton(AF_INET6, s, &ssin6.sin6_addr,
+			    sizeof(struct in6_addr));
+			if (bits == -1) {
+
+				/* XXX - until AF_INET6 support gets in base */
+				if (errno != EAFNOSUPPORT) {
+					log_warn("inet_net_pton");
+					return 0;
+				}
+				bits = temp_inet_net_pton_ipv6(s,
+				    &ssin6.sin6_addr,
+				    sizeof(struct in6_addr));
+			}
+			if (bits == -1) {
+				log_warn("inet_net_pton");
+				return 0;
+			}
+			ssin6.sin6_family = AF_INET6;
+			memcpy(&ss, &ssin6, sizeof(ssin6));
+			ss.ss_len = sizeof(struct sockaddr_in6);
+		}
+	}
+	else {
+		/* IP address ? */
+		if (inet_pton(AF_INET, s, &ssin.sin_addr) == 1) {
+			ssin.sin_family = AF_INET;
+			bits = 32;
+			memcpy(&ss, &ssin, sizeof(ssin));
+			ss.ss_len = sizeof(struct sockaddr_in);
+		}
+		else if (inet_pton(AF_INET6, s, &ssin6.sin6_addr) == 1) {
+			ssin6.sin6_family = AF_INET6;
+			bits = 128;
+			memcpy(&ss, &ssin6, sizeof(ssin6));
+			ss.ss_len = sizeof(struct sockaddr_in6);
+		}
+		else return 0;
+	}
+
+	netaddr->ss   = ss;
+	netaddr->bits = bits;
+	return 1;
+}
+
+int
+text_to_relayhost(struct relayhost *relay, char *s)
+{
+	u_int32_t		 i;
+	struct schema {
+		char		*name;
+		u_int8_t	 flags;
+	} schemas [] = {
+		{ "smtp://",		0				},
+		{ "smtps://",		F_SMTPS				},
+		{ "starttls://",	F_STARTTLS			},
+		{ "smtps+auth://",     	F_SMTPS|F_AUTH			},
+		{ "starttls+auth://",	F_STARTTLS|F_AUTH		},
+		{ "ssl://",		F_SMTPS|F_STARTTLS		},
+		{ "ssl+auth://",	F_SMTPS|F_STARTTLS|F_AUTH	}
+	};
+	const char	*errstr = NULL;
+	char	*p;
+	char	*sep;
+	int	 len;
+
+	for (i = 0; i < nitems(schemas); ++i)
+		if (strncasecmp(schemas[i].name, s, strlen(schemas[i].name)) == 0)
+			break;
+
+	if (i == nitems(schemas)) {
+		/* there is a schema, but it's not recognized */
+		if (strstr(s, "://"))
+			return 0;
+
+		/* no schema, default to smtp:// */
+		i = 0;
+		p = s;
+	}
+	else
+		p = s + strlen(schemas[i].name);
+
+	relay->flags = schemas[i].flags;
+
+	if ((sep = strrchr(p, ':')) != NULL) {
+		relay->port = strtonum(sep+1, 1, 0xffff, &errstr);
+		if (errstr)
+			return 0;
+		len = sep - p;
+	}
+	else 
+		len = strlen(p);
+
+	if (strlcpy(relay->hostname, p, sizeof (relay->hostname))
+	    >= sizeof (relay->hostname))
+		return 0;
+
+	relay->hostname[len] = 0;
+
+	return 1;
+}
+
 /*
  * Check file for security. Based on usr.bin/ssh/auth.c.
  */
@@ -517,18 +646,9 @@ sa_set_port(struct sockaddr *sa, int port)
 u_int64_t
 generate_uid(void)
 {
-	u_int64_t	id;
-	struct timeval	tp;
+	static u_int32_t id = 0;
 
-	if (gettimeofday(&tp, NULL) == -1)
-		fatal("generate_uid: time");
-
-	id = (u_int32_t)tp.tv_sec;
-	id <<= 32;
-	id |= (u_int32_t)tp.tv_usec;
-	usleep(1);
-
-	return (id);
+	return ((uint64_t)(id++) << 32 | arc4random());
 }
 
 void
@@ -677,4 +797,36 @@ parse_smtp_response(char *line, size_t len, char **msg, int *cont)
 			return "non-printable character in reply";
 
 	return NULL;
+}
+
+static int
+temp_inet_net_pton_ipv6(const char *src, void *dst, size_t size)
+{
+	int	ret;
+	int	bits;
+	char	buf[sizeof("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255:255:255:255/128")];
+	char		*sep;
+	const char	*errstr;
+
+	if (strlcpy(buf, src, sizeof buf) >= sizeof buf) {
+		errno = EMSGSIZE;
+		return (-1);
+	}
+
+	sep = strchr(buf, '/');
+	if (sep != NULL)
+		*sep++ = '\0';
+
+	ret = inet_pton(AF_INET6, buf, dst);
+	if (ret != 1)
+		return (-1);
+
+	if (sep == NULL)
+		return 128;
+
+	bits = strtonum(sep, 0, 128, &errstr);
+	if (errstr)
+		return (-1);
+
+	return bits;
 }

@@ -20,10 +20,12 @@ typedef struct {
     ngx_str_t                       name;
 
     ngx_int_t                       current_weight;
+    ngx_int_t                       effective_weight;
     ngx_int_t                       weight;
 
     ngx_uint_t                      fails;
     time_t                          accessed;
+    time_t                          checked;
 
     ngx_uint_t                      max_fails;
     time_t                          fail_timeout;
