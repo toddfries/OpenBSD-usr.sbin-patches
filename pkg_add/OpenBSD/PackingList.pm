@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.117 2011/08/27 08:57:39 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.120 2012/06/08 15:01:00 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -113,8 +113,8 @@ sub make_shallow_copy
 {
 	my ($plist, $h) = @_;
 
-	my $copy = bless {state => OpenBSD::PackingList::State->new,
-		infodir => \(my $d = ${$plist->{infodir}})}, ref($plist);
+	my $copy = OpenBSD::PackingList->new;
+	$copy->set_infodir($plist->infodir);
 	$plist->copy_shallow_if($copy, $h);
 	return $copy;
 }
@@ -123,8 +123,8 @@ sub make_deep_copy
 {
 	my ($plist, $h) = @_;
 
-	my $copy = bless {state => OpenBSD::PackingList::State->new,
-		infodir => \(my $d = ${$plist->{infodir}})}, ref($plist);
+	my $copy = OpenBSD::PackingList->new;
+	$copy->set_infodir($plist->infodir);
 	$plist->copy_deep_if($copy, $h);
 	return $copy;
 }
@@ -237,7 +237,7 @@ sub ExtraInfoOnly
 	my ($fh, $cont) = @_;
 	my $_;
 	while (<$fh>) {
-		if (m/^\@(?:name|pkgpath|comment\s+subdir\=)\b/o) {
+		if (m/^\@(?:name|pkgpath|comment\s+(?:subdir|pkgpath)\=)\b/o) {
 			&$cont($_);
 		# XXX optimization
 		} elsif (m/^\@(?:depend|wantlib|newgroup|newuser|cwd)\b/o) {
@@ -259,7 +259,7 @@ sub UpdateInfoOnly
 		    }
 		    return;
 		}
-		if (m/^\@(?:name|depend|wantlib|conflict|option|pkgpath|url|arch|comment\s+subdir\=)\b/o) {
+		if (m/^\@(?:name|depend|wantlib|conflict|option|pkgpath|url|arch|comment\s+(?:subdir|pkgpath)\=)\b/o) {
 			&$cont($_);
 		# XXX optimization
 		} elsif (m/^\@(?:newgroup|newuser|cwd)\b/o) {
@@ -442,12 +442,15 @@ sub visit
 
 	if (defined $self->{cvstags}) {
 		for my $item (@{$self->{cvstags}}) {
-			$item->$method(@l);
+			$item->$method(@l) unless $item->{deleted};
 		}
 	}
 
+	# XXX unique and info files really get deleted, so there's no need
+	# to remove them later.
 	for my $unique_item (@unique_categories) {
-		$self->{$unique_item}->$method(@l) if defined $self->{$unique_item};
+		$self->{$unique_item}->$method(@l) 
+		    if defined $self->{$unique_item};
 	}
 
 	for my $special (OpenBSD::PackageInfo::info_names()) {
@@ -457,7 +460,7 @@ sub visit
 	for my $listname (@list_categories) {
 		if (defined $self->{$listname}) {
 			for my $item (@{$self->{$listname}}) {
-				$item->$method(@l);
+				$item->$method(@l) if !$item->{deleted};
 			}
 		}
 	}
