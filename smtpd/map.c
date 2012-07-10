@@ -1,4 +1,4 @@
-/*	$OpenBSD: map.c,v 1.25 2011/12/13 22:09:53 eric Exp $	*/
+/*	$OpenBSD: map.c,v 1.27 2012/05/29 19:53:10 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -33,6 +33,8 @@
 
 struct map_backend *map_backend_lookup(enum map_src);
 
+extern struct map_backend map_backend_static;
+
 extern struct map_backend map_backend_db;
 extern struct map_backend map_backend_stdio;
 
@@ -40,6 +42,9 @@ struct map_backend *
 map_backend_lookup(enum map_src source)
 {
 	switch (source) {
+	case S_NONE:
+		return &map_backend_static;
+
 	case S_DB:
 		return &map_backend_db;
 
@@ -89,7 +94,7 @@ map_lookup(objid_t mapid, char *key, enum map_kind kind)
 		return NULL;
 
 	backend = map_backend_lookup(map->m_src);
-	hdl = backend->open(map->m_config);
+	hdl = backend->open(map);
 	if (hdl == NULL) {
 		log_warn("map_lookup: can't open %s", map->m_config);
 		return NULL;
@@ -99,4 +104,30 @@ map_lookup(objid_t mapid, char *key, enum map_kind kind)
 
 	backend->close(hdl);
 	return ret;
+}
+
+int
+map_compare(objid_t mapid, char *key, enum map_kind kind,
+    int (*func)(char *, char *))
+{
+	void *hdl = NULL;
+	struct map *map;
+	struct map_backend *backend = NULL;
+	int ret;
+
+	map = map_find(mapid);
+	if (map == NULL)
+		return 0;
+
+	backend = map_backend_lookup(map->m_src);
+	hdl = backend->open(map);
+	if (hdl == NULL) {
+		log_warn("map_lookup: can't open %s", map->m_config);
+		return 0;
+	}
+
+	ret = backend->compare(hdl, key, kind, func);
+
+	backend->close(hdl);
+	return ret;	
 }

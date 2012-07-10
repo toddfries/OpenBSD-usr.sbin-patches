@@ -1,4 +1,4 @@
-/*	$OpenBSD: scheduler.c,v 1.1 2012/01/28 11:33:07 gilles Exp $	*/
+/*	$OpenBSD: scheduler.c,v 1.3 2012/07/02 17:00:05 eric Exp $	*/
 
 /*
  * Copyright (c) 2012 Gilles Chehade <gilles@openbsd.org>
@@ -37,14 +37,22 @@
 extern struct scheduler_backend scheduler_backend_ramqueue;
 
 struct scheduler_backend *
-scheduler_backend_lookup(enum scheduler_type type)
+scheduler_backend_lookup(const char *name)
 {
-	switch (type) {
-	case SCHED_RAMQUEUE:
+	if (!strcmp(name, "ramqueue"))
 		return &scheduler_backend_ramqueue;
-	default:
-		fatal("unsupported scheduler_backend type");
-	}
 
 	return NULL;
+}
+
+void
+scheduler_info(struct scheduler_info *sched, struct envelope *evp)
+{
+	strlcpy(sched->destination, evp->dest.domain, sizeof sched->destination);
+
+	sched->evpid = evp->id;
+	sched->creation = evp->creation;
+	sched->lasttry  = evp->lasttry;
+	sched->expire   = evp->expire;
+	sched->retry    = evp->retry;
 }
