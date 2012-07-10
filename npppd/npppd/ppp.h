@@ -1,4 +1,4 @@
-/* $OpenBSD: ppp.h,v 1.9 2012/01/23 03:36:22 yasuoka Exp $ */
+/*	$OpenBSD: ppp.h,v 1.11 2012/05/08 13:20:44 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -48,6 +48,7 @@
 						   Control */
 
 #define	PPP_LCP_MRU			1	/* Maximum-Receive-Unit */
+#define	PPP_LCP_ACCM			2	/* Async-Control-Character-Map*/
 #define	PPP_LCP_AUTH_PROTOCOL		3	/* Authentication-Protcol */
 #define	PPP_LCP_QUALITY_PROTOCOL	4	/* Quality-Control */
 #define	PPP_LCP_MAGICNUMBER		5	/* Magic-Number */
@@ -421,8 +422,10 @@ typedef struct _mppe {
 	/*
 	 * configuration parameters.
 	 */
-	uint16_t 	enabled		:1,	/* if 0 No MPPE */
-			required	:1,	/* if 1 MPPE is optional */
+	uint16_t 	/* if 0 no MPPE */
+			enabled		:1,
+			/* if 1 don't forward packet without MPPE */
+			required	:1,
 			mode_auto	:1,
 			keylen_auto	:1,
 			mode_stateless	:1,
@@ -459,7 +462,7 @@ struct _npppd_ppp {
 	int		timeout_sec;
 
 	/** Physical layer */
-	int		tunnel_type;		/** PPP Tunnel TYpe */
+	int		tunnel_type;		/** PPP Tunnel Type */
 	uint16_t	mru;			/** MRU */
 	uint16_t	peer_mru;		/** Peer's MRU */
 	void		*phy_context;		/** Context of physical layer */
@@ -618,7 +621,7 @@ typedef struct _dialin_proxy_info {
 		/** LCP data */
 		u_char data[256];
 	}   /** the last sent LCP */ last_sent_lcp,
-	    /** the last recevied LCP */ last_recv_lcp;
+	    /** the last received LCP */ last_recv_lcp;
 
 	/** ID of authentication packet */
 	int		auth_id;

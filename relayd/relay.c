@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.146 2012/04/11 08:25:26 deraadt Exp $	*/
+/*	$OpenBSD: relay.c,v 1.148 2012/04/30 10:49:57 benno Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -1372,7 +1372,11 @@ relay_read_http(struct bufferevent *bev, void *arg)
 				if (ret == PN_FAIL)
 					goto abort;
 			}
-		} else if ((cre->method == HTTP_METHOD_POST ||
+		} else if ((cre->method == HTTP_METHOD_DELETE ||
+		    cre->method == HTTP_METHOD_GET ||
+		    cre->method == HTTP_METHOD_HEAD ||
+		    cre->method == HTTP_METHOD_OPTIONS ||
+		    cre->method == HTTP_METHOD_POST ||
 		    cre->method == HTTP_METHOD_PUT ||
 		    cre->method == HTTP_METHOD_RESPONSE) &&
 		    strcasecmp("Content-Length", pk.key) == 0) {
@@ -1388,6 +1392,14 @@ relay_read_http(struct bufferevent *bev, void *arg)
 				relay_close_http(con, 500, errstr, 0);
 				goto abort;
 			}
+		} else if ((cre->method == HTTP_METHOD_TRACE) &&
+		    strcasecmp("Content-Length", pk.key) == 0) {
+			/*
+			 * This method should not have a body and thus no
+			 * Content-Length header.
+			 */
+			relay_close_http(con, 400, "malformed", 0);
+			goto abort;
 		}
  lookup:
 		if (strcasecmp("Transfer-Encoding", pk.key) == 0 &&
@@ -1466,6 +1478,10 @@ relay_read_http(struct bufferevent *bev, void *arg)
 			/* Data stream */
 			bev->readcb = relay_read;
 			break;
+		case HTTP_METHOD_DELETE:
+		case HTTP_METHOD_GET:
+		case HTTP_METHOD_HEAD:
+		case HTTP_METHOD_OPTIONS:
 		case HTTP_METHOD_POST:
 		case HTTP_METHOD_PUT:
 		case HTTP_METHOD_RESPONSE:

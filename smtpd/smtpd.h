@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.287 2012/03/07 22:54:49 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.302 2012/07/02 17:00:05 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -21,7 +21,7 @@
 #define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
 #endif
 
-#include "filter.h"
+#include "filter_api.h"
 #include "ioev.h"
 #include "iobuf.h"
 
@@ -231,26 +231,18 @@ struct peer {
 	void			(*cb)(int, short, void *);
 };
 
-enum map_type {
-	T_SINGLE,
-	T_LIST,
-	T_HASH
-};
-
 enum map_src {
 	S_NONE,
-	S_DYN,
-	S_DNS,
 	S_PLAIN,
-	S_DB,
-	S_EXT
+	S_DB
 };
 
 enum map_kind {
 	K_NONE,
 	K_ALIAS,
 	K_VIRTUAL,
-	K_SECRET
+	K_CREDENTIALS,
+	K_NETADDR
 };	
 
 enum mapel_type {
@@ -263,19 +255,14 @@ struct mapel {
 	TAILQ_ENTRY(mapel)		 me_entry;
 	union mapel_data {
 		char			 med_string[MAX_LINE_SIZE];
-		struct netaddr		 med_addr;
 	}				 me_key;
 	union mapel_data		 me_val;
 };
 
 struct map {
 	TAILQ_ENTRY(map)		 m_entry;
-#define F_USED				 0x01
-#define F_DYNAMIC			 0x02
-	u_int8_t			 m_flags;
 	char				 m_name[MAX_LINE_SIZE];
 	objid_t				 m_id;
-	enum map_type			 m_type;
 	enum mapel_type			 m_eltype;
 	enum map_src			 m_src;
 	char				 m_config[MAXPATHLEN];
@@ -284,9 +271,10 @@ struct map {
 
 
 struct map_backend {
-	void *(*open)(char *);
+	void *(*open)(struct map *);
 	void (*close)(void *);
 	void *(*lookup)(void *, char *, enum map_kind);
+	int  (*compare)(void *, char *, enum map_kind, int (*)(char *, char *));
 };
 
 
@@ -439,6 +427,7 @@ TAILQ_HEAD(deliverylist, envelope);
 enum envelope_field {
 	EVP_VERSION,
 	EVP_ID,
+	EVP_MSGID,
 	EVP_TYPE,
 	EVP_HELO,
 	EVP_HOSTNAME,
@@ -574,8 +563,6 @@ struct session {
 	int				 s_dstatus;
 
 	FILE				*datafp;
-	int				 mboxfd;
-	int				 messagefd;
 };
 
 
@@ -826,6 +813,7 @@ enum mta_state {
 	MTA_SMTP_QUIT,
 	MTA_SMTP_BODY,
 	MTA_SMTP_DONE,
+	MTA_SMTP_RSET,
 };
 
 /* mta session flags */
@@ -857,11 +845,12 @@ struct mta_session {
 	char			*host;
 	int			 port;
 	int			 flags;
-	TAILQ_HEAD(,envelope)	 recipients;
 	TAILQ_HEAD(,mta_relay)	 relays;
 	char			*authmap;
 	char			*secret;
 	FILE			*datafp;
+
+	TAILQ_HEAD(,mta_task)	 tasks;
 
 	struct envelope		*currevp;
 	struct iobuf		 iobuf;
@@ -878,7 +867,7 @@ struct mta_batch {
 };
 
 /* maps return structures */
-struct map_secret {
+struct map_credentials {
 	char username[MAX_LINE_SIZE];
 	char password[MAX_LINE_SIZE];
 };
@@ -893,17 +882,8 @@ struct map_virtual {
 	struct expandtree	expandtree;
 };
 
-
-/* queue structures */
-enum queue_type {
-	QT_INVALID=0,
-	QT_FS
-};
-
-enum queue_kind {
-	Q_INCOMING,
-	Q_QUEUE,
-	Q_CORRUPT
+struct map_netaddr {
+	struct netaddr		netaddr;
 };
 
 enum queue_op {
@@ -920,10 +900,10 @@ enum queue_op {
 
 struct queue_backend {
 	int (*init)(int);
-	int (*message)(enum queue_kind, enum queue_op, u_int32_t *);
-	int (*envelope)(enum queue_kind, enum queue_op, struct envelope *);
+	int (*message)(enum queue_op, u_int32_t *);
+	int (*envelope)(enum queue_op, struct envelope *);
 
-	void *(*qwalk_new)(enum queue_kind, u_int32_t);
+	void *(*qwalk_new)(u_int32_t);
 	int   (*qwalk)(void *, u_int64_t *);
 	void  (*qwalk_close)(void *);
 };
@@ -965,10 +945,15 @@ struct delivery_backend {
 	void	(*open)(struct deliver *);
 };
 
+struct scheduler_info {
+	u_int64_t	evpid;
+	char		destination[MAXHOSTNAMELEN];
 
-/* scheduler_backend */
-enum scheduler_type {
-	SCHED_RAMQUEUE,
+	enum delivery_type	type;
+	time_t			creation;
+	time_t			lasttry;
+	time_t			expire;
+	u_int8_t		retry;
 };
 
 struct scheduler_backend {
@@ -977,7 +962,7 @@ struct scheduler_backend {
 
 	int	(*next)(u_int64_t *, time_t *);
 
-	void	(*insert)(struct envelope *);
+	void	(*insert)(struct scheduler_info *);
 	void	(*schedule)(u_int64_t);
 	void	(*remove)(u_int64_t);
 
@@ -1059,9 +1044,9 @@ int		 enqueue_offline(int, char **);
 void envelope_set_errormsg(struct envelope *, char *, ...);
 char *envelope_ascii_field_name(enum envelope_field);
 int envelope_ascii_load(enum envelope_field, struct envelope *, char *);
-int envelope_ascii_dump(enum envelope_field, struct envelope *, char *,
-    size_t);
-
+int envelope_ascii_dump(enum envelope_field, struct envelope *, char *, size_t);
+int envelope_load_file(struct envelope *, FILE *);
+int envelope_dump_file(struct envelope *, FILE *);
 
 /* expand.c */
 int expand_cmp(struct expandnode *, struct expandnode *);
@@ -1090,6 +1075,7 @@ void lka_session_destroy(struct lka_session *);
 
 /* map.c */
 void *map_lookup(objid_t, char *, enum map_kind);
+int map_compare(objid_t, char *, enum map_kind, int (*)(char *, char *));
 struct map *map_find(objid_t);
 struct map *map_findbyname(const char *);
 
@@ -1105,9 +1091,9 @@ SPLAY_PROTOTYPE(mfatree, mfa_session, nodes, mfa_session_cmp);
 
 /* mta.c */
 pid_t mta(void);
-int mta_session_cmp(struct mta_session *, struct mta_session *);
-SPLAY_PROTOTYPE(mtatree, mta_session, entry, mta_session_cmp);
 
+/* mta_session.c */
+void mta_session_imsg(struct imsgev *, struct imsg *);
 
 /* parse.y */
 int parse_config(struct smtpd *, const char *, int);
@@ -1123,18 +1109,18 @@ void queue_commit_envelopes(struct envelope *);
 /* queue_backend.c */
 u_int32_t queue_generate_msgid(void);
 u_int64_t queue_generate_evpid(u_int32_t msgid);
-struct queue_backend *queue_backend_lookup(enum queue_type);
-int queue_message_create(enum queue_kind, u_int32_t *);
-int queue_message_delete(enum queue_kind, u_int32_t);
-int queue_message_commit(enum queue_kind, u_int32_t);
-int queue_message_fd_r(enum queue_kind, u_int32_t);
-int queue_message_fd_rw(enum queue_kind, u_int32_t);
-int queue_message_corrupt(enum queue_kind, u_int32_t);
-int queue_envelope_create(enum queue_kind, struct envelope *);
-int queue_envelope_delete(enum queue_kind, struct envelope *);
-int queue_envelope_load(enum queue_kind, u_int64_t, struct envelope *);
-int queue_envelope_update(enum queue_kind, struct envelope *);
-void *qwalk_new(enum queue_kind, u_int32_t);
+struct queue_backend *queue_backend_lookup(const char *);
+int queue_message_create(u_int32_t *);
+int queue_message_delete(u_int32_t);
+int queue_message_commit(u_int32_t);
+int queue_message_fd_r(u_int32_t);
+int queue_message_fd_rw(u_int32_t);
+int queue_message_corrupt(u_int32_t);
+int queue_envelope_create(struct envelope *);
+int queue_envelope_delete(struct envelope *);
+int queue_envelope_load(u_int64_t, struct envelope *);
+int queue_envelope_update(struct envelope *);
+void *qwalk_new(u_int32_t);
 int   qwalk(void *, u_int64_t *);
 void  qwalk_close(void *);
 
@@ -1145,7 +1131,8 @@ void message_reset_flags(struct envelope *);
 
 
 /* scheduler.c */
-struct scheduler_backend *scheduler_backend_lookup(enum scheduler_type);
+struct scheduler_backend *scheduler_backend_lookup(const char *);
+void scheduler_info(struct scheduler_info *, struct envelope *);
 
 
 /* smtp.c */
@@ -1236,3 +1223,5 @@ int ckdir(const char *, mode_t, uid_t, gid_t, int);
 int rmtree(char *, int);
 int mvpurge(char *, char *);
 const char *parse_smtp_response(char *, size_t, char **, int *);
+int text_to_netaddr(struct netaddr *, char *);
+int text_to_relayhost(struct relayhost *, char *);

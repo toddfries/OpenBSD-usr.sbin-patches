@@ -1,4 +1,4 @@
-/*	$OpenBSD: rde_rib.c,v 1.131 2011/09/21 08:59:01 claudio Exp $ */
+/*	$OpenBSD: rde_rib.c,v 1.133 2012/07/01 11:55:13 sthen Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Claudio Jeker <claudio@openbsd.org>
@@ -874,7 +874,7 @@ prefix_updateall(struct rde_aspath *asp, enum nexthop_state state,
 		 * If the prefix is the active one remove it first,
 		 * this has to be done because we can not detect when
 		 * the active prefix changes its state. In this case
-		 * we know that this is a withdrawl and so the second
+		 * we know that this is a withdrawal and so the second
 		 * prefix_evaluate() will generate no update because
 		 * the nexthop is unreachable or ineligible.
 		 */
@@ -909,7 +909,7 @@ prefix_network_clean(struct rde_peer *peer, time_t reloadtime, u_int32_t flags)
 
 	for (asp = LIST_FIRST(&peer->path_h); asp != NULL; asp = xasp) {
 		xasp = LIST_NEXT(asp, peer_l);
-		if ((asp->flags & F_ANN_DYNAMIC) == flags)
+		if ((asp->flags & F_ANN_DYNAMIC) != flags)
 			continue;
 		for (p = LIST_FIRST(&asp->prefix_h); p != NULL; p = xp) {
 			xp = LIST_NEXT(p, path_l);
