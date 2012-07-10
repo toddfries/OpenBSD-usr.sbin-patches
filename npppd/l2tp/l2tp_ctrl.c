@@ -1,4 +1,4 @@
-/* $OpenBSD: l2tp_ctrl.c,v 1.8 2012/01/18 02:53:56 yasuoka Exp $	*/
+/*	$OpenBSD: l2tp_ctrl.c,v 1.11 2012/05/08 13:28:06 yasuoka Exp $	*/
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -26,7 +26,7 @@
  * SUCH DAMAGE.
  */
 /**@file Control connection processing functions for L2TP LNS */
-/* $Id: l2tp_ctrl.c,v 1.8 2012/01/18 02:53:56 yasuoka Exp $ */
+/* $Id: l2tp_ctrl.c,v 1.11 2012/05/08 13:28:06 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/time.h>
@@ -35,16 +35,17 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include <arpa/inet.h>
-#include <stdlib.h>
-#include <syslog.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <stddef.h>
-#include <netdb.h>
-#include <time.h>
-#include <string.h>
+#include <errno.h>
 #include <event.h>
 #include <ifaddrs.h>
+#include <netdb.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
+#include <time.h>
 
 #ifdef USE_LIBSOCKUTIL
 #include <seil/sockfromto.h>
@@ -258,18 +259,19 @@ l2tp_ctrl_send_disconnect_notify(l2tp_ctrl *_this)
 	L2TP_CTRL_ASSERT(_this->state == L2TP_CTRL_STATE_ESTABLISHED ||
 	    _this->state == L2TP_CTRL_STATE_CLEANUP_WAIT);
 
-	/* the contexts is not active or StopCCN have been sent */
+	/* this control is not actively closing or StopCCN have been sent */
 	if (_this->active_closing == 0)
 		return 0;
 
-	/* CDN have been sent for all Calls */
+	/* Send CDN all Calls */
 	ncalls = 0;
 	if (slist_length(&_this->call_list) != 0) {
 		ncalls = l2tp_ctrl_disconnect_all_calls(_this);
 		if (ncalls > 0) {
 			/*
-			 * Call l2tp_ctrl_disconnect_all_calls() to check
-			 * the send window still filled.
+			 * Call the function again to check whether the
+			 * sending window is fulled.  In case ncalls == 0,
+			 * it means we've sent CDN for all calls.
 			 */
 			ncalls = l2tp_ctrl_disconnect_all_calls(_this);
 		}
@@ -288,7 +290,7 @@ l2tp_ctrl_send_disconnect_notify(l2tp_ctrl *_this)
  * Terminate the control connection
  *
  * <p>
- * please spcify an appropriate value to result( >0 ) for
+ * please specify an appropriate value to result( >0 ) for
  * StopCCN ResultCode AVP, when to sent Active Close (which
  * require StopCCN sent).</p>
  * <p>
@@ -421,18 +423,17 @@ l2tp_ctrl_purge_ipsec_sa(l2tp_ctrl *_this)
 		return;	/* don't purge the sa */
 	}
 
-#ifdef USE_LIBSOCKUTIL
+#if defined(USE_LIBSOCKUTIL)  && defined(IP_IPSEC_SA_COOKIE)
 	is_natt = (_this->sa_cookie != NULL)? 1 : 0;
 #else
 	is_natt = 0;
 #endif
+	proto = 0;
 	memcpy(&peer, &_this->peer, _this->peer.ss_len);
 	memcpy(&sock, &_this->sock, _this->sock.ss_len);
-	if (!is_natt) {
-		proto = 0;
+	if (!is_natt)
 		SIN(&peer)->sin_port = SIN(&sock)->sin_port = 0;
-	}
-#ifdef USE_LIBSOCKUTIL
+#if defined(USE_LIBSOCKUTIL)  && defined(IP_IPSEC_SA_COOKIE)
 	else {
 		ipsec_sa_cookie = _this->sa_cookie;
 		SIN(&peer)->sin_port = ipsec_sa_cookie->remote_port;
@@ -823,9 +824,14 @@ l2tp_ctrl_input(l2tpd *_this, int listener_index, struct sockaddr *peer,
 		    listener_index))->phy_label, sizeof(phy_label));
 		if (_this->phy_label_with_ifname != 0) {
 			if (get_ifname_by_sockaddr(sock, ifname) == NULL) {
-				l2tpd_log_access_deny(_this,
-				    "could not get interface informations",
-				    peer);
+				if (errno != ENOENT)
+					l2tp_ctrl_log(ctrl, LOG_ERR,
+					    "get_ifname_by_sockaddr() "
+					    "failed: %m");
+				else
+					l2tpd_log_access_deny(_this,
+					    "could not determine received "
+					    "interface", peer);
 				goto fail;
 			}
 			if (l2tpd_config_str_equal(_this,
@@ -1166,20 +1172,13 @@ l2tp_ctrl_txwin_is_full(l2tp_ctrl *_this)
 
 /* send control packet */
 int
-l2tp_ctrl_send_packet(l2tp_ctrl *_this, int call_id, bytebuffer *bytebuf,
-    int is_ctrl)
+l2tp_ctrl_send_packet(l2tp_ctrl *_this, int call_id, bytebuffer *bytebuf)
 {
 	struct l2tp_header *hdr;
-	int rval, use_seq;
+	int rval;
 	time_t curr_time;
 
 	curr_time = get_monosec();
-
-#ifdef L2TP_DATA_WITH_SEQUENCE
-	use_seq = 1;
-#else
-	use_seq = is_ctrl;
-#endif
 
 	bytebuffer_flip(bytebuf);
 	hdr = (struct l2tp_header *)bytebuffer_pointer(bytebuf);
@@ -1196,14 +1195,13 @@ l2tp_ctrl_send_packet(l2tp_ctrl *_this, int call_id, bytebuffer *bytebuf,
 	hdr->ns = htons(_this->snd_nxt);
 	hdr->nr = htons(_this->rcv_nxt);
 
-	if (is_ctrl &&
-	    bytebuffer_remaining(bytebuf) > sizeof(struct l2tp_header))
+	if (bytebuffer_remaining(bytebuf) > sizeof(struct l2tp_header))
 		/* Not ZLB */
 		_this->snd_nxt++;
 
 	L2TP_CTRL_DBG((_this, DEBUG_LEVEL_2,
-	    "SEND %s ns=%u nr=%u snd_nxt=%u snd_una=%u rcv_nxt=%u ",
-	    (is_ctrl)? "C" : " ", ntohs(hdr->ns), htons(hdr->nr),
+	    "SEND C ns=%u nr=%u snd_nxt=%u snd_una=%u rcv_nxt=%u ",
+	    ntohs(hdr->ns), htons(hdr->nr),
 	    _this->snd_nxt, _this->snd_una, _this->rcv_nxt));
 
 	if (_this->l2tpd->ctrl_out_pktdump != 0) {
@@ -1388,8 +1386,8 @@ l2tp_ctrl_send_StopCCN(l2tp_ctrl *_this, int result)
 	avp_set_val16(avp, result);
 	bytebuf_add_avp(bytebuf, avp, 2);
 
-	if (l2tp_ctrl_send_packet(_this, 0, bytebuf, 1) != 0) {
-		l2tp_ctrl_log(_this, LOG_ERR, "sending CCN failed");
+	if (l2tp_ctrl_send_packet(_this, 0, bytebuf) != 0) {
+		l2tp_ctrl_log(_this, LOG_ERR, "sending StopCCN failed");
 		return - 1;
 	}
 	l2tp_ctrl_log(_this, LOG_INFO, "SendStopCCN result=%d", result);
@@ -1403,16 +1401,15 @@ l2tp_ctrl_send_StopCCN(l2tp_ctrl *_this, int result)
 static int
 l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 {
-	int avpsz;
-	uint32_t val32;
-	uint16_t rcode, tunid, ecode;
+	int result, error, avpsz, len;
+	uint16_t tunid;
 	struct l2tp_avp *avp;
-	char buf[L2TP_AVP_MAXSIZ + 16], emes[256], peermes[256];
+	char buf[L2TP_AVP_MAXSIZ + 16], emes[256], pmes[256];
 
-	rcode = 0;
-	ecode = 0;
+	result = 0;
+	error = 0;
 	tunid = 0;
-	peermes[0] = '\0';
+	pmes[0] = '\0';
 	avp = (struct l2tp_avp *)buf;
 	while (pktlen >= 6 && (avpsz = avp_enum(avp, pkt, pktlen, 1)) > 0) {
 		pkt += avpsz;
@@ -1442,15 +1439,17 @@ l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 			AVP_SIZE_CHECK(avp, ==, 8);
 			continue;
 		case L2TP_AVP_TYPE_RESULT_CODE:
-			AVP_SIZE_CHECK(avp, >=, 10);
-			val32 = avp_get_val32(avp);
-			rcode = val32 >> 16;
-			ecode = val32 & 0xffff;
-			if (avp->length > 10) {
-				avp->attr_value[avp->length - 6] = '\0';
-				strlcpy(peermes,
-				    (const char *)avp->attr_value + 4,
-				    sizeof(peermes));
+			AVP_SIZE_CHECK(avp, >=, 8);
+			result = avp->attr_value[0] << 8 | avp->attr_value[1];
+			if (avp->length >= 10) {
+				error = avp->attr_value[2] << 8 |
+				    avp->attr_value[3];
+				len = avp->length - 12;
+				if (len > 0) {
+					len = MIN(len, sizeof(pmes) - 1);
+					memcpy(pmes, &avp->attr_value[4], len);
+					pmes[len] = '\0';
+				}
 			}
 			continue;
 		case L2TP_AVP_TYPE_ASSINGED_TUNNEL_ID:
@@ -1475,8 +1474,8 @@ l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 		}
 	}
 
-	if (rcode == L2TP_CDN_RCODE_ERROR_CODE &&
-	    ecode == L2TP_ECODE_NO_RESOURCE) {
+	if (result == L2TP_CDN_RCODE_ERROR_CODE &&
+	    error == L2TP_ECODE_NO_RESOURCE) {
 		/*
 		 * Memo:
 		 * This state may be happen in following state.
@@ -1491,8 +1490,8 @@ l2tp_ctrl_recv_StopCCN(l2tp_ctrl *_this, u_char *pkt, int pktlen)
 
 	l2tp_ctrl_log(_this, LOG_INFO, "RecvStopCCN result=%s/%u "
 	    "error=%s/%u tunnel_id=%u message=\"%s\"",
-	    l2tp_stopccn_rcode_string(rcode), rcode, l2tp_ecode_string(ecode),
-	    ecode, tunid, peermes);
+	    l2tp_stopccn_rcode_string(result), result,
+	    l2tp_ecode_string(error), error, tunid, pmes);
 
 	return 0;
 
@@ -1600,7 +1599,7 @@ l2tp_ctrl_send_SCCRP(l2tp_ctrl *_this)
 	avp_set_val16(avp, _this->winsz);
 	bytebuf_add_avp(bytebuf, avp, 2);
 
-	if ((l2tp_ctrl_send_packet(_this, 0, bytebuf, 1)) != 0) {
+	if ((l2tp_ctrl_send_packet(_this, 0, bytebuf)) != 0) {
 		l2tp_ctrl_log(_this, LOG_ERR, "sending SCCRP failed");
 		l2tp_ctrl_stop(_this, L2TP_STOP_CCN_RCODE_GENERAL);
 		return;
@@ -1629,7 +1628,7 @@ l2tp_ctrl_send_HELLO(l2tp_ctrl *_this)
 	avp_set_val16(avp, L2TP_AVP_MESSAGE_TYPE_HELLO);
 	bytebuf_add_avp(bytebuf, avp, 2);
 
-	if ((l2tp_ctrl_send_packet(_this, 0, bytebuf, 1)) != 0) {
+	if ((l2tp_ctrl_send_packet(_this, 0, bytebuf)) != 0) {
 		l2tp_ctrl_log(_this, LOG_ERR, "sending HELLO failed");
 		l2tp_ctrl_stop(_this, L2TP_STOP_CCN_RCODE_GENERAL);
 		return 1;
@@ -1652,7 +1651,7 @@ l2tp_ctrl_send_ZLB(l2tp_ctrl *_this)
 	bytebuffer_put(_this->zlb_buffer, BYTEBUFFER_PUT_DIRECT,
 	    sizeof(struct l2tp_header));
 
-	return l2tp_ctrl_send_packet(_this, 0, _this->zlb_buffer, 1);
+	return l2tp_ctrl_send_packet(_this, 0, _this->zlb_buffer);
 }
 
 /*
@@ -1710,7 +1709,7 @@ l2tp_ctrl_log(l2tp_ctrl *_this, int prio, const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-#ifdef	L2TPD_MULITPLE
+#ifdef	L2TPD_MULTIPLE
 	snprintf(logbuf, sizeof(logbuf), "l2tpd id=%u ctrl=%u %s",
 	    _this->l2tpd->id, _this->id, fmt);
 #else
