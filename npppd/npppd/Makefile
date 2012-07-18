@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.10 2012/05/08 13:18:37 yasuoka Exp $
+#	$OpenBSD: Makefile,v 1.12 2012/07/16 18:05:36 markus Exp $
 
 NPPPD_COMMON_DIR=	${.CURDIR}/../common
 
@@ -31,9 +31,11 @@ SRCS+=		pppoe_session.c pppoed.c
 .PATH:	${.CURDIR}/../pppoe
 
 CPPFLAGS+=	-D__COPYRIGHT\(x\)= -D__RCSID\(x\)=
+CPPFLAGS+=	-DNPPPD_MAX_IFACE=8
 CPPFLAGS+=	-DUSE_NPPPD_MPPE
 CPPFLAGS+=	-DUSE_NPPPD_PIPEX
 CPPFLAGS+=	-DUSE_NPPPD_RADIUS
+CPPFLAGS+=	-DUSE_SA_COOKIE
 
 CPPFLAGS+=	-DGENERIC_USE -DRADISH
 
