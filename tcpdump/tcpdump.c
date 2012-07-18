@@ -1,4 +1,4 @@
-/*	$OpenBSD: tcpdump.c,v 1.63 2010/06/26 16:47:07 henning Exp $	*/
+/*	$OpenBSD: tcpdump.c,v 1.65 2012/07/11 10:37:38 sthen Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997
@@ -59,6 +59,7 @@
 #include "pfctl_parser.h"
 #include "privsep.h"
 
+int Aflag;			/* dump ascii */
 int aflag;			/* translate network and broadcast addresses */
 int dflag;			/* print filter code */
 int eflag;			/* print ethernet header */
@@ -228,8 +229,13 @@ main(int argc, char **argv)
 
 	opterr = 0;
 	while ((op = getopt(argc, argv,
-	    "ac:D:deE:fF:i:IlLnNOopqr:s:StT:vw:xXy:Y")) != -1)
+	    "Aac:D:deE:fF:i:IlLnNOopqr:s:StT:vw:xXy:Y")) != -1)
 		switch (op) {
+
+		case 'A':
+			if (xflag == 0) ++xflag;
+			++Aflag;
+			break;
 
 		case 'a':
 			++aflag;
@@ -555,7 +561,7 @@ gotchld(int signo)
 
 /* dump the buffer in `emacs-hexl' style */
 void
-default_print_hexl(const u_char *cp, unsigned int length, unsigned int offset)
+default_print_hexl(const u_char *cp, unsigned int length)
 {
 	unsigned int i, j, jm;
 	int c;
@@ -563,8 +569,7 @@ default_print_hexl(const u_char *cp, unsigned int length, unsigned int offset)
 
 	printf("\n");
 	for (i = 0; i < length; i += 0x10) {
-		snprintf(ln, sizeof(ln), "  %04x: ",
-		    (unsigned int)(i + offset));
+		snprintf(ln, sizeof(ln), "  %04x: ", (unsigned int)i);
 		jm = length - i;
 		jm = jm > 16 ? 16 : jm;
 
@@ -597,6 +602,20 @@ default_print_hexl(const u_char *cp, unsigned int length, unsigned int offset)
 	}
 }
 
+/* dump the text from the buffer */
+void
+default_print_ascii(const u_char *cp, unsigned int length)
+{
+	int c, i;
+
+	printf("\n");
+	for (i = 0; i < length; i++) {
+		c = cp[i];
+		c = isprint(c) || isspace(c) ? c : '.';
+		putchar(c);
+	}
+}
+
 /* Like default_print() but data need not be aligned */
 void
 default_print_unaligned(register const u_char *cp, register u_int length)
@@ -606,7 +625,10 @@ default_print_unaligned(register const u_char *cp, register u_int length)
 
 	if (Xflag) {
 		/* dump the buffer in `emacs-hexl' style */
-		default_print_hexl(cp, length, 0);
+		default_print_hexl(cp, length);
+	} else if (Aflag) {
+		/* dump the text in the buffer */
+		default_print_ascii(cp, length);
 	} else {
 		/* dump the buffer in old tcpdump style */
 		nshorts = (u_int) length / sizeof(u_short);
@@ -634,7 +656,10 @@ default_print(register const u_char *bp, register u_int length)
 
 	if (Xflag) {
 		/* dump the buffer in `emacs-hexl' style */
-		default_print_hexl(bp, length, 0);
+		default_print_hexl(bp, length);
+	} else if (Aflag) {
+		/* dump the text in the buffer */
+		default_print_ascii(bp, length);
 	} else {
 		/* dump the buffer in old tcpdump style */
 		if ((long)bp & 1) {
@@ -674,7 +699,7 @@ __dead void
 usage(void)
 {
 	(void)fprintf(stderr,
-"Usage: %s [-adefILlNnOopqStvXx] [-c count] [-D direction]\n",
+"Usage: %s [-AadefILlNnOopqStvXx] [-c count] [-D direction]\n",
 	    program_name);
 	(void)fprintf(stderr,
 "\t       [-E [espalg:]espkey] [-F file] [-i interface] [-r file]\n");
