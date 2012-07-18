@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.302 2012/07/02 17:00:05 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.310 2012/07/12 08:51:43 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -67,6 +67,9 @@
 #define PATH_SPOOL		"/var/spool/smtpd"
 #define PATH_OFFLINE		"/offline"
 #define PATH_PURGE		"/purge"
+#define PATH_INCOMING		"/incoming"
+#define PATH_ENVELOPES		"/envelopes"
+#define PATH_MESSAGE		"/message"
 
 /* number of MX records to lookup */
 #define MAX_MX_COUNT		10
@@ -162,8 +165,8 @@ enum imsg_type {
 	IMSG_QUEUE_SCHEDULE,
 	IMSG_QUEUE_REMOVE,
 
-	IMSG_RUNNER_REMOVE,
-	IMSG_RUNNER_SCHEDULE,
+	IMSG_SCHEDULER_REMOVE,
+	IMSG_SCHEDULER_SCHEDULE,
 
 	IMSG_BATCH_CREATE,
 	IMSG_BATCH_APPEND,
@@ -223,7 +226,7 @@ enum smtp_proc_type {
 	PROC_MDA,
 	PROC_MTA,
 	PROC_CONTROL,
-	PROC_RUNNER,
+	PROC_SCHEDULER,
 } smtpd_process;
 
 struct peer {
@@ -620,6 +623,7 @@ struct smtpd {
 #define	TRACE_SMTP	0x0008
 #define	TRACE_MTA	0x0010
 #define	TRACE_BOUNCE	0x0020
+#define	TRACE_SCHEDULER	0x0040
 
 enum {
 	STATS_SMTP_SESSION = 0,
@@ -640,8 +644,8 @@ enum {
 	STATS_LKA_SESSION_CNAME,
 	STATS_LKA_FAILURE,
 
-	STATS_RUNNER,
-	STATS_RUNNER_BOUNCES,
+	STATS_SCHEDULER,
+	STATS_SCHEDULER_BOUNCES,
 
 	STATS_QUEUE_LOCAL,
 	STATS_QUEUE_REMOTE,
@@ -894,7 +898,6 @@ enum queue_op {
 	QOP_COMMIT,
 	QOP_LOAD,
 	QOP_FD_R,
-	QOP_FD_RW,
 	QOP_CORRUPT,
 };
 
@@ -958,7 +961,7 @@ struct scheduler_info {
 
 struct scheduler_backend {
 	void	(*init)(void);
-	int	(*setup)(time_t, time_t);
+	int	(*setup)(void);
 
 	int	(*next)(u_int64_t *, time_t *);
 
@@ -1110,6 +1113,9 @@ void queue_commit_envelopes(struct envelope *);
 u_int32_t queue_generate_msgid(void);
 u_int64_t queue_generate_evpid(u_int32_t msgid);
 struct queue_backend *queue_backend_lookup(const char *);
+int queue_message_incoming_path(u_int32_t, char *, size_t);
+int queue_envelope_incoming_path(u_int64_t, char *, size_t);
+int queue_message_incoming_delete(u_int32_t);
 int queue_message_create(u_int32_t *);
 int queue_message_delete(u_int32_t);
 int queue_message_commit(u_int32_t);
@@ -1125,8 +1131,8 @@ int   qwalk(void *, u_int64_t *);
 void  qwalk_close(void *);
 
 
-/* runner.c */
-pid_t runner(void);
+/* scheduler.c */
+pid_t scheduler(void);
 void message_reset_flags(struct envelope *);
 
 
@@ -1201,14 +1207,13 @@ void addargs(arglist *, char *, ...)
 	__attribute__((format(printf, 2, 3)));
 int bsnprintf(char *, size_t, const char *, ...)
 	__attribute__ ((format (printf, 3, 4)));
+int mkdir_p(char *, mode_t);
 int safe_fclose(FILE *);
 int hostname_match(char *, char *);
 int email_to_mailaddr(struct mailaddr *, char *);
-int valid_localpart(char *);
-int valid_domainpart(char *);
+int valid_localpart(const char *);
+int valid_domainpart(const char *);
 char *ss_to_text(struct sockaddr_storage *);
-int valid_message_id(char *);
-int valid_message_uid(char *);
 char *time_to_text(time_t);
 int secure_file(int, char *, char *, uid_t, int);
 void lowercase(char *, char *, size_t);

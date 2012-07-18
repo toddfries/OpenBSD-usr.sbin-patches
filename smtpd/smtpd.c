@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.152 2012/07/02 17:00:05 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.155 2012/07/09 17:57:54 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -484,6 +484,8 @@ main(int argc, char *argv[])
 				verbose |= TRACE_MTA;
 			else if (!strcmp(optarg, "bounce"))
 				verbose |= TRACE_BOUNCE;
+			else if (!strcmp(optarg, "scheduler"))
+				verbose |= TRACE_SCHEDULER;
 			else if (!strcmp(optarg, "all"))
 				verbose |= ~TRACE_VERBOSE;
 			else
@@ -538,6 +540,11 @@ main(int argc, char *argv[])
 		errx(1, "error in offline directory setup");
 	if (ckdir(PATH_SPOOL PATH_PURGE, 0700, env->sc_pw->pw_uid, 0, 1) == 0)
 		errx(1, "error in purge directory setup");
+
+	mvpurge(PATH_SPOOL PATH_INCOMING, PATH_SPOOL PATH_PURGE);
+
+	if (ckdir(PATH_SPOOL PATH_INCOMING, 0700, env->sc_pw->pw_uid, 0, 1) == 0)
+		errx(1, "error in incoming directory setup");
 
 	log_debug("using \"%s\" queue backend", backend_queue);
 	log_debug("using \"%s\" scheduler backend", backend_scheduler);
@@ -637,7 +644,7 @@ fork_peers(void)
 	env->sc_instances[PROC_MTA] = 1;
 	env->sc_instances[PROC_PARENT] = 1;
 	env->sc_instances[PROC_QUEUE] = 1;
-	env->sc_instances[PROC_RUNNER] = 1;
+	env->sc_instances[PROC_SCHEDULER] = 1;
 	env->sc_instances[PROC_SMTP] = 1;
 
 	init_pipes();
@@ -648,7 +655,7 @@ fork_peers(void)
 	env->sc_title[PROC_MFA] = "mail filter agent";
 	env->sc_title[PROC_MTA] = "mail transfer agent";
 	env->sc_title[PROC_QUEUE] = "queue";
-	env->sc_title[PROC_RUNNER] = "runner";
+	env->sc_title[PROC_SCHEDULER] = "scheduler";
 	env->sc_title[PROC_SMTP] = "smtp server";
 
 	child_add(control(), CHILD_DAEMON, PROC_CONTROL);
@@ -657,7 +664,7 @@ fork_peers(void)
 	child_add(mfa(), CHILD_DAEMON, PROC_MFA);
 	child_add(mta(), CHILD_DAEMON, PROC_MTA);
 	child_add(queue(), CHILD_DAEMON, PROC_QUEUE);
-	child_add(runner(), CHILD_DAEMON, PROC_RUNNER);
+	child_add(scheduler(), CHILD_DAEMON, PROC_SCHEDULER);
 	child_add(smtp(), CHILD_DAEMON, PROC_SMTP);
 
 	setproctitle("[priv]");
@@ -1173,7 +1180,7 @@ proc_to_str(int proc)
 	CASE(PROC_MDA);
 	CASE(PROC_MTA);
 	CASE(PROC_CONTROL);
-	CASE(PROC_RUNNER);
+	CASE(PROC_SCHEDULER);
 	default:
 		return "PROC_???";
 	}
@@ -1236,8 +1243,8 @@ imsg_to_str(int type)
 	CASE(IMSG_QUEUE_SCHEDULE);
 	CASE(IMSG_QUEUE_REMOVE);
 
-	CASE(IMSG_RUNNER_REMOVE);
-	CASE(IMSG_RUNNER_SCHEDULE);
+	CASE(IMSG_SCHEDULER_REMOVE);
+	CASE(IMSG_SCHEDULER_SCHEDULE);
 
 	CASE(IMSG_BATCH_CREATE);
 	CASE(IMSG_BATCH_APPEND);

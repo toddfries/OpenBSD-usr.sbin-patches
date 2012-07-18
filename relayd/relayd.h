@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.154 2012/05/08 15:10:15 benno Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.156 2012/07/09 09:52:05 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2006, 2007 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -23,6 +23,10 @@
 #include <sys/param.h>		/* MAXHOSTNAMELEN */
 #include <limits.h>
 #include <imsg.h>
+
+#ifndef nitems
+#define	nitems(_a)	(sizeof((_a)) / sizeof((_a)[0]))
+#endif
 
 #define CONF_FILE		"/etc/relayd.conf"
 #define RELAYD_SOCKET		"/var/run/relayd.sock"
@@ -169,7 +173,7 @@ struct ctl_relay_event {
 
 	off_t			 splicelen;
 	int			 line;
-	size_t			 toread;
+	off_t			 toread;
 	int			 chunked;
 	int			 done;
 	enum httpmethod		 method;
