@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.4 2012/07/15 17:36:42 gilles Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.8 2012/08/10 11:05:55 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -43,6 +43,70 @@
 #include "smtpd.h"
 #include "log.h"
 
+#define MTA_HIWAT	65535
+
+enum mta_state {
+	MTA_INIT,
+	MTA_SECRET,
+	MTA_DATA,
+	MTA_MX,
+	MTA_CONNECT,
+	MTA_DONE,
+	MTA_SMTP_READY,
+	MTA_SMTP_BANNER,
+	MTA_SMTP_EHLO,
+	MTA_SMTP_HELO,
+	MTA_SMTP_STARTTLS,
+	MTA_SMTP_AUTH,
+	MTA_SMTP_MAIL,
+	MTA_SMTP_RCPT,
+	MTA_SMTP_DATA,
+	MTA_SMTP_QUIT,
+	MTA_SMTP_BODY,
+	MTA_SMTP_DONE,
+	MTA_SMTP_RSET,
+};
+
+#define MTA_FORCE_ANYSSL	0x01
+#define MTA_FORCE_SMTPS		0x02
+#define MTA_ALLOW_PLAIN		0x04
+#define MTA_USE_AUTH		0x08
+#define MTA_FORCE_MX		0x10
+#define MTA_USE_CERT		0x20
+#define MTA_TLS			0x40
+
+#define MTA_EXT_STARTTLS	0x01
+#define MTA_EXT_AUTH		0x02
+#define MTA_EXT_PIPELINING	0x04
+
+struct mta_relay {
+	TAILQ_ENTRY(mta_relay)	 entry;
+	struct sockaddr_storage	 sa;
+	char			 fqdn[MAXHOSTNAMELEN];
+	int			 used;
+};
+
+struct mta_session {
+	SPLAY_ENTRY(mta_session) entry;
+	u_int64_t		 id;
+	enum mta_state		 state;
+	char			*host;
+	int			 port;
+	int			 flags;
+	TAILQ_HEAD(,mta_relay)	 relays;
+	char			*authmap;
+	char			*secret;
+	FILE			*datafp;
+
+	TAILQ_HEAD(,mta_task)	 tasks;
+
+	struct envelope		*currevp;
+	struct iobuf		 iobuf;
+	struct io		 io;
+	int			 ext; /* extension */
+	struct ssl		*ssl;
+};
+
 struct mta_task {
 	SPLAY_ENTRY(mta_task)	 entry;
 	uint64_t		 id;
@@ -54,6 +118,7 @@ struct mta_task {
 	TAILQ_HEAD(,envelope)	 envelopes;
 };
 
+SPLAY_HEAD(mta_session_tree, mta_session);
 SPLAY_HEAD(mta_task_tree, mta_task);
 
 static void mta_io(struct io *, int);
@@ -72,13 +137,12 @@ static struct mta_task * mta_task_lookup(uint64_t, int);
 static struct mta_task * mta_task_create(uint64_t, struct mta_session *);
 static void mta_task_free(struct mta_task *);
 
-SPLAY_PROTOTYPE(mtatree, mta_session, entry, mta_session_cmp);
+SPLAY_PROTOTYPE(mta_session_tree, mta_session, entry, mta_session_cmp);
 SPLAY_PROTOTYPE(mta_task_tree, mta_task, entry, mta_task_cmp);
 
 static const char * mta_strstate(int);
 
-#define MTA_HIWAT	65535
-
+static struct mta_session_tree mta_sessions = SPLAY_INITIALIZER(&mta_sessions);
 static struct mta_task_tree mta_tasks = SPLAY_INITIALIZER(&mta_tasks);
 
 void
@@ -148,7 +212,7 @@ mta_session_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		TAILQ_INIT(&s->relays);
 		TAILQ_INIT(&s->tasks);
-		SPLAY_INSERT(mtatree, &env->mta_sessions, s);
+		SPLAY_INSERT(mta_session_tree, &mta_sessions, s);
 
 		if (mta_task_create(s->id, s) == NULL)
 			fatalx("mta_session_imsg: mta_task_create");
@@ -409,11 +473,8 @@ mta_enter_state(struct mta_session *s, int newstate)
 		if (TAILQ_FIRST(&s->tasks))
 			fatalx("all tasks should have been deleted already");
 
-		imsg_compose_event(env->sc_ievs[PROC_QUEUE],
-		    IMSG_BATCH_DONE, 0, 0, -1, NULL, 0);
-
 		/* deallocate resources */
-		SPLAY_REMOVE(mtatree, &env->mta_sessions, s);
+		SPLAY_REMOVE(mta_session_tree, &mta_sessions, s);
 		while ((relay = TAILQ_FIRST(&s->relays))) {
 			TAILQ_REMOVE(&s->relays, relay, entry);
 			free(relay);
@@ -609,8 +670,10 @@ mta_response(struct mta_session *s, char *line)
 	case MTA_SMTP_RCPT:
 		evp = s->currevp;
 		s->currevp = TAILQ_NEXT(s->currevp, entry);
-		if (line[0] != '2')
-			mta_envelope_done(task, evp, line);
+		if (line[0] != '2' && mta_envelope_done(task, evp, line)) {
+				mta_enter_state(s, MTA_SMTP_RSET);
+				break;
+		}
 		if (s->currevp == NULL)
 			mta_enter_state(s, MTA_SMTP_DATA);
 		else
@@ -763,20 +826,20 @@ mta_io(struct io *io, int evt)
 static void
 mta_send(struct mta_session *s, char *fmt, ...)
 {
-        va_list  ap;
-        char    *p;
-        int      len;
+	va_list  ap;
+	char	*p;
+	int	 len;
 
-        va_start(ap, fmt);
-        if ((len = vasprintf(&p, fmt, ap)) == -1)
-                fatal("mta: vasprintf");
-        va_end(ap);
+	va_start(ap, fmt);
+	if ((len = vasprintf(&p, fmt, ap)) == -1)
+		fatal("mta: vasprintf");
+	va_end(ap);
 
 	log_trace(TRACE_MTA, "mta: %p: >>> %s", s, p);
 
 	iobuf_fqueue(&s->iobuf, "%s\r\n", p);
 
-        free(p);
+	free(p);
 }
 
 /*
@@ -786,27 +849,27 @@ static ssize_t
 mta_queue_data(struct mta_session *s)
 {
 	char	*ln;
-        size_t	 len, q;
+	size_t	 len, q;
 
 	q = iobuf_queued(&s->iobuf);
 
 	while (iobuf_queued(&s->iobuf) < MTA_HIWAT) {
-                if ((ln = fgetln(s->datafp, &len)) == NULL)
-                        break;
-                if (ln[len - 1] == '\n')
-                        len--;
+		if ((ln = fgetln(s->datafp, &len)) == NULL)
+			break;
+		if (ln[len - 1] == '\n')
+			len--;
 		if (*ln == '.')
 			iobuf_queue(&s->iobuf, ".", 1);
 		iobuf_queue(&s->iobuf, ln, len);
 		iobuf_queue(&s->iobuf, "\r\n", 2);
 	}
 
-        if (ferror(s->datafp)) {
+	if (ferror(s->datafp)) {
 		mta_status(s, 1, "460 Error reading content file");
 		return (-1);
 	}
 
-        if (feof(s->datafp)) {
+	if (feof(s->datafp)) {
 		fclose(s->datafp);
 		s->datafp = NULL;
 	}
@@ -897,12 +960,12 @@ mta_session_lookup(u_int64_t id)
 	struct mta_session	 key, *res;
 
 	key.id = id;
-	if ((res = SPLAY_FIND(mtatree, &env->mta_sessions, &key)) == NULL)
+	if ((res = SPLAY_FIND(mta_session_tree, &mta_sessions, &key)) == NULL)
 		fatalx("mta_session_lookup: session not found");
 	return (res);
 }
 
-SPLAY_GENERATE(mtatree, mta_session, entry, mta_session_cmp);
+SPLAY_GENERATE(mta_session_tree, mta_session, entry, mta_session_cmp);
 
 static struct mta_task *
 mta_task_create(u_int64_t id, struct mta_session *s)
@@ -979,7 +1042,7 @@ mta_strstate(int state)
 	CASE(MTA_SMTP_EHLO);
 	CASE(MTA_SMTP_HELO);
 	CASE(MTA_SMTP_STARTTLS);
-	CASE(MTA_SMTP_AUTH);                             
+	CASE(MTA_SMTP_AUTH);
 	CASE(MTA_SMTP_MAIL);
 	CASE(MTA_SMTP_RCPT);
 	CASE(MTA_SMTP_DATA);
