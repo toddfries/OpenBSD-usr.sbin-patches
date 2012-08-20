@@ -35,7 +35,7 @@
 
 #define MAX_TAG_SIZE		 32
 /* SYNC WITH filter.h		  */
-//#define MAX_LINE_SIZE		 1000
+//#define MAX_LINE_SIZE		 4096
 //#define MAX_LOCALPART_SIZE	 128
 //#define MAX_DOMAINPART_SIZE	 MAXHOSTNAMELEN
 
