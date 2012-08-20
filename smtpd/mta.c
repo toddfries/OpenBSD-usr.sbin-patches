@@ -43,7 +43,7 @@
 #include "smtpd.h"
 #include "log.h"
 
-#define MTA_MAXCONN	5	/* connections per route */
+#define MTA_MAXCONN	256	/* connections per route */
 #define MTA_MAXMAIL	100	/* mails per session     */
 #define MTA_MAXRCPT	1000	/* rcpt per mail         */
 
