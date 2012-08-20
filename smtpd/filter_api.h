@@ -23,7 +23,7 @@
 #define	FILTER_API_VERSION	50
 
 #if !defined(MAX_LINE_SIZE)
-#define MAX_LINE_SIZE		 1000
+#define MAX_LINE_SIZE		 4096
 #endif
 
 #if !defined(MAX_LOCALPART_SIZE)
