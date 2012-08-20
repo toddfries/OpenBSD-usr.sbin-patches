@@ -35,6 +35,7 @@
 
 #define MAX_TAG_SIZE		 32
 
+
 /* return and forward path size */
 #define	MAX_FILTER_NAME		 32
 #define MAX_PATH_SIZE		 256
