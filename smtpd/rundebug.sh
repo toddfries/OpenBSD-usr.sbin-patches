@@ -1,3 +1,10 @@
+td=$(mktemp -d /tmp/.rundebug.XXXXXXXXXXXXXXXXXXXX)
+
+{
+	echo handle SIGPIPE nostop print pass
+	echo cont
+} > $td/gdbcmds
+
 pkill smtpd
 while pgrep smtpd; do sleep 1; done
 
@@ -16,9 +23,11 @@ if [ -f smtpd/obj/smtpd ]; then
 else
 	smtpd=./smtpd/smtpd
 fi
-newcmd $smtpd -f /etc/mail/smtpd.conf.new -d
+newcmd $smtpd -f /etc/mail/smtpd.conf -d
 sleep 3
 for p in $(pgrep smtpd)
 do
-	newcmd gdb $smtpd $p
+	newcmd gdb -x $td/gdbcmds $smtpd $p
 done
+sleep 30
+rm -rf "$td"
