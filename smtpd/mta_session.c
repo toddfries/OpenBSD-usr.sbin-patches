@@ -293,6 +293,7 @@ mta_enter_state(struct mta_session *s, int newstate)
 		/*
 		 * Obtain message body fd.
 		 */
+		if (s->task)
 		imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 		    IMSG_QUEUE_MESSAGE_FD, s->task->msgid, 0, -1,
 		    &s->id, sizeof(s->id));
@@ -462,19 +463,23 @@ mta_enter_state(struct mta_session *s, int newstate)
 		break;
 
 	case MTA_SMTP_MAIL:
+		if (s->task) {
 		if (s->task->sender.user[0] && s->task->sender.domain[0])
 			mta_send(s, "MAIL FROM: <%s@%s>",
 			    s->task->sender.user, s->task->sender.domain);
 		else
 			mta_send(s, "MAIL FROM: <>");
+		}
 		break;
 
 	case MTA_SMTP_RCPT:
+		if (s->task) {
 		if (s->currevp == NULL)
 			s->currevp = TAILQ_FIRST(&s->task->envelopes);
 		mta_send(s, "RCPT TO: <%s@%s>",
 		    s->currevp->dest.user,
 		    s->currevp->dest.domain);
+		}
 		break;
 
 	case MTA_SMTP_DATA:
