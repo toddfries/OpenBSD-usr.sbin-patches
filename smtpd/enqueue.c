@@ -177,7 +177,7 @@ enqueue(int argc, char *argv[])
 	time(&timestamp);
 
 	while ((ch = getopt(argc, argv,
-	    "A:B:b:E::e:F:f:iJ::L:mo:p:qtvx")) != -1) {
+	    "A:B:b:E::e:F:f:iJ::L:mN:o:p:qtvx")) != -1) {
 		switch (ch) {
 		case 'f':
 			fake_from = optarg;
@@ -200,6 +200,7 @@ enqueue(int argc, char *argv[])
 		case 'i':
 		case 'L':
 		case 'm':
+		case 'N': /* XXX: DSN */
 		case 'o':
 		case 'p':
 		case 'x':
