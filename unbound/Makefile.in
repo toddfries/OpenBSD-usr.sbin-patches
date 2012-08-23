@@ -100,7 +100,7 @@ util/storage/lruhash.c util/storage/slabhash.c util/timehist.c util/tube.c \
 util/winsock_event.c validator/autotrust.c validator/val_anchor.c \
 validator/validator.c validator/val_kcache.c validator/val_kentry.c \
 validator/val_neg.c validator/val_nsec3.c validator/val_nsec.c \
-validator/val_sigcrypt.c validator/val_utils.c $(CHECKLOCK_SRC)
+validator/val_sigcrypt.c validator/val_utils.c dns64/dns64.c $(CHECKLOCK_SRC)
 COMMON_OBJ_WITHOUT_NETCALL=dns.lo infra.lo rrset.lo dname.lo msgencode.lo \
 msgparse.lo msgreply.lo packed_rrset.lo iterator.lo iter_delegpt.lo \
 iter_donotq.lo iter_fwd.lo iter_hints.lo iter_priv.lo iter_resptype.lo \
@@ -110,7 +110,7 @@ fptr_wlist.lo locks.lo log.lo mini_event.lo module.lo net_help.lo \
 random.lo rbtree.lo regional.lo rtt.lo dnstree.lo lookup3.lo lruhash.lo \
 slabhash.lo timehist.lo tube.lo winsock_event.lo autotrust.lo val_anchor.lo \
 validator.lo val_kcache.lo val_kentry.lo val_neg.lo val_nsec3.lo val_nsec.lo \
-val_sigcrypt.lo val_utils.lo $(PYTHONMOD_OBJ) $(CHECKLOCK_OBJ)
+val_sigcrypt.lo val_utils.lo dns64.lo $(PYTHONMOD_OBJ) $(CHECKLOCK_OBJ)
 COMMON_OBJ=$(COMMON_OBJ_WITHOUT_NETCALL) netevent.lo listen_dnsport.lo \
 outside_network.lo
 # set to $COMMON_OBJ or to "" if --enableallsymbols
@@ -540,6 +540,9 @@ dns.lo dns.o: $(srcdir)/services/cache/dns.c config.h $(srcdir)/iterator/iter_de
  $(srcdir)/util/data/dname.h $(srcdir)/util/module.h $(srcdir)/util/data/msgparse.h \
  $(srcdir)/util/net_help.h \
  $(srcdir)/util/regional.h $(srcdir)/util/config_file.h
+
+dns64.lo dns64.o: $(srcdir)/dns64/dns64.c
+
 infra.lo infra.o: $(srcdir)/services/cache/infra.c config.h \
  $(srcdir)/services/cache/infra.h \
  $(srcdir)/util/storage/lruhash.h $(srcdir)/util/locks.h $(srcdir)/util/log.h $(srcdir)/util/rtt.h \

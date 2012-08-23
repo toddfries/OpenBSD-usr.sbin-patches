@@ -310,8 +310,8 @@ server:
 	# prefetch-key: no
 
 	# module configuration of the server. A string with identifiers
-	# separated by spaces. "iterator" or "validator iterator"
-	# module-config: "validator iterator"
+	# separated by spaces. Syntax: [dns64] [validator] iterator
+	# module-config: "dns64 iterator"
 
 	# File with trusted keys, kept uptodate using RFC5011 probes,
 	# initial file like trust-anchor-file, then it stores metadata.
@@ -452,6 +452,9 @@ server:
 	# You can also add PTR records using local-data directly, but then
 	# you need to do the reverse notation yourself.
 	# local-data-ptr: "192.0.2.3 www.example.com"
+
+	# DNS64 prefix. Must be specified when DNS64 is in use.
+	# dns64-prefix: 64:ff9b::0/96
 
 	# service clients over SSL (on the TCP sockets), with plain DNS inside
 	# the SSL stream.  Give the certificate to use and private key.
