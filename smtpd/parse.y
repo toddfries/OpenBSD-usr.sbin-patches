@@ -336,16 +336,16 @@ main		: QUEUE INTERVAL interval	{
 				conf->sc_queue_compress_algo = strdup($2);
 				log_debug("queue compress using %s", conf->sc_queue_compress_algo);
 			}
-			if ($2 == NULL && ($3 == NULL || $4 == NULL)) {
-				yyerror("invalid queue encrypt syntax (queue encrypt <cipher> key <key>)");
-				YYERROR;
-			}			  
 			if ($3 && $4) {
 				conf->sc_queue_flags |= QUEUE_ENCRYPT;
 				conf->sc_queue_encrypt_cipher = strdup($3);
 				conf->sc_queue_encrypt_key = strdup($4);
 				log_debug("queue encrypt using %s", conf->sc_queue_encrypt_cipher);
 			}
+			if ($2 == NULL && ($3 == NULL || $4 == NULL)) {
+				yyerror("invalid queue encrypt syntax (queue encrypt <cipher> key <key>)");
+				YYERROR;
+			}			  
 		}
 		| EXPIRE STRING {
 			conf->sc_qexpire = delaytonum($2);
