@@ -108,19 +108,17 @@ queue_message_commit(uint32_t msgid)
 	queue_message_incoming_path(msgid, msgpath, sizeof msgpath);
 	strlcat(msgpath, PATH_MESSAGE, sizeof(msgpath));
 
-	strlcpy(comppath, msgpath, sizeof(comppath));
-	strlcat(comppath, ".comp", sizeof(comppath));
-
-	strlcpy(cryptpath, msgpath, sizeof(cryptpath));
-	strlcat(cryptpath, ".crypt", sizeof(cryptpath));
+	bsnprintf(comppath, sizeof comppath, "%s.comp", msgpath);
+	bsnprintf(cryptpath, sizeof cryptpath, "%s.crypt", msgpath);
 
 	if (env->sc_queue_flags & QUEUE_COMPRESS) {
 
 		fdin = open(msgpath, O_RDONLY);
 		fdout = open(comppath, O_RDWR | O_CREAT | O_EXCL, 0600);
 		if (fdin == -1 || fdout == -1)
-			return 0;
-		queue_compress_file(fdin, fdout);
+			return (0);
+		if (! queue_compress_file(fdin, fdout))
+			return (0);
 		close(fdin);
 		close(fdout);
 
@@ -137,8 +135,9 @@ queue_message_commit(uint32_t msgid)
 		fdin = open(msgpath, O_RDONLY);
 		fdout = open(cryptpath, O_RDWR | O_CREAT | O_EXCL, 0600);
 		if (fdin == -1 || fdout == -1)
-			return 0;
-		queue_encrypt_file(fdin, fdout);
+			return (0);
+		if (! queue_encrypt_file(fdin, fdout))
+			return (0);
 		close(fdin);
 		close(fdout);
 
