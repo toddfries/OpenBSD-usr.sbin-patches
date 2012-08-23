@@ -406,8 +406,6 @@ send_line(FILE *fp, int v, char *fmt, ...)
 	int ret;
 	va_list ap;
 
-	// fprintf(stderr,"send_line(fp=%p, v=%d, fmt=\"%s\", ...)\n",fp,v,fmt);
-
 	if (v)
 		printf(">>> ");
 	va_start(ap, fmt);
