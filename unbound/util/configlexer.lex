@@ -239,6 +239,8 @@ control-cert-file{COLON}	{ YDVAR(1, VAR_CONTROL_CERT_FILE) }
 python-script{COLON}		{ YDVAR(1, VAR_PYTHON_SCRIPT) }
 python{COLON}			{ YDVAR(0, VAR_PYTHON) }
 domain-insecure{COLON}		{ YDVAR(1, VAR_DOMAIN_INSECURE) }
+dns64-prefix{COLON}		{ YDVAR(1, VAR_DNS64_PREFIX) }
+dns64-synthall{COLON}		{ YDVAR(1, VAR_DNS64_SYNTHALL) }
 <INITIAL,val>{NEWLINE}		{ LEXOUT(("NL\n")); cfg_parser->line++; }
 
 	/* Quoted strings. Strip leading and ending quotes */
