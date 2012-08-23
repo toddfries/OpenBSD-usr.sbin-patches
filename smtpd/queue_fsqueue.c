@@ -42,8 +42,8 @@
 #include "smtpd.h"
 #include "log.h"
 
-static int	fsqueue_envelope_load(struct envelope *);
-static int	fsqueue_envelope_update(struct envelope *);
+static int	fsqueue_envelope_load(struct envelope *, char *, size_t);
+static int	fsqueue_envelope_update(struct envelope *, char *, size_t);
 static int	fsqueue_envelope_delete(struct envelope *);
 
 static int	fsqueue_message_create(uint32_t *);
@@ -54,11 +54,11 @@ static int	fsqueue_message_corrupt(uint32_t);
 
 static int	fsqueue_message_path(uint32_t, char *, size_t);
 static int	fsqueue_envelope_path(uint64_t, char *, size_t);
-static int	fsqueue_envelope_dump_atomic(char *, struct envelope *);
+static int	fsqueue_envelope_dump_atomic(char *, char *, size_t);
 
 static int	fsqueue_init(int);
 static int	fsqueue_message(enum queue_op, uint32_t *);
-static int	fsqueue_envelope(enum queue_op , struct envelope *);
+static int	fsqueue_envelope(enum queue_op , struct envelope *, char *, size_t);
 
 static void    *fsqueue_qwalk_new(uint32_t);
 static int	fsqueue_qwalk(void *, uint64_t *);
@@ -106,17 +106,11 @@ fsqueue_envelope_path(uint64_t evpid, char *buf, size_t len)
 }
 
 static int
-fsqueue_envelope_dump_atomic(char *dest, struct envelope *ep)
+fsqueue_envelope_dump_atomic(char *dest, char *evpbuf, size_t evplen)
 {
 	int	 fd;
 	char	 evpname[MAXPATHLEN];
-	char	 evpbuf[sizeof(struct envelope)];
-	size_t	 evplen;
 	ssize_t	 w;
-
-	evplen = envelope_dump_buffer(ep, evpbuf, sizeof evpbuf);
-	if (evplen == 0)
-		return (0);
 
 	/* temporary fix for multi-process access to the queue,
 	 * should be fixed by rerouting ALL queue access through
@@ -165,7 +159,7 @@ tempfail:
 }
 
 static int
-fsqueue_envelope_create(struct envelope *ep)
+fsqueue_envelope_create(struct envelope *ep, char *buf, size_t len)
 {
 	char		evpname[MAXPATHLEN];
 	uint64_t	evpid;
@@ -182,14 +176,13 @@ again:
 		goto again;
 	ep->id = evpid;
 
-	return (fsqueue_envelope_dump_atomic(evpname, ep));
+	return (fsqueue_envelope_dump_atomic(evpname, buf, len));
 }
 
 static int
-fsqueue_envelope_load(struct envelope *ep)
+fsqueue_envelope_load(struct envelope *ep, char *buf, size_t len)
 {
 	char	 pathname[MAXPATHLEN];
-	char	 evpbuf[sizeof(struct envelope)];
 	int	 fd;
 	ssize_t	 r;
 
@@ -202,22 +195,22 @@ fsqueue_envelope_load(struct envelope *ep)
 		fatal("fsqueue_envelope_load: open");
 	}
 
-	if ((r = read(fd, evpbuf, sizeof evpbuf)) == -1)
+	if ((r = read(fd, buf, len)) == -1)
 		return (0);
 
 	close(fd);
 
-	return (envelope_load_buffer(ep, evpbuf, r));
+	return (r);
 }
 
 static int
-fsqueue_envelope_update(struct envelope *ep)
+fsqueue_envelope_update(struct envelope *ep, char *buf, size_t len)
 {
 	char dest[MAXPATHLEN];
 
 	fsqueue_envelope_path(ep->id, dest, sizeof(dest));
 
-	return (fsqueue_envelope_dump_atomic(dest, ep));
+	return (fsqueue_envelope_dump_atomic(dest, buf, len));
 }
 
 static int
@@ -414,20 +407,20 @@ fsqueue_message(enum queue_op qop, uint32_t *msgid)
 }
 
 static int
-fsqueue_envelope(enum queue_op qop, struct envelope *m)
+fsqueue_envelope(enum queue_op qop, struct envelope *m, char *buf, size_t len)
 {
         switch (qop) {
         case QOP_CREATE:
-		return fsqueue_envelope_create(m);
+		return fsqueue_envelope_create(m, buf, len);
 
         case QOP_DELETE:
 		return fsqueue_envelope_delete(m);
 
         case QOP_LOAD:
-		return fsqueue_envelope_load(m);
+		return fsqueue_envelope_load(m, buf, len);
 
         case QOP_UPDATE:
-		return fsqueue_envelope_update(m);
+		return fsqueue_envelope_update(m, buf, len);
 
         default:
 		fatalx("queue_fsqueue_envelope: unsupported operation.");
