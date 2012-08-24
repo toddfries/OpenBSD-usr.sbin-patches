@@ -16,20 +16,24 @@ if [ "$DISPLAY" ]; then
 	}
 else
 	newcmd() {
-		tmux new-window -d "$@"
+		tmux new-window "$*"
 	}
 fi
 
-if [ -f smtpd/obj/smtpd ]; then
+if [ -x ./smtpd/obj/smtpd ]; then
 	smtpd=./smtpd/obj/smtpd
 else
-	smtpd=./smtpd/smtpd
+	if [ -x ./smtpd/smtpd ]; then
+		smtpd=./smtpd/smtpd
+	else
+		smtpd=./src/smtpd
+	fi
 fi
-newcmd $smtpd -f /etc/mail/smtpd.conf -d
-sleep 3
+newcmd sudo $smtpd -f /etc/mail/smtpd.conf -vd -T all
+sleep 5
 for p in $(pgrep smtpd)
 do
-	newcmd gdb -x $td/gdbcmds -batch $smtpd $p
+	newcmd sudo gdb -x $td/gdbcmds $smtpd $p
 done
 sleep 30
 rm -rf "$td"
