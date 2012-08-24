@@ -121,7 +121,7 @@ typedef struct {
 
 %}
 
-%token	AS QUEUE COMPRESS ENCRYPT KEY INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
+%token	AS QUEUE INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
 %token	MAP HASH LIST SINGLE SSL SMTPS CERTIFICATE
 %token	DB PLAIN DOMAIN SOURCE
 %token  RELAY BACKUP VIA DELIVER TO MAILDIR MBOX HOSTNAME
@@ -135,7 +135,7 @@ typedef struct {
 %type	<v.tv>		interval
 %type	<v.object>	mapref
 %type	<v.maddr>	relay_as
-%type	<v.string>	certname user tag on alias credentials compress encrypt key
+%type	<v.string>	certname user tag on alias credentials
 
 %%
 
@@ -306,46 +306,8 @@ credentials	: AUTH STRING	{
 		| /* empty */	{ $$ = 0; }
 		;
 
-compress	: COMPRESS STRING {
-			$$ = $2;
-		}
-		| COMPRESS {
-			$$ = "zlib";
-		}
-		| /* empty */	{ $$ = NULL; }
-		;
-
-encrypt		: ENCRYPT STRING {
-			$$ = $2;
-		}
-		| /* empty */	{ $$ = NULL; }
-		;
-
-key		: KEY STRING {
-			$$ = $2;
-		}
-		| /* empty */	{ $$ = NULL; }
-		;
-
 main		: QUEUE INTERVAL interval	{
 			conf->sc_qintval = $3;
-		}
-		| QUEUE compress encrypt key {
-			if ($2) {
-				conf->sc_queue_flags |= QUEUE_COMPRESS;
-				conf->sc_queue_compress_algo = strdup($2);
-				log_debug("queue compress using %s", conf->sc_queue_compress_algo);
-			}
-			if ($3 && $4) {
-				conf->sc_queue_flags |= QUEUE_ENCRYPT;
-				conf->sc_queue_encrypt_cipher = strdup($3);
-				conf->sc_queue_encrypt_key = strdup($4);
-				log_debug("queue encrypt using %s", conf->sc_queue_encrypt_cipher);
-			}
-			if ($2 == NULL && ($3 == NULL || $4 == NULL)) {
-				yyerror("invalid queue encrypt syntax (queue encrypt <cipher> key <key>)");
-				YYERROR;
-			}			  
 		}
 		| EXPIRE STRING {
 			conf->sc_qexpire = delaytonum($2);
@@ -1141,12 +1103,10 @@ lookup(char *s)
 		{ "auth",		AUTH },
 		{ "backup",		BACKUP },
 		{ "certificate",	CERTIFICATE },
-		{ "compress",		COMPRESS },
 		{ "db",			DB },
 		{ "deliver",		DELIVER },
 		{ "domain",		DOMAIN },
 		{ "enable",		ENABLE },
-		{ "encrypt",		ENCRYPT },
 		{ "expire",		EXPIRE },
 		{ "filter",		FILTER },
 		{ "for",		FOR },

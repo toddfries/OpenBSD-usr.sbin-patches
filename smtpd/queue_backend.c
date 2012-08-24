@@ -24,7 +24,6 @@
 #include <sys/stat.h>
 
 #include <ctype.h>
-#include <errno.h>
 #include <event.h>
 #include <fcntl.h>
 #include <imsg.h>
@@ -100,55 +99,6 @@ queue_message_delete(uint32_t msgid)
 int
 queue_message_commit(uint32_t msgid)
 {
-	char	msgpath[MAXPATHLEN];
-	char	comppath[MAXPATHLEN];
-	char	cryptpath[MAXPATHLEN];
-	int	fdin, fdout;
-
-	queue_message_incoming_path(msgid, msgpath, sizeof msgpath);
-	strlcat(msgpath, PATH_MESSAGE, sizeof(msgpath));
-
-	bsnprintf(comppath, sizeof comppath, "%s.comp", msgpath);
-	bsnprintf(cryptpath, sizeof cryptpath, "%s.crypt", msgpath);
-
-	if (env->sc_queue_flags & QUEUE_COMPRESS) {
-
-		fdin = open(msgpath, O_RDONLY);
-		fdout = open(comppath, O_RDWR | O_CREAT | O_EXCL, 0600);
-		if (fdin == -1 || fdout == -1)
-			return (0);
-		if (! queue_compress_file(fdin, fdout))
-			return (0);
-		close(fdin);
-		close(fdout);
-
-		if (rename(comppath, msgpath) == -1) {
-			if (errno == ENOSPC)
-				return (0);
-			fatal("queue_message_commit: rename");
-		}
-	}
-
-#if 0
-	if (env->sc_queue_flags & QUEUE_ENCRYPT) {
-
-		fdin = open(msgpath, O_RDONLY);
-		fdout = open(cryptpath, O_RDWR | O_CREAT | O_EXCL, 0600);
-		if (fdin == -1 || fdout == -1)
-			return (0);
-		if (! queue_encrypt_file(fdin, fdout))
-			return (0);
-		close(fdin);
-		close(fdout);
-
-		if (rename(cryptpath, msgpath) == -1) {
-			if (errno == ENOSPC)
-				return (0);
-			fatal("queue_message_commit: rename");
-		}
-	}
-#endif
-
 	return env->sc_queue->message(QOP_COMMIT, &msgid);
 }
 
@@ -161,25 +111,7 @@ queue_message_corrupt(uint32_t msgid)
 int
 queue_message_fd_r(uint32_t msgid)
 {
-	int	fd, fd2;
-
-	fd = env->sc_queue->message(QOP_FD_R, &msgid);
-
-#if 0
-	if (env->sc_queue_flags & QUEUE_ENCRYPT) {
-		fd2 = queue_decrypt_file(fd);
-		close(fd);
-		fd = fd2;
-	}
-#endif
-
-	if (env->sc_queue_flags & QUEUE_COMPRESS) {
-		fd2 = queue_uncompress_file(fd);
-		close(fd);
-		fd = fd2;
-	}
-
-	return (fd);
+	return env->sc_queue->message(QOP_FD_R, &msgid);
 }
 
 int

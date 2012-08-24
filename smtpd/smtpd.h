@@ -579,12 +579,6 @@ struct smtpd {
 #define SMTPD_MTA_BUSY			       	 0x00000040
 #define SMTPD_BOUNCE_BUSY      		       	 0x00000080
 	uint32_t				 sc_flags;
-	uint32_t				 sc_queue_flags;
-#define QUEUE_COMPRESS				 0x00000001
-#define QUEUE_ENCRYPT				 0x00000002
-	char					*sc_queue_compress_algo;
-	char					*sc_queue_encrypt_cipher;
-	char					*sc_queue_encrypt_key;
 	struct timeval				 sc_qintval;
 	int					 sc_qexpire;
 	uint32_t				 sc_maxconn;
@@ -598,7 +592,6 @@ struct smtpd {
 	struct passwd				*sc_pw;
 	char					 sc_hostname[MAXHOSTNAMELEN];
 	struct queue_backend			*sc_queue;
-	struct queue_compress_backend		*sc_queue_compress;
 	struct scheduler_backend		*sc_scheduler;
 	struct stat_backend			*sc_stat;
 
@@ -814,12 +807,6 @@ struct queue_backend {
 	void  (*qwalk_close)(void *);
 };
 
-struct queue_compress_backend {
-	int	(*compress_file)(int, int);
-	int	(*uncompress_file)(int);
-	size_t	(*compress_buffer)(char *, size_t, char *, size_t);
-	size_t	(*uncompress_buffer)(char *, size_t, char *, size_t);
-};
 
 /* auth structures */
 enum auth_type {

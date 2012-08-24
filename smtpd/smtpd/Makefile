@@ -11,8 +11,7 @@ SRCS=		aliases.c auth.c bounce.c config.c control.c		\
 		queue.c queue_backend.c ruleset.c			\
 		scheduler.c scheduler_backend.c smtp.c smtp_session.c	\
 		smtpd.c	ssl.c ssl_privsep.c stat_backend.c tree.c	\
-		user.c util.c						\
-		queue_compress.c queue_compress_zlib.c queue_encrypt.c
+		user.c util.c
 
 # backends
 SRCS+=		auth_bsd.c
@@ -38,7 +37,7 @@ SRCS+=		asr.c asr_debug.c asr_utils.c gethostnamadr_async.c	\
 MAN=		smtpd.8 smtpd.conf.5
 BINDIR=		/usr/sbin
 
-LDADD+=		-levent -lutil -lssl -lcrypto -lm -lz
+LDADD+=		-levent -lutil -lssl -lcrypto -lm
 DPADD+=		${LIBEVENT} ${LIBUTIL} ${LIBSSL} ${LIBCRYPTO} ${LIBM}
 CFLAGS+=	-g3 -ggdb -I${.CURDIR}/.. -I${.CURDIR}/../../../lib/libc/asr
 CFLAGS+=	-Wall -Wstrict-prototypes -Wmissing-prototypes

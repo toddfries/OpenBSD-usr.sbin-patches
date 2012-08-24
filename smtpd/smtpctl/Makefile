@@ -19,8 +19,7 @@ CFLAGS+=	-Wsign-compare -Wbounded
 SRCS=	enqueue.c parser.c log.c envelope.c
 SRCS+=	queue_backend.c queue_fsqueue.c
 SRCS+=	smtpctl.c util.c
-SRCS+=	queue_compress.c queue_compress_zlib.c queue_encrypt.c
 
-LDADD+=	-lutil -lz
+LDADD+=	-lutil
 DPADD+=	${LIBUTIL} ${LIBEVENT}
 .include <bsd.prog.mk>
