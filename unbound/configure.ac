@@ -6,10 +6,10 @@ sinclude(acx_pthread.m4)
 sinclude(acx_python.m4)
 sinclude(ac_pkg_swig.m4)
 
-AC_INIT(unbound, 1.4.16, unbound-bugs@nlnetlabs.nl, unbound)
+AC_INIT(unbound, 1.4.18, unbound-bugs@nlnetlabs.nl, unbound)
 
 LIBUNBOUND_CURRENT=3
-LIBUNBOUND_REVISION=1
+LIBUNBOUND_REVISION=3
 LIBUNBOUND_AGE=1
 # 1.0.0 had 0:12:0
 # 1.0.1 had 0:13:0
@@ -42,6 +42,8 @@ LIBUNBOUND_AGE=1
 # 1.4.14 had 2:14:0
 # 1.4.15 had 3:0:1 # adds ub_version()
 # 1.4.16 had 3:1:1
+# 1.4.17 had 3:2:1
+# 1.4.18 had 3:3:1
 
 #   Current  -- the number of the binary API that we're implementing
 #   Revision -- which iteration of the implementation of the binary
@@ -207,6 +209,11 @@ AC_DEFINE_UNQUOTED(RSRC_PACKAGE_VERSION, [$wnvs], [version number for resource f
 # Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST
 AC_LANG_C
+# allow user to override the -g -O2 flags.
+if test "x$CFLAGS" = "x" ; then
+ACX_CHECK_COMPILER_FLAG(g, [CFLAGS="$CFLAGS -g"])
+ACX_CHECK_COMPILER_FLAG(O2, [CFLAGS="$CFLAGS -O2"])
+fi
 AC_PROG_CC
 ACX_DEPFLAG
 ACX_DETERMINE_EXT_FLAGS_UNBOUND
@@ -470,7 +477,7 @@ if test x_$ub_test_python != x_no; then
             AC_SUBST(WITH_PYTHONMODULE)
 	    PYTHONMOD_OBJ="pythonmod.lo pythonmod_utils.lo"
 	    AC_SUBST(PYTHONMOD_OBJ)
-	    PYTHONMOD_HEADER="$(srcdir)/pythonmod/pythonmod.h"
+	    PYTHONMOD_HEADER='$(srcdir)/pythonmod/pythonmod.h'
 	    AC_SUBST(PYTHONMOD_HEADER)
 	    PYTHONMOD_INSTALL=pythonmod-install
 	    AC_SUBST(PYTHONMOD_INSTALL)
@@ -508,11 +515,33 @@ CONFIG_DATE=`date +%Y%m%d`
 AC_SUBST(CONFIG_DATE)
 
 # Checks for libraries.
+
+# libnss
+USE_NSS="no"
+AC_ARG_WITH([nss], AC_HELP_STRING([--with-nss=path],
+	[use libnss instead of openssl, installed at path.]),
+	[
+	USE_NSS="yes"
+	AC_DEFINE(HAVE_NSS, 1, [Use libnss for crypto])
+	if test "$withval" != "/usr" -a "$withval" != "" -a "$withval" != "yes"; then
+		CPPFLAGS="$CPPFLAGS -I$withval/include"
+		LDFLAGS="$LDFLAGS -L$withval/lib"
+		ACX_RUNTIME_PATH_ADD([$withval/lib])
+		CPPFLAGS="-I$withval/include/nspr4 $CPPFLAGS"
+	else
+		CPPFLAGS="-I/usr/include/nspr4 $CPPFLAGS"
+	fi
+        LIBS="$LIBS -lnss3 -lnspr4"
+	]
+)
+
+# openssl
+if test $USE_NSS = "no"; then
 ACX_WITH_SSL
 ACX_LIB_SSL
 AC_CHECK_HEADERS([openssl/conf.h],,, [AC_INCLUDES_DEFAULT])
 AC_CHECK_HEADERS([openssl/engine.h],,, [AC_INCLUDES_DEFAULT])
-AC_CHECK_FUNCS([OPENSSL_config EVP_sha1 EVP_sha256 EVP_sha512])
+AC_CHECK_FUNCS([OPENSSL_config EVP_sha1 EVP_sha256 EVP_sha512 FIPS_mode])
 AC_CHECK_DECLS([SSL_COMP_get_compression_methods,sk_SSL_COMP_pop_free], [], [], [
 AC_INCLUDES_DEFAULT
 #ifdef HAVE_OPENSSL_ERR_H
@@ -533,6 +562,8 @@ AC_INCLUDES_DEFAULT
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
 ])
+fi
+
 
 AC_ARG_ENABLE(sha2, AC_HELP_STRING([--disable-sha2], [Disable SHA256 and SHA512 RRSIG support]))
 case "$enable_sha2" in
@@ -643,18 +674,47 @@ AC_MSG_RESULT($ac_cv_c_gost_works)
 
 AC_ARG_ENABLE(gost, AC_HELP_STRING([--disable-gost], [Disable GOST support]))
 use_gost="no"
+if test $USE_NSS = "no"; then
 case "$enable_gost" in
 	no)
 	;;
 	*)
 	AC_CHECK_FUNC(EVP_PKEY_set_type_str, [:],[AC_MSG_ERROR([OpenSSL 1.0.0 is needed for GOST support])])
-        AC_CHECK_FUNC(EC_KEY_new, [], [AC_MSG_ERROR([OpenSSL does not support ECC, needed for GOST support])])
+	AC_CHECK_FUNC(EC_KEY_new, [], [AC_MSG_ERROR([OpenSSL does not support ECC, needed for GOST support])])
 	AC_CHECK_GOST_WORKS
-	if test $ac_cv_c_gost_works != no; then
+	if test "$ac_cv_c_gost_works" != no; then
 		use_gost="yes"
 		AC_DEFINE([USE_GOST], [1], [Define this to enable GOST support.])
 	fi
 	;;
+esac
+fi dnl !USE_NSS
+
+AC_ARG_ENABLE(ecdsa, AC_HELP_STRING([--disable-ecdsa], [Disable ECDSA support]))
+use_ecdsa="no"
+case "$enable_ecdsa" in
+    no)
+      ;;
+    *)
+      if test $USE_NSS = "no"; then
+	      AC_CHECK_FUNC(ECDSA_sign, [], [AC_MSG_ERROR([OpenSSL does not support ECDSA: please upgrade or rerun with --disable-ecdsa])])
+	      AC_CHECK_FUNC(SHA384_Init, [], [AC_MSG_ERROR([OpenSSL does not support SHA384: please upgrade or rerun with --disable-ecdsa])])
+	      AC_CHECK_DECLS([NID_X9_62_prime256v1, NID_secp384r1], [], [AC_MSG_ERROR([OpenSSL does not support the ECDSA curves: please upgrade or rerun with --disable-ecdsa])], [AC_INCLUDES_DEFAULT
+#include <openssl/evp.h>
+	      ])
+	      # see if OPENSSL 1.0.0 or later (has EVP MD and Verify independency)
+	      AC_MSG_CHECKING([if openssl supports SHA2 and ECDSA with EVP])
+	      if grep OPENSSL_VERSION_NUMBER $ssldir/include/openssl/opensslv.h | grep 0x0 >/dev/null; then
+		AC_MSG_RESULT([no])
+		AC_DEFINE_UNQUOTED([USE_ECDSA_EVP_WORKAROUND], [1], [Define this to enable an EVP workaround for older openssl])
+	      else
+		AC_MSG_RESULT([yes])
+	      fi
+      fi
+      # we now know we have ECDSA and the required curves.
+      AC_DEFINE_UNQUOTED([USE_ECDSA], [1], [Define this to enable ECDSA support.])
+      use_ecdsa="yes"
+      ;;
 esac
 
 # check for libevent
@@ -824,6 +884,36 @@ if test $ac_cv_func_daemon = yes; then
 ])
 fi
 
+AC_CHECK_MEMBERS([struct in_pktinfo.ipi_spec_dst],,,[
+AC_INCLUDES_DEFAULT
+#if HAVE_SYS_PARAM_H
+#include <sys/param.h>
+#endif
+
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+
+#ifdef HAVE_SYS_UIO_H
+#include <sys/uio.h>
+#endif
+
+#ifdef HAVE_NETINET_IN_H
+#include <netinet/in.h>
+#endif
+
+#ifdef HAVE_ARPA_INET_H
+#include <arpa/inet.h>
+#endif
+
+#ifdef HAVE_WINSOCK2_H
+#include <winsock2.h>
+#endif
+
+#ifdef HAVE_WS2TCPIP_H
+#include <ws2tcpip.h>
+#endif
+])
 AC_SEARCH_LIBS([setusercontext], [util])
 AC_CHECK_FUNCS([tzset sigprocmask fcntl getpwnam getrlimit setrlimit setsid sbrk chroot kill sleep usleep random srandom recvmsg sendmsg writev socketpair glob initgroups strftime localtime_r setusercontext _beginthreadex])
 AC_CHECK_FUNCS([setresuid],,[AC_CHECK_FUNCS([setreuid])])
@@ -911,6 +1001,17 @@ rm -f conftest.lo
 AC_SUBST(SOURCEDETERMINE)
 AC_SUBST(SOURCEFILE)
 
+# see if we want to build the library or everything
+ALLTARGET="alltargets"
+AC_ARG_WITH(libunbound-only, AC_HELP_STRING([--with-libunbound-only],
+	[do not build daemon and tool programs]),
+	[
+	if test "$withval" = "yes"; then
+		ALLTARGET="lib"
+	fi
+])
+AC_SUBST(ALLTARGET)
+
 # check this after all other compilation checks, since the linking of the lib
 # may break checks after this.
 AC_ARG_WITH(ldns, AC_HELP_STRING([--with-ldns=PATH], 
@@ -932,14 +1033,34 @@ AC_CHECK_LIB(ldns, ldns_rr_new,,[
 	AC_MSG_ERROR([No ldns library found, install the ldns library into system lib dir or use --with-ldns=path to other location.  The --with-ldns can point to the make-dir of ldns.  Install the package ldns or download source http://www.nlnetlabs.nl/projects/ldns])
 ])
 AC_CHECK_FUNC(ldns_buffer_copy)
-AC_CHECK_FUNC(ldns_key_buf2rsa_raw)
+if test $USE_NSS = "no"; then
+    AC_CHECK_FUNC(ldns_key_buf2rsa_raw)
+else
+    dnl ignore test
+    ac_cv_func_ldns_key_buf2rsa_raw="yes"
+fi
 AC_CHECK_FUNC(ldns_get_random)
 AC_CHECK_FUNC(ldns_b32_ntop_extended_hex)
-if test x$use_gost = xyes; then
+if test x$use_gost = xyes -a x$USE_NSS = xno; then
     AC_CHECK_FUNC(ldns_key_EVP_load_gost_id)
     AC_CHECK_FUNCS([ldns_key_EVP_unload_gost])
 else
+    dnl ignore test
     ac_cv_func_ldns_key_EVP_load_gost_id="yes"
+fi
+if test x$use_ecdsa = xyes; then
+    AC_CHECK_DECL([LDNS_ECDSAP384SHA384], [], [], [
+AC_INCLUDES_DEFAULT
+#ifdef HAVE_SYS_SOCKET_H
+#  include <sys/socket.h>
+#endif
+#ifdef HAVE_WS2TCPIP_H
+#  include <ws2tcpip.h>
+#endif
+#include <ldns/ldns.h>
+    ])
+else
+    ac_cv_have_decl_LDNS_ECDSAP384SHA384="yes"
 fi
 AC_CHECK_HEADERS([ldns/ldns.h],,[
 	AC_MSG_ERROR([No ldns include file found, install the ldns library development files.  Install package ldns-dev or ldns-devel or download source http://www.nlnetlabs.nl/projects/ldns])
@@ -969,7 +1090,8 @@ if test $ac_cv_func_ldns_buffer_copy = yes \
     -a $ac_cv_func_ldns_get_random = yes \
     -a $ac_cv_header_ldns_ldns_h = yes \
     -a $ac_cv_func_ldns_b32_ntop_extended_hex = yes \
-    -a $ac_cv_func_ldns_key_EVP_load_gost_id = yes; then
+    -a $ac_cv_func_ldns_key_EVP_load_gost_id = yes \
+    -a $ac_cv_have_decl_LDNS_ECDSAP384SHA384 = yes; then
     dnl ldns was found
     :
 else

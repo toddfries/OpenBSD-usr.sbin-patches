@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_backend.c,v 1.29 2012/08/19 14:16:58 chl Exp $	*/
+/*	$OpenBSD: queue_backend.c,v 1.32 2012/08/24 19:51:48 eric Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -40,7 +40,7 @@
 #include "smtpd.h"
 #include "log.h"
 
-static const char* envelope_validate(struct envelope *, uint64_t);
+static const char* envelope_validate(struct envelope *);
 
 extern struct queue_backend	queue_backend_fs;
 
@@ -196,65 +196,13 @@ queue_message_fd_rw(uint32_t msgid)
 static int
 queue_envelope_dump_buffer(struct envelope *ep, char *evpbuf, size_t evpbufsize)
 {
-	char		 evpbufcom[sizeof(struct envelope)];
-	char		 evpbufenc[sizeof(struct envelope)];
-	char		*evp;
-	size_t		 evplen;
-
-	evp = evpbuf;
-	evplen = envelope_dump_buffer(ep, evpbuf, evpbufsize);
-	if (evplen == 0)
-		return (0);
-
-	if (env->sc_queue_flags & QUEUE_COMPRESS) {
-		evplen = queue_compress_buffer(evp, evplen, evpbufcom, sizeof evpbufcom);
-		if (evplen == 0)
-			return (0);
-		evp = evpbufcom;
-	}
-
-#if 0
-	if (env->sc_queue_flags & QUEUE_ENCRYPT) {
-		evplen = queue_encrypt_buffer(evp, evplen, evpbufenc, sizeof evpbufenc);
-		if (evplen == 0)
-			return (0);
-		evp = evpbufenc;
-	}
-#endif
-
-	memmove(evpbuf, evp, evplen);
-
-	return (evplen);
+	return (envelope_dump_buffer(ep, evpbuf, evpbufsize));
 }
 
 static int
 queue_envelope_load_buffer(struct envelope *ep, char *evpbuf, size_t evpbufsize)
 {
-	char		 evpbufcom[sizeof(struct envelope)];
-	char		 evpbufenc[sizeof(struct envelope)];
-	char		*evp;
-	size_t		 evplen;
-
-	evp = evpbuf;
-	evplen = evpbufsize;
-
-#if 0
-	if (env->sc_queue_flags & QUEUE_ENCRYPT) {
-		evplen = queue_decrypt_buffer(evp, evplen, evpbufenc, sizeof evpbufenc);
-		if (evplen == 0)
-			return (0);
-		evp = evpbufenc;
-	}
-#endif
-
-	if (env->sc_queue_flags & QUEUE_COMPRESS) {
-		evplen = queue_uncompress_buffer(evp, evplen, evpbufcom, sizeof evpbufcom);
-		if (evplen == 0)
-			return (0);
-		evp = evpbufcom;
-	}
-
-	return (envelope_load_buffer(ep, evp, evplen));
+	return (envelope_load_buffer(ep, evpbuf, evpbufsize));
 }
 
 
@@ -270,7 +218,7 @@ queue_envelope_create(struct envelope *ep)
 	if (evplen == 0)
 		return (0);
 
-	r = env->sc_queue->envelope(QOP_CREATE, ep, evpbuf, evplen);
+	r = env->sc_queue->envelope(QOP_CREATE, &ep->id, evpbuf, evplen);
 	if (!r) {
 		ep->creation = 0;
 		ep->id = 0;
@@ -281,7 +229,7 @@ queue_envelope_create(struct envelope *ep)
 int
 queue_envelope_delete(struct envelope *ep)
 {
-	return env->sc_queue->envelope(QOP_DELETE, ep, NULL, 0);
+	return env->sc_queue->envelope(QOP_DELETE, &ep->id, NULL, 0);
 }
 
 int
@@ -292,12 +240,12 @@ queue_envelope_load(uint64_t evpid, struct envelope *ep)
 	size_t		 evplen;
 
 	ep->id = evpid;
-	evplen = env->sc_queue->envelope(QOP_LOAD, ep, evpbuf, sizeof evpbuf);
+	evplen = env->sc_queue->envelope(QOP_LOAD, &ep->id, evpbuf, sizeof evpbuf);
 	if (evplen == 0)
 		return (0);
 		
 	if (queue_envelope_load_buffer(ep, evpbuf, evplen)) {
-		if ((e = envelope_validate(ep, evpid)) == NULL) {
+		if ((e = envelope_validate(ep)) == NULL) {
 			ep->id = evpid;
 			return (1);
 		}
@@ -316,7 +264,7 @@ queue_envelope_update(struct envelope *ep)
 	if (evplen == 0)
 		return (0);
 
-	return env->sc_queue->envelope(QOP_UPDATE, ep, evpbuf, evplen);
+	return env->sc_queue->envelope(QOP_UPDATE, &ep->id, evpbuf, evplen);
 }
 
 void *
@@ -367,13 +315,10 @@ queue_generate_evpid(uint32_t msgid)
 
 /**/
 static const char*
-envelope_validate(struct envelope *ep, uint64_t id)
+envelope_validate(struct envelope *ep)
 {
 	if (ep->version != SMTPD_ENVELOPE_VERSION)
 		return "version mismatch";
-
-	if (evpid_to_msgid(ep->id) != (evpid_to_msgid(id)))
-		return "msgid mismatch";
 
 	if (memchr(ep->helo, '\0', sizeof(ep->helo)) == NULL)
 		return "invalid helo";

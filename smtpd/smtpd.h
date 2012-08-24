@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.329 2012/08/21 20:19:46 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.332 2012/08/24 13:21:56 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -424,7 +424,6 @@ TAILQ_HEAD(deliverylist, envelope);
 
 enum envelope_field {
 	EVP_VERSION,
-	EVP_ID,
 	EVP_MSGID,
 	EVP_TYPE,
 	EVP_HELO,
@@ -808,7 +807,7 @@ enum queue_op {
 struct queue_backend {
 	int (*init)(int);
 	int (*message)(enum queue_op, uint32_t *);
-	int (*envelope)(enum queue_op, struct envelope *, char *, size_t);
+	int (*envelope)(enum queue_op, uint64_t *, char *, size_t);
 
 	void *(*qwalk_new)(uint32_t);
 	int   (*qwalk)(void *, uint64_t *);
@@ -860,8 +859,6 @@ struct delivery_backend {
 
 struct scheduler_info {
 	uint64_t		evpid;
-	char			destination[MAXHOSTNAMELEN];
-
 	enum delivery_type	type;
 	time_t			creation;
 	time_t			lasttry;
@@ -1071,25 +1068,6 @@ int queue_envelope_update(struct envelope *);
 void *qwalk_new(uint32_t);
 int   qwalk(void *, uint64_t *);
 void  qwalk_close(void *);
-
-/* queue_compress.c */
-struct queue_compress_backend *queue_compress_backend_lookup(const char *);
-int queue_compress_file(int, int);
-int queue_uncompress_file(int);
-size_t queue_compress_buffer(char *, size_t, char *, size_t);
-size_t queue_uncompress_buffer(char *, size_t, char *, size_t);
-
-/* queue_compress_zlib.c */
-int queue_compress_zlib_file(int, int);
-int queue_uncompress_zlib_file(int);
-size_t queue_compress_zlib_buffer(char *, size_t, char *, size_t);
-size_t queue_uncompress_zlib_buffer(char *, size_t, char *, size_t);
-
-/* queue_encrypt.c */
-int queue_encrypt_file(int, int);
-int queue_decrypt_file(int);
-size_t queue_encrypt_buffer(char *, size_t, char *, size_t);
-size_t queue_decrypt_buffer(char *, size_t, char *, size_t);
 
 /* scheduler.c */
 pid_t scheduler(void);
