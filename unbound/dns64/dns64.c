@@ -813,7 +813,7 @@ dns64_inform_super(struct module_qstate* qstate, int id,
 	}
 
 	/* Store the generated response in cache. */
-	if (!dns_cache_store(super->env, &super->qinfo, super->return_msg->rep, 0, 0, NULL))
+	if (!dns_cache_store(super->env, &super->qinfo, super->return_msg->rep, 0, 0, 0, NULL))
 		log_err("out of memory");
 }
 
