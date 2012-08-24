@@ -4,6 +4,7 @@ td=$(mktemp -d /tmp/.rundebug.XXXXXXXXXXXXXXXXXXXX)
 	echo handle SIGPIPE nostop print pass
 	echo handle SIGTERM nostop print pass
 	echo handle SIGHUP  nostop print pass
+	echo handle SIGINT  nostop print pass
 	echo cont
 } > $td/gdbcmds
 
