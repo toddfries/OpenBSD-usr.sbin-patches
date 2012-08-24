@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.128 2012/08/21 13:13:17 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.130 2012/08/24 18:46:46 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -76,7 +76,11 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 			return;
 
 		case IMSG_QUEUE_REMOVE_MESSAGE:
-			queue_message_incoming_delete(evpid_to_msgid(e->id));
+			msgid = *(uint32_t*)(imsg->data);
+			queue_message_incoming_delete(msgid);
+			imsg_compose_event(env->sc_ievs[PROC_SCHEDULER],
+			    IMSG_QUEUE_REMOVE_MESSAGE, 0, 0, -1,
+			    &msgid, sizeof msgid);
 			return;
 
 		case IMSG_QUEUE_COMMIT_MESSAGE:
@@ -149,7 +153,8 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_QUEUE_EXPIRE:
 			id = *(uint64_t*)(imsg->data);
-			queue_envelope_load(id, &evp);
+			if (queue_envelope_load(id, &evp) == 0)
+				errx(1, "cannot load evp:%016" PRIx64, id),
 			envelope_set_errormsg(&evp, "envelope expired");
 			queue_bounce(&evp);
 			queue_envelope_delete(&evp);
@@ -157,7 +162,8 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_MDA_SESS_NEW:
 			id = *(uint64_t*)(imsg->data);
-			queue_envelope_load(id, &evp);
+			if (queue_envelope_load(id, &evp) == 0)
+				errx(1, "cannot load evp:%016" PRIx64, id),
 			evp.lasttry = time(NULL);
 			fd = queue_message_fd_r(evpid_to_msgid(id));
 			imsg_compose_event(env->sc_ievs[PROC_MDA],
@@ -178,7 +184,8 @@ queue_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_BATCH_APPEND:
 			id = *(uint64_t*)(imsg->data);
-			queue_envelope_load(id, &evp);
+			if (queue_envelope_load(id, &evp) == 0)
+				errx(1, "cannot load evp:%016" PRIx64, id),
 			evp.lasttry = time(NULL);
 			evp.batch_id = batch_id;
 			imsg_compose_event(env->sc_ievs[PROC_MTA],
