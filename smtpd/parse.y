@@ -121,7 +121,11 @@ typedef struct {
 
 %}
 
+<<<<<<< .merge_file_1Z5eHx
 %token	AS QUEUE COMPRESS ENCRYPT KEY INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
+=======
+%token	AS QUEUE INTERVAL SIZE LISTEN ON ALL PORT EXPIRE
+>>>>>>> .merge_file_mx1fc1
 %token	MAP HASH LIST SINGLE SSL SMTPS CERTIFICATE
 %token	DB PLAIN DOMAIN SOURCE
 %token  RELAY BACKUP VIA DELIVER TO MAILDIR MBOX HOSTNAME
@@ -135,7 +139,11 @@ typedef struct {
 %type	<v.tv>		interval
 %type	<v.object>	mapref
 %type	<v.maddr>	relay_as
+<<<<<<< .merge_file_1Z5eHx
 %type	<v.string>	certname user tag on alias credentials compress encrypt key
+=======
+%type	<v.string>	certname user tag on alias credentials
+>>>>>>> .merge_file_mx1fc1
 
 %%
 
@@ -306,6 +314,7 @@ credentials	: AUTH STRING	{
 		| /* empty */	{ $$ = 0; }
 		;
 
+<<<<<<< .merge_file_1Z5eHx
 compress	: COMPRESS STRING {
 			$$ = $2;
 		}
@@ -347,6 +356,11 @@ main		: QUEUE INTERVAL interval	{
 				YYERROR;
 			}			  
 		}
+=======
+main		: QUEUE INTERVAL interval	{
+			conf->sc_qintval = $3;
+		}
+>>>>>>> .merge_file_mx1fc1
 		| EXPIRE STRING {
 			conf->sc_qexpire = delaytonum($2);
 			if (conf->sc_qexpire == -1) {
@@ -1141,12 +1155,18 @@ lookup(char *s)
 		{ "auth",		AUTH },
 		{ "backup",		BACKUP },
 		{ "certificate",	CERTIFICATE },
+<<<<<<< .merge_file_1Z5eHx
 		{ "compress",		COMPRESS },
+=======
+>>>>>>> .merge_file_mx1fc1
 		{ "db",			DB },
 		{ "deliver",		DELIVER },
 		{ "domain",		DOMAIN },
 		{ "enable",		ENABLE },
+<<<<<<< .merge_file_1Z5eHx
 		{ "encrypt",		ENCRYPT },
+=======
+>>>>>>> .merge_file_mx1fc1
 		{ "expire",		EXPIRE },
 		{ "filter",		FILTER },
 		{ "for",		FOR },

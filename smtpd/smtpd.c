@@ -566,6 +566,7 @@ main(int argc, char *argv[])
 	if (env->sc_stat == NULL)
 		errx(1, "could not find stat backend \"%s\"", backend_stat);
 
+<<<<<<< .merge_file_vKjBNW
 	if (env->sc_queue_compress_algo) {
 		env->sc_queue_compress = 
 			queue_compress_backend_lookup(env->sc_queue_compress_algo);
@@ -574,6 +575,8 @@ main(int argc, char *argv[])
 			     env->sc_queue_compress_algo);
 	}
 
+=======
+>>>>>>> .merge_file_tGQV3L
 	log_init(debug);
 	log_verbose(verbose);
 
