@@ -162,7 +162,7 @@ content_server: server_num_threads | server_verbosity | server_port |
 	server_so_sndbuf | server_harden_below_nxdomain | server_ignore_cd_flag |
 	server_log_queries | server_tcp_upstream | server_ssl_upstream |
 	server_ssl_service_key | server_ssl_service_pem | server_ssl_port |
-	server_minimal_responses | server_rrset_roundrobin
+	server_minimal_responses | server_rrset_roundrobin |
 	server_dns64_prefix | server_dns64_synthall
 	;
 stubstart: VAR_STUB_ZONE
