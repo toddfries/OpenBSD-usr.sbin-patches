@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.57 2012/08/19 14:16:58 chl Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.61 2012/08/23 16:10:19 todd Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -177,7 +177,7 @@ enqueue(int argc, char *argv[])
 	time(&timestamp);
 
 	while ((ch = getopt(argc, argv,
-	    "A:B:b:E::e:F:f:iJ::L:mo:p:qtvx")) != -1) {
+	    "A:B:b:E::e:F:f:iJ::L:mN:o:p:qR:tvx")) != -1) {
 		switch (ch) {
 		case 'f':
 			fake_from = optarg;
@@ -200,8 +200,10 @@ enqueue(int argc, char *argv[])
 		case 'i':
 		case 'L':
 		case 'm':
+		case 'N': /* XXX: DSN */
 		case 'o':
 		case 'p':
+		case 'R':
 		case 'x':
 			break;
 		case 'q':
@@ -652,12 +654,27 @@ static void
 rcpt_add(char *addr)
 {
 	void	*nrcpts;
+	char	*p;
+	int	n;
+
+	n = 1;
+	p = addr;
+	while ((p = strchr(p, ',')) != NULL) {
+		n++;
+		p++;
+	}
 
 	if ((nrcpts = realloc(msg.rcpts,
-	    sizeof(char *) * (msg.rcpt_cnt + 1))) == NULL)
+	    sizeof(char *) * (msg.rcpt_cnt + n))) == NULL)
 		err(1, "rcpt_add realloc");
 	msg.rcpts = nrcpts;
-	msg.rcpts[msg.rcpt_cnt++] = qualify_addr(addr);
+
+	while (n--) {
+		if ((p = strchr(addr, ',')) != NULL)
+			*p++ = '\0';
+		msg.rcpts[msg.rcpt_cnt++] = qualify_addr(addr);
+		addr = p;
+	}
 }
 
 static int
