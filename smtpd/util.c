@@ -259,6 +259,15 @@ rmtree(char *path, int keepdir)
 	FTSENT		*e;
 	int		 ret, depth;
 
+	if (path[0] == '\0')
+		return (-1);
+	if (path[0] == 0)
+		return (-1);
+	if (strlen(path) < 2)
+		return (-1);
+
+	printf("rmtree('%s', %d)\n", path, keepdir);
+
 	path_argv[0] = path;
 	path_argv[1] = NULL;
 	ret = 0;
@@ -280,6 +289,8 @@ rmtree(char *path, int keepdir)
 			}
 			continue;
 		}
+		if (e->fts_statp == (void *)0x3)
+			continue;
 
 		if (S_ISDIR(e->fts_statp->st_mode)) {
 			e->fts_number = depth++;
