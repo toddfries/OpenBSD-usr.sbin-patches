@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.341 2012/08/29 16:26:17 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.346 2012/09/01 16:25:27 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -236,7 +236,8 @@ struct peer {
 enum map_src {
 	S_NONE,
 	S_PLAIN,
-	S_DB
+	S_DB /*,
+	S_LDAP*/
 };
 
 enum map_kind {
@@ -583,11 +584,7 @@ struct smtpd {
 	uint32_t				 sc_flags;
 	uint32_t				 sc_queue_flags;
 #define QUEUE_COMPRESS				 0x00000001
-#define QUEUE_ENCRYPT				 0x00000002
 	char					*sc_queue_compress_algo;
-	char					*sc_queue_crypto_cipher;
-	char					*sc_queue_crypto_digest;
-	char					*sc_queue_crypto_key;
 	struct timeval				 sc_qintval;
 	int					 sc_qexpire;
 	struct event				 sc_ev;
@@ -818,8 +815,8 @@ struct queue_backend {
 };
 
 struct compress_backend {
-	int	(*compress_file)(int, int);
-	int	(*uncompress_file)(int, int);
+	int	(*compress_file)(FILE *, FILE *);
+	int	(*uncompress_file)(FILE *, FILE *);
 	size_t	(*compress_buffer)(const char *, size_t, char *, size_t);
 	size_t	(*uncompress_buffer)(const char *, size_t, char *, size_t);
 };
@@ -981,15 +978,6 @@ void session_socket_no_linger(int);
 int session_socket_error(int);
 
 
-/* crypto_backend.c */
-int	crypto_setup(uint8_t *, uint8_t *, uint8_t *);
-void	crypto_clear(void);
-int	crypto_encrypt_file(FILE *, FILE *);
-int	crypto_decrypt_file(FILE *, FILE *);
-size_t	crypto_encrypt_buffer(const char *, size_t, char *, size_t);
-size_t	crypto_decrypt_buffer(const char *, size_t, char *, size_t);
-
-
 /* delivery.c */
 struct delivery_backend *delivery_backend_lookup(enum action_type);
 
@@ -1099,8 +1087,8 @@ void  qwalk_close(void *);
 
 /* compress_backend.c */
 struct compress_backend *compress_backend_lookup(const char *);
-int compress_file(int, int);
-int uncompress_file(int, int);
+int compress_file(FILE *, FILE *);
+int uncompress_file(FILE *, FILE *);
 size_t compress_buffer(const char *, size_t, char *, size_t);
 size_t uncompress_buffer(const char *, size_t, char *, size_t);
 
