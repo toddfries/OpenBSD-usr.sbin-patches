@@ -1,4 +1,4 @@
-/*	$OpenBSD: envelope.c,v 1.11 2012/09/02 12:21:22 chl Exp $	*/
+/*	$OpenBSD: envelope.c,v 1.13 2012/09/19 18:20:36 eric Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@openbsd.org>
@@ -512,7 +512,10 @@ ascii_load_sockaddr(struct sockaddr_storage *ss, char *buf)
 	struct sockaddr_in6 ssin6;
 	struct sockaddr_in  ssin;
 
-	if (strncasecmp("IPv6:", buf, 5) == 0) {
+	if (!strcmp("local", buf)) {
+		ss->ss_family = AF_LOCAL;
+	}
+	else if (strncasecmp("IPv6:", buf, 5) == 0) {
 		if (inet_pton(AF_INET6, buf + 5, &ssin6.sin6_addr) != 1)
 			return 0;
 		ssin6.sin6_family = AF_INET6;
@@ -562,7 +565,7 @@ ascii_load_flags(enum delivery_flags *dest, char *buf)
 		if (strcasecmp(flag, "authenticated") == 0)
 			*dest |= DF_AUTHENTICATED;
 		else if (strcasecmp(flag, "enqueued") == 0)
-			*dest |= DF_ENQUEUED;
+			;
 		else if (strcasecmp(flag, "bounce") == 0)
 			*dest |= DF_BOUNCE;
 		else if (strcasecmp(flag, "internal") == 0)
@@ -714,11 +717,6 @@ ascii_dump_flags(enum delivery_flags flags, char *buf, size_t len)
 	if (flags) {
 		if (flags & DF_AUTHENTICATED)
 			cpylen = strlcat(buf, "authenticated", len);
-		if (flags & DF_ENQUEUED) {
-			if (buf[0] != '\0')
-				cpylen = strlcat(buf, " ", len);
-			cpylen = strlcat(buf, "enqueued", len);
-		}
 		if (flags & DF_BOUNCE) {
 			if (buf[0] != '\0')
 				cpylen = strlcat(buf, " ", len);

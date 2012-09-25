@@ -1,4 +1,4 @@
-/*	$OpenBSD: mda.c,v 1.72 2012/08/25 10:23:11 gilles Exp $	*/
+/*	$OpenBSD: mda.c,v 1.74 2012/09/20 09:27:49 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -62,8 +62,6 @@ mda_imsg(struct imsgev *iev, struct imsg *imsg)
 	struct envelope		*ep;
 	FILE			*fp;
 	uint16_t		 msg;
-
-	log_imsg(PROC_MDA, iev->proc, imsg);
 
 	if (iev->proc == PROC_QUEUE) {
 		switch (imsg->hdr.type) {
@@ -431,7 +429,7 @@ mda_check_loop(FILE *fp, struct envelope *ep)
 {
 	char		*buf, *lbuf;
 	size_t		 len;
-	struct mailaddr	 maddr, dest;
+	struct mailaddr	 maddr;
 	int		 ret = 0;
 
 	lbuf = NULL;
@@ -455,11 +453,8 @@ mda_check_loop(FILE *fp, struct envelope *ep)
 			bzero(&maddr, sizeof maddr);
 			if (! email_to_mailaddr(&maddr, buf + 14))
 				continue;
-
-			dest = (ep->type == D_BOUNCE) ? ep->sender : ep->dest;
-
-			if (strcasecmp(maddr.user, dest.user) == 0 &&
-			    strcasecmp(maddr.domain, dest.domain) == 0) {
+			if (strcasecmp(maddr.user, ep->dest.user) == 0 &&
+			    strcasecmp(maddr.domain, ep->dest.domain) == 0) {
 				ret = 1;
 				break;
 			}
