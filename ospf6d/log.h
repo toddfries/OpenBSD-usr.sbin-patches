@@ -1,4 +1,4 @@
-/*	$OpenBSD: log.h,v 1.5 2009/12/22 17:45:47 claudio Exp $ */
+/*	$OpenBSD: log.h,v 1.7 2012/09/20 07:22:48 bluhm Exp $ */
 
 /*
  * Copyright (c) 2003, 2004 Henning Brauer <henning@openbsd.org>
