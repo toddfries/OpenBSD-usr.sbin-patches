@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.135 2012/08/25 22:52:19 eric Exp $	*/
+/*	$OpenBSD: lka.c,v 1.139 2012/09/19 19:40:36 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -49,8 +49,6 @@ static void lka_sig_handler(int, short, void *);
 static int lka_verify_mail(struct mailaddr *);
 static int lka_encode_credentials(char *, size_t, struct map_credentials *);
 
-void lka_session(struct submit_status *);
-void lka_session_forward_reply(struct forward_req *, int);
 
 static void
 lka_imsg(struct imsgev *iev, struct imsg *imsg)
@@ -61,8 +59,6 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 	struct rule		*rule;
 	struct map		*map;
 	void			*tmp;
-
-	log_imsg(PROC_LKA, iev->proc, imsg);
 
 	if (imsg->hdr.type == IMSG_DNS_HOST || imsg->hdr.type == IMSG_DNS_MX ||
 	    imsg->hdr.type == IMSG_DNS_PTR) {
@@ -92,7 +88,9 @@ lka_imsg(struct imsgev *iev, struct imsg *imsg)
 			if (rule) {
 				ss->code = 250;
 				ss->envelope.rule = *rule;
-				if (IS_RELAY(*rule))
+				ss->envelope.expire = rule->r_qexpire;
+				if (rule->r_action == A_RELAY ||
+				    rule->r_action == A_RELAYVIA)
 					ss->envelope.type = D_MTA;
 				else
 					ss->envelope.type = D_MDA;
@@ -320,7 +318,7 @@ lka(void)
 	return (0);
 }
 
-int
+static int
 lka_verify_mail(struct mailaddr *maddr)
 {
 	return 1;
