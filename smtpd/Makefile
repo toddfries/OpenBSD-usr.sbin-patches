@@ -2,6 +2,6 @@
 
 .include <bsd.own.mk>
 
-SUBDIR = makemap smtpd smtpctl
+SUBDIR = makemap smtpd smtpctl libsmtpdfilter
 
 .include <bsd.subdir.mk>
