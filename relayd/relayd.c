@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.c,v 1.109 2012/09/21 09:56:27 benno Exp $	*/
+/*	$OpenBSD: relayd.c,v 1.111 2012/10/03 08:46:05 reyk Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008 Reyk Floeter <reyk@openbsd.org>
@@ -564,6 +564,7 @@ void
 purge_relay(struct relayd *env, struct relay *rlay)
 {
 	struct rsession		*con;
+	struct relay_table	*rlt;
 
 	/* shutdown and remove relay */
 	if (event_initialized(&rlay->rl_ev))
@@ -590,6 +591,11 @@ purge_relay(struct relayd *env, struct relay *rlay)
 		free(rlay->rl_ssl_key);
 	if (rlay->rl_ssl_ca != NULL)
 		free(rlay->rl_ssl_ca);
+
+	while ((rlt = TAILQ_FIRST(&rlay->rl_tables))) {
+		TAILQ_REMOVE(&rlay->rl_tables, rlt, rlt_entry);
+		free(rlt);
+	}
 
 	free(rlay);
 }
@@ -1234,7 +1240,7 @@ accept_reserve(int sockfd, struct sockaddr *addr, socklen_t *addrlen,
 
 	if ((ret = accept(sockfd, addr, addrlen)) > -1) {
 		(*counter)++;
-		log_debug("%s: inflight incremented, now %d",__func__,
+		DPRINTF("%s: inflight incremented, now %d",__func__,
 		    *counter);
 	}
 	return ret;
