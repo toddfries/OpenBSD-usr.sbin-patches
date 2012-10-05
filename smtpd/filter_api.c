@@ -29,6 +29,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "log.h"
 #include "filter_api.h"
 
 static struct filter_internals {
@@ -101,6 +102,7 @@ filter_register_helo_callback(enum filter_status (*cb)(uint64_t, struct filter_h
 void
 filter_register_ehlo_callback(enum filter_status (*cb)(uint64_t, struct filter_helo *, void *), void *cb_arg)
 {
+	log_info("filter_register_ehlo_callback(%p, %p)", cb_arg);
 	filter_register_callback(FILTER_EHLO, cb, cb_arg);
 }
 
@@ -252,8 +254,10 @@ filter_handler(int fd, short event, void *p)
 		case FILTER_EHLO:
 			if (fi.ehlo_cb == NULL)
 				goto ignore;
+			log_info("filter_handler calling FILTER_EHLO");
 			ret = fi.ehlo_cb(fm.cl_id, &fm.u.helo,
 			    fi.ehlo_cb_arg);
+			log_info("filter_handler FILTER_EHLO returned %d", ret);
 			break;
 		case FILTER_MAIL:
 			if (fi.mail_cb == NULL)

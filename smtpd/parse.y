@@ -405,7 +405,7 @@ main		: QUEUE INTERVAL interval	{
 				YYERROR;
 			}
 			free($2);
-		}/*
+		}
 		| FILTER STRING STRING		{
 			struct filter *filter;
 			struct filter *tmp;
@@ -437,7 +437,6 @@ main		: QUEUE INTERVAL interval	{
 			free($2);
 			free($3);
 		}
-		*/
 		;
 
 mapsource	: SOURCE PLAIN STRING			{
