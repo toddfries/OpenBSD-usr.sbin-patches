@@ -1,4 +1,4 @@
-/*	$OpenBSD: dns.c,v 1.57 2012/08/25 10:23:11 gilles Exp $	*/
+/*	$OpenBSD: dns.c,v 1.59 2012/10/03 21:44:35 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -352,9 +352,7 @@ dnssession_init(struct dns *query)
 {
 	struct dnssession *s;
 
-	s = calloc(1, sizeof(struct dnssession));
-	if (s == NULL)
-		fatal("dnssession_init: calloc");
+	s = xcalloc(1, sizeof(struct dnssession), "dnssession_init");
 
 	stat_increment("lka.session", 1);
 
@@ -398,12 +396,13 @@ dnssession_mx_insert(struct dnssession *s, const char *host, int preference)
 	TAILQ_FOREACH(e, &s->mx, entry) {
 		if (mx->preference <= e->preference) {
 			TAILQ_INSERT_BEFORE(e, mx, entry);
-			return;
+			goto end;
 		}
 	}
 
 	TAILQ_INSERT_TAIL(&s->mx, mx, entry);
 
+end:
 	if (s->preference == -1 && s->query.backup[0]
 	    && !strcasecmp(host, s->query.backup)) {
 		log_debug("dns: found our backup preference");
