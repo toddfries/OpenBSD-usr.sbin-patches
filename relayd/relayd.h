@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.157 2012/09/20 12:30:20 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.160 2012/10/03 08:40:40 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2012 Reyk Floeter <reyk@openbsd.org>
@@ -48,6 +48,8 @@
 #define MAX_NAME_SIZE		64
 #define SRV_MAX_VIRTS		16
 
+#define FD_RESERVE		5
+
 #define RELAY_MAX_SESSIONS	1024
 #define RELAY_TIMEOUT		600
 #define RELAY_CACHESIZE		-1	/* use default size */
@@ -57,6 +59,7 @@
 #define RELAY_STATINTERVAL	60
 #define RELAY_BACKLOG		10
 #define RELAY_MAXLOOKUPLEVELS	5
+#define RELAY_OUTOF_FD_RETRIES	5 
 
 #define CONFIG_RELOAD		0x00
 #define CONFIG_TABLES		0x01
@@ -103,6 +106,13 @@ struct ctl_status {
 struct ctl_id {
 	objid_t		 id;
 	char		 name[MAX_NAME_SIZE];
+};
+
+struct ctl_relaytable {
+	objid_t		 id;
+	objid_t		 relayid;
+	int		 mode;
+	u_int32_t	 flags;
 };
 
 struct ctl_script {
@@ -427,12 +437,16 @@ struct rsession {
 	struct ctl_relay_event		 se_out;
 	void				*se_priv;
 	u_int32_t			 se_hashkey;
+	int				 se_hashkeyset;
+	struct relay_table		*se_table;
 	struct event			 se_ev;
 	struct timeval			 se_timeout;
 	struct timeval			 se_tv_start;
 	struct timeval			 se_tv_last;
+	struct event			 se_inflightevt;
 	int				 se_done;
 	int				 se_retry;
+	int				 se_retrycount;
 	u_int16_t			 se_mark;
 	struct evbuffer			*se_log;
 	struct relay			*se_relay;
@@ -575,6 +589,17 @@ struct protocol {
 };
 TAILQ_HEAD(protolist, protocol);
 
+struct relay_table {
+	struct table		*rlt_table;
+	u_int32_t		 rlt_flags;
+	int			 rlt_mode;
+	u_int32_t		 rlt_key;
+	struct host		*rlt_host[RELAY_MAXHOSTS];
+	int			 rlt_nhosts;
+	TAILQ_ENTRY(relay_table) rlt_entry;
+};
+TAILQ_HEAD(relaytables, relay_table);
+
 struct relay_config {
 	objid_t			 id;
 	u_int32_t		 flags;
@@ -583,10 +608,7 @@ struct relay_config {
 	char			 ifname[IFNAMSIZ];
 	in_port_t		 port;
 	in_port_t		 dstport;
-	int			 dstmode;
 	int			 dstretry;
-	objid_t			 dsttable;
-	objid_t			 backuptable;
 	struct sockaddr_storage	 ss;
 	struct sockaddr_storage	 dstss;
 	struct sockaddr_storage	 dstaf;
@@ -609,11 +631,7 @@ struct relay {
 	int			 rl_dsts;
 	struct bufferevent	*rl_dstbev;
 
-	struct table		*rl_dsttable;
-	struct table		*rl_backuptable;
-	u_int32_t		 rl_dstkey;
-	struct host		*rl_dsthost[RELAY_MAXHOSTS];
-	int			 rl_dstnhosts;
+	struct relaytables	 rl_tables;
 
 	struct event		 rl_ev;
 	struct event		 rl_evt;
@@ -784,6 +802,7 @@ enum imsg_type {
 	IMSG_CFG_PROTO,
 	IMSG_CFG_PROTONODE,
 	IMSG_CFG_RELAY,
+	IMSG_CFG_RELAY_TABLE,
 	IMSG_CFG_DONE
 };
 
@@ -1060,6 +1079,8 @@ int		 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
 void		 socket_rlimit(int);
 char		*get_string(u_int8_t *, size_t);
 void		*get_data(u_int8_t *, size_t);
+int		 accept_reserve(int sockfd, struct sockaddr *addr,
+			socklen_t *addrlen, int reserve, volatile int *);
 
 /* carp.c */
 int	 carp_demote_init(char *, int);
@@ -1141,5 +1162,6 @@ int	 config_setprotonode(struct relayd *, enum privsep_procid,
 int	 config_getprotonode(struct relayd *, struct imsg *);
 int	 config_setrelay(struct relayd *env, struct relay *);
 int	 config_getrelay(struct relayd *, struct imsg *);
+int	 config_getrelaytable(struct relayd *, struct imsg *);
 
 #endif /* _RELAYD_H */
