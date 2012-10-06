@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay.c,v 1.152 2012/09/20 12:30:20 reyk Exp $	*/
+/*	$OpenBSD: relay.c,v 1.155 2012/10/03 08:40:40 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2012 Reyk Floeter <reyk@openbsd.org>
@@ -77,6 +77,7 @@ SSL_CTX		*relay_ssl_ctx_create(struct relay *);
 void		 relay_ssl_transaction(struct rsession *,
 		    struct ctl_relay_event *);
 void		 relay_ssl_accept(int, short, void *);
+void		 relay_connect_retry(int, short, void *);
 void		 relay_ssl_connect(int, short, void *);
 void		 relay_ssl_connected(struct ctl_relay_event *);
 void		 relay_ssl_readcb(int, short, void *);
@@ -88,7 +89,8 @@ static __inline int
 extern void	 bufferevent_read_pressure_cb(struct evbuffer *, size_t,
 		    size_t, void *);
 
-volatile sig_atomic_t relay_sessions;
+volatile int relay_sessions;
+volatile int relay_inflight = 0;
 objid_t relay_conid;
 
 static struct relayd		*env = NULL;
@@ -372,40 +374,41 @@ relay_statistics(int fd, short events, void *arg)
 void
 relay_launch(void)
 {
-	void		(*callback)(int, short, void *);
-	struct relay	*rlay;
-	struct host	*host;
+	void			(*callback)(int, short, void *);
+	struct relay		*rlay;
+	struct host		*host;
+	struct relay_table	*rlt;
 
 	TAILQ_FOREACH(rlay, env->sc_relays, rl_entry) {
 		if ((rlay->rl_conf.flags & (F_SSL|F_SSLCLIENT)) &&
 		    (rlay->rl_ssl_ctx = relay_ssl_ctx_create(rlay)) == NULL)
 			fatal("relay_init: failed to create SSL context");
 
-		if (rlay->rl_dsttable != NULL) {
-			switch (rlay->rl_conf.dstmode) {
+		TAILQ_FOREACH(rlt, &rlay->rl_tables, rlt_entry) {
+			switch (rlt->rlt_mode) {
 			case RELAY_DSTMODE_ROUNDROBIN:
-				rlay->rl_dstkey = 0;
+				rlt->rlt_key = 0;
 				break;
 			case RELAY_DSTMODE_LOADBALANCE:
 			case RELAY_DSTMODE_HASH:
-				rlay->rl_dstkey =
+				rlt->rlt_key =
 				    hash32_str(rlay->rl_conf.name, HASHINIT);
-				rlay->rl_dstkey =
-				    hash32_str(rlay->rl_dsttable->conf.name,
-				    rlay->rl_dstkey);
+				rlt->rlt_key =
+				    hash32_str(rlt->rlt_table->conf.name,
+				    rlt->rlt_key);
 				break;
 			}
-			rlay->rl_dstnhosts = 0;
-			TAILQ_FOREACH(host, &rlay->rl_dsttable->hosts, entry) {
-				if (rlay->rl_dstnhosts >= RELAY_MAXHOSTS)
+			rlt->rlt_nhosts = 0;
+			TAILQ_FOREACH(host, &rlt->rlt_table->hosts, entry) {
+				if (rlt->rlt_nhosts >= RELAY_MAXHOSTS)
 					fatal("relay_init: "
 					    "too many hosts in table");
-				host->idx = rlay->rl_dstnhosts;
-				rlay->rl_dsthost[rlay->rl_dstnhosts++] = host;
+				host->idx = rlt->rlt_nhosts;
+				rlt->rlt_host[rlt->rlt_nhosts++] = host;
 			}
 			log_info("adding %d hosts from table %s%s",
-			    rlay->rl_dstnhosts, rlay->rl_dsttable->conf.name,
-			    rlay->rl_dsttable->conf.check ? "" : " (no check)");
+			    rlt->rlt_nhosts, rlt->rlt_table->conf.name,
+			    rlt->rlt_table->conf.check ? "" : " (no check)");
 		}
 
 		switch (rlay->rl_proto->type) {
@@ -934,7 +937,8 @@ relay_accept(int fd, short event, void *arg)
 		return;
 
 	slen = sizeof(ss);
-	if ((s = accept(fd, (struct sockaddr *)&ss, (socklen_t *)&slen)) == -1) {
+	if ((s = accept_reserve(fd, (struct sockaddr *)&ss,
+	    (socklen_t *)&slen, FD_RESERVE, &relay_inflight)) == -1) {
 		/*
 		 * Pause accept if we are out of file descriptors, or
 		 * libevent will haunt us here too.
@@ -944,6 +948,8 @@ relay_accept(int fd, short event, void *arg)
 
 			event_del(&rlay->rl_ev);
 			evtimer_add(&rlay->rl_evt, &evtpause);
+			log_debug("%s: deferring connections",__func__,
+			    relay_inflight);
 		}
 		return;
 	}
@@ -971,7 +977,6 @@ relay_accept(int fd, short event, void *arg)
 	con->se_id = ++relay_conid;
 	con->se_relayid = rlay->rl_conf.id;
 	con->se_pid = getpid();
-	con->se_hashkey = rlay->rl_dstkey;
 	con->se_in.tree = &proto->request_tree;
 	con->se_out.tree = &proto->response_tree;
 	con->se_in.dir = RELAY_DIR_REQUEST;
@@ -1065,6 +1070,13 @@ relay_accept(int fd, short event, void *arg)
 		close(s);
 		if (con != NULL)
 			free(con);
+		/* 
+		 * the session struct was not completly set up, but still
+		 * counted as an inflight session. account for this.
+		 */
+		relay_inflight--;
+		log_debug("%s: inflight decremented, now %d",
+		    __func__, relay_inflight);
 	}
 }
 
@@ -1092,22 +1104,46 @@ relay_from_table(struct rsession *con)
 {
 	struct relay		*rlay = (struct relay *)con->se_relay;
 	struct host		*host;
-	struct table		*table = rlay->rl_dsttable;
+	struct relay_table	*rlt = NULL;
+	struct table		*table = NULL;
 	u_int32_t		 p = con->se_hashkey;
 	int			 idx = 0;
 
-	if (table->conf.check && !table->up && !rlay->rl_backuptable->up) {
-		log_debug("%s: no active hosts", __func__);
-		return (-1);
-	} else if (!table->up && rlay->rl_backuptable->up) {
-		table = rlay->rl_backuptable;
+	/* the table is already selected */
+	if (con->se_table != NULL) {
+		rlt = con->se_table;
+		table = rlt->rlt_table;
+		if (table->conf.check && !table->up)
+			table = NULL;
+		goto gottable;
 	}
 
-	switch (rlay->rl_conf.dstmode) {
+	/* otherwise grep the first active table */
+	TAILQ_FOREACH(rlt, &rlay->rl_tables, rlt_entry) {
+		table = rlt->rlt_table;
+		if ((rlt->rlt_flags & F_USED) == 0 ||
+		    (table->conf.check && !table->up))
+			table = NULL;
+		else
+			break;
+	}
+
+ gottable:
+	if (table == NULL) {
+		log_debug("%s: session %d: no active hosts",
+		    __func__, con->se_id);
+		return (-1);
+	}
+	if (!con->se_hashkeyset) {
+		p = con->se_hashkey = rlt->rlt_key;
+		con->se_hashkeyset = 1;
+	}
+
+	switch (rlt->rlt_mode) {
 	case RELAY_DSTMODE_ROUNDROBIN:
-		if ((int)rlay->rl_dstkey >= rlay->rl_dstnhosts)
-			rlay->rl_dstkey = 0;
-		idx = (int)rlay->rl_dstkey;
+		if ((int)rlt->rlt_key >= rlt->rlt_nhosts)
+			rlt->rlt_key = 0;
+		idx = (int)rlt->rlt_key;
 		break;
 	case RELAY_DSTMODE_LOADBALANCE:
 		p = relay_hash_addr(&con->se_in.ss, p);
@@ -1116,14 +1152,15 @@ relay_from_table(struct rsession *con)
 		p = relay_hash_addr(&rlay->rl_conf.ss, p);
 		p = hash32_buf(&rlay->rl_conf.port,
 		    sizeof(rlay->rl_conf.port), p);
-		if ((idx = p % rlay->rl_dstnhosts) >= RELAY_MAXHOSTS)
+		if ((idx = p % rlt->rlt_nhosts) >= RELAY_MAXHOSTS)
 			return (-1);
 	}
-	host = rlay->rl_dsthost[idx];
-	DPRINTF("%s: host %s, p 0x%08x, idx %d", __func__,
-	    host->conf.name, p, idx);
+	host = rlt->rlt_host[idx];
+	DPRINTF("%s: session %d: table %s host %s, p 0x%08x, idx %d",
+	    __func__, con->se_id, table->conf.name, host->conf.name, p, idx);
 	while (host != NULL) {
-		DPRINTF("%s: host %s", __func__, host->conf.name);
+		DPRINTF("%s: session %d: host %s", __func__,
+		    con->se_id, host->conf.name);
 		if (!table->conf.check || host->up == HOST_UP)
 			goto found;
 		host = TAILQ_NEXT(host, entry);
@@ -1138,8 +1175,8 @@ relay_from_table(struct rsession *con)
 	fatalx("relay_from_table: no active hosts, desynchronized");
 
  found:
-	if (rlay->rl_conf.dstmode == RELAY_DSTMODE_ROUNDROBIN)
-		rlay->rl_dstkey = host->idx + 1;
+	if (rlt->rlt_mode == RELAY_DSTMODE_ROUNDROBIN)
+		rlt->rlt_key = host->idx + 1;
 	con->se_retry = host->conf.retry;
 	con->se_out.port = table->conf.port;
 	bcopy(&host->conf.ss, &con->se_out.ss, sizeof(con->se_out.ss));
@@ -1159,7 +1196,7 @@ relay_natlook(int fd, short event, void *arg)
 
 	if (con->se_out.ss.ss_family == AF_UNSPEC && cnl->in == -1 &&
 	    rlay->rl_conf.dstss.ss_family == AF_UNSPEC &&
-	    rlay->rl_dsttable == NULL) {
+	    TAILQ_EMPTY(&rlay->rl_tables)) {
 		relay_close(con, "session NAT lookup failed");
 		return;
 	}
@@ -1245,21 +1282,105 @@ relay_bindany(int fd, short event, void *arg)
 		relay_close(con, "bindany failed, invalid socket");
 		return;
 	}
-
 	if (relay_connect(con) == -1)
 		relay_close(con, "session failed");
+}
+
+void
+relay_connect_retry(int fd, short sig, void *arg)
+{
+	struct timeval	 evtpause = { 1, 0 };
+	struct rsession	*con = (struct rsession *)arg;
+	struct relay	*rlay = (struct relay *)con->se_relay;
+	int		 bnds = -1;
+
+	if (relay_inflight < 1)
+		fatalx("relay_connect_retry: no connection in flight");
+
+	DPRINTF("%s: retry %d of %d, inflight: %d",__func__,
+	    con->se_retrycount, con->se_retry, relay_inflight);
+
+	if (sig != EV_TIMEOUT)
+		fatalx("relay_connect_retry: called without timeout");
+
+	evtimer_del(&con->se_inflightevt);
+
+        /*
+	 * XXX we might want to check if the inbound socket is still
+	 * available: client could have closed it while we were waiting?
+	 */
+
+	DPRINTF("%s: got EV_TIMEOUT", __func__);
+
+	if (getdtablecount() + FD_RESERVE +
+	    relay_inflight > getdtablesize()) {
+		if (con->se_retrycount < RELAY_OUTOF_FD_RETRIES) {
+			evtimer_add(&con->se_inflightevt, &evtpause);
+			return;
+		}
+		/* we waited for RELAY_OUTOF_FD_RETRIES seconds, give up */
+		event_add(&rlay->rl_ev, NULL);
+		relay_abort_http(con, 504, "connection timed out", 0);		
+		return;
+	}
+
+	if (rlay->rl_conf.fwdmode == FWD_TRANS) {
+		/* con->se_bnds cannot be unset */
+		bnds = con->se_bnds;
+	}
+
+ retry:
+	if ((con->se_out.s = relay_socket_connect(&con->se_out.ss,
+	    con->se_out.port, rlay->rl_proto, bnds)) == -1) {
+		log_debug("%s: session %d: "
+		    "forward failed: %s, %s", __func__,
+		    con->se_id, strerror(errno),
+		    con->se_retry ? "next retry" : "last retry");
+
+		con->se_retrycount++;
+
+		if ((errno == ENFILE || errno == EMFILE) && 
+		    (con->se_retrycount < con->se_retry)) {
+			event_del(&rlay->rl_ev);
+			evtimer_add(&con->se_inflightevt, &evtpause);
+			evtimer_add(&rlay->rl_evt, &evtpause);
+			return;
+		} else if (con->se_retrycount < con->se_retry)
+			goto retry;
+		event_add(&rlay->rl_ev, NULL);
+		relay_abort_http(con, 504, "connect failed", 0);
+		return;
+	}
+
+	relay_inflight--;
+	DPRINTF("%s: inflight decremented, now %d",__func__, relay_inflight);
+
+	event_add(&rlay->rl_ev, NULL);
+
+	if (errno == EINPROGRESS)
+		event_again(&con->se_ev, con->se_out.s, EV_WRITE|EV_TIMEOUT,
+		    relay_connected, &con->se_tv_start, &rlay->rl_conf.timeout,
+		    con);
+	else
+		relay_connected(con->se_out.s, EV_WRITE, con);
+
+	return;
 }
 
 int
 relay_connect(struct rsession *con)
 {
 	struct relay	*rlay = (struct relay *)con->se_relay;
+	struct timeval	 evtpause = { 1, 0 };
 	int		 bnds = -1, ret;
+
+	if (relay_inflight < 1)
+		fatalx("relay_connect: no connection in flight");
 
 	if (gettimeofday(&con->se_tv_start, NULL) == -1)
 		return (-1);
 
-	if (rlay->rl_dsttable != NULL) {
+	if (!TAILQ_EMPTY(&rlay->rl_tables)) {
 		if (relay_from_table(con) != 0)
 			return (-1);
 	} else if (con->se_out.ss.ss_family == AF_UNSPEC) {
@@ -1295,18 +1416,33 @@ relay_connect(struct rsession *con)
  retry:
 	if ((con->se_out.s = relay_socket_connect(&con->se_out.ss,
 	    con->se_out.port, rlay->rl_proto, bnds)) == -1) {
-		if (con->se_retry) {
-			con->se_retry--;
-			log_debug("%s: session %d: "
-			    "forward failed: %s, %s", __func__,
-			    con->se_id, strerror(errno),
-			    con->se_retry ? "next retry" : "last retry");
-			goto retry;
+		if (errno == ENFILE || errno == EMFILE) {
+			log_debug("%s: session %d: forward failed: %s",
+			    __func__, con->se_id, strerror(errno));
+			evtimer_set(&con->se_inflightevt, relay_connect_retry,
+			    con);
+			event_del(&rlay->rl_ev);
+			evtimer_add(&con->se_inflightevt, &evtpause);
+			evtimer_add(&rlay->rl_evt, &evtpause);
+			return (0);
+		} else {
+			if (con->se_retry) {
+				con->se_retry--;
+				log_debug("%s: session %d: "
+				    "forward failed: %s, %s", __func__,
+				    con->se_id, strerror(errno),
+				    con->se_retry ? "next retry" : "last retry");
+				goto retry;
+			}
+			log_debug("%s: session %d: forward failed: %s", __func__,
+			    con->se_id, strerror(errno));
+			return (-1);
 		}
-		log_debug("%s: session %d: forward failed: %s", __func__,
-		    con->se_id, strerror(errno));
-		return (-1);
-	}
+	}	
+
+	relay_inflight--;
+	DPRINTF("%s: inflight decremented, now %d",__func__,
+	    relay_inflight);
 
 	if (errno == EINPROGRESS)
 		event_again(&con->se_ev, con->se_out.s, EV_WRITE|EV_TIMEOUT,
@@ -1361,8 +1497,18 @@ relay_close(struct rsession *con, const char *msg)
 			SSL_shutdown(con->se_in.ssl);
 		SSL_free(con->se_in.ssl);
 	}
-	if (con->se_in.s != -1)
+	if (con->se_in.s != -1) {
 		close(con->se_in.s);
+		if (con->se_out.s == -1) {
+			/* 
+			 * the output was never connected,
+			 * thus this was an inflight session.
+			 */
+			relay_inflight--;
+			log_debug("%s: sessions inflight decremented, now %d",
+			    __func__, relay_inflight);
+		}
+	}
 	if (con->se_in.path != NULL)
 		free(con->se_in.path);
 	if (con->se_in.buf != NULL)
@@ -1569,6 +1715,9 @@ relay_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 		return (config_getprotonode(env, imsg));
 	case IMSG_CFG_RELAY:
 		config_getrelay(env, imsg);
+		break;
+	case IMSG_CFG_RELAY_TABLE:
+		config_getrelaytable(env, imsg);
 		break;
 	case IMSG_CFG_DONE:
 		config_getcfg(env, imsg);
