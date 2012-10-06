@@ -60,6 +60,8 @@ mfa_session(struct submit_status *ss, enum session_state state)
 	ms->state = state;
 	ms->filter = TAILQ_FIRST(env->sc_filters);
 
+	log_info("mfa_session: calling %s", ms->filter->name);
+
 	tree_xset(&sessions, ms->id, ms);
 
 	if (ms->filter == NULL)
@@ -164,6 +166,8 @@ mfa_session_done(struct mfa_session *ms)
 {
 	enum imsg_type imsg_type;
 
+	log_info("mfa_session_done: state = 0x%x", ms->state);
+
 	switch (ms->state) {
 	case S_CONNECTED:
 		imsg_type = IMSG_MFA_CONNECT;
@@ -240,6 +244,7 @@ mfa_session_imsg(int fd, short event, void *p)
 	short			evflags = EV_READ;
 
 	if (event & EV_READ) {
+		log_info("mfa_session_imsg: EV_READ");
 		n = imsg_read(filter->ibuf);
 		if (n == -1)
 			fatal("mfa_session_imsg: imsg_read");
@@ -251,6 +256,7 @@ mfa_session_imsg(int fd, short event, void *p)
 	}
 
 	if (event & EV_WRITE) {
+		log_info("mfa_session_imsg: EV_WRITE");
 		if (msgbuf_write(&filter->ibuf->w) == -1)
 			fatal("mfa_session_imsg: msgbuf_write");
 		if (filter->ibuf->w.queued)
@@ -258,6 +264,7 @@ mfa_session_imsg(int fd, short event, void *p)
 	}
 
 	for (;;) {
+		log_info("mfa_session_imsg: for(;;) ...");
 		n = imsg_get(filter->ibuf, &imsg);
 		if (n == -1)
 			fatalx("mfa_session_imsg: imsg_get");
@@ -298,7 +305,9 @@ mfa_session_imsg(int fd, short event, void *p)
 		}
 		imsg_free(&imsg);
 	}
+	log_info("mfa_session_imsg: end for(;;) ...");
 	event_set(&filter->ev, filter->ibuf->fd, evflags,
 	    mfa_session_imsg, filter);
 	event_add(&filter->ev, NULL);
+	log_info("mfa_session_imsg: done");
 }
