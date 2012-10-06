@@ -1,4 +1,4 @@
-/*	$OpenBSD: map_static.c,v 1.4 2012/09/19 12:59:59 eric Exp $	*/
+/*	$OpenBSD: map_static.c,v 1.7 2012/09/27 17:47:49 chl Exp $	*/
 
 /*
  * Copyright (c) 2012 Gilles Chehade <gilles@openbsd.org>
@@ -37,15 +37,15 @@
 
 /* static backend */
 static void *map_static_open(struct map *);
-static void *map_static_lookup(void *, char *, enum map_kind);
-static int   map_static_compare(void *, char *, enum map_kind,
-    int (*)(char *, char *));
+static void *map_static_lookup(void *, const char *, enum map_kind);
+static int   map_static_compare(void *, const char *, enum map_kind,
+    int (*)(const char *, const char *));
 static void  map_static_close(void *);
 
-static void *map_static_credentials(char *, char *, size_t);
-static void *map_static_alias(char *, char *, size_t);
-static void *map_static_virtual(char *, char *, size_t);
-static void *map_static_netaddr(char *, char *, size_t);
+static void *map_static_credentials(const char *, char *, size_t);
+static void *map_static_alias(const char *, char *, size_t);
+static void *map_static_virtual(const char *, char *, size_t);
+static void *map_static_netaddr(const char *, char *, size_t);
 
 struct map_backend map_backend_static = {
 	map_static_open,
@@ -67,7 +67,7 @@ map_static_close(void *hdl)
 }
 
 static void *
-map_static_lookup(void *hdl, char *key, enum map_kind kind)
+map_static_lookup(void *hdl, const char *key, enum map_kind kind)
 {
 	struct map	*m  = hdl;
 	struct mapel	*me = NULL;
@@ -117,8 +117,8 @@ map_static_lookup(void *hdl, char *key, enum map_kind kind)
 }
 
 static int
-map_static_compare(void *hdl, char *key, enum map_kind kind,
-    int (*func)(char *, char *))
+map_static_compare(void *hdl, const char *key, enum map_kind kind,
+    int (*func)(const char *, const char *))
 {
 	struct map	*m   = hdl;
 	struct mapel	*me  = NULL;
@@ -135,7 +135,7 @@ map_static_compare(void *hdl, char *key, enum map_kind kind,
 }
 
 static void *
-map_static_credentials(char *key, char *line, size_t len)
+map_static_credentials(const char *key, char *line, size_t len)
 {
 	struct map_credentials *map_credentials = NULL;
 	char *p;
@@ -156,9 +156,8 @@ map_static_credentials(char *key, char *line, size_t len)
 		return NULL;
 	*p++ = '\0';
 
-	map_credentials = calloc(1, sizeof(struct map_credentials));
-	if (map_credentials == NULL)
-		fatalx("calloc");
+	map_credentials = xcalloc(1, sizeof *map_credentials,
+	    "map_static_credentials");
 
 	if (strlcpy(map_credentials->username, line,
 		sizeof(map_credentials->username)) >=
@@ -178,16 +177,14 @@ err:
 }
 
 static void *
-map_static_alias(char *key, char *line, size_t len)
+map_static_alias(const char *key, char *line, size_t len)
 {
 	char	       	*subrcpt;
 	char	       	*endp;
 	struct map_alias	*map_alias = NULL;
 	struct expandnode	 xn;
 
-	map_alias = calloc(1, sizeof(struct map_alias));
-	if (map_alias == NULL)
-		fatalx("calloc");
+	map_alias = xcalloc(1, sizeof *map_alias, "map_static_alias");
 
 	while ((subrcpt = strsep(&line, ",")) != NULL) {
 		/* subrcpt: strip initial whitespace. */
@@ -204,30 +201,27 @@ map_static_alias(char *key, char *line, size_t len)
 		if (! alias_parse(&xn, subrcpt))
 			goto error;
 
-		expand_insert(&map_alias->expandtree, &xn);
+		expand_insert(&map_alias->expand, &xn);
 		map_alias->nbnodes++;
 	}
 
 	return map_alias;
 
 error:
-	/* free elements in map_alias->expandtree */
-	expand_free(&map_alias->expandtree);
+	expand_free(&map_alias->expand);
 	free(map_alias);
 	return NULL;
 }
 
 static void *
-map_static_virtual(char *key, char *line, size_t len)
+map_static_virtual(const char *key, char *line, size_t len)
 {
 	char	       	*subrcpt;
 	char	       	*endp;
 	struct map_virtual	*map_virtual = NULL;
 	struct expandnode	 xn;
 
-	map_virtual = calloc(1, sizeof(struct map_virtual));
-	if (map_virtual == NULL)
-		fatalx("calloc");
+	map_virtual = xcalloc(1, sizeof *map_virtual, "map_static_virtual");
 
 	/* domain key, discard value */
 	if (strchr(key, '@') == NULL)
@@ -248,28 +242,25 @@ map_static_virtual(char *key, char *line, size_t len)
 		if (! alias_parse(&xn, subrcpt))
 			goto error;
 
-		expand_insert(&map_virtual->expandtree, &xn);
+		expand_insert(&map_virtual->expand, &xn);
 		map_virtual->nbnodes++;
 	}
 
 	return map_virtual;
 
 error:
-	/* free elements in map_virtual->expandtree */
-	expand_free(&map_virtual->expandtree);
+	expand_free(&map_virtual->expand);
 	free(map_virtual);
 	return NULL;
 }
 
 
 static void *
-map_static_netaddr(char *key, char *line, size_t len)
+map_static_netaddr(const char *key, char *line, size_t len)
 {
 	struct map_netaddr	*map_netaddr = NULL;
 
-	map_netaddr = calloc(1, sizeof(struct map_netaddr));
-	if (map_netaddr == NULL)
-		fatalx("calloc");
+	map_netaddr = xcalloc(1, sizeof *map_netaddr, "map_static_netaddr");
 
 	if (! text_to_netaddr(&map_netaddr->netaddr, line))
 	    goto error;

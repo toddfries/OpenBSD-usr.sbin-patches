@@ -1,4 +1,4 @@
-/*	$OpenBSD: mfa.c,v 1.69 2012/09/19 19:40:36 eric Exp $	*/
+/*	$OpenBSD: mfa.c,v 1.71 2012/09/29 11:02:41 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -52,7 +52,6 @@ static void mfa_test_close(struct envelope *);
 static void mfa_test_rset(struct envelope *);
 static int mfa_strip_source_route(char *, size_t);
 static int mfa_fork_filter(struct filter *);
-void mfa_session(struct submit_status *, enum session_state);
 
 static void
 mfa_imsg(struct imsgev *iev, struct imsg *imsg)
@@ -106,17 +105,13 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 	if (iev->proc == PROC_PARENT) {
 		switch (imsg->hdr.type) {
 		case IMSG_CONF_START:
-			env->sc_filters = calloc(1, sizeof *env->sc_filters);
-			if (env->sc_filters == NULL)
-				fatal(NULL);
+			env->sc_filters = xcalloc(1, sizeof *env->sc_filters,
+			    "mfa_imsg");
 			TAILQ_INIT(env->sc_filters);
 			return;
 
 		case IMSG_CONF_FILTER:
-			filter = calloc(1, sizeof *filter);
-			if (filter == NULL)
-				fatal(NULL);
-			memcpy(filter, (struct filter *)imsg->data, sizeof (*filter));
+			filter = xmemdup(imsg->data, sizeof *filter, "mfa_imsg");
 			TAILQ_INSERT_TAIL(env->sc_filters, filter, f_entry);
 			return;
 
