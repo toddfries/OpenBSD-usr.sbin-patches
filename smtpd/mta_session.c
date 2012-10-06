@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.16 2012/09/11 16:24:28 eric Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.21 2012/10/03 16:43:19 chl Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -358,7 +358,8 @@ mta_enter_state(struct mta_session *s, int newstate)
 			else
 				sa_set_port(sa, 25);
 
-			iobuf_init(&s->iobuf, 0, 0);
+			if (iobuf_init(&s->iobuf, 0, 0) == -1)
+				fatal("iobuf_init");
 			io_init(&s->io, -1, s, mta_io, &s->iobuf);
 			io_set_timeout(&s->io, 10000);
 			if (io_connect(&s->io, sa) == -1) {
@@ -522,7 +523,7 @@ mta_enter_state(struct mta_session *s, int newstate)
 		break;
 
 	default:
-		fatal("mta_enter_state: unknown state");
+		fatalx("mta_enter_state: unknown state");
 	}
 #undef mta_enter_state
 }
@@ -642,7 +643,7 @@ mta_response(struct mta_session *s, char *line)
 		break;
 
 	default:
-		fatal("mta_response() bad state");
+		fatalx("mta_response() bad state");
 	}
 }
 
@@ -761,7 +762,7 @@ mta_io(struct io *io, int evt)
 		break;
 
 	default:
-		fatal("mta_io()");
+		fatalx("mta_io() bad event");
 	}
 }
 
@@ -858,18 +859,17 @@ mta_status(struct mta_session *s, int connerr, const char *fmt, ...)
 static void
 mta_envelope_done(struct mta_task *task, struct envelope *e, const char *status)
 {
-	struct	mta_host	*host = TAILQ_FIRST(&task->session->hosts);
+	struct	mta_host *host = TAILQ_FIRST(&task->session->hosts);
+	char		  relay[MAX_LINE_SIZE], stat[MAX_LINE_SIZE];
 
 	envelope_set_errormsg(e, "%s", status);
 
-	log_info("%016" PRIx64 ": to=<%s@%s>, delay=%s, relay=%s [%s], stat=%s (%s)",
-	    e->id, e->dest.user,
-	    e->dest.domain,
-	    duration_to_text(time(NULL) - e->creation),
-	    host->fqdn,
-	    ss_to_text(&host->sa),
+	snprintf(relay, sizeof relay, "relay=%s [%s], ",
+	    host->fqdn, ss_to_text(&host->sa));
+	snprintf(stat, sizeof stat, "%s (%s)",
 	    mta_response_status(e->errorline),
 	    mta_response_text(e->errorline));
+	log_envelope(e, relay, stat);
 
 	imsg_compose_event(env->sc_ievs[PROC_QUEUE],
 	    mta_response_delivery(e->errorline), 0, 0, -1, e, sizeof(*e));
@@ -923,8 +923,7 @@ mta_check_loop(FILE *fp)
 			buf[len - 1] = '\0';
 		else {
 			/* EOF without EOL, copy and add the NUL */
-			if ((lbuf = malloc(len + 1)) == NULL)
-				err(1, NULL);
+			lbuf = xmalloc(len + 1, "mta_check_loop");
 			memcpy(lbuf, buf, len);
 			lbuf[len] = '\0';
 			buf = lbuf;
