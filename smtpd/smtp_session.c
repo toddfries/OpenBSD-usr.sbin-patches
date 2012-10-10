@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.169 2012/09/14 19:22:04 eric Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.171 2012/10/09 20:33:02 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -399,6 +399,21 @@ session_rfc5321_mail_handler(struct session *s, char *args)
 		session_respond(s, "503 5.5.1 Polite people say HELO first");
 		return 1;
 	}
+
+
+	if (s->s_l->flags & F_STARTTLS_REQUIRE)
+		if (!(s->s_flags & F_SECURE)) {
+			session_respond(s,
+			    "530 5.7.0 Must issue a STARTTLS command first");
+			return 1;
+		}
+
+	if (s->s_l->flags & F_AUTH_REQUIRE)
+		if (!(s->s_flags & F_AUTHENTICATED)) {
+			session_respond(s,
+			    "530 5.7.0 Must issue an AUTH command first");
+			return 1;
+		}
 
 	if (s->s_state != S_HELO) {
 		session_respond(s, "503 5.5.1 Sender already specified");
@@ -1088,8 +1103,7 @@ session_respond(struct session *s, char *fmt, ...)
 
 	log_trace(TRACE_SMTP, "smtp: %p: >>> %s", s, buf);
 
-	iobuf_queue(&s->s_iobuf, buf, n);
-	iobuf_queue(&s->s_iobuf, "\r\n", 2);
+	iobuf_xfqueue(&s->s_iobuf, "session_respond", "%s\r\n", buf);
 
 	/*
 	 * Log failures.  Might be annoying in the long term, but it is a good
