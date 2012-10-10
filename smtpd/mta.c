@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.144 2012/09/28 14:03:00 chl Exp $	*/
+/*	$OpenBSD: mta.c,v 1.146 2012/10/10 17:57:05 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -43,7 +43,7 @@
 #include "smtpd.h"
 #include "log.h"
 
-#define MTA_MAXCONN	5	/* connections per route */
+#define MTA_MAXCONN	10	/* connections per route */
 #define MTA_MAXMAIL	100	/* mails per session     */
 #define MTA_MAXRCPT	1000	/* rcpt per mail         */
 
@@ -337,13 +337,19 @@ const char *
 mta_route_to_text(struct mta_route *route)
 {
 	static char	 buf[1024];
+	char		 tmp[32];
 	const char	*sep = "";
-
-	buf[0] = '\0';
 
 	snprintf(buf, sizeof buf, "route:%s[", route->hostname);
 
+	if (route->port) {
+		snprintf(tmp, sizeof tmp, "port=%i", (int)route->port);
+		strlcat(buf, tmp, sizeof buf);
+		sep = ",";
+	}
+
 	if (route->flags & ROUTE_STARTTLS) {
+		strlcat(buf, sep, sizeof buf);
 		sep = ",";
 		strlcat(buf, "starttls", sizeof buf);
 	}
