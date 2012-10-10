@@ -9,7 +9,8 @@ SRCS=		userfilter.c log.c
 NOMAN=
 BINDIR=		/usr/sbin
 
-LDADD+=		-levent -lutil -lssl -lcrypto -lm -lz -lsmtpdfilter
+LDADD+=		-levent -lutil -lssl -lcrypto -lm -lz
+LDADD+=		${.CURDIR}/../libsmtpdfilter/obj/libsmtpdfilter.a
 DPADD+=		${LIBEVENT} ${LIBUTIL} ${LIBSSL} ${LIBCRYPTO} ${LIBM} ${LIBZ}
 CFLAGS+=	-g3 -ggdb -I${.CURDIR}/.. -I${.CURDIR}/../../../lib/libc/asr
 CFLAGS+=	-Wall -Wstrict-prototypes -Wmissing-prototypes
