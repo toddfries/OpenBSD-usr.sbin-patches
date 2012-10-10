@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.378 2012/10/03 19:42:16 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.383 2012/10/10 18:02:37 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -32,6 +32,7 @@
 #define MAX_NAME_SIZE		 64
 
 #define MAX_HOPS_COUNT		 100
+#define	DEFAULT_MAX_BODY_SIZE  	(35*1024*1024)
 
 #define MAX_TAG_SIZE		 32
 
@@ -79,8 +80,10 @@
 #define F_SMTPS			 0x02
 #define F_AUTH			 0x04
 #define F_SSL			(F_SMTPS|F_STARTTLS)
+#define	F_STARTTLS_REQUIRE     	 0x08
+#define	F_AUTH_REQUIRE		 0x10
 
-#define	F_BACKUP		0x10	/* XXX */
+#define	F_BACKUP		0x20	/* XXX */
 
 #define F_SCERT			0x01
 #define F_CCERT			0x02
@@ -364,6 +367,7 @@ struct expandnode {
 	TAILQ_ENTRY(expandnode)	 tq_entry;
 	enum expand_type       	 type;
 	int			 sameuser;
+	int			 alias;
 	struct rule		*rule;
 	struct expandnode	*parent;
 	unsigned int		 depth;
@@ -381,6 +385,7 @@ struct expandnode {
 struct expand {
 	RB_HEAD(expandtree, expandnode)	 tree;
 	TAILQ_HEAD(xnodes, expandnode)	*queue;
+	int				 alias;
 	struct rule			*rule;
 	struct expandnode		*parent;
 };
@@ -1164,7 +1169,13 @@ void *xmalloc(size_t, const char *);
 void *xcalloc(size_t, size_t, const char *);
 char *xstrdup(const char *, const char *);
 void *xmemdup(const void *, size_t, const char *);
+void iobuf_xinit(struct iobuf *, size_t, size_t, const char *);
+void iobuf_xfqueue(struct iobuf *, const char *, const char *, ...);
 void log_envelope(const struct envelope *, const char *, const char *);
 void session_socket_blockmode(int, enum blockmodes);
 void session_socket_no_linger(int);
 int session_socket_error(int);
+
+/* waitq.c */
+int  waitq_wait(void *, void (*)(void *, void *, void *), void *);
+void waitq_run(void *, void *);
