@@ -39,7 +39,9 @@
 #include "smtpd.h"
 #include "log.h"
 
+void mfa_session(struct submit_status *, enum session_state);
 static int mfa_session_proceed(struct mfa_session *);
+int mfa_session_proceed_dns_answer(struct mfa_session *);
 static void mfa_session_pickup(struct mfa_session *);
 static void mfa_session_fail(struct mfa_session *);
 static void mfa_session_destroy(struct mfa_session *);
@@ -60,8 +62,6 @@ mfa_session(struct submit_status *ss, enum session_state state)
 	ms->state = state;
 	ms->filter = TAILQ_FIRST(env->sc_filters);
 
-	log_info("mfa_session: calling %s", ms->filter->name);
-
 	tree_xset(&sessions, ms->id, ms);
 
 	if (ms->filter == NULL)
@@ -75,6 +75,8 @@ mfa_session_proceed(struct mfa_session *ms)
 {
 	struct filter_msg      	 fm;
 
+	fm = ms->fm;
+
 	fm.id = ms->id;
 	fm.cl_id = ms->ss.id;
 	fm.version = FILTER_API_VERSION;
@@ -87,6 +89,7 @@ mfa_session_proceed(struct mfa_session *ms)
 			    sizeof(fm.u.connect.hostname)) >= sizeof(fm.u.connect.hostname))
 			fatalx("mfa_session_proceed: CONNECT: truncation");
 		fm.u.connect.hostaddr = ms->ss.envelope.ss;
+		log_debug("fm.u.connect.hostaddr=%s", ss_to_text(&fm.u.connect.hostaddr));
 		break;
 
  	case S_HELO:
@@ -146,6 +149,26 @@ mfa_session_proceed(struct mfa_session *ms)
 	return 1;
 }
 
+int
+mfa_session_proceed_dns_answer(struct mfa_session *ms)
+{
+	struct filter_msg      	 fm;
+
+	fm = ms->fm;
+
+	fm.id = ms->id;
+	fm.cl_id = ms->ss.id;
+	fm.version = FILTER_API_VERSION;
+	fm.type = FILTER_DNS_ANSWER;
+
+	imsg_compose(ms->filter->ibuf, fm.type, 0, 0, -1,
+	    &fm, sizeof(fm));
+	event_set(&ms->filter->ev, ms->filter->ibuf->fd, EV_READ|EV_WRITE, mfa_session_imsg, ms->filter);
+	event_add(&ms->filter->ev, NULL);
+	return 1;
+}
+
+
 static void
 mfa_session_pickup(struct mfa_session *ms)
 {
@@ -165,8 +188,6 @@ static void
 mfa_session_done(struct mfa_session *ms)
 {
 	enum imsg_type imsg_type;
-
-	log_info("mfa_session_done: state = 0x%x", ms->state);
 
 	switch (ms->state) {
 	case S_CONNECTED:
@@ -229,6 +250,14 @@ mfa_session_fail(struct mfa_session *ms)
 static void
 mfa_session_destroy(struct mfa_session *ms)
 {
+	log_debug("mfa_session_destroy");
+	/* If the session is waiting for an imsg, do not kill it now, since
+	 * the id must still be valid.
+	 */
+	if (ms->fm.code == STATUS_WAITING)
+		return;
+
+	log_debug("mfa_session_destroy: real");
 	tree_xpop(&sessions, ms->id);
 	free(ms);
 }
@@ -241,10 +270,12 @@ mfa_session_imsg(int fd, short event, void *p)
 	struct imsg		imsg;
 	ssize_t			n;
 	struct filter_msg	fm;
+	struct dns		dns;
 	short			evflags = EV_READ;
 
+	log_debug("mfa_session_imsg");
+
 	if (event & EV_READ) {
-		log_info("mfa_session_imsg: EV_READ");
 		n = imsg_read(filter->ibuf);
 		if (n == -1)
 			fatal("mfa_session_imsg: imsg_read");
@@ -256,7 +287,6 @@ mfa_session_imsg(int fd, short event, void *p)
 	}
 
 	if (event & EV_WRITE) {
-		log_info("mfa_session_imsg: EV_WRITE");
 		if (msgbuf_write(&filter->ibuf->w) == -1)
 			fatal("mfa_session_imsg: msgbuf_write");
 		if (filter->ibuf->w.queued)
@@ -264,20 +294,13 @@ mfa_session_imsg(int fd, short event, void *p)
 	}
 
 	for (;;) {
-		log_info("mfa_session_imsg: for(;;) ...");
+		/* log_debug("mfa_session_imsg: call imsg_get"); */
 		n = imsg_get(filter->ibuf, &imsg);
+		/* log_debug("mfa_session_imsg: imsg_get=%zd", n); */
 		if (n == -1)
 			fatalx("mfa_session_imsg: imsg_get");
 		if (n == 0)
 			break;
-
-		if ((imsg.hdr.len - IMSG_HEADER_SIZE)
-		    != sizeof(fm))
-			fatalx("mfa_session_imsg: corrupted imsg");
-
-		memcpy(&fm, imsg.data, sizeof (fm));
-		if (fm.version != FILTER_API_VERSION)
-			fatalx("mfa_session_imsg: API version mismatch");
 
 		switch (imsg.hdr.type) {
 		case FILTER_CONNECT:
@@ -289,7 +312,21 @@ mfa_session_imsg(int fd, short event, void *p)
 		case FILTER_QUIT:
 		case FILTER_CLOSE:
 		case FILTER_RSET:
+		case FILTER_DNS_ANSWER:
+			if ((imsg.hdr.len - IMSG_HEADER_SIZE)
+			    != sizeof(fm))
+				fatalx("mfa_session_imsg: corrupted imsg");
+
+			memcpy(&fm, imsg.data, sizeof (fm));
+			if (fm.version != FILTER_API_VERSION)
+				fatalx("mfa_session_imsg: API version mismatch");
+
 			ms = tree_xget(&sessions, fm.id);
+
+			if (ms == NULL) {
+				log_debug("mfa_session_imsg [%llx]: session is already closed ... ignoring imsg", fm.id);
+				break;
+			}
 
 			/* overwrite filter code */
 			ms->fm.code = fm.code;
@@ -300,14 +337,28 @@ mfa_session_imsg(int fd, short event, void *p)
 
 			mfa_session_pickup(ms);
 			break;
+
+		case FILTER_DNS_QUERY: {
+			if ((imsg.hdr.len - IMSG_HEADER_SIZE)
+			    != sizeof(struct dns))
+				fatalx("mfa_session_imsg: corrupted imsg");
+
+			memcpy(&dns, imsg.data, sizeof (dns));
+
+			imsg_compose_event(env->sc_ievs[PROC_LKA], dns.type,
+					   0, 0, -1, imsg.data,
+					   sizeof(dns));
+
+			break;
+		}
 		default:
 			fatalx("mfa_session_imsg: unsupported imsg");
 		}
 		imsg_free(&imsg);
 	}
-	log_info("mfa_session_imsg: end for(;;) ...");
+	log_debug("mfa_session_imsg: call event_set/add");
+
 	event_set(&filter->ev, filter->ibuf->fd, evflags,
 	    mfa_session_imsg, filter);
 	event_add(&filter->ev, NULL);
-	log_info("mfa_session_imsg: done");
 }

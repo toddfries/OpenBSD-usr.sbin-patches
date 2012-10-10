@@ -52,6 +52,11 @@ static void mfa_test_close(struct envelope *);
 static void mfa_test_rset(struct envelope *);
 static int mfa_strip_source_route(char *, size_t);
 static int mfa_fork_filter(struct filter *);
+void mfa_session(struct submit_status *, enum session_state);
+struct mfa_session *mfa_session_find(uint64_t);
+int mfa_session_proceed_dns_answer(struct mfa_session *);
+
+extern struct tree sessions;
 
 static void
 mfa_imsg(struct imsgev *iev, struct imsg *imsg)
@@ -88,7 +93,31 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 	}
 
 	if (iev->proc == PROC_LKA) {
+		struct dns		*dns;
+		struct mfa_session	*ms;
+
 		switch (imsg->hdr.type) {
+		case IMSG_DNS_HOST:
+		case IMSG_DNS_HOST_END:
+		case IMSG_DNS_MX:
+		case IMSG_DNS_PTR:
+			dns = imsg->data;
+			ms = tree_get(&sessions, dns->id);
+
+			if (!ms) {
+				log_debug("no more mfa_session, ignoring IMSG...");
+				return;
+			}
+
+			dns->type = imsg->hdr.type;
+			log_debug("mfa_imsg: received %s imsg_type",
+				  imsg_to_str(dns->type));
+
+			ms->fm.dns_answer = *dns;
+
+			mfa_session_proceed_dns_answer(ms);
+			return;
+
 		case IMSG_LKA_MAIL:
 		case IMSG_LKA_RCPT:
 			imsg_compose_event(env->sc_ievs[PROC_SMTP],
@@ -117,7 +146,8 @@ mfa_imsg(struct imsgev *iev, struct imsg *imsg)
 
 		case IMSG_CONF_END:
 			TAILQ_FOREACH(filter, env->sc_filters, f_entry) {
-				log_info("forking filter: %s", filter->name);
+				log_info("forking filter [%s]: %s",
+					 filter->name, filter->path);
 				if (! mfa_fork_filter(filter))
 					fatalx("could not fork filter");
 			}
@@ -142,7 +172,7 @@ mfa_sig_handler(int sig, short event, void *p)
 		break;
 
 	case SIGCHLD:
-		fatalx("unexpected SIGCHLD");
+		fatalx("mfa: unexpected SIGCHLD");
 		break;
 
 	default:

@@ -29,44 +29,67 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "log.h"
 #include "filter_api.h"
-
-static struct filter_internals {
-	struct event	ev;
-	struct imsgbuf	ibuf;
-
-	enum filter_status (*connect_cb)(uint64_t, struct filter_connect *, void *);
-	void *connect_cb_arg;
-
-	enum filter_status (*helo_cb)(uint64_t, struct filter_helo *, void *);
-	void *helo_cb_arg;
-
-	enum filter_status (*ehlo_cb)(uint64_t, struct filter_helo *, void *);
-	void *ehlo_cb_arg;
-
-	enum filter_status (*mail_cb)(uint64_t, struct filter_mail *, void *);
-	void *mail_cb_arg;
-
-	enum filter_status (*rcpt_cb)(uint64_t, struct filter_rcpt *, void *);
-	void *rcpt_cb_arg;
-
-	enum filter_status (*dataline_cb)(uint64_t, struct filter_dataline *, void *);
-	void *dataline_cb_arg;
-
-	enum filter_status (*quit_cb)(uint64_t, void *);
-	void *quit_cb_arg;
-
-	enum filter_status (*close_cb)(uint64_t, void *);
-	void *close_cb_arg;
-
-	enum filter_status (*rset_cb)(uint64_t, void *);
-	void *rset_cb_arg;
-
-} fi;
 
 static void filter_handler(int, short, void *);
 static void filter_register_callback(enum filter_type, void *, void *);
+
+void
+filter_dns_query_host(char *host, int port, uint64_t id)
+{
+	short		 evflags = EV_READ;
+	struct dns	 query;
+
+	bzero(&query, sizeof(query));
+	strlcpy(query.host, host, sizeof(query.host));
+	query.port = port;
+	query.id = id;
+	query.type = IMSG_DNS_HOST;
+	query.error = DNS_ENOTFOUND; /* override later */
+
+	imsg_compose(&fi.ibuf, FILTER_DNS_QUERY, 0, 0, -1,
+	    &query, sizeof(query));
+	evflags |= EV_WRITE;
+	event_set(&fi.ev, 0, evflags, filter_handler, &fi);
+	event_add(&fi.ev, NULL);
+}
+
+void
+filter_dns_query_mx(char *host, int port, uint64_t id)
+{
+	short		 evflags = EV_READ;
+	struct dns	 query;
+
+	bzero(&query, sizeof(query));
+	strlcpy(query.host, host, sizeof(query.host));
+	query.port = port;
+	query.id = id;
+	query.type = IMSG_DNS_MX;
+
+	imsg_compose(&fi.ibuf, FILTER_DNS_QUERY, 0, 0, -1,
+	    &query, sizeof(query));
+	evflags |= EV_WRITE;
+	event_set(&fi.ev, 0, evflags, filter_handler, &fi);
+	event_add(&fi.ev, NULL);
+}
+
+void
+filter_dns_query_ptr(struct sockaddr_storage *ss, uint64_t id)
+{
+	short		 evflags = EV_READ;
+	struct dns	 query;
+
+	bzero(&query, sizeof(query));
+	query.ss = *ss;
+	query.id = id;
+	query.type = IMSG_DNS_PTR;
+
+	imsg_compose(&fi.ibuf, FILTER_DNS_QUERY, 0, 0, -1,
+	    &query, sizeof(query));
+	evflags |= EV_WRITE;
+	event_set(&fi.ev, 0, evflags, filter_handler, &fi);
+	event_add(&fi.ev, NULL);
+}
 
 void
 filter_init(void)
@@ -102,7 +125,6 @@ filter_register_helo_callback(enum filter_status (*cb)(uint64_t, struct filter_h
 void
 filter_register_ehlo_callback(enum filter_status (*cb)(uint64_t, struct filter_helo *, void *), void *cb_arg)
 {
-	log_info("filter_register_ehlo_callback(%p, %p)", cb_arg);
 	filter_register_callback(FILTER_EHLO, cb, cb_arg);
 }
 
@@ -140,6 +162,29 @@ void
 filter_register_rset_callback(enum filter_status (*cb)(uint64_t, void *), void *cb_arg)
 {
 	filter_register_callback(FILTER_RSET, cb, cb_arg);
+}
+
+void
+fltapi_dns_lookup_host(char *host, enum filter_status (*cb)(uint64_t, struct dns *, void *), void *cb_arg)
+{
+	fi.dns_lookup_host_cb = cb;
+	fi.dns_lookup_host_cb_arg = cb_arg;
+
+	filter_dns_query_host(host, 0, fi.current_id);
+}
+
+void
+fltapi_dns_lookup_mx(char *host, enum filter_status (*cb)(uint64_t, struct dns *, void *), void *cb_arg)
+{
+	fi.dns_lookup_mx_cb = cb;
+	fi.dns_lookup_mx_cb_arg = cb_arg;
+}
+
+void
+fltapi_dns_lookup_ptr(struct sockaddr_storage *ss, enum filter_status (*cb)(uint64_t, struct dns *, void *), void *cb_arg)
+{
+	fi.dns_lookup_ptr_cb = cb;
+	fi.dns_lookup_ptr_cb_arg = cb_arg;
 }
 
 static void
@@ -232,11 +277,13 @@ filter_handler(int fd, short event, void *p)
 
 		if ((imsg.hdr.len - IMSG_HEADER_SIZE)
 		    != sizeof(fm))
-			errx(1, "corrupted imsg");
+			errx(1, "filter_handler: corrupted imsg");
 
 		memcpy(&fm, imsg.data, sizeof (fm));
 		if (fm.version != FILTER_API_VERSION)
-			errx(1, "API version mismatch");
+			errx(1, "filter_handler: API version mismatch");
+
+		fi.current_id = fm.id;
 
 		switch (imsg.hdr.type) {
 		case FILTER_CONNECT:
@@ -254,10 +301,8 @@ filter_handler(int fd, short event, void *p)
 		case FILTER_EHLO:
 			if (fi.ehlo_cb == NULL)
 				goto ignore;
-			log_info("filter_handler calling FILTER_EHLO");
 			ret = fi.ehlo_cb(fm.cl_id, &fm.u.helo,
 			    fi.ehlo_cb_arg);
-			log_info("filter_handler FILTER_EHLO returned %d", ret);
 			break;
 		case FILTER_MAIL:
 			if (fi.mail_cb == NULL)
@@ -293,8 +338,33 @@ filter_handler(int fd, short event, void *p)
 			ret = fi.rset_cb(fm.cl_id, fi.rset_cb_arg);
  			break;
 
+		case FILTER_DNS_ANSWER:
+			switch (fm.dns_answer.type) {
+			case IMSG_DNS_HOST:
+			case IMSG_DNS_HOST_END:
+				if (fi.dns_lookup_host_cb == NULL)
+					goto ignore;
+				ret = fi.dns_lookup_host_cb(fm.cl_id, &fm.dns_answer,
+							    fi.dns_lookup_host_cb_arg);
+				break;
+			case IMSG_DNS_MX:
+				if (fi.dns_lookup_mx_cb == NULL)
+					goto ignore;
+				ret = fi.dns_lookup_mx_cb(fm.cl_id, &fm.dns_answer,
+							  fi.dns_lookup_mx_cb_arg);
+				break;
+			case IMSG_DNS_PTR:
+				if (fi.dns_lookup_ptr_cb == NULL)
+					goto ignore;
+				ret = fi.dns_lookup_ptr_cb(fm.cl_id, &fm.dns_answer,
+							   fi.dns_lookup_ptr_cb_arg);
+				break;
+			default:
+				errx(1, "filter_handler: FILTER_DNS_ANSWER: unsupported dns_answer.type");
+			}
+			break;
 		default:
-			errx(1, "unsupported imsg");
+			errx(1, "filter_handler: unsupported imsg");
 		}
 
 		switch (ret) {
