@@ -2,6 +2,6 @@
 
 .include <bsd.own.mk>
 
-SUBDIR = dnsbl logall
+SUBDIR = dnsbl logall userfilter
 
 .include <bsd.subdir.mk>
