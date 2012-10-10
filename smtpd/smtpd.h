@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.381 2012/10/08 20:35:16 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.383 2012/10/10 18:02:37 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -80,8 +80,10 @@
 #define F_SMTPS			 0x02
 #define F_AUTH			 0x04
 #define F_SSL			(F_SMTPS|F_STARTTLS)
+#define	F_STARTTLS_REQUIRE     	 0x08
+#define	F_AUTH_REQUIRE		 0x10
 
-#define	F_BACKUP		0x10	/* XXX */
+#define	F_BACKUP		0x20	/* XXX */
 
 #define F_SCERT			0x01
 #define F_CCERT			0x02
@@ -365,6 +367,7 @@ struct expandnode {
 	TAILQ_ENTRY(expandnode)	 tq_entry;
 	enum expand_type       	 type;
 	int			 sameuser;
+	int			 alias;
 	struct rule		*rule;
 	struct expandnode	*parent;
 	unsigned int		 depth;
@@ -382,6 +385,7 @@ struct expandnode {
 struct expand {
 	RB_HEAD(expandtree, expandnode)	 tree;
 	TAILQ_HEAD(xnodes, expandnode)	*queue;
+	int				 alias;
 	struct rule			*rule;
 	struct expandnode		*parent;
 };
