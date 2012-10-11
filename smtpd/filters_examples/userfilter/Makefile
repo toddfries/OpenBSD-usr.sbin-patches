@@ -19,7 +19,7 @@ CFLAGS+=	-DNO_IO
 
 SRCS=		filter_user.c log.c util.c
 
-LDADD+=         -levent -lutil ${.CURDIR}/../../libsmtpdfilter/obj/libsmtpdfilter.a
+LDADD+=         -levent -lutil -lsqlite3 ${.CURDIR}/../../libsmtpdfilter/obj/libsmtpdfilter.a
 DPADD+=         ${LIBEVENT} ${LIBUTIL}
 #DPADD+= ${.CURDIR}/../libsmtpdfilter/libsmtpdfilter.a
 
