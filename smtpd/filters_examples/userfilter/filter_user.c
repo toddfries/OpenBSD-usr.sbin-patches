@@ -109,13 +109,14 @@ rcpt_cb(uint64_t id, struct filter_rcpt *rcpt, void *p)
 
 	asprintf(&user_sql_arg.email, "%s@%s", rcpt->user, rcpt->domain);
 
-	log_info("[%llx] RCPT: %s", id, user_sql_arg.email);
+	log_info("%llx: RCPT: %s", id, user_sql_arg.email);
 
 	rc = sqlite3_open("/etc/mail/users.db", &db);
 	if ( rc ) {
-		log_info("Can't open database: %s", sqlite3_errmsg(db));
+		log_info("%llx: Can't open database: %s", id,
+		    sqlite3_errmsg(db));
 		/* XXX is this right? */
-		return STATUS_ACCEPT;
+		goto accept;
 	}
 
 	/*
@@ -127,28 +128,33 @@ rcpt_cb(uint64_t id, struct filter_rcpt *rcpt, void *p)
 	rc = sqlite3_exec(db, "select * from " DOMAIN_TAB_NAME,
 	    sql_domain_callback, (void *)&user_sql_arg, &errmsg);
 	if (rc != SQLITE_OK) {
-		log_info("SQL error: %s", errmsg);
+		log_info("%llx: SQL error: %s", id, errmsg);
 		sqlite3_free(errmsg);
 	}
 	if (user_sql_arg.ok == 0)
-		return STATUS_ACCEPT;
+		goto accept;
 
 	user_sql_arg.ok = 0;
 
 	rc = sqlite3_exec(db, "select * from " USER_TAB_NAME,
 	    sql_user_callback, (void *)&user_sql_arg, &errmsg);
 	if (rc != SQLITE_OK) {
-		log_info("SQL error: %s", errmsg);
+		log_info("%llx: SQL error: %s", id, errmsg);
 		sqlite3_free(errmsg);
 	}
 	free(user_sql_arg.email);
 
 	if (user_sql_arg.ok == 0)
-		return STATUS_REJECT;
+		goto reject;
 
 	sqlite3_close(db);
 
+accept:
+	log_info("%llx: rcpt_cb returning ACCEPT", id);
 	return STATUS_ACCEPT;
+reject:
+	log_info("%llx: rcpt_cb returning REJECT", id);
+	return STATUS_REJECT;
 }
 
 int
