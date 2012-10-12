@@ -16,9 +16,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <sys/queue.h>
 #include <sys/socket.h>
 
+#include <imsg.h>
+#include <event.h>
 #include <netdb.h>
+
+#include "dns.h"
+#include "imsg_type.h"
 
 #define	FILTER_API_VERSION	 50
 
@@ -43,6 +49,8 @@ enum filter_type {
 	FILTER_QUIT		= 0x040,
 	FILTER_CLOSE		= 0x080,
 	FILTER_RSET		= 0x100,
+	FILTER_DNS_QUERY	= 0x200,
+	FILTER_DNS_ANSWER	= 0x400,
 };
 
 struct filter_connect {
@@ -83,7 +91,51 @@ struct filter_msg {
 	uint8_t			version;
 	enum filter_type	type;
 	union filter_union	u;
+	struct dns		dns_answer;
 };
+
+struct filter_internals {
+	struct event	ev;
+	struct imsgbuf	ibuf;
+	uint64_t	current_id;
+
+	enum filter_status (*connect_cb)(uint64_t, struct filter_connect *, void *);
+	void *connect_cb_arg;
+
+	enum filter_status (*helo_cb)(uint64_t, struct filter_helo *, void *);
+	void *helo_cb_arg;
+
+	enum filter_status (*ehlo_cb)(uint64_t, struct filter_helo *, void *);
+	void *ehlo_cb_arg;
+
+	enum filter_status (*mail_cb)(uint64_t, struct filter_mail *, void *);
+	void *mail_cb_arg;
+
+	enum filter_status (*rcpt_cb)(uint64_t, struct filter_rcpt *, void *);
+	void *rcpt_cb_arg;
+
+	enum filter_status (*dataline_cb)(uint64_t, struct filter_dataline *, void *);
+	void *dataline_cb_arg;
+
+	enum filter_status (*quit_cb)(uint64_t, void *);
+	void *quit_cb_arg;
+
+	enum filter_status (*close_cb)(uint64_t, void *);
+	void *close_cb_arg;
+
+	enum filter_status (*rset_cb)(uint64_t, void *);
+	void *rset_cb_arg;
+
+	enum filter_status (*dns_lookup_host_cb)(uint64_t, struct dns *, void *);
+	void *dns_lookup_host_cb_arg;
+
+	enum filter_status (*dns_lookup_mx_cb)(uint64_t, struct dns *, void *);
+	void *dns_lookup_mx_cb_arg;
+
+	enum filter_status (*dns_lookup_ptr_cb)(uint64_t, struct dns *, void *);
+	void *dns_lookup_ptr_cb_arg;
+} fi;
+
 
 /**/
 void filter_init(void);
@@ -99,3 +151,6 @@ void filter_register_quit_callback(enum filter_status (*)(uint64_t, void *), voi
 void filter_register_close_callback(enum filter_status (*)(uint64_t, void *), void *);
 void filter_register_rset_callback(enum filter_status (*)(uint64_t, void *), void *);
 
+void fltapi_dns_lookup_host(char *, enum filter_status (*)(uint64_t, struct dns *, void *), void *);
+void fltapi_dns_lookup_mx(char *, enum filter_status (*)(uint64_t, struct dns *, void *), void *);
+void fltapi_dns_lookup_ptr(struct sockaddr_storage *, enum filter_status (*)(uint64_t, struct dns *, void *), void *);
