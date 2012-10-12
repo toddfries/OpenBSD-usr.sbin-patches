@@ -69,6 +69,28 @@ static void dns_reply(struct dns *, int);
 
 #define print_dname(a,b,c) asr_strdname(a, b, c)
 
+#if 0
+#define CASE(x) case x : return #x
+
+const char *
+dns_to_str(int type)
+{
+	static char	 buf[32];
+
+	switch(type) {
+	CASE(DNS_OK);
+	CASE(DNS_RETRY);
+	CASE(DNS_EINVAL);
+	CASE(DNS_ENONAME);
+	CASE(DNS_ENOTFOUND);
+	default:
+		snprintf(buf, sizeof(buf), "DNS_??? (%d)", type);
+
+		return buf;
+	}
+}
+#endif
+
 /*
  * User interface.
  */

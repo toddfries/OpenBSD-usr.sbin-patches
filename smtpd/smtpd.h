@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.383 2012/10/10 18:02:37 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.385 2012/10/10 20:29:46 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -83,7 +83,7 @@
 #define	F_STARTTLS_REQUIRE     	 0x08
 #define	F_AUTH_REQUIRE		 0x10
 
-#define	F_BACKUP		0x20	/* XXX */
+#define	F_BACKUP		0x20	/* XXX - MUST BE SYNC-ED WITH ROUTE_BACKUP */
 
 #define F_SCERT			0x01
 #define F_CCERT			0x02
@@ -94,7 +94,7 @@
 #define ROUTE_SSL		(ROUTE_STARTTLS | ROUTE_SMTPS)
 #define ROUTE_AUTH		0x04
 #define ROUTE_MX		0x08
-#define ROUTE_BACKUP		0x10	/* XXX */
+#define ROUTE_BACKUP		0x20	/* XXX - MUST BE SYNC-ED WITH F_BACKUP */
 
 typedef uint32_t	objid_t;
 
@@ -109,87 +109,6 @@ struct relayhost {
 	uint16_t port;
 	char cert[PATH_MAX];
 	char authmap[MAX_PATH_SIZE];
-};
-
-enum imsg_type {
-	IMSG_NONE,
-	IMSG_CTL_OK,		/* answer to smtpctl requests */
-	IMSG_CTL_FAIL,
-	IMSG_CTL_SHUTDOWN,
-	IMSG_CTL_VERBOSE,
-	IMSG_CONF_START,
-	IMSG_CONF_SSL,
-	IMSG_CONF_LISTENER,
-	IMSG_CONF_MAP,
-	IMSG_CONF_MAP_CONTENT,
-	IMSG_CONF_RULE,
-	IMSG_CONF_RULE_SOURCE,
-	IMSG_CONF_FILTER,
-	IMSG_CONF_END,
-	IMSG_LKA_MAIL,
-	IMSG_LKA_RCPT,
-	IMSG_LKA_SECRET,
-	IMSG_LKA_RULEMATCH,
-	IMSG_MDA_SESS_NEW,
-	IMSG_MDA_DONE,
-
-	IMSG_MFA_CONNECT,
- 	IMSG_MFA_HELO,
- 	IMSG_MFA_MAIL,
- 	IMSG_MFA_RCPT,
- 	IMSG_MFA_DATALINE,
-	IMSG_MFA_QUIT,
-	IMSG_MFA_CLOSE,
-	IMSG_MFA_RSET,
-
-	IMSG_QUEUE_CREATE_MESSAGE,
-	IMSG_QUEUE_SUBMIT_ENVELOPE,
-	IMSG_QUEUE_COMMIT_ENVELOPES,
-	IMSG_QUEUE_REMOVE_MESSAGE,
-	IMSG_QUEUE_COMMIT_MESSAGE,
-	IMSG_QUEUE_TEMPFAIL,
-	IMSG_QUEUE_PAUSE_MDA,
-	IMSG_QUEUE_PAUSE_MTA,
-	IMSG_QUEUE_RESUME_MDA,
-	IMSG_QUEUE_RESUME_MTA,
-
-	IMSG_QUEUE_DELIVERY_OK,
-	IMSG_QUEUE_DELIVERY_TEMPFAIL,
-	IMSG_QUEUE_DELIVERY_PERMFAIL,
-	IMSG_QUEUE_DELIVERY_LOOP,
-	IMSG_QUEUE_MESSAGE_FD,
-	IMSG_QUEUE_MESSAGE_FILE,
-	IMSG_QUEUE_REMOVE,
-	IMSG_QUEUE_EXPIRE,
-
-	IMSG_SCHEDULER_REMOVE,
-	IMSG_SCHEDULER_SCHEDULE,
-
-	IMSG_BATCH_CREATE,
-	IMSG_BATCH_APPEND,
-	IMSG_BATCH_CLOSE,
-
-	IMSG_PARENT_FORWARD_OPEN,
-	IMSG_PARENT_FORK_MDA,
-
-	IMSG_PARENT_AUTHENTICATE,
-	IMSG_PARENT_SEND_CONFIG,
-
-	IMSG_SMTP_ENQUEUE,
-	IMSG_SMTP_PAUSE,
-	IMSG_SMTP_RESUME,
-
-	IMSG_DNS_HOST,
-	IMSG_DNS_HOST_END,
-	IMSG_DNS_MX,
-	IMSG_DNS_PTR,
-
-	IMSG_STAT_INCREMENT,
-	IMSG_STAT_DECREMENT,
-	IMSG_STAT_SET,
-
-	IMSG_STATS,
-	IMSG_STATS_GET,
 };
 
 enum blockmodes {
@@ -630,25 +549,6 @@ struct forward_req {
 	uint64_t			 id;
 	uint8_t				 status;
 	char				 as_user[MAXLOGNAME];
-};
-
-enum dns_status {
-	DNS_OK = 0,
-	DNS_RETRY,
-	DNS_EINVAL,
-	DNS_ENONAME,
-	DNS_ENOTFOUND,
-};
-
-struct dns {
-	uint64_t		 id;
-	char			 host[MAXHOSTNAMELEN];
-	char			 backup[MAXHOSTNAMELEN];
-	int			 port;
-	int			 error;
-	int			 type;
-	struct imsgev		*asker;
-	struct sockaddr_storage	 ss;
 };
 
 struct secret {
@@ -1175,6 +1075,7 @@ void log_envelope(const struct envelope *, const char *, const char *);
 void session_socket_blockmode(int, enum blockmodes);
 void session_socket_no_linger(int);
 int session_socket_error(int);
+uint64_t strtoevpid(const char *);
 
 /* waitq.c */
 int  waitq_wait(void *, void (*)(void *, void *, void *), void *);
