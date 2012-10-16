@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.174 2012/10/04 18:25:39 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.178 2012/10/15 18:32:25 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@openbsd.org>
@@ -182,6 +182,10 @@ parent_imsg(struct imsgev *iev, struct imsg *imsg)
 	    		    0, 0, -1, imsg->data, sizeof(int));
 			imsg_compose_event(env->sc_ievs[PROC_SMTP], IMSG_CTL_VERBOSE,
 	    		    0, 0, -1, imsg->data, sizeof(int));
+			return;
+
+		case IMSG_CTL_SHUTDOWN:
+			parent_shutdown();
 			return;
 		}
 	}
@@ -541,6 +545,9 @@ main(int argc, char *argv[])
 	argv += optind;
 	argc -= optind;
 
+	if (argc || *argv)
+		usage();
+
 	ssl_init();
 
 	if (parse_config(&smtpd, conffile, opts))
@@ -688,14 +695,14 @@ fork_peers(void)
 	init_pipes();
 
 	env->sc_title[PROC_CONTROL] = "control";
-	env->sc_title[PROC_LKA] = "lookup agent";
-	env->sc_title[PROC_MDA] = "mail delivery agent";
-	env->sc_title[PROC_MFA] = "mail filter agent";
-	env->sc_title[PROC_MTA] = "mail transfer agent";
+	env->sc_title[PROC_LKA] = "lookup";
+	env->sc_title[PROC_MDA] = "delivery";
+	env->sc_title[PROC_MFA] = "filter";
+	env->sc_title[PROC_MTA] = "transfer";
 	env->sc_title[PROC_PARENT] = "[priv]";
 	env->sc_title[PROC_QUEUE] = "queue";
 	env->sc_title[PROC_SCHEDULER] = "scheduler";
-	env->sc_title[PROC_SMTP] = "smtp server";
+	env->sc_title[PROC_SMTP] = "smtp";
 
 	child_add(control(), CHILD_DAEMON, env->sc_title[PROC_CONTROL]);
 	child_add(lka(), CHILD_DAEMON, env->sc_title[PROC_LKA]);
@@ -1257,6 +1264,7 @@ imsg_to_str(int type)
 	CASE(IMSG_CONF_FILTER);
 	CASE(IMSG_CONF_END);
 
+	CASE(IMSG_LKA_UPDATE_MAP);
 	CASE(IMSG_LKA_MAIL);
 	CASE(IMSG_LKA_RCPT);
 	CASE(IMSG_LKA_SECRET);
