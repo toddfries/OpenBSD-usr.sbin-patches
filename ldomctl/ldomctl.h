@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.h,v 1.2 2012/10/27 18:50:43 kettenis Exp $	*/
+/*	$OpenBSD: ldomctl.h,v 1.1 2012/11/05 19:50:54 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -16,16 +16,19 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stddef.h>
+struct guest {
+	const char *name;
+	uint64_t gid;
+	uint64_t mdpa;
 
-extern int debug;
-#define DPRINTF(x)	if (debug) printf x
+	int num_cpus;
 
-void *xmalloc(size_t);
-void *xzalloc(size_t);
-char *xstrdup(const char *);
+	TAILQ_ENTRY(guest) link;
+};
 
-#define min(a, b)	((a) < (b) ? (a) : (b))
-#define max(a, b)	((a) > (b) ? (a) : (b))
+extern TAILQ_HEAD(guest_head, guest) guests;
 
-#define roundup(n, m) (((n) + ((m) - 1)) & ~((m) - 1))
+void add_guest(struct md_node *);
+
+extern struct md *hvmd;
+extern uint64_t hv_mdpa;

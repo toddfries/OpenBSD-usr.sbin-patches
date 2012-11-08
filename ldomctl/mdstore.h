@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.h,v 1.2 2012/10/27 18:50:43 kettenis Exp $	*/
+/*	$OpenBSD: mdstore.h,v 1.3 2012/11/04 23:30:38 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -16,16 +16,21 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stddef.h>
+#include <sys/queue.h>
+#include <stdbool.h>
 
-extern int debug;
-#define DPRINTF(x)	if (debug) printf x
+extern struct ds_service mdstore_service;
 
-void *xmalloc(size_t);
-void *xzalloc(size_t);
-char *xstrdup(const char *);
+struct mdstore_set {
+	const char *name;
+	bool booted_set;
+	bool boot_set;
 
-#define min(a, b)	((a) < (b) ? (a) : (b))
-#define max(a, b)	((a) > (b) ? (a) : (b))
+	TAILQ_ENTRY(mdstore_set) link;
+};
 
-#define roundup(n, m) (((n) + ((m) - 1)) & ~((m) - 1))
+extern TAILQ_HEAD(mdstore_set_head, mdstore_set) mdstore_sets;
+
+void mdstore_download(struct ds_conn *, const char *);
+void mdstore_select(struct ds_conn *, const char *);
+void mdstore_delete(struct ds_conn *, const char *);

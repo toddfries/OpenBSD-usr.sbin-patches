@@ -1,4 +1,4 @@
-/*	$OpenBSD: ds.h,v 1.1 2012/10/21 12:47:58 kettenis Exp $	*/
+/*	$OpenBSD: ds.h,v 1.2 2012/11/04 18:57:10 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -17,6 +17,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/queue.h>
 
 /*
  * LDC virtual link layer protocol.
@@ -83,6 +84,7 @@ struct ldc_conn {
 	uint64_t	lc_msg[LDC_MSG_MAX / 8];
 	size_t		lc_len;
 
+	void		*lc_cookie;
 	void		(*lc_reset)(struct ldc_conn *);
 	void		(*lc_start)(struct ldc_conn *);
 	void		(*lc_rx_data)(struct ldc_conn *, void *, size_t);
@@ -191,9 +193,6 @@ struct ds_service {
 	void		(*ds_start)(struct ldc_conn *, uint64_t);
 	void		(*ds_rx_data)(struct ldc_conn *, uint64_t, void *,
 			    size_t);
-
-	uint64_t	ds_svc_handle;
-	uint32_t	ds_ackid;
 };
 
 void	ldc_ack(struct ldc_conn *, uint32_t);
@@ -202,6 +201,32 @@ void	ds_rx_msg(struct ldc_conn *, void *, size_t);
 void	ds_init_ack(struct ldc_conn *);
 void	ds_reg_ack(struct ldc_conn *, uint64_t);
 void	ds_reg_nack(struct ldc_conn *, uint64_t);
+void	ds_unreg_ack(struct ldc_conn *, uint64_t);
+void	ds_unreg_nack(struct ldc_conn *, uint64_t);
 
 void	ds_receive_msg(struct ldc_conn *lc, void *, size_t);
 void	ds_send_msg(struct ldc_conn *lc, void *, size_t);
+
+struct ds_conn_svc {
+	struct ds_service *service;
+	uint64_t svc_handle;
+	uint32_t ackid;
+
+	TAILQ_ENTRY(ds_conn_svc) link;
+};
+
+struct ds_conn {
+	char *path;
+	void *cookie;
+	int id;
+	struct ldc_conn lc;
+	int fd;
+
+	TAILQ_HEAD(ds_conn_svc_head, ds_conn_svc) services;
+	TAILQ_ENTRY(ds_conn) link;
+};
+
+struct ds_conn *ds_conn_open(const char *, void *);
+void	ds_conn_register_service(struct ds_conn *, struct ds_service *);
+void	ds_conn_serve(void);
+void	ds_conn_handle(struct ds_conn *);

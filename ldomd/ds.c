@@ -1,4 +1,4 @@
-/*	$OpenBSD: ds.c,v 1.4 2012/10/22 21:16:25 kettenis Exp $	*/
+/*	$OpenBSD: ds.c,v 1.3 2012/11/04 23:28:07 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -17,6 +17,8 @@
  */
 
 #include <sys/types.h>
+#include <sys/poll.h>
+#include <sys/queue.h>
 #include <err.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -26,20 +28,6 @@
 
 #include "ds.h"
 #include "util.h"
-
-void	pri_start(struct ldc_conn *, uint64_t);
-void	pri_rx_data(struct ldc_conn *, uint64_t, void *, size_t);
-
-void	mdstore_start(struct ldc_conn *, uint64_t);
-void	mdstore_rx_data(struct ldc_conn *, uint64_t, void *, size_t);
-
-struct ds_service ds_service[] = {
-	{ "pri", 1, 0, pri_start, pri_rx_data },
-#if 0
-	{ "mdstore", 1, 0, mdstore_start, mdstore_rx_data },
-#endif
-	{ NULL, 0, 0 }
-};
 
 void	ldc_rx_ctrl_vers(struct ldc_conn *, struct ldc_pkt *);
 void	ldc_rx_ctrl_rtr(struct ldc_conn *, struct ldc_pkt *);
@@ -249,6 +237,7 @@ ldc_rx_data(struct ldc_conn *lc, struct ldc_pkt *lp)
 		return;
 	}
 
+#if 0
 	if (lp->ackid) {
 		int i;
 
@@ -260,6 +249,7 @@ ldc_rx_data(struct ldc_conn *lc, struct ldc_pkt *lp)
 			}
 		}
 	}
+#endif
 	if (lp->stype == LDC_ACK)
 		return;
 
@@ -386,8 +376,6 @@ ldc_send_rdx(struct ldc_conn *lc)
 void
 ldc_reset(struct ldc_conn *lc)
 {
-	abort();
-
 	lc->lc_tx_seqid = 0;
 	lc->lc_state = 0;
 #if 0
@@ -414,6 +402,7 @@ ldc_ack(struct ldc_conn *lc, uint32_t ackid)
 void
 ds_rx_msg(struct ldc_conn *lc, void *data, size_t len)
 {
+	struct ds_conn *dc = lc->lc_cookie;
 	struct ds_msg *dm = data;
 
 	switch(dm->msg_type) {
@@ -434,32 +423,44 @@ ds_rx_msg(struct ldc_conn *lc, void *data, size_t len)
 	case DS_REG_REQ:
 	{
 		struct ds_reg_req *dr = data;
-		int i;
+		struct ds_conn_svc *dcs;
 
 		DPRINTF(("DS_REG_REQ %s %d.%d 0x%016llx\n", dr->svc_id,
 		    dr->major_vers, dr->minor_vers, dr->svc_handle));
-		for (i = 0; ds_service[i].ds_svc_id; i++)
-			if (strcmp(dr->svc_id, ds_service[i].ds_svc_id) == 0) {
-				ds_service[i].ds_svc_handle = dr->svc_handle;
-				ds_service[i].ds_ackid = lc->lc_tx_seqid;
-				ds_reg_ack(lc, dr->svc_handle);
+		TAILQ_FOREACH(dcs, &dc->services, link) {
+			if (strcmp(dr->svc_id, dcs->service->ds_svc_id) == 0) {
+				dcs->svc_handle = dr->svc_handle;
+				dcs->ackid = lc->lc_tx_seqid;
+				ds_reg_ack(lc, dcs->svc_handle);
+				dcs->service->ds_start(lc, dcs->svc_handle);
 				return;
 			}
+		}
 
 		ds_reg_nack(lc, dr->svc_handle);
+		break;
+	}
+
+	case DS_UNREG:
+	{
+		struct ds_unreg *du = data;
+
+		DPRINTF(("DS_UNREG 0x%016llx\n", du->svc_handle));
+		ds_unreg_ack(lc, du->svc_handle);
 		break;
 	}
 
 	case DS_DATA:
 	{
 		struct ds_data *dd = data;
-		int i;
+		struct ds_conn_svc *dcs;
 
 		DPRINTF(("DS_DATA 0x%016llx\n", dd->svc_handle));
-		for (i = 0; ds_service[i].ds_svc_id; i++)
-			if (ds_service[i].ds_svc_handle == dd->svc_handle)
-				ds_service[i].ds_rx_data(lc, dd->svc_handle,
+		TAILQ_FOREACH(dcs, &dc->services, link) {
+			if (dcs->svc_handle == dd->svc_handle)
+				dcs->service->ds_rx_data(lc, dd->svc_handle,
 				    data, len);
+		}
 		break;
 	}
 
@@ -475,6 +476,7 @@ ds_init_ack(struct ldc_conn *lc)
 {
 	struct ds_init_ack da;
 
+	DPRINTF((" DS_INIT_ACK\n"));
 	bzero(&da, sizeof(da));
 	da.msg_type = DS_INIT_ACK;
 	da.payload_len = sizeof(da) - 8;
@@ -487,6 +489,7 @@ ds_reg_ack(struct ldc_conn *lc, uint64_t svc_handle)
 {
 	struct ds_reg_ack da;
 
+	DPRINTF((" DS_REG_ACK 0x%016llx\n", svc_handle));
 	bzero(&da, sizeof(da));
 	da.msg_type = DS_REG_ACK;
 	da.payload_len = sizeof(da) - 8;
@@ -500,6 +503,7 @@ ds_reg_nack(struct ldc_conn *lc, uint64_t svc_handle)
 {
 	struct ds_reg_nack dn;
 
+	DPRINTF((" DS_REG_NACK 0x%016llx\n", svc_handle));
 	bzero(&dn, sizeof(dn));
 	dn.msg_type = DS_REG_NACK;
 	dn.payload_len = sizeof(dn) - 8;
@@ -507,6 +511,32 @@ ds_reg_nack(struct ldc_conn *lc, uint64_t svc_handle)
 	dn.result = DS_REG_VER_NACK;
 	dn.major_vers = 0;
 	ds_send_msg(lc, &dn, sizeof(dn));
+}
+
+void
+ds_unreg_ack(struct ldc_conn *lc, uint64_t svc_handle)
+{
+	struct ds_unreg du;
+
+	DPRINTF((" DS_UNREG_ACK 0x%016llx\n", svc_handle));
+	bzero(&du, sizeof(du));
+	du.msg_type = DS_UNREG_ACK;
+	du.payload_len = sizeof(du) - 8;
+	du.svc_handle = svc_handle;
+	ds_send_msg(lc, &du, sizeof(du));
+}
+
+void
+ds_unreg_nack(struct ldc_conn *lc, uint64_t svc_handle)
+{
+	struct ds_unreg du;
+
+	DPRINTF((" DS_UNREG_NACK 0x%016llx\n", svc_handle));
+	bzero(&du, sizeof(du));
+	du.msg_type = DS_UNREG_NACK;
+	du.payload_len = sizeof(du) - 8;
+	du.svc_handle = svc_handle;
+	ds_send_msg(lc, &du, sizeof(du));
 }
 
 void
@@ -575,171 +605,119 @@ void
 ds_send_msg(struct ldc_conn *lc, void *buf, size_t len)
 {
 	uint8_t *p = buf;
-#if 0
 	struct ldc_pkt lp;
 	ssize_t nbytes;
-#endif
 
 	while (len > 0) {
 		ldc_send_msg(lc, p, min(len, LDC_MSG_MAX));
 		p += min(len, LDC_MSG_MAX);
 		len -= min(len, LDC_MSG_MAX);
 
+		if (len > 0) {
+			/* Consume ACK. */
+			nbytes = read(lc->lc_fd, &lp, sizeof(lp));
+			if (nbytes != sizeof(lp))
+				err(1, "read");
 #if 0
-		/* Consume ACK. */
-		nbytes = read(lc->lc_fd, &lp, sizeof(lp));
-		if (nbytes != sizeof(lp))
-			err(1, "read");
+			{
+				uint64_t *msg = (uint64_t *)&lp;
+				int i;
 
-	{
-		uint64_t *msg = (uint64_t *)&lp;
-		int i;
-
-		for (i = 0; i < 8; i++)
-			printf("%02x: %016llx\n", i, msg[i]);
-	}
+				for (i = 0; i < 8; i++)
+					printf("%02x: %016llx\n", i, msg[i]);
+			}
 #endif
+		}
 	}
 }
 
-#define PRI_REQUEST	0x00
+TAILQ_HEAD(ds_conn_head, ds_conn) ds_conns =
+    TAILQ_HEAD_INITIALIZER(ds_conns);
+int num_ds_conns;
 
-struct pri_msg {
-	uint32_t	msg_type;
-	uint32_t	payload_len;
-	uint64_t	svc_handle;
-	uint64_t	reqnum;
-	uint64_t	type;
-} __packed;
-
-#define PRI_DATA	0x01
-
-struct pri_data {
-	uint32_t	msg_type;
-	uint32_t	payload_len;
-	uint64_t	svc_handle;
-	uint64_t	reqnum;
-	uint64_t	type;
-	char		data[1];
-} __packed;
-
-#define PRI_UPDATE	0x02
-
-struct pri_update {
-	uint32_t	msg_type;
-	uint32_t	payload_len;
-	uint64_t	svc_handle;
-	uint64_t	reqnum;
-	uint64_t	type;
-} __packed;
-
-void
-pri_start(struct ldc_conn *lc, uint64_t svc_handle)
+struct ds_conn *
+ds_conn_open(const char *path, void *cookie)
 {
-	struct pri_msg pm;
+	struct ds_conn *dc;
 
-	bzero(&pm, sizeof(pm));
-	pm.msg_type = DS_DATA;
-	pm.payload_len = sizeof(pm) - 8;
-	pm.svc_handle = svc_handle;
-	pm.reqnum = 0;
-	pm.type = PRI_REQUEST;
-	ds_send_msg(lc, &pm, sizeof(pm));
+	dc = xmalloc(sizeof(*dc));
+	dc->path = xstrdup(path);
+	dc->cookie = cookie;
+
+	dc->fd = open(path, O_RDWR, 0);
+	if (dc->fd == -1)
+		err(1, "open");
+
+	memset(&dc->lc, 0, sizeof(dc->lc));
+	dc->lc.lc_fd = dc->fd;
+	dc->lc.lc_cookie = dc;
+	dc->lc.lc_rx_data = ds_rx_msg;
+
+	TAILQ_INIT(&dc->services);
+	TAILQ_INSERT_TAIL(&ds_conns, dc, link);
+	dc->id = num_ds_conns++;
+	return dc;
 }
 
-void *pri_buf;
-size_t pri_len;
+void
+ds_conn_register_service(struct ds_conn *dc, struct ds_service *ds)
+{
+	struct ds_conn_svc *dcs;
+
+	dcs = xzalloc(sizeof(*dcs));
+	dcs->service = ds;
+
+	TAILQ_INSERT_TAIL(&dc->services, dcs, link);
+}
 
 void
-pri_rx_data(struct ldc_conn *lc, uint64_t svc_handle, void *data, size_t len)
+ds_conn_handle(struct ds_conn *dc)
 {
-	struct pri_data *pd = data;
+	struct ldc_pkt lp;
+	ssize_t nbytes;
 
-	if (pd->type != PRI_DATA) {
-		DPRINTF(("Unexpected PRI message type 0x%02llx\n", pd->type));
+	nbytes = read(dc->fd, &lp, sizeof(lp));
+	if (nbytes != sizeof(lp)) {
+		ldc_reset(&dc->lc);
 		return;
 	}
 
-	pri_len = pd->payload_len - 24;
-	pri_buf = xmalloc(pri_len);
-
-	len -= sizeof(struct pri_msg);
-	bcopy(&pd->data, pri_buf, len);
-	ds_receive_msg(lc, pri_buf + len, pri_len - len);
-}
-
-#define MDSET_LIST_REQUEST	0x0004
-
-struct mdstore_msg {
-	uint32_t	msg_type;
-	uint32_t	payload_len;
-	uint64_t	svc_handle;
-	uint64_t	reqnum;
-	uint16_t	command;
-} __packed;
-
-#define MDSET_LIST_REPLY	0x0104
-
-struct mdstore_list_resp {
-	uint32_t	msg_type;
-	uint32_t	payload_len;
-	uint64_t	svc_handle;
-	uint64_t	reqnum;
-	uint32_t	result;
-	uint16_t	booted_set;
-	uint16_t	boot_set;
-	char		sets[1];
-} __packed;
-
-#define MDST_SUCCESS		0x0
-#define MDST_FAILURE		0x1
-#define MDST_INVALID_MSG	0x2
-#define MDST_MAX_MDS_ERR	0x3
-#define MDST_BAD_NAME_ERR	0x4
-#define MDST_SET_EXISTS_ERR	0x5
-#define MDST_ALLOC_SET_ERR	0x6
-#define MDST_ALLOC_MD_ERR	0x7
-#define MDST_MD_COUNT_ERR	0x8
-#define MDST_MD_SIZE_ERR	0x9
-#define MDST_MD_TYPE_ERR	0xa
-#define MDST_NOT_EXIST_ERR	0xb
-
-void
-mdstore_start(struct ldc_conn *lc, uint64_t svc_handle)
-{
-	struct mdstore_msg mm;
-
-	bzero(&mm, sizeof(mm));
-	mm.msg_type = DS_DATA;
-	mm.payload_len = sizeof(mm) - 8;
-	mm.svc_handle = svc_handle;
-	mm.reqnum = 0;
-	mm.command = MDSET_LIST_REQUEST;
-	ds_send_msg(lc, &mm, sizeof(mm));
+	switch (lp.type) {
+	case LDC_CTRL:
+		ldc_rx_ctrl(&dc->lc, &lp);
+		break;
+	case LDC_DATA:
+		ldc_rx_data(&dc->lc, &lp);
+		break;
+	default:
+		DPRINTF(("0x%02x/0x%02x/0x%02x\n", lp.type, lp.stype,
+		    lp.ctrl));
+		ldc_reset(&dc->lc);
+		break;
+	}
 }
 
 void
-mdstore_rx_data(struct ldc_conn *lc, uint64_t svc_handle, void *data,
-    size_t len)
+ds_conn_serve(void)
 {
-	struct mdstore_list_resp *mr = data;
-	int idx = 0;
+	struct ds_conn *dc;
+	struct pollfd *pfd;
+	int nfds;
 
-	if (mr->result != MDST_SUCCESS) {
-		DPRINTF(("Unexpected result 0x%x\n", mr->result));
-		return;
+	pfd = xmalloc(num_ds_conns * sizeof(*pfd));
+	TAILQ_FOREACH(dc, &ds_conns, link) {
+		pfd[dc->id].fd = dc->fd;
+		pfd[dc->id].events = POLLIN;
 	}
 
-	len = 0;
-	for (idx = 0; len < mr->payload_len - 24; idx++) {
-		printf("%s", &mr->sets[len]);
-		if (idx == mr->booted_set)
-			printf(" [current]");
-		else if (idx == mr->boot_set)
-			printf(" [next]");
-		printf("\n");
-		len += strlen(&mr->sets[len]) + 1;
-	}
+	while (1) {
+		nfds = poll(pfd, num_ds_conns, -1);
+		if (nfds == -1 || nfds == 0)
+			errx(1, "poll");
 
-	exit(0);
+		TAILQ_FOREACH(dc, &ds_conns, link) {
+			if (pfd[dc->id].revents)
+				ds_conn_handle(dc);
+		}
+	}
 }
