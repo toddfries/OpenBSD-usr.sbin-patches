@@ -1,4 +1,4 @@
-/*	$OpenBSD: mdstore.c,v 1.4 2012/11/05 19:50:54 kettenis Exp $	*/
+/*	$OpenBSD: mdstore.c,v 1.6 2012/11/24 23:02:43 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -143,8 +143,17 @@ mdstore_rx_data(struct ldc_conn *lc, uint64_t svc_handle, void *data,
 	int idx;
 
 	if (mr->result != MDST_SUCCESS) {
-		DPRINTF(("Unexpected result 0x%x\n", mr->result));
-		return;
+		switch (mr->result) {
+		case MDST_SET_EXISTS_ERR:
+			errx(1, "Configuration already exists");
+			break;
+		case MDST_NOT_EXIST_ERR:
+			errx(1, "No such configuration");
+			break;
+		default:
+			errx(1, "Unexpected result 0x%x\n", mr->result);
+			break;
+		}
 	}
 
 	switch (mdstore_command) {
@@ -337,7 +346,7 @@ mdstore_download(struct ds_conn *dc, const char *name)
 		err(1, "%s", name);
 
 	node = md_find_node(hvmd, "guests");
-	TAILQ_INIT(&guests);
+	TAILQ_INIT(&guest_list);
 	TAILQ_FOREACH(prop, &node->prop_list, link) {
 		if (prop->tag == MD_PROP_ARC &&
 		    strcmp(prop->name->str, "fwd") == 0) {
@@ -350,7 +359,7 @@ mdstore_download(struct ds_conn *dc, const char *name)
 	hv_mdpa = alloc_frag();
 
 	mdstore_begin(dc, dcs->svc_handle, name, nmds);
-	TAILQ_FOREACH(guest, &guests, link) {
+	TAILQ_FOREACH(guest, &guest_list, link) {
 		if (asprintf(&path, "%s/%s.md", name, guest->name) == -1)
 			err(1, "asprintf");
 		type = 0;
@@ -412,7 +421,7 @@ add_frag_mblock(struct md_node *node)
 	}
 
 	delete_frag(hv_mdpa);
-	TAILQ_FOREACH(guest, &guests, link)
+	TAILQ_FOREACH(guest, &guest_list, link)
 		delete_frag(guest->mdpa);
 }
 
