@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.10 2012/11/26 21:01:43 kettenis Exp $	*/
+/*	$OpenBSD: config.c,v 1.14 2012/12/08 18:45:26 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -37,17 +37,14 @@
 #define LDC_HVCTL_SVC	1
 #define LDC_CONSOLE_SVC	2
 
-struct pri_cpu {
-	uint64_t pid;
-	TAILQ_ENTRY(pri_cpu) link;
+#define MAX_STRANDS_PER_CORE	16
+
+struct core {
+	struct guest *guests[MAX_STRANDS_PER_CORE];
+	TAILQ_ENTRY(core) link;
 };
 
-struct pri_core {
-	TAILQ_HEAD(pri_cpu_head, pri_cpu) cpu_list;
-	TAILQ_ENTRY(pri_core) link;
-};
-
-TAILQ_HEAD(pri_core_head, pri_core) pri_core_list;
+TAILQ_HEAD(, core) cores;
 
 struct frag {
 	TAILQ_ENTRY(frag) link;
@@ -80,6 +77,10 @@ uint64_t max_page_size;
 
 uint64_t content_version;
 uint64_t stick_frequency;
+uint64_t tod_frequency;
+uint64_t tod;
+uint64_t erpt_pa;
+uint64_t erpt_size;
 
 struct md *pri;
 struct md *hvmd;
@@ -93,47 +94,73 @@ int total_cpus;
 TAILQ_HEAD(, mblock) free_memory = TAILQ_HEAD_INITIALIZER(free_memory);
 uint64_t total_memory;
 
-struct pri_core *pri_cores;
+struct cpu *
+pri_find_cpu(uint64_t pid)
+{
+	struct cpu *cpu = NULL;
+
+	TAILQ_FOREACH(cpu, &free_cpus, link) {
+		if (cpu->pid == pid)
+			break;
+	}
+
+	return cpu;
+}
 
 void
-pri_add_core(struct md *md, struct md_node *node, struct pri_core *core)
+pri_link_core(struct md *md, struct md_node *node, struct core *core)
 {
-	struct pri_cpu *cpu;
 	struct md_node *node2;
 	struct md_prop *prop;
+	struct cpu *cpu;
+	uint64_t pid;
 
 	TAILQ_FOREACH(prop, &node->prop_list, link) {
 		if (prop->tag == MD_PROP_ARC &&
 		    strcmp(prop->name->str, "back") == 0) {
 			node2 = prop->d.arc.node;
-			if (strcmp(node2->name->str, "cpu") == 0) {
-				cpu = xmalloc(sizeof(*cpu));
-				md_get_prop_val(md, node2, "pid", &cpu->pid);
-				TAILQ_INSERT_TAIL(&core->cpu_list, cpu, link);
-			} else {
-				pri_add_core(md, node2, core);
+			if (strcmp(node2->name->str, "cpu") != 0) {
+				pri_link_core(md, node2, core);
+				continue;
 			}
+
+			pid = -1;
+			if (!md_get_prop_val(md, node2, "pid", &pid))
+				md_get_prop_val(md, node2, "id", &pid);
+
+			cpu = pri_find_cpu(pid);
+			if (cpu == NULL)
+				errx(1, "couldn't determine core for VCPU %lld\n", pid);
+			cpu->core = core;
 		}
 	}
 }
 
 void
+pri_add_core(struct md *md, struct md_node *node)
+{
+	struct core *core;
+
+	core = xzalloc(sizeof(*core));
+	TAILQ_INSERT_TAIL(&cores, core, link);
+
+	pri_link_core(md, node, core);
+}
+
+void
 pri_init_cores(struct md *md)
 {
-	struct pri_core *core;
 	struct md_node *node;
 	const void *type;
 	size_t len;
 
-	TAILQ_INIT(&pri_core_list);
+	TAILQ_INIT(&cores);
 
 	TAILQ_FOREACH(node, &md->node_list, link) {
 		if (strcmp(node->name->str, "tlb") == 0 &&
 		    md_get_prop_data(md, node, "type", &type, &len) &&
 		    strcmp(type, "data") == 0) {
-			core = xmalloc(sizeof(*core));
-			TAILQ_INIT(&core->cpu_list);
-			pri_add_core(md, node, core);
+			pri_add_core(md, node);
 		}
 	}
 }
@@ -343,9 +370,7 @@ pri_init(struct md *md)
 			pri_add_mblock(md, prop->d.arc.node);
 	}
 
-#if 0
 	pri_init_cores(md);
-#endif
 }
 
 void
@@ -524,6 +549,10 @@ hvmd_init_device(struct md *md, struct md_node *node)
 	struct md_node *node2;
 	struct md_prop *prop;
 
+	if (strcmp(node->name->str, "pcie_bus") != 0 &&
+	    strcmp(node->name->str, "network_device") != 0)
+		return;
+
 	if (!md_get_prop_val(md, node, "resource_id", &resource_id))
 		errx(1, "missing resource_id property in ldc_endpoint node");
 
@@ -690,6 +719,10 @@ hvmd_init(struct md *md)
 	node = md_find_node(md, "root");
 	md_get_prop_val(md, node, "content-version", &content_version);
 	md_get_prop_val(md, node, "stick-frequency", &stick_frequency);
+	md_get_prop_val(md, node, "tod-frequency", &tod_frequency);
+	md_get_prop_val(md, node, "tod", &tod);
+	md_get_prop_val(md, node, "erpt-pa", &erpt_pa);
+	md_get_prop_val(md, node, "erpt-size", &erpt_size);
 
 	node = md_find_node(md, "frag_space");
 	md_get_prop_val(md, node, "fragsize", &fragsize);
@@ -760,6 +793,19 @@ hvmd_finalize_cpu(struct md *md, struct cpu *cpu)
 {
 	struct md_node *parent;
 	struct md_node *node;
+	int i;
+
+	for (i = 0; i < MAX_STRANDS_PER_CORE; i++) {
+		if (cpu->core->guests[i] == cpu->guest) {
+			cpu->partid = i + 1;
+			break;
+		}
+		if (cpu->core->guests[i] == NULL) {
+			cpu->core->guests[i] = cpu->guest;
+			cpu->partid = i + 1;
+			break;
+		}
+	}
 
 	parent = md_find_node(md, "cpus");
 	assert(parent);
@@ -1059,8 +1105,23 @@ hvmd_finalize(void)
 	md = md_alloc();
 	node = md_add_node(md, "root");
 	md_add_prop_val(md, node, "content-version", content_version);
-	if (stick_frequency != 0)
+	if (content_version <= 0x100000000) {
 		md_add_prop_val(md, node, "stick-frequency", stick_frequency);
+		if (tod_frequency != 0)
+			md_add_prop_val(md, node, "tod-frequency",
+			    tod_frequency);
+		if (tod != 0)
+			md_add_prop_val(md, node, "tod", tod);
+		if (erpt_pa != 0)
+			md_add_prop_val(md, node, "erpt-pa", erpt_pa);
+		if (erpt_size != 0)
+			md_add_prop_val(md, node, "erpt-size", erpt_size);
+
+		parent = node;
+		node = md_add_node(md, "platform");
+		md_link_node(md, parent, node);
+		md_add_prop_val(md, node, "stick-frequency", stick_frequency);
+	}
 
 	parent = md_find_node(md, "root");
 	assert(parent);
@@ -1497,11 +1558,16 @@ guest_add_vsw_port(struct guest *guest, struct md_node *vds,
 	struct md *md = guest->md;
 	struct md_node *node;
 	struct md_node *child;
+	uint64_t mac_addr;
 
 	if (vds == NULL)
 		vds = guest_find_vsw(guest);
 	if (vds == NULL)
 		vds = guest_add_vsw(guest);
+	if (!md_get_prop_val(md, vds, "local-mac-address", &mac_addr)) {
+		mac_addr = 0x00144ff80000 + (arc4random() & 0x3ffff);
+		md_add_prop_val(md, vds, "local-mac-address", mac_addr);
+	}
 
 	node = md_add_node(md, "virtual-device-port");
 	md_link_node(md, vds, node);
@@ -1612,8 +1678,8 @@ guest_add_vnet(struct guest *guest, uint64_t mac_addr, uint64_t mtu,
 
 struct md_node *
 guest_add_vnet_port(struct guest *guest, struct md_node *vdc,
-    uint64_t mac_addr, uint64_t mtu, uint64_t cfghandle, uint64_t id,
-    uint64_t channel)
+    uint64_t mac_addr, uint64_t remote_mac_addr, uint64_t mtu, uint64_t cfghandle,
+    uint64_t id, uint64_t channel)
 {
 	struct md *md = guest->md;
 	struct md_node *node;
@@ -1626,6 +1692,9 @@ guest_add_vnet_port(struct guest *guest, struct md_node *vdc,
 	md_link_node(md, vdc, node);
 	md_add_prop_str(md, node, "name", "vnet-port");
 	md_add_prop_val(md, node, "id", id);
+	md_add_prop_val(md, node, "switch-port", 0);
+	md_add_prop_data(md, node, "remote-mac-address",
+	    (uint8_t *)&remote_mac_addr, sizeof(remote_mac_addr));
 
 	child = guest_add_endpoint(guest, channel);
 	md_link_node(md, node, child);
@@ -1999,6 +2068,8 @@ guest_add_memory(struct guest *guest, uint64_t base, uint64_t size)
 	uint64_t resource_id;
 
 	mblock = pri_alloc_memory(base, size);
+	if (mblock == NULL)
+		errx(1, "unable to allocate guest memory");
 	for (resource_id = 0; resource_id < max_cpus; resource_id++)
 		if (mblocks[resource_id] == NULL)
 			break;
@@ -2047,12 +2118,16 @@ guest_add_vnetwork(struct guest *guest, uint64_t id, uint64_t mac_addr,
 	struct ldc_channel *lc;
 	char *devalias;
 	char *devpath;
+	struct md_node *node;
+	uint64_t remote_mac_addr = -1;
 
 	primary = guest_lookup("primary");
 
 	lc = hvmd_add_vio(guest);
 	guest_add_vsw_port(primary, NULL, id, lc->server_endpoint->channel);
-	guest_add_vnet_port(guest, NULL, mac_addr, mtu, id, 0,
+	node = guest_find_vsw(primary);
+	md_get_prop_val(primary->md, node, "local-mac-address", &remote_mac_addr);
+	guest_add_vnet_port(guest, NULL, mac_addr, remote_mac_addr, mtu, id, 0,
 	    lc->client_endpoint->channel);
 
 	xasprintf(&devalias, "net%d", id);
