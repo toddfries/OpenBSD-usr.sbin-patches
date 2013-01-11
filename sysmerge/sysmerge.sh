@@ -1,6 +1,6 @@
 #!/bin/ksh -
 #
-# $OpenBSD: sysmerge.sh,v 1.94 2012/12/19 19:40:30 rpe Exp $
+# $OpenBSD: sysmerge.sh,v 1.101 2013/01/04 07:56:36 rpe Exp $
 #
 # Copyright (c) 2008, 2009, 2010, 2011, 2012 Antoine Jacoutot <ajacoutot@openbsd.org>
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
@@ -21,12 +21,12 @@
 umask 0022
 
 unset AUTO_INSTALLED_FILES BATCHMODE DIFFMODE ETCSUM NEED_NEWALIASES
-unset NEWGRP NEWUSR NEED_REBOOT SRCDIR SRCSUM TGZ TGZURL XETCSUM
-unset XTGZ XTGZURL
+unset NEWGRP NEWUSR NEED_REBOOT SRCDIR SRCSUM TGZ XETCSUM XTGZ
 
 WRKDIR=$(mktemp -d -p ${TMPDIR:=/var/tmp} sysmerge.XXXXXXXXXX) || exit 1
 SWIDTH=$(stty size | awk '{w=$2} END {if (w==0) {w=80} print w}')
 MERGE_CMD="${MERGE_CMD:=sdiff -as -w ${SWIDTH} -o}"
+FETCH_CMD="${FETCH_CMD:=/usr/bin/ftp -V -m -k ${FTP_KEEPALIVE:-0}}"
 REPORT="${REPORT:=${WRKDIR}/sysmerge.log}"
 DBDIR="${DBDIR:=/var/db/sysmerge}"
 
@@ -83,38 +83,53 @@ if (($(id -u) != 0)); then
 	error_rm_wrkdir
 fi
 
-if [ -z "${FETCH_CMD}" ]; then
-	[ -z "${FTP_KEEPALIVE}" ] && FTP_KEEPALIVE=0
-	FETCH_CMD="/usr/bin/ftp -V -m -k ${FTP_KEEPALIVE}"
-fi
+# extract (x)etcXX.tgz and create cksum file
+# takes file- and setname ('etc' or 'xetc') as arguments
+# stores sumfilename in ETCSUM or XETCSUM (see eval)
+extract_set() {
+	[[ -z $1 ]] && return
+	local _tgz=$(readlink -f "$1") _set=$2
+	typeset -u _SETSUM=${_set}sum
+	eval ${_SETSUM}=${_set}sum
+	(cd ${TEMPROOT} && tar -xzphf "${_tgz}" && \
+	 tar -tzf "${_tgz}" | xargs cksum > ${WRKDIR}/${_set}sum) || \
+		error_rm_wrkdir "extract/cksum of ${_tgz} failed"
+}
+
+# optionally fetch and check if file is a valid (x)etcXX.tgz
+# takes url or filename and setname ('etc' or 'xetc') as arguments
+# stores local path to tgz in TGZ or XTGZ
+get_set() {
+	local _tgz=$1 _url=$1 _set=$2
+	if [[ ${_url} == @(file|ftp|http|https)://*/*[!/] ]]; then 
+		_tgz=${WRKDIR}/${_set}.tgz
+		${FETCH_CMD} -o ${_tgz} "${_url}" || \
+			error_rm_wrkdir "could not retrieve ${_url}"
+	fi
+	[[ ${_set} == etc ]] && TGZ=${_tgz} || XTGZ=${_tgz}
+	tar -tzf "${_tgz}" ./var/db/sysmerge/${_set}sum >/dev/null 2>&1 || \
+		error_rm_wrkdir "${_tgz} is not a valid ${_set}XX.tgz set"
+}
+
+# prepare TEMPROOT content from a src dir and create cksum file 
+prepare_src() {
+	[[ -z ${SRCDIR} ]] && return
+	SRCSUM=srcsum
+	(cd ${SRCDIR}/etc && \
+	 make DESTDIR=${TEMPROOT} distribution-etc-root-var >/dev/null 2>&1 && \
+	 cd ${TEMPROOT} && find . -type f | xargs cksum > ${WRKDIR}/${SRCSUM}) || \
+		error_rm_wrkdir "prepare/cksum of ${SRCDIR} failed"
+}
 
 do_populate() {
-	local cf i _array _d _r _D _E _R _X CF_DIFF CF_FILES CURSUM IGNORE_FILES
+	local cf i _array _d _r _D _R CF_DIFF CF_FILES CURSUM IGNORE_FILES
 	mkdir -p ${DESTDIR}/${DBDIR} || error_rm_wrkdir
 	echo "===> Populating temporary root under ${TEMPROOT}"
 	mkdir -p ${TEMPROOT}
-	if [ -n "${SRCDIR}" ]; then
-		SRCSUM=srcsum
-		cd ${SRCDIR}/etc
-		make DESTDIR=${TEMPROOT} distribution-etc-root-var >/dev/null 2>&1
-		(cd ${TEMPROOT} && find . -type f | xargs cksum > ${WRKDIR}/${SRCSUM})
-	fi
-
-	if [ -n "${TGZ}" -o -n "${XTGZ}" ]; then
-		for i in ${TGZ} ${XTGZ}; do
-			tar -xzphf ${i} -C ${TEMPROOT};
-		done
-		if [ -n "${TGZ}" ]; then
-			ETCSUM=etcsum
-			_E=$(cd $(dirname ${TGZ}) && pwd)/$(basename ${TGZ})
-			(cd ${TEMPROOT} && tar -tzf ${_E} | xargs cksum > ${WRKDIR}/${ETCSUM})
-		fi
-		if [ -n "${XTGZ}" ]; then
-			XETCSUM=xetcsum
-			_X=$(cd $(dirname ${XTGZ}) && pwd)/$(basename ${XTGZ})
-			(cd ${TEMPROOT} && tar -tzf ${_X} | xargs cksum > ${WRKDIR}/${XETCSUM})
-		fi
-	fi
+	
+	prepare_src
+	extract_set "${TGZ}" etc
+	extract_set "${XTGZ}" xetc
 
 	for i in ${SRCSUM} ${ETCSUM} ${XETCSUM}; do
 		if [ -f ${DESTDIR}/${DBDIR}/${i} ]; then
@@ -122,7 +137,7 @@ do_populate() {
 			# and is present in current installation
 			if [ -z "${DIFFMODE}" ]; then
 				_R=$(cd ${TEMPROOT} && \
-					cksum -c ${DESTDIR}/${DBDIR}/${i} 2>/dev/null | grep OK | awk '{ print $2 }' | sed 's/[:]//')
+					cksum -c ${DESTDIR}/${DBDIR}/${i} 2>/dev/null | awk '/OK/ { print $2 }' | sed 's/[:]//')
 				for _r in ${_R}; do
 					if [ -f ${DESTDIR}/${_r} -a -f ${TEMPROOT}/${_r} ]; then
 						# sanity check: _always_ compare master.passwd(5) and group(5)
@@ -215,17 +230,13 @@ mm_install() {
 		fi
 		export NEED_REBOOT=1
 		;;
-	/etc/mail/access|/etc/mail/genericstable|/etc/mail/mailertable|/etc/mail/virtusertable)
+	/etc/mail/@(access|genericstable|mailertable|virtusertable))
 		echo " (running makemap(8))"
 		/usr/libexec/sendmail/makemap hash ${DESTDIR}/${1#.} < ${DESTDIR}/${1#.}
 		;;
 	/etc/mail/aliases)
 		echo " (running newaliases(8))"
-		if [ -n "${DESTDIR}" ]; then
-			chroot ${DESTDIR} newaliases >/dev/null || export NEED_NEWALIASES=1
-		else
-			newaliases >/dev/null
-		fi
+		${DESTDIR:+chroot ${DESTDIR}} newaliases >/dev/null || export NEED_NEWALIASES=1
 		;;
 	/etc/master.passwd)
 		echo " (running pwd_mkdb(8))"
@@ -253,7 +264,7 @@ mm_install_link() {
 
 merge_loop() {
 	local INSTALL_MERGED MERGE_AGAIN
-	[ "$(expr "${MERGE_CMD}" : ^sdiff.*)" -gt 0 ] && \
+	[[ ${MERGE_CMD} == sdiff* ]] && \
 		echo "===> Type h at the sdiff prompt (%) to get usage help\n"
 	MERGE_AGAIN=1
 	while [ -n "${MERGE_AGAIN}" ]; do
@@ -341,7 +352,7 @@ diff_loop() {
 	unset CAN_INSTALL
 	unset FORCE_UPG
 
-	while [ "${HANDLE_COMPFILE}" = "v" -o "${HANDLE_COMPFILE}" = "todo" ]; do
+	while [[ ${HANDLE_COMPFILE} == @(v|todo) ]]; do
 		if [ -f "${DESTDIR}${COMPFILE#.}" -a -f "${COMPFILE}" -a -z "${IS_LINK}" ]; then
 			if [ -z "${DIFFMODE}" ]; then
 				# automatically install files if current != new and current = old
@@ -365,12 +376,7 @@ diff_loop() {
 						if [ "${_u}" != "root" ]; then
 							if [ -z "$(grep -E "^${_u}:" ${DESTDIR}${COMPFILE#.})" ]; then
 								echo "===> Adding the ${_u} user"
-								if [ -n "${DESTDIR}" ]; then
-									chroot ${DESTDIR} chpass -la "${l}"
-								else
-									chpass -la "${l}"
-								fi
-								if (($? == 0)); then
+								if ${DESTDIR:+chroot ${DESTDIR}} chpass -la "${l}"; then
 									set -A NEWUSR -- ${NEWUSR[@]} ${_u}
 								else
 									_merge_pwd=1
@@ -390,12 +396,7 @@ diff_loop() {
 						_gid=$(echo ${l} | awk -F ':' '{ print $3 }')
 						if [ -z "$(grep -E "^${_g}:" ${DESTDIR}${COMPFILE#.})" ]; then
 							echo "===> Adding the ${_g} group"
-							if [ -n "${DESTDIR}" ]; then
-								chroot ${DESTDIR} groupadd -g "${_gid}" "${_g}"
-							else
-								groupadd -g "${_gid}" "${_g}"
-							fi
-							if (($? == 0)); then
+							if ${DESTDIR:+chroot ${DESTDIR}} groupadd -g "${_gid}" "${_g}"; then
 								set -A NEWGRP -- ${NEWGRP[@]} ${_g}
 							else
 								_merge_grp=1
@@ -449,7 +450,7 @@ diff_loop() {
 
 		if [ -z "${BATCHMODE}" ]; then
 			echo "  Use 'd' to delete the temporary ${COMPFILE}"
-			if [ "${COMPFILE}" != "./etc/master.passwd" -a "${COMPFILE}" != "./etc/group" -a "${COMPFILE}" != "./etc/hosts" ]; then
+			if [[ ${COMPFILE} != ./etc/@(master.passwd|group|hosts) ]]; then
 				CAN_INSTALL=1
 				echo "  Use 'i' to install the temporary ${COMPFILE}"
 			fi
@@ -550,10 +551,9 @@ do_compare() {
 		# it will be deleted from temproot and ignored from comparison.
 		# several files are generated from scripts so CVS ID is not a
 		# reliable way of detecting changes; leave for a full diff.
-		if [ -z "${DIFFMODE}" -a "${COMPFILE}" != "./etc/fbtab" \
-		    -a "${COMPFILE}" != "./etc/login.conf" \
-		    -a "${COMPFILE}" != "./etc/sysctl.conf" \
-		    -a "${COMPFILE}" != "./etc/ttys" -a -z "${IS_LINK}" ]; then
+		if [[ -z ${DIFFMODE} && \
+			${COMPFILE} != ./etc/@(fbtab|login.conf|sysctl.conf|ttys) && \
+			-z ${IS_LINK} ]]; then
 			CVSID1=$(grep "[$]OpenBSD:" ${DESTDIR}${COMPFILE#.} 2>/dev/null)
 			CVSID2=$(grep "[$]OpenBSD:" ${COMPFILE} 2>/dev/null) || CVSID2=none
 			[ "${CVSID2}" = "${CVSID1}" ] && rm "${COMPFILE}"
@@ -564,7 +564,7 @@ do_compare() {
 			if diff -q "${DESTDIR}${COMPFILE#.}" "${COMPFILE}" >/dev/null 2>&1; then
 				rm "${COMPFILE}"
 			# xetcXX.tgz contains binary files; set IS_BINFILE to disable sdiff
-			elif diff -q "${DESTDIR}${COMPFILE#.}" "${COMPFILE}" | grep "Binary" >/dev/null 2>&1; then
+			elif diff -q "${DESTDIR}${COMPFILE#.}" "${COMPFILE}" | grep -q Binary; then
 				IS_BINFILE=1
 				diff_loop
 			else
@@ -636,6 +636,7 @@ do_post() {
 	rm -f ${DESTDIR}/${DBDIR}/.*.bak
 }
 
+
 while getopts bds:x: arg; do
 	case ${arg} in
 	b)
@@ -647,26 +648,14 @@ while getopts bds:x: arg; do
 	s)
 		if [ -d "${OPTARG}" ]; then
 			SRCDIR=${OPTARG}
-		elif echo ${OPTARG} | \
-		    grep -qE '^(file|ftp|http|https)://.*/etc[0-9][0-9]\.tgz$'; then
-			TGZ=${WRKDIR}/etc.tgz
-			TGZURL=${OPTARG}
-			${FETCH_CMD} -o ${TGZ} ${TGZURL} || \
-				error_rm_wrkdir "could not retrieve ${TGZURL}"
-		else
-			TGZ=${OPTARG}
+			[ -f "${SRCDIR}/etc/Makefile" ] || \
+				error_rm_wrkdir "${SRCDIR} is not a valid path to src"
+			continue
 		fi
+		get_set "${OPTARG}" etc
 		;;
 	x)
-		if echo ${OPTARG} | \
-		    grep -qE '^(file|ftp|http|https)://.*/xetc[0-9][0-9]\.tgz$'; then
-			XTGZ=${WRKDIR}/xetc.tgz
-			XTGZURL=${OPTARG}
-			${FETCH_CMD} -o ${XTGZ} ${XTGZURL} || \
-				error_rm_wrkdir "could not retrieve ${XTGZURL}"
-		else
-			XTGZ=${OPTARG}
-		fi
+		get_set "${OPTARG}" xetc
 		;;
 	*)
 		usage
@@ -691,15 +680,6 @@ if [ -z "${SRCDIR}" -a -z "${TGZ}" -a -z "${XTGZ}" ]; then
 	fi
 fi
 
-[ -n "${SRCDIR}" -a ! -f "${SRCDIR}/etc/Makefile" ] && \
-	error_rm_wrkdir "${SRCDIR} is not a valid path to src"
-
-[ -n "${TGZ}" ] && ! tar tzf ${TGZ} ./var/db/sysmerge/etcsum >/dev/null 2>&1 && \
-	error_rm_wrkdir "${TGZ} is not a valid etcXX.tgz set"
-
-[ -n "${XTGZ}" ] && ! tar tzf ${XTGZ} ./var/db/sysmerge/xetcsum >/dev/null 2>&1 && \
-	error_rm_wrkdir "${XTGZ} is not a valid xetcXX.tgz set"
-	
 TEMPROOT="${WRKDIR}/temproot"
 BKPDIR="${WRKDIR}/backups"
 
