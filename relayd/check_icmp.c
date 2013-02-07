@@ -1,4 +1,4 @@
-/*	$OpenBSD: check_icmp.c,v 1.33 2012/09/19 09:49:24 reyk Exp $	*/
+/*	$OpenBSD: check_icmp.c,v 1.35 2013/01/29 15:04:42 sthen Exp $	*/
 
 /*
  * Copyright (c) 2006 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -58,7 +58,7 @@ icmp_setup(struct relayd *env, struct ctl_icmp_event *cie, int af)
 	if (af == AF_INET6)
 		proto = IPPROTO_ICMPV6;
 	if ((cie->s = socket(af, SOCK_RAW, proto)) < 0)
-		fatal("icmp_init: socket");
+		fatal("icmp_setup: socket");
 	socket_set_blockmode(cie->s, BM_NONBLOCK);
 	cie->env = env;
 	cie->af = af;
@@ -161,7 +161,7 @@ icmp_checks_timeout(struct ctl_icmp_event *cie, enum host_error he)
 void
 send_icmp(int s, short event, void *arg)
 {
-	struct ctl_icmp_event	*cie = (struct ctl_icmp_event *)arg;
+	struct ctl_icmp_event	*cie = arg;
 	struct table		*table;
 	struct host		*host;
 	struct sockaddr		*to;
@@ -262,7 +262,7 @@ send_icmp(int s, short event, void *arg)
 void
 recv_icmp(int s, short event, void *arg)
 {
-	struct ctl_icmp_event	*cie = (struct ctl_icmp_event *)arg;
+	struct ctl_icmp_event	*cie = arg;
 	u_char			 packet[ICMP_BUF_SIZE];
 	socklen_t		 slen;
 	struct sockaddr_storage	 ss;

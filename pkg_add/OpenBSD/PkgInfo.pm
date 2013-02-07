@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgInfo.pm,v 1.25 2011/11/24 19:47:11 espie Exp $
+# $OpenBSD: PkgInfo.pm,v 1.27 2013/01/18 21:19:36 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -264,12 +264,34 @@ sub filter_files
 	my ($self, $state, $search, @args) = @_;
 	require OpenBSD::PackingList;
 
+	my @k = ();
+	for my $file (keys %$search) {
+		my $k = $file;
+		if ($file =~ m|^.*/(.*?)$|) {
+			$k = $1;
+		}
+		push(@k, quotemeta($k));
+	}
+	my $re = join('|', @k);
+
 	my @result = ();
 	for my $arg (@args) {
 		$self->find_pkg($state, $arg,
 		    sub {
 		    	my ($pkgname, $handle) = @_;
 
+			if (-f $handle->info.CONTENTS) {
+				my $maybe = 0;
+				open(my $fh, '<', $handle->info.CONTENTS);
+				while (<$fh>) {
+					if (m/$re/) {
+						$maybe = 1;
+						last;
+					}
+				}
+				close($fh);
+				return if !$maybe;
+			}
 			my $plist = $handle->plist(\&OpenBSD::PackingList::FilesOnly);
 
 			$plist->hunt_file($search, $pkgname, \@result);
@@ -464,8 +486,8 @@ sub parse_and_run
 		    sub {
 			    my $pat = shift;
 			    my @list;
-			    $state->lock;
 			    if ($pat =~ m/\//o) {
+				    $state->lock;
 				    @list = find_by_path($pat);
 				    push(@ARGV, @list);
 			    } else {
