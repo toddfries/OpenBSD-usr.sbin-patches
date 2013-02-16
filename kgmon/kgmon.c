@@ -1,4 +1,4 @@
-/*	$OpenBSD: kgmon.c,v 1.15 2009/10/27 23:59:51 deraadt Exp $	*/
+/*	$OpenBSD: kgmon.c,v 1.17 2013/02/12 08:06:22 mpi Exp $	*/
 
 /*
  * Copyright (c) 1983, 1992, 1993

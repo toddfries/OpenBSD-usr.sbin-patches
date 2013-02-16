@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.403 2013/02/05 15:23:40 gilles Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.407 2013/02/15 22:43:21 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -54,6 +54,7 @@
 #ifndef SMTPD_NAME
 #define	SMTPD_NAME		 "OpenSMTPD"
 #endif
+#define	SMTPD_VERSION		 "5.3"
 #define SMTPD_BANNER		 "220 %s ESMTP %s"
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
@@ -90,6 +91,7 @@
 #define	F_BACKUP		0x10	/* XXX - MUST BE SYNC-ED WITH RELAY_BACKUP */
 #define	F_STARTTLS_REQUIRE	0x20
 #define	F_AUTH_REQUIRE		0x40
+#define	F_LMTP			0x80
 
 #define F_SCERT			0x01
 #define F_CCERT			0x02
@@ -102,6 +104,7 @@
 #define RELAY_AUTH		0x08
 #define RELAY_BACKUP		0x10	/* XXX - MUST BE SYNC-ED WITH F_BACKUP */
 #define RELAY_MX		0x20
+#define RELAY_LMTP		0x80
 
 typedef uint32_t	objid_t;
 
@@ -359,7 +362,7 @@ struct rule {
 
 	struct mailaddr		       *r_as;
 	struct table		       *r_mapping;
-	struct table		       *r_users;
+	struct table		       *r_userbase;
 	time_t				r_qexpire;
 };
 
@@ -409,6 +412,8 @@ struct expandnode {
 	struct rule	       *rule;
 	struct expandnode      *parent;
 	unsigned int		depth;
+	struct table   	       *mapping;
+	struct table   	       *userbase;
 	union {
 		/*
 		 * user field handles both expansion user and system user
@@ -581,6 +586,7 @@ struct smtpd {
 #define	TRACE_STAT	0x0200
 #define	TRACE_RULES	0x0400
 #define	TRACE_IMSGSIZE	0x0800
+#define	TRACE_EXPAND	0x1000
 
 #define PROFILE_TOSTAT	0x0001
 #define PROFILE_IMSG	0x0002
@@ -813,11 +819,6 @@ struct scheduler_info {
 	time_t			nexttry;
 };
 
-struct id_list {
-	struct id_list	*next;
-	uint64_t	 id;
-};
-
 #define SCHED_NONE		0x00
 #define SCHED_DELAY		0x01
 #define SCHED_REMOVE		0x02
@@ -830,7 +831,7 @@ struct scheduler_batch {
 	int		 type;
 	time_t		 delay;
 	size_t		 evpcount;
-	struct id_list	*evpids;
+	uint64_t	*evpids;
 };
 
 struct scheduler_backend {
@@ -1026,9 +1027,9 @@ struct ca_vrfy_resp_msg {
 
 
 /* aliases.c */
-int aliases_get(struct table *, struct expand *, const char *);
+int aliases_get(struct expand *, const char *);
 int aliases_virtual_check(struct table *, const struct mailaddr *);
-int aliases_virtual_get(struct table *, struct expand *, const struct mailaddr *);
+int aliases_virtual_get(struct expand *, const struct mailaddr *);
 int alias_parse(struct expandnode *, const char *);
 
 
@@ -1343,7 +1344,7 @@ const char *relayhost_to_text(const struct relayhost *);
 const char *rule_to_text(struct rule *);
 const char *sockaddr_to_text(struct sockaddr *);
 const char *mailaddr_to_text(const struct mailaddr *);
-
+const char *expandnode_to_text(struct expandnode *);
 
 /* util.c */
 typedef struct arglist arglist;
