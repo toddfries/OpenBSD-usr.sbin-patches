@@ -1,4 +1,4 @@
-/*	$OpenBSD: snmpd.h,v 1.40 2013/01/24 09:30:27 gerhard Exp $	*/
+/*	$OpenBSD: snmpd.h,v 1.42 2013/03/06 21:42:40 sthen Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008, 2012 Reyk Floeter <reyk@openbsd.org>
@@ -445,6 +445,7 @@ void		 log_info(const char *, ...);
 void		 log_debug(const char *, ...);
 __dead void	 fatal(const char *);
 __dead void	 fatalx(const char *);
+void		 vlog(int, const char *, va_list);
 const char	*log_in6addr(const struct in6_addr *);
 const char	*print_host(struct sockaddr_storage *, char *, size_t);
 
@@ -507,7 +508,7 @@ int			 pfr_get_astats(struct pfr_table *, struct pfr_astats *,
 int			 pfr_get_tstats(struct pfr_table *, struct pfr_tstats *,
 			    int *, int);
 int			 pfr_buf_grow(struct pfr_buffer *, int);
-void			*pfr_buf_next(struct pfr_buffer *, const void *);
+const void		*pfr_buf_next(struct pfr_buffer *, const void *);
 int			 pfi_get_ifaces(const char *, struct pfi_kif *, int *);
 int			 pfi_get(struct pfr_buffer *, const char *);
 int			 pfi_count(void);

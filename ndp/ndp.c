@@ -1,4 +1,4 @@
-/*	$OpenBSD: ndp.c,v 1.45 2009/06/25 15:44:43 claudio Exp $	*/
+/*	$OpenBSD: ndp.c,v 1.47 2013/03/21 04:43:17 deraadt Exp $	*/
 /*	$KAME: ndp.c,v 1.101 2002/07/17 08:46:33 itojun Exp $	*/
 
 /*
@@ -141,10 +141,6 @@ void pfx_flush(void);
 void rtrlist(void);
 void rtr_flush(void);
 void harmonize_rtr(void);
-#ifdef SIOCSDEFIFACE_IN6	/* XXX: check SIOCGDEFIFACE_IN6 as well? */
-static void getdefif(void);
-static void setdefif(char *);
-#endif
 static char *sec2str(time_t);
 static char *ether_str(struct sockaddr_dl *);
 static void ts_print(const struct timeval *);
@@ -168,7 +164,7 @@ main(int argc, char *argv[])
 
 	pid = getpid();
 	thiszone = gmt2local(0);
-	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPR")) != -1)
+	while ((ch = getopt(argc, argv, "acd:f:i:nprstA:HPR")) != -1)
 		switch (ch) {
 		case 'a':
 		case 'c':
@@ -178,7 +174,6 @@ main(int argc, char *argv[])
 		case 'P':
 		case 'R':
 		case 's':
-		case 'I':
 			if (mode) {
 				usage();
 				/*NOTREACHED*/
@@ -237,24 +232,6 @@ main(int argc, char *argv[])
 		}
 		delete(arg);
 		break;
-	case 'I':
-#ifdef SIOCSDEFIFACE_IN6	/* XXX: check SIOCGDEFIFACE_IN6 as well? */
-		if (argc > 1) {
-			usage();
-			/*NOTREACHED*/
-		} else if (argc == 1) {
-			if (strcmp(*argv, "delete") == 0 ||
-			    if_nametoindex(*argv))
-				setdefif(*argv);
-			else
-				errx(1, "invalid interface %s", *argv);
-		}
-		getdefif(); /* always call it to print the result */
-		break;
-#else
-		errx(1, "not supported yet");
-		/*NOTREACHED*/
-#endif
 	case 'p':
 		if (argc != 0) {
 			usage();
@@ -567,7 +544,7 @@ dump(struct in6_addr *addr, int cflag)
 {
 	int mib[6];
 	size_t needed;
-	char *lim, *buf, *next;
+	char *lim, *buf = NULL, *next;
 	struct rt_msghdr *rtm;
 	struct sockaddr_in6 *sin;
 	struct sockaddr_dl *sdl;
@@ -592,16 +569,21 @@ again:;
 	mib[3] = AF_INET6;
 	mib[4] = NET_RT_FLAGS;
 	mib[5] = RTF_LLINFO;
-	if (sysctl(mib, 6, NULL, &needed, NULL, 0) < 0)
-		err(1, "sysctl(PF_ROUTE estimate)");
-	if (needed > 0) {
-		if ((buf = malloc(needed)) == NULL)
-			err(1, "malloc");
-		if (sysctl(mib, 6, buf, &needed, NULL, 0) < 0)
+	while (1) {
+		if (sysctl(mib, 6, NULL, &needed, NULL, 0) == -1)
+			err(1, "sysctl(PF_ROUTE estimate)");
+		if (needed == 0)
+			break;
+		if ((buf = realloc(buf, needed)) == NULL)
+			err(1, "realloc");
+		if (sysctl(mib, 6, buf, &needed, NULL, 0) == -1) {
+			if (errno == ENOMEM)
+				continue;
 			err(1, "sysctl(PF_ROUTE, NET_RT_FLAGS)");
+		}
 		lim = buf + needed;
-	} else
-		buf = lim = NULL;
+		break;
+	}
 
 	for (next = buf; next && next < lim; next += rtm->rtm_msglen) {
 		int isrouter = 0, prbs = 0;
@@ -829,9 +811,6 @@ usage(void)
 	printf("usage: ndp [-nrt] [-a | -c | -p] [-H | -P | -R] ");
 	printf("[-A wait] [-d hostname]\n");
 	printf("\t[-f filename] ");
-#ifdef SIOCSDEFIFACE_IN6
-	printf("[-I [interface | delete]] ");
-#endif
 	printf("[-i interface [flag ...]]\n");
 	printf("\t[-s nodename etheraddr [temp] [proxy]] [hostname]\n");
 	exit(1);
@@ -1446,60 +1425,6 @@ harmonize_rtr(void)
 
 	close(s);
 }
-
-#ifdef SIOCSDEFIFACE_IN6	/* XXX: check SIOCGDEFIFACE_IN6 as well? */
-static void
-setdefif(char *ifname)
-{
-	struct in6_ndifreq ndifreq;
-	unsigned int ifindex;
-
-	if (strcasecmp(ifname, "delete") == 0)
-		ifindex = 0;
-	else {
-		if ((ifindex = if_nametoindex(ifname)) == 0)
-			err(1, "failed to resolve i/f index for %s", ifname);
-	}
-
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
-		err(1, "socket");
-
-	strlcpy(ndifreq.ifname, "lo0", sizeof(ndifreq.ifname)); /* dummy */
-	ndifreq.ifindex = ifindex;
-
-	if (ioctl(s, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
-		err(1, "ioctl(SIOCSDEFIFACE_IN6)");
-
-	close(s);
-}
-
-static void
-getdefif(void)
-{
-	struct in6_ndifreq ndifreq;
-	char ifname[IFNAMSIZ+8];
-
-	if ((s = socket(AF_INET6, SOCK_DGRAM, 0)) < 0)
-		err(1, "socket");
-
-	memset(&ndifreq, 0, sizeof(ndifreq));
-	strlcpy(ndifreq.ifname, "lo0", sizeof(ndifreq.ifname)); /* dummy */
-
-	if (ioctl(s, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq) < 0)
-		err(1, "ioctl(SIOCGDEFIFACE_IN6)");
-
-	if (ndifreq.ifindex == 0)
-		printf("No default interface.\n");
-	else {
-		if ((if_indextoname(ndifreq.ifindex, ifname)) == NULL)
-			err(1, "failed to resolve ifname for index %lu",
-			    ndifreq.ifindex);
-		printf("ND default interface = %s\n", ifname);
-	}
-
-	close(s);
-}
-#endif
 
 static char *
 sec2str(time_t total)

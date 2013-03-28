@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospf6d.h,v 1.26 2013/01/14 14:39:38 florian Exp $ */
+/*	$OpenBSD: ospf6d.h,v 1.28 2013/03/25 14:29:35 markus Exp $ */
 
 /*
  * Copyright (c) 2004, 2007 Esben Norby <norby@openbsd.org>
@@ -112,6 +112,7 @@ enum imsg_type {
 	IMSG_DB_END,
 	IMSG_LS_REQ,
 	IMSG_LS_UPD,
+	IMSG_LS_SNAP,
 	IMSG_LS_ACK,
 	IMSG_LS_FLOOD,
 	IMSG_LS_BADREQ,
@@ -375,6 +376,7 @@ struct ospfd_conf {
 	int			flags;
 	u_int8_t		border;
 	u_int8_t		redistribute;
+	char			*csock;
 };
 
 /* kroute */

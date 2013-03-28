@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.114 2013/02/14 12:30:49 gilles Exp $	*/
+/*	$OpenBSD: parse.y,v 1.116 2013/03/06 21:42:40 sthen Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -47,6 +47,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 #include <util.h>
 
@@ -129,7 +130,7 @@ typedef struct {
 %type	<v.number>	port from auth ssl size expire sender
 %type	<v.object>	tables tablenew tableref destination alias virtual usermapping userbase credentials
 %type	<v.maddr>	relay_as
-%type	<v.string>	certificate tag tagged compression relay_source listen_helo relay_helo relay_backup
+%type	<v.string>	certificate tag tagged relay_source listen_helo relay_helo relay_backup
 %%
 
 grammar		: /* empty */
@@ -329,30 +330,10 @@ credentials	: AUTH tables	{
 		| /* empty */	{ $$ = 0; }
 		;
 
-compression	: COMPRESSION		{
-			$$ = strdup("gzip");
-			if ($$ == NULL) {
-				yyerror("strdup");
-				YYERROR;
-			}
-		}
-		| COMPRESSION STRING	{ $$ = $2; }
-		;
-
 listen_helo	: HOSTNAME STRING	{ $$ = $2; }
 		| /* empty */		{ $$ = NULL; }
 
-main		: QUEUE compression {
-			conf->sc_queue_compress_algo = strdup($2);
-			if (conf->sc_queue_compress_algo == NULL) {
-				yyerror("strdup");
-				free($2);
-				YYERROR;
-			}
-			conf->sc_queue_flags |= QUEUE_COMPRESS;
-			free($2);
-		}
-		| BOUNCEWARN {
+main		: BOUNCEWARN {
 			bzero(conf->sc_bounce_warn, sizeof conf->sc_bounce_warn);
 		} bouncedelays
 		| EXPIRE STRING {
@@ -948,13 +929,15 @@ int
 yyerror(const char *fmt, ...)
 {
 	va_list		 ap;
+	char		*nfmt;
 
 	file->errors++;
 	va_start(ap, fmt);
-	fprintf(stderr, "%s:%d: ", file->name, yylval.lineno);
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
+	if (asprintf(&nfmt, "%s:%d: %s", file->name, yylval.lineno, fmt) == -1)
+		fatalx("yyerror asprintf");
+	vlog(LOG_CRIT, nfmt, ap);
 	va_end(ap);
+	free(nfmt);
 	return (0);
 }
 
@@ -978,7 +961,6 @@ lookup(char *s)
 		{ "backup",		BACKUP },
 		{ "bounce-warn",	BOUNCEWARN },
 		{ "certificate",	CERTIFICATE },
-		{ "compression",       	COMPRESSION },
 		{ "deliver",		DELIVER },
 		{ "domain",		DOMAIN },
 		{ "expire",		EXPIRE },

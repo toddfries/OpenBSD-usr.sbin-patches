@@ -1,4 +1,4 @@
-/*	$OpenBSD: pptpd.c,v 1.12 2012/11/13 17:10:40 yasuoka Exp $	*/
+/*	$OpenBSD: pptpd.c,v 1.15 2013/03/14 10:21:07 mpi Exp $	*/
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -25,20 +25,22 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-/* $Id: pptpd.c,v 1.12 2012/11/13 17:10:40 yasuoka Exp $ */
+/* $Id: pptpd.c,v 1.15 2013/03/14 10:21:07 mpi Exp $ */
 
 /**@file
  * This file provides a implementation of PPTP daemon.  Currently it
  * provides functions for PAC (PPTP Access Concentrator) only.
- * $Id: pptpd.c,v 1.12 2012/11/13 17:10:40 yasuoka Exp $
+ * $Id: pptpd.c,v 1.15 2013/03/14 10:21:07 mpi Exp $
  */
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
+#include <netinet/ip_gre.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -49,7 +51,6 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <string.h>
 #include <string.h>
 #include <event.h>
 #include <ifaddrs.h>
@@ -99,6 +100,18 @@ pptpd_init(pptpd *_this)
 {
 	int i, m;
 	uint16_t call0, call[UINT16_MAX - 1];
+
+	int mib[] = { CTL_NET, PF_INET, IPPROTO_GRE, GRECTL_ALLOW };
+	int value;
+	size_t size;
+	size = sizeof(value);
+
+	if (sysctl(mib, sizeof(mib)/sizeof(mib[0]), &value, &size, NULL, 0) == 0) {
+		if(value == 0) {
+			pptpd_log(_this, LOG_ERR, "GRE protocol not allowed");
+			return 1;
+		}
+	}
 
 	memset(_this, 0, sizeof(pptpd));
 	_this->id = pptpd_seqno++;
@@ -282,9 +295,6 @@ pptpd_listener_start(pptpd_listener *_this)
 	int sock, ival, sock_gre;
 	struct sockaddr_in bind_sin, bind_sin_gre;
 	int wildcardbinding;
-#ifdef NPPPD_FAKEBIND
-	extern void set_faith(int, int);
-#endif
 
 	wildcardbinding =
 	    (_this->bind_sin.sin_addr.s_addr == INADDR_ANY)?  1 : 0;
@@ -303,10 +313,6 @@ pptpd_listener_start(pptpd_listener *_this)
 		pptpd_log(_this->self, LOG_WARNING,
 		    "setsockopt(SO_REUSEPORT) failed at %s(): %m", __func__);
 	}
-#ifdef NPPPD_FAKEBIND
-	if (!wildcardbinding)
-		set_faith(sock, 1);
-#endif
 #if defined(IP_STRICT_RCVIF) && defined(USE_STRICT_RCVIF)
 	ival = 1;
 	if (setsockopt(sock, IPPROTO_IP, IP_STRICT_RCVIF, &ival, sizeof(ival))
@@ -338,10 +344,6 @@ pptpd_listener_start(pptpd_listener *_this)
 		    ntohs(_this->bind_sin.sin_port), __func__);
 		goto fail;
 	}
-#ifdef NPPPD_FAKEBIND
-	if (!wildcardbinding)
-		set_faith(sock, 0);
-#endif
 	pptpd_log(_this->self, LOG_INFO, "Listening %s:%u/tcp (PPTP PAC) [%s]",
 	    inet_ntoa(_this->bind_sin.sin_addr),
 	    ntohs(_this->bind_sin.sin_port), _this->tun_name);
@@ -353,10 +355,6 @@ pptpd_listener_start(pptpd_listener *_this)
 		    __func__);
 		goto fail;
 	}
-#ifdef NPPPD_FAKEBIND
-	if (!wildcardbinding)
-		set_faith(sock_gre, 1);
-#endif
 #if defined(IP_STRICT_RCVIF) && defined(USE_STRICT_RCVIF)
 	ival = 1;
 	if (setsockopt(sock_gre, IPPROTO_IP, IP_STRICT_RCVIF, &ival,
@@ -388,10 +386,6 @@ pptpd_listener_start(pptpd_listener *_this)
 		    ntohs(bind_sin_gre.sin_port), __func__);
 		goto fail;
 	}
-#ifdef NPPPD_FAKEBIND
-	if (!wildcardbinding)
-		set_faith(sock_gre, 0);
-#endif
 	if (wildcardbinding) {
 #ifdef USE_LIBSOCKUTIL
 		if (setsockoptfromto(sock) != 0) {
@@ -633,7 +627,8 @@ pptpd_io_event(int fd, short evmask, void *ctx)
 			    (struct sockaddr *)&peer, &peerlen)) < 0) {
 				if (errno == EMFILE || errno == ENFILE)
 					accept_pause();
-				else if (errno != EAGAIN && errno != EINTR) {
+				else if (errno != EAGAIN && errno != EINTR &&
+				    errno != ECONNABORTED) {
 					pptpd_log(_this, LOG_ERR,
 					    "accept() failed at %s(): %m",
 						__func__);

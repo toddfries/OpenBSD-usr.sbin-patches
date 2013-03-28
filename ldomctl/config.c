@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.14 2012/12/08 18:45:26 kettenis Exp $	*/
+/*	$OpenBSD: config.c,v 1.16 2013/03/04 11:54:13 otto Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -592,8 +592,16 @@ hvmd_init_endpoint(struct md *md, struct md_node *node)
 	if (resource_id >= max_guest_ldcs)
 		errx(1, "resource_id larger than max_guest_ldcs");
 
-	if (ldc_endpoints[resource_id])
+	if (ldc_endpoints[resource_id]) {
+		/*
+		 * Some machine descriptions seem to have duplicate
+		 * arcs.  Fortunately, these can be easily detected
+		 * and ignored.
+		 */
+		if (ldc_endpoints[resource_id]->hv_node == node)
+			return;
 		errx(1, "duplicate resource_id");
+	}
 
 	endpoint = xzalloc(sizeof(*endpoint));
 	endpoint->target_guest = -1;
@@ -2259,7 +2267,8 @@ build_config(const char *filename)
 	uint64_t memory;
 
 	SIMPLEQ_INIT(&conf.domain_list);
-	parse_config(filename, &conf);
+	if (parse_config(filename, &conf) < 0)
+		exit(1);
 
 	pri = md_read("pri");
 	if (pri == NULL)

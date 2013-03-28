@@ -1,6 +1,6 @@
 #!/bin/ksh -
 #
-# $OpenBSD: sysmerge.sh,v 1.102 2013/01/25 13:32:49 ajacoutot Exp $
+# $OpenBSD: sysmerge.sh,v 1.104 2013/03/22 08:20:43 ajacoutot Exp $
 #
 # Copyright (c) 2008-2013 Antoine Jacoutot <ajacoutot@openbsd.org>
 # Copyright (c) 1998-2003 Douglas Barton <DougB@FreeBSD.org>
@@ -88,12 +88,13 @@ fi
 # stores sumfilename in ETCSUM or XETCSUM (see eval)
 extract_set() {
 	[[ -z $1 ]] && return
-	local _tgz=$(readlink -f "$1") _set=$2
+	local _tgz=$(readlink -f "$1") _set=$2 _f
 	typeset -u _SETSUM=${_set}sum
 	eval ${_SETSUM}=${_set}sum
 	(cd ${TEMPROOT} && tar -xzphf "${_tgz}" && \
-	 tar -tzf "${_tgz}" | xargs cksum > ${WRKDIR}/${_set}sum) || \
-		error_rm_wrkdir "extract/cksum of ${_tgz} failed"
+		tar -tzf "${_tgz}" | while read _f; do
+			[ ! -h ${_f} ] && cksum ${_f} >> ${WRKDIR}/${_set}sum; done) || \
+				error_rm_wrkdir "extract/cksum of ${_tgz} failed"
 }
 
 # optionally fetch and check if file is a valid (x)etcXX.tgz
@@ -117,7 +118,7 @@ prepare_src() {
 	SRCSUM=srcsum
 	(cd ${SRCDIR}/etc && \
 	 make DESTDIR=${TEMPROOT} distribution-etc-root-var >/dev/null 2>&1 && \
-	 cd ${TEMPROOT} && find . -type f | xargs cksum > ${WRKDIR}/${SRCSUM}) || \
+	 cd ${TEMPROOT} && find . -type f -and ! -type l | xargs cksum > ${WRKDIR}/${SRCSUM}) || \
 		error_rm_wrkdir "prepare/cksum of ${SRCDIR} failed"
 }
 
@@ -527,17 +528,19 @@ diff_loop() {
 }
 
 sm_compare() {
-	local _c1 _c2 COMPFILE CVSID1 CVSID2
+	local _c1 _c2 _c3 COMPFILE CVSID1 CVSID2
 	echo "===> Starting comparison"
 
 	cd ${TEMPROOT} || error_rm_wrkdir
 
 	# use -size +0 to avoid comparing empty log files and device nodes;
 	# however, we want to keep the symlinks; group and master.passwd
-	# need to be handled first in case install_file needs a new user/group
+	# need to be handled first in case install_file needs a new user/group;
+	# aliases(5) needs to be handled last in case smtpd.conf(5) syntax changes
 	_c1="./etc/group ./etc/master.passwd"
-	_c2=$(find . -type f -size +0 -or -type l | grep -vE '(./etc/group|./etc/master.passwd)')
-	for COMPFILE in ${_c1} ${_c2}; do
+	_c2=$(find . -type f -size +0 -or -type l | grep -vE '^./etc/(group|master.passwd|mail/aliases)$')
+	_c3=$(find . -type f -name aliases)
+	for COMPFILE in ${_c1} ${_c2} ${_c3}; do
 		unset IS_BINFILE
 		unset IS_LINK
 		# links need to be treated in a different way

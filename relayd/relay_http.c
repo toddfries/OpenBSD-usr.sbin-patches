@@ -1,4 +1,4 @@
-/*	$OpenBSD: relay_http.c,v 1.9 2013/02/15 12:15:12 bluhm Exp $	*/
+/*	$OpenBSD: relay_http.c,v 1.11 2013/03/10 23:32:53 reyk Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2012 Reyk Floeter <reyk@openbsd.org>
@@ -78,8 +78,8 @@ relay_read_http(struct bufferevent *bev, void *arg)
 	const char		*errstr;
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL) == -1)
-		goto fail;
+	getmonotime(&con->se_tv_last);
+
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("%s: size %lu, to read %lld", __func__, size, cre->toread);
 	if (!size) {
@@ -375,6 +375,8 @@ relay_read_http(struct bufferevent *bev, void *arg)
 	if (EVBUFFER_LENGTH(src) && bev->readcb != relay_read_http)
 		bev->readcb(bev, arg);
 	bufferevent_enable(bev, EV_READ);
+	if (relay_splice(cre) == -1)
+		relay_close(con, strerror(errno));
 	return;
  fail:
 	relay_abort_http(con, 500, strerror(errno), 0);
@@ -391,13 +393,15 @@ relay_read_httpcontent(struct bufferevent *bev, void *arg)
 	struct evbuffer		*src = EVBUFFER_INPUT(bev);
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL) == -1)
-		goto fail;
+	getmonotime(&con->se_tv_last);
+
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("%s: dir %d, size %lu, to read %lld",
 	    __func__, cre->dir, size, cre->toread);
 	if (!size)
 		return;
+	if (relay_spliceadjust(cre) == -1)
+		goto fail;
 
 	if (cre->toread > 0) {
 		/* Read content data */
@@ -442,13 +446,15 @@ relay_read_httpchunks(struct bufferevent *bev, void *arg)
 	long			 lval;
 	size_t			 size;
 
-	if (gettimeofday(&con->se_tv_last, NULL) == -1)
-		goto fail;
+	getmonotime(&con->se_tv_last);
+
 	size = EVBUFFER_LENGTH(src);
 	DPRINTF("%s: dir %d, size %lu, to read %lld",
 	    __func__, cre->dir, size, cre->toread);
 	if (!size)
 		return;
+	if (relay_spliceadjust(cre) == -1)
+		goto fail;
 
 	if (cre->toread > 0) {
 		/* Read chunk data */

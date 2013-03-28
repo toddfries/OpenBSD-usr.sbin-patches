@@ -1,4 +1,4 @@
-/*	$OpenBSD: ospfe.c,v 1.38 2012/09/17 13:49:27 bluhm Exp $ */
+/*	$OpenBSD: ospfe.c,v 1.41 2013/03/25 14:29:35 markus Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -90,7 +90,7 @@ ospfe(struct ospfd_conf *xconf, int pipe_parent2ospfe[2], int pipe_ospfe2rde[2],
 	}
 
 	/* create ospfd control socket outside chroot */
-	if (control_init() == -1)
+	if (control_init(xconf->csock) == -1)
 		fatalx("control socket setup failed");
 
 	/* create the raw ip socket */
@@ -484,6 +484,8 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 			nbr = nbr_find_peerid(imsg.hdr.peerid);
 			if (nbr == NULL)
 				break;
+			if (nbr->state != NBR_STA_SNAP)	/* discard */
+				break;
 
 			/* add LSA header to the neighbor db_sum_list */
 			lhp = lsa_hdr_new();
@@ -493,6 +495,10 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 		case IMSG_DB_END:
 			nbr = nbr_find_peerid(imsg.hdr.peerid);
 			if (nbr == NULL)
+				break;
+
+			nbr->dd_snapshot = 0;
+			if (nbr->state != NBR_STA_SNAP)
 				break;
 
 			/* snapshot done, start tx of dd packets */
@@ -584,12 +590,14 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 			lsa_cache_put(ref, nbr);
 			break;
 		case IMSG_LS_UPD:
+		case IMSG_LS_SNAP:
 			/*
-			 * IMSG_LS_UPD is used in three cases:
+			 * IMSG_LS_UPD is used in two cases:
 			 * 1. as response to ls requests
 			 * 2. as response to ls updates where the DB
 			 *    is newer then the sent LSA
-			 * 3. in EXSTART when the LSA has age MaxAge
+			 * IMSG_LS_SNAP is used in one case:
+			 *    in EXSTART when the LSA has age MaxAge
 			 */
 			l = imsg.hdr.len - IMSG_HEADER_SIZE;
 			if (l < sizeof(lsa_hdr))
@@ -601,6 +609,10 @@ ospfe_dispatch_rde(int fd, short event, void *bula)
 				break;
 
 			if (nbr->iface->self == nbr)
+				break;
+
+			if (imsg.hdr.type == IMSG_LS_SNAP &&
+			    nbr->state != NBR_STA_SNAP)
 				break;
 
 			memcpy(&age, imsg.data, sizeof(age));
@@ -922,7 +934,7 @@ orig_rtr_lsa_area(struct area *area)
 	if (oeconf->border)
 		flags |= OSPF_RTR_B;
 	/* TODO set V flag if a active virtual link ends here and the
-	 * area is the tranist area for this link. */
+	 * area is the transit area for this link. */
 	if (virtual)
 		flags |= OSPF_RTR_V;
 
