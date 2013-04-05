@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.16 2013/03/04 11:54:13 otto Exp $	*/
+/*	$OpenBSD: config.c,v 1.18 2013/04/03 15:38:48 kettenis Exp $	*/
 
 /*
  * Copyright (c) 2012 Mark Kettenis
@@ -60,6 +60,8 @@ struct mblock **mblocks;
 struct ldc_endpoint **ldc_endpoints;
 
 uint64_t max_cpus;
+bool have_cwqs;
+bool have_rngs;
 
 uint64_t max_guests;
 uint64_t max_hv_ldcs;
@@ -765,6 +767,9 @@ hvmd_init(struct md *md)
 			hvmd_init_cpu(md, prop->d.arc.node);
 	}
 
+	have_cwqs = (md_find_node(md, "cwqs") != NULL);
+	have_rngs = (md_find_node(md, "rngs") != NULL);
+
 	node = md_find_node(md, "devices");
 	TAILQ_FOREACH(prop, &node->prop_list, link) {
 		if (prop->tag == MD_PROP_ARC &&
@@ -852,14 +857,30 @@ hvmd_finalize_maus(struct md *md)
 {
 	struct md_node *parent;
 	struct md_node *node;
+	struct md_node *child;
+	int i;
 
 	parent = md_find_node(md, "root");
 	assert(parent);
 
 	node = md_add_node(md, "maus");
 	md_link_node(md, parent, node);
-	node = md_add_node(md, "cwqs");
-	md_link_node(md, parent, node);
+	
+	if (have_cwqs) {
+		node = md_add_node(md, "cwqs");
+		md_link_node(md, parent, node);
+	}
+
+	if (have_rngs) {
+		node = md_add_node(md, "rngs");
+		md_link_node(md, parent, node);
+		child = md_add_node(md, "rng");
+		md_link_node(md, node, child);
+		for (i = 0; i < max_cpus; i++) {
+			if (cpus[i])
+				md_link_node(md, cpus[i]->hv_node, child);
+		}
+	}
 }
 
 void
@@ -2263,8 +2284,8 @@ build_config(const char *filename)
 	struct domain *domain;
 	struct vdisk *vdisk;
 	struct vnet *vnet;
-	uint64_t num_cpus;
-	uint64_t memory;
+	uint64_t num_cpus, primary_num_cpus;
+	uint64_t memory, primary_memory;
 
 	SIMPLEQ_INIT(&conf.domain_list);
 	if (parse_config(filename, &conf) < 0)
@@ -2280,15 +2301,23 @@ build_config(const char *filename)
 	pri_init(pri);
 	pri_alloc_memory(hv_membase, hv_memsize);
 
-	num_cpus = 0;
-	memory = 0; 
+	num_cpus = primary_num_cpus = 0;
+	memory = primary_memory = 0; 
 	SIMPLEQ_FOREACH(domain, &conf.domain_list, entry) {
+		if (strcmp(domain->name, "primary") == 0) {
+			primary_num_cpus = domain->vcpu;
+			primary_memory = domain->memory;
+		}
 		num_cpus += domain->vcpu;
 		memory += domain->memory;
 	}
-	if (num_cpus >= total_cpus)
+	if (primary_num_cpus == 0 && total_cpus > num_cpus)
+		primary_num_cpus = total_cpus - num_cpus;
+	if (primary_memory == 0 && total_memory > memory)
+		primary_memory = total_memory - memory;
+	if (num_cpus > total_cpus || primary_num_cpus == 0)
 		errx(1, "not enough VCPU resources available");
-	if (memory >= total_memory)
+	if (memory > total_memory || primary_memory == 0)
 		errx(1, "not enough memory available");
 
 	hvmd_init(hvmd);
@@ -2305,12 +2334,14 @@ build_config(const char *filename)
 			primary->endpoint_id = endpoint->channel + 1;
 	}
 
-	for (i = total_cpus - num_cpus; i < max_cpus; i++)
+	for (i = primary_num_cpus; i < max_cpus; i++)
 		guest_delete_cpu(primary, i);
 	guest_delete_memory(primary);
-	guest_add_memory(primary, -1, total_memory - memory);
+	guest_add_memory(primary, -1, primary_memory);
 
 	SIMPLEQ_FOREACH(domain, &conf.domain_list, entry) {
+		if (strcmp(domain->name, "primary") == 0)
+			continue;
 		guest = guest_create(domain->name);
 		for (i = 0; i < domain->vcpu; i++)
 			guest_add_cpu(guest);
