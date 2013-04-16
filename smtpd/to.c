@@ -1,4 +1,4 @@
-/*	$OpenBSD: to.c,v 1.4 2013/02/15 22:43:21 eric Exp $	*/
+/*	$OpenBSD: to.c,v 1.6 2013/04/12 18:22:49 eric Exp $	*/
 
 /*
  * Copyright (c) 2009 Jacek Masiulaniec <jacekm@dobremiasto.net>
@@ -97,7 +97,7 @@ text_to_mailaddr(struct mailaddr *maddr, const char *email)
 {
 	char *username;
 	char *hostname;
-	char  buffer[MAX_LINE_SIZE];
+	char  buffer[SMTPD_MAXLINESIZE];
 
 	if (strlcpy(buffer, email, sizeof buffer) >= sizeof buffer)
 		return 0;
@@ -134,7 +134,7 @@ text_to_mailaddr(struct mailaddr *maddr, const char *email)
 const char *
 mailaddr_to_text(const struct mailaddr *maddr)
 {
-	static char  buffer[MAX_LINE_SIZE];
+	static char  buffer[SMTPD_MAXLINESIZE];
 
 	strlcpy(buffer, maddr->user, sizeof buffer);
 	strlcat(buffer, "@", sizeof buffer);
@@ -218,7 +218,8 @@ duration_to_text(time_t t)
 {
 	static char	dst[64];
 	char		buf[64];
-	int		d, h, m, s;
+	int		h, m, s;
+	long long	d;
 
 	if (t == 0) {
 		strlcpy(dst, "0s", sizeof dst);
@@ -239,7 +240,7 @@ duration_to_text(time_t t)
 	d = t / 24;
 
 	if (d) {
-		snprintf(buf, sizeof buf, "%id", d);
+		snprintf(buf, sizeof buf, "%llid", d);
 		strlcat(dst, buf, sizeof dst);
 	}
 	if (h) {
@@ -627,7 +628,7 @@ int
 text_to_credentials(struct credentials *creds, const char *s)
 {
 	char   *p;
-	char	buffer[MAX_LINE_SIZE];
+	char	buffer[SMTPD_MAXLINESIZE];
 	size_t	offset;
 
 	p = strchr(s, ':');
