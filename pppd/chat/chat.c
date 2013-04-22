@@ -1,4 +1,4 @@
-/*	$OpenBSD: chat.c,v 1.28 2010/08/12 02:00:28 kevlo Exp $	*/
+/*	$OpenBSD: chat.c,v 1.30 2013/04/21 17:50:29 tedu Exp $	*/
 
 /*
  *	Chat -- a program for automatic session establishment (i.e. dial
@@ -1341,7 +1341,7 @@ register char *string;
 		if ((report_string[n] != (char*) NULL) &&
 		    s - temp >= (report_len = strlen(report_string[n])) &&
 		    strncmp(s - report_len, report_string[n], report_len) == 0) {
-		    time_t time_now   = time ((time_t*) NULL);
+		    time_t time_now   = time (NULL);
 		    struct tm* tm_now = localtime (&time_now);
 
 		    strftime (report_buffer, 20, "%b %d %H:%M:%S ", tm_now);
@@ -1425,43 +1425,6 @@ register char *string;
     alarmed   = 0;
     return (0);
 }
-
-/*
- * Gross kludge to handle Solaris versions >= 2.6 having usleep.
- */
-#ifdef SOL2
-#include <sys/param.h>
-#if MAXUID > 65536		/* then this is Solaris 2.6 or later */
-#undef NO_USLEEP
-#endif
-#endif /* SOL2 */
-
-#ifdef NO_USLEEP
-#include <sys/types.h>
-#include <sys/time.h>
-
-/*
-  usleep -- support routine for 4.2BSD system call emulations
-  last edit:  29-Oct-1984     D A Gwyn
-  */
-
-extern int	  select();
-
-int
-usleep( usec )				  /* returns 0 if ok, else -1 */
-    long		usec;		/* delay in microseconds */
-{
-    static struct {		/* `timeval' */
-	long	tv_sec;		/* seconds */
-	long	tv_usec;	/* microsecs */
-    } delay;	    		/* _select() timeout */
-
-    delay.tv_sec  = usec / 1000000L;
-    delay.tv_usec = usec % 1000000L;
-
-    return select(0, (long *)0, (long *)0, (long *)0, &delay);
-}
-#endif
 
 void
 pack_array (array, end)

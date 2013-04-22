@@ -22,6 +22,7 @@
 #include "defs.h"
 #include <stdarg.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <util.h>
 #include <err.h>
 
@@ -41,8 +42,8 @@ u_char pruning = 1;	/* Enable pruning by default */
 #define NHANDLERS	2
 
 static struct ihandler {
-    int fd;			/* File descriptor		 */
-    ihfunc_t func;		/* Function to call with &fd_set */
+    int fd;			/* File descriptor		*/
+    ihfunc_t func;		/* Function to call		*/
 } ihandlers[NHANDLERS];
 static int nhandlers = 0;
 
@@ -74,14 +75,13 @@ register_input_handler(int fd, ihfunc_t func)
 int
 main(int argc, char *argv[])
 {
-    register int recvlen;
+    int recvlen;
     int dummy;
     FILE *fp;
-    struct timeval tv;
+    struct timeval now;
     u_int32_t prev_genid;
-    int vers;
-    fd_set rfds, readers;
-    int nfds, n, i, ch;
+    struct pollfd *pfd;
+    int vers, n, i, ch;
     sigset_t mask, omask;
     const char *errstr;
 
@@ -165,17 +165,11 @@ usage:	fprintf(stderr,
 
     logit(LOG_NOTICE, 0, "%s", versionstring);
 
-#ifdef SYSV
-    srand48(time(NULL));
-#else
-    srandom(gethostid());
-#endif
-
     /*
      * Get generation id
      */
-    gettimeofday(&tv, 0);
-    dvmrp_genid = tv.tv_sec;
+    gettimeofday(&now, NULL);
+    dvmrp_genid = (u_int32_t)now.tv_sec;	/* for a while after 2038 */
 
     fp = fopen(genidfilename, "r");
     if (fp != NULL) {
@@ -237,17 +231,12 @@ usage:	fprintf(stderr,
     if (debug != 0)
 	(void)signal(SIGQUIT, dump);
 
-    FD_ZERO(&readers);
-    if (igmp_socket >= FD_SETSIZE)
-	logit(LOG_ERR, 0, "descriptor too big");
-    FD_SET(igmp_socket, &readers);
-    nfds = igmp_socket + 1;
+    pfd = calloc(sizeof(struct pollfd), 1 + nhandlers);
+    pfd[0].fd = igmp_socket;
+    pfd[0].events = POLLIN;
     for (i = 0; i < nhandlers; i++) {
-	if (ihandlers[i].fd >= FD_SETSIZE)
-	    logit(LOG_ERR, 0, "descriptor too big");
-	FD_SET(ihandlers[i].fd, &readers);
-	if (ihandlers[i].fd >= nfds)
-	    nfds = ihandlers[i].fd + 1;
+	pfd[i + 1].fd = ihandlers[i].fd;
+	pfd[i + 1].events = POLLIN;
     }
 
     /*
@@ -268,14 +257,13 @@ usage:	fprintf(stderr,
      */
     dummy = 0;
     for(;;) {
-	bcopy((char *)&readers, (char *)&rfds, sizeof(rfds));
-	if ((n = select(nfds, &rfds, NULL, NULL, NULL)) < 0) {
+	if ((n = poll(pfd, nhandlers + 1, -1)) < 0) {
             if (errno != EINTR) /* SIGALRM is expected */
-                logit(LOG_WARNING, errno, "select failed");
+                logit(LOG_WARNING, errno, "poll failed");
             continue;
         }
 
-	if (FD_ISSET(igmp_socket, &rfds)) {
+	if (pfd[0].revents & POLLIN) {
 	    recvlen = recvfrom(igmp_socket, recv_buf, RECV_BUF_SIZE,
 			       0, NULL, &dummy);
 	    if (recvlen < 0) {
@@ -291,8 +279,8 @@ usage:	fprintf(stderr,
         }
 
 	for (i = 0; i < nhandlers; i++) {
-	    if (FD_ISSET(ihandlers[i].fd, &rfds)) {
-		(*ihandlers[i].func)(ihandlers[i].fd, &rfds);
+	    if (pfd[i + 1].revents & POLLIN) {
+		(*ihandlers[i].func)(ihandlers[i].fd);
 	    }
 	}
     }
@@ -306,20 +294,21 @@ usage:	fprintf(stderr,
  * seconds.  Also, every TIMER_INTERVAL seconds it calls timer() to
  * do all the other time-based processing.
  */
+/* XXX signal race */
 static void
 fasttimer(int i)
 {
     static unsigned int tlast;
     static unsigned int nsent;
-    register unsigned int t = tlast + 1;
-    register int n;
+    unsigned int t = tlast + 1;
+    int n;
 
     /*
      * if we're in the last second, send everything that's left.
      * otherwise send at least the fraction we should have sent by now.
      */
     if (t >= ROUTE_REPORT_INTERVAL) {
-	register int nleft = nroutes - nsent;
+	int nleft = nroutes - nsent;
 	while (nleft > 0) {
 	    if ((n = report_next_chunk()) <= 0)
 		break;
@@ -328,7 +317,7 @@ fasttimer(int i)
 	tlast = 0;
 	nsent = 0;
     } else {
-	register unsigned int ncum = nroutes * t / ROUTE_REPORT_INTERVAL;
+	unsigned int ncum = nroutes * t / ROUTE_REPORT_INTERVAL;
 	while (nsent < ncum) {
 	    if ((n = report_next_chunk()) <= 0)
 		break;
@@ -417,6 +406,7 @@ timer(void)
 /*
  * On termination, let everyone know we're going away.
  */
+/* XXX signal race */
 static void
 done(int i)
 {
@@ -425,6 +415,7 @@ done(int i)
     _exit(1);
 }
 
+/* XXX signal race, atexit race */
 static void
 cleanup(void)
 {
@@ -445,6 +436,7 @@ cleanup(void)
 /*
  * Dump internal data structures to stderr.
  */
+/* XXX signal race */
 static void
 dump(int i)
 {
@@ -473,6 +465,7 @@ fdump(int i)
 /*
  * Dump local cache contents to a file.
  */
+/* XXX signal race */
 static void
 cdump(int i)
 {
@@ -489,6 +482,7 @@ cdump(int i)
 /*
  * Restart mrouted
  */
+/* XXX signal race */
 static void
 restart(int i)
 {

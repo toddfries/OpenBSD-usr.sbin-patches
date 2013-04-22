@@ -1,4 +1,4 @@
-/*	$OpenBSD: misc.c,v 1.44 2011/08/22 19:32:42 millert Exp $	*/
+/*	$OpenBSD: misc.c,v 1.46 2013/04/21 00:14:51 tedu Exp $	*/
 
 /* Copyright 1988,1990,1993,1994 by Paul Vixie
  * All rights reserved
@@ -443,7 +443,7 @@ log_it(const char *username, PID_T xpid, const char *event, const char *detail) 
 #if defined(LOG_FILE)
 	char *msg;
 	size_t msglen;
-	TIME_T now = time((TIME_T) 0);
+	time_t now = time(NULL);
 	struct tm *t = localtime(&now);
 #endif /*LOG_FILE*/
 #if defined(SYSLOG)
@@ -783,4 +783,16 @@ poke_daemon(const char *spool_dir, unsigned char cookie) {
 	if (sock >= 0)
 		close(sock);
 	(void) signal(SIGPIPE, SIG_DFL);
+}
+
+int
+strtot(const char *nptr, char **endptr, time_t *tp)
+{
+	long long ll;
+
+	ll = strtoll(nptr, endptr, 10);
+	if (ll < 0 || (time_t)ll != ll)
+		return (-1);
+	*tp = (time_t)ll;
+	return (0);
 }

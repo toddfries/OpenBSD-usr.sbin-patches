@@ -1,4 +1,4 @@
-/*	$OpenBSD: dump.c,v 1.12 2008/06/10 04:49:11 reyk Exp $	*/
+/*	$OpenBSD: dump.c,v 1.15 2013/04/21 19:46:31 deraadt Exp $	*/
 /*	$KAME: dump.c,v 1.10 2002/05/31 10:10:03 itojun Exp $	*/
 
 /*
@@ -83,13 +83,12 @@ dump_interface_status(void)
 		    ifinfo->mediareqok ? "available" : "unavailable");
 		fprintf(fp, "  probes: %d, dadcount = %d\n",
 		    ifinfo->probes, ifinfo->dadcount);
-		if (ifinfo->timer.tv_sec == tm_max.tv_sec &&
-		    ifinfo->timer.tv_usec == tm_max.tv_usec)
+		if (ifinfo->stoptimer)
 			fprintf(fp, "  no timer\n");
 		else {
-			fprintf(fp, "  timer: interval=%d:%d, expire=%s\n",
-			    (int)ifinfo->timer.tv_sec,
-			    (int)ifinfo->timer.tv_usec,
+			fprintf(fp, "  timer: interval=%lld:%ld, expire=%s\n",
+			    (long long)ifinfo->timer.tv_sec,
+			    ifinfo->timer.tv_usec,
 			    (ifinfo->expire.tv_sec < now.tv_sec) ? "expired"
 			    : sec2str(ifinfo->expire.tv_sec - now.tv_sec));
 		}
@@ -113,7 +112,8 @@ static char *
 sec2str(time_t total)
 {
 	static char result[256];
-	int days, hours, mins, secs;
+	time_t days;
+	int hours, mins, secs;
 	int first = 1;
 	char *p = result;
 	char *ep = &result[sizeof(result)];
@@ -126,7 +126,7 @@ sec2str(time_t total)
 
 	if (days) {
 		first = 0;
-		n = snprintf(p, ep - p, "%dd", days);
+		n = snprintf(p, ep - p, "%lldd", (long long)days);
 		if (n < 0 || n >= ep - p)
 			return "?";
 		p += n;

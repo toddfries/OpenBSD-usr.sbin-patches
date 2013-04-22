@@ -1,4 +1,4 @@
-/*	$OpenBSD: rdate.c,v 1.24 2009/10/27 23:59:54 deraadt Exp $	*/
+/*	$OpenBSD: rdate.c,v 1.28 2013/04/20 20:39:14 millert Exp $	*/
 /*	$NetBSD: rdate.c,v 1.4 1996/03/16 12:37:45 pk Exp $	*/
 
 /*
@@ -34,7 +34,6 @@
 /*
  * rdate.c: Set the date from the specified host
  *
- *	Uses the rfc868 time protocol at socket 37.
  *	Time is returned as the number of seconds since
  *	midnight January 1st 1900.
  */
@@ -44,6 +43,7 @@
 #include <sys/time.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
 #include <err.h>
 #include <string.h>
@@ -62,25 +62,17 @@ void ntp_client (const char *, int, struct timeval *, struct timeval *, int);
 
 extern char    *__progname;
 
-void
+__dead void
 usage(void)
 {
-	(void) fprintf(stderr, "usage: %s [-46acnpsv] host\n", __progname);
-	(void) fprintf(stderr,
-	    "  -4: use IPv4 only\n"
-	    "  -6: use IPv6 only\n"
-	    "  -a: use adjtime instead of instant change\n"
-	    "  -c: correct leap second count\n"
-	    "  -n: use SNTP instead of RFC868 time protocol\n"
-	    "  -p: just print, don't set\n"
-	    "  -s: just set, don't print\n"
-	    "  -v: verbose output\n");
+	(void) fprintf(stderr, "usage: %s [-46acnopsv] host\n", __progname);
+	exit(1);
 }
 
 int
 main(int argc, char **argv)
 {
-	int             pr = 0, silent = 0, ntp = 0, verbose = 0;
+	int             pr = 0, silent = 0, ntp = 1, verbose = 0;
 	int		slidetime = 0, corrleaps = 0;
 	char           *hname;
 	extern int      optind;
@@ -89,7 +81,7 @@ main(int argc, char **argv)
 
 	struct timeval new, adjust;
 
-	while ((c = getopt(argc, argv, "46psancv")) != -1)
+	while ((c = getopt(argc, argv, "46psanocv")) != -1) {
 		switch (c) {
 		case '4':
 			family = PF_INET;
@@ -115,6 +107,10 @@ main(int argc, char **argv)
 			ntp++;
 			break;
 
+		case 'o':
+			ntp = 0;
+			break;
+
 		case 'c':
 			corrleaps = 1;
 			break;
@@ -125,13 +121,10 @@ main(int argc, char **argv)
 
 		default:
 			usage();
-			return 1;
 		}
-
-	if (argc - 1 != optind) {
-		usage();
-		return 1;
 	}
+	if (argc - 1 != optind)
+		usage();
 	hname = argv[optind];
 
 	if (ntp)

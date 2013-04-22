@@ -1,4 +1,4 @@
-/*	$OpenBSD: l2tpd.c,v 1.11 2012/09/18 13:14:08 yasuoka Exp $ */
+/*	$OpenBSD: l2tpd.c,v 1.13 2013/04/20 23:32:32 yasuoka Exp $ */
 
 /*-
  * Copyright (c) 2009 Internet Initiative Japan Inc.
@@ -26,7 +26,7 @@
  * SUCH DAMAGE.
  */
 /**@file L2TP(Layer Two Tunneling Protocol "L2TP") / RFC2661 */
-/* $Id: l2tpd.c,v 1.11 2012/09/18 13:14:08 yasuoka Exp $ */
+/* $Id: l2tpd.c,v 1.13 2013/04/20 23:32:32 yasuoka Exp $ */
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -113,7 +113,7 @@ l2tpd_init(l2tpd *_this)
 		    __func__);
 		return 1;
 	}
-	off = random() % L2TP_SESSION_ID_MASK;
+	off = arc4random() % L2TP_SESSION_ID_MASK;
 	for (i = 0; i < L2TP_NCALL; i++) {
 		id = (i + off) % L2TP_SESSION_ID_MASK;
 		if (id == 0)
@@ -573,8 +573,6 @@ l2tpd_reload(l2tpd *_this, struct l2tp_confs *l2tp_conf)
 		return 0;
 	}
 
-	if (l2tpd_init(_this) != 0)
-		return -1;
 	i = 0;
 	TAILQ_FOREACH(conf, l2tp_conf, entry)
 		l2tpd_add_listener(_this, i++, conf);
