@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.31 2013/03/17 00:38:29 brad Exp $	*/
+/*	$OpenBSD: config.c,v 1.37 2013/05/08 06:32:07 brad Exp $	*/
 /*	$KAME: config.c,v 1.62 2002/05/29 10:13:10 itojun Exp $	*/
 
 /*
@@ -52,7 +52,6 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
-#include <search.h>
 #include <unistd.h>
 #include <ifaddrs.h>
 #include <stdint.h>
@@ -724,8 +723,12 @@ make_packet(struct rainfo *rainfo)
 
 		packlen += sizeof(struct nd_opt_dnssl);
 
+		/*
+		 * Each domain in the packet ends with a null byte. Account for
+		 * that here.
+		 */
 		TAILQ_FOREACH(dnsd, &dsl->dnssldoms, entry)
-			domains_size += dnsd->length;
+			domains_size += dnsd->length + 1;
 
 		domains_size = (domains_size + 7) & ~7;
 
@@ -781,8 +784,6 @@ make_packet(struct rainfo *rainfo)
 		buf += sizeof(struct nd_opt_mtu);
 	}
 
-	
-	
 	TAILQ_FOREACH(pfx, &rainfo->prefixes, entry) {
 		u_int32_t vltime, pltime;
 		struct timeval now;
@@ -803,13 +804,13 @@ make_packet(struct rainfo *rainfo)
 		if (pfx->vltimeexpire == 0)
 			vltime = pfx->validlifetime;
 		else
-			vltime = (pfx->vltimeexpire > now.tv_sec) ?
-				pfx->vltimeexpire - now.tv_sec : 0;
+			vltime = (u_int32_t)(pfx->vltimeexpire > now.tv_sec ?
+				pfx->vltimeexpire - now.tv_sec : 0);
 		if (pfx->pltimeexpire == 0)
 			pltime = pfx->preflifetime;
 		else
-			pltime = (pfx->pltimeexpire > now.tv_sec) ? 
-				pfx->pltimeexpire - now.tv_sec : 0;
+			pltime = (u_int32_t)(pfx->pltimeexpire > now.tv_sec ? 
+				pfx->pltimeexpire - now.tv_sec : 0);
 		if (vltime < pltime) {
 			/*
 			 * this can happen if vltime is decrement but pltime
@@ -828,6 +829,10 @@ make_packet(struct rainfo *rainfo)
 	TAILQ_FOREACH(rds, &rainfo->rdnsss, entry) {
 		ndopt_rdnss = (struct nd_opt_rdnss *)buf;
 		ndopt_rdnss->nd_opt_rdnss_type = ND_OPT_RDNSS;
+		/*
+		 * An IPv6 address is 16 bytes, so multiply the number of
+		 * addresses by two to get a size in units of 8 bytes.
+		 */
 		ndopt_rdnss->nd_opt_rdnss_len = 1 + rds->servercnt * 2;
 		ndopt_rdnss->nd_opt_rdnss_reserved = 0;
 		ndopt_rdnss->nd_opt_rdnss_lifetime = htonl(rds->lifetime);
@@ -840,8 +845,6 @@ make_packet(struct rainfo *rainfo)
 
 	TAILQ_FOREACH(dsl, &rainfo->dnssls, entry) {
 		u_int32_t size;
-		char *curlabel_begin;
-		char *curlabel_end;
 
 		ndopt_dnssl = (struct nd_opt_dnssl *)buf;
 		ndopt_dnssl->nd_opt_dnssl_type = ND_OPT_DNSSL;
@@ -850,7 +853,7 @@ make_packet(struct rainfo *rainfo)
 
 		size = 0;
 		TAILQ_FOREACH(dnsd, &dsl->dnssldoms, entry)
-			size += dnsd->length;
+			size += dnsd->length + 1;
 		/* align size on the next 8 byte boundary */
 		size = (size + 7) & ~7;
 		ndopt_dnssl->nd_opt_dnssl_len = 1 + size / 8;
@@ -858,16 +861,18 @@ make_packet(struct rainfo *rainfo)
 		buf += sizeof(struct nd_opt_dnssl);
 
 		TAILQ_FOREACH(dnsd, &dsl->dnssldoms, entry) {
+			char *curlabel_begin;
+			char *curlabel_end;
+
 			curlabel_begin = dnsd->domain;
-			while ((curlabel_end = strchr(curlabel_begin, '.')) &&
-			    (curlabel_end - curlabel_begin) > 1)
+			while ((curlabel_end = strchr(curlabel_begin, '.'))
+			    != NULL && curlabel_end > curlabel_begin)
 			{
 				size_t curlabel_size;
 
 				curlabel_size = curlabel_end - curlabel_begin;
-				*buf = curlabel_size;
-				++buf;
-				strncpy(buf, curlabel_begin, curlabel_size);
+				*buf++ = curlabel_size;
+				memcpy(buf, curlabel_begin, curlabel_size);
 				buf += curlabel_size;
 				curlabel_begin = curlabel_end + 1;
 			}

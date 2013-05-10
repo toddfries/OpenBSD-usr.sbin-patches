@@ -1,4 +1,4 @@
-/*	$OpenBSD: identd.c,v 1.10 2013/04/22 05:08:46 dlg Exp $ */
+/*	$OpenBSD: identd.c,v 1.19 2013/04/29 06:32:11 jmc Exp $ */
 
 /*
  * Copyright (c) 2013 David Gwynne <dlg@openbsd.org>
@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 
@@ -35,6 +36,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <event.h>
+#include <fcntl.h>
 #include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +45,8 @@
 #include <unistd.h>
 
 #define IDENTD_USER "_identd"
+
+#define DOTNOIDENT ".noident"
 
 #define TIMEOUT_MIN 4
 #define TIMEOUT_MAX 240
@@ -101,6 +105,10 @@ struct identd_listener {
 
 void	parent_rd(int, short, void *);
 void	parent_wr(int, short, void *);
+int	parent_username(struct ident_resolver *, struct passwd *);
+int	parent_uid(struct ident_resolver *, struct passwd *);
+int	parent_token(struct ident_resolver *, struct passwd *);
+void	parent_noident(struct ident_resolver *, struct passwd *);
 
 void	child_rd(int, short, void *);
 void	child_wr(int, short, void *);
@@ -120,13 +128,14 @@ int	fetchuid(struct ident_client *);
 
 const char *gethost(struct sockaddr_storage *);
 const char *getport(struct sockaddr_storage *);
+const char *gentoken(void);
 
 struct loggers {
 	void (*err)(int, const char *, ...);
 	void (*errx)(int, const char *, ...);
 	void (*warn)(const char *, ...);
 	void (*warnx)(const char *, ...);
-	void (*info)(const char *, ...);
+	void (*notice)(const char *, ...);
 	void (*debug)(const char *, ...);
 };
 
@@ -135,7 +144,7 @@ const struct loggers conslogger = {
 	errx,
 	warn,
 	warnx,
-	warnx, /* info */
+	warnx, /* notice */
 	warnx /* debug */
 };
 
@@ -143,7 +152,7 @@ void	syslog_err(int, const char *, ...);
 void	syslog_errx(int, const char *, ...);
 void	syslog_warn(const char *, ...);
 void	syslog_warnx(const char *, ...);
-void	syslog_info(const char *, ...);
+void	syslog_notice(const char *, ...);
 void	syslog_debug(const char *, ...);
 void	syslog_vstrerror(int, int, const char *, va_list);
 
@@ -152,7 +161,7 @@ const struct loggers syslogger = {
 	syslog_errx,
 	syslog_warn,
 	syslog_warnx,
-	syslog_info,
+	syslog_notice,
 	syslog_debug
 };
 
@@ -162,7 +171,7 @@ const struct loggers *logger = &conslogger;
 #define lerrx(_e, _f...) logger->errx((_e), _f)
 #define lwarn(_f...) logger->warn(_f)
 #define lwarnx(_f...) logger->warnx(_f)
-#define linfo(_f...) logger->info(_f)
+#define lnotice(_f...) logger->notice(_f)
 #define ldebug(_f...) logger->debug(_f)
 
 #define sa(_ss) ((struct sockaddr *)(_ss))
@@ -171,14 +180,19 @@ __dead void
 usage(void)
 {
 	extern char *__progname;
-	fprintf(stderr, "usage: %s [-46d] [-l address] [-p port] "
-	    "[-t timeout]\n", __progname);
+	fprintf(stderr, "usage: %s [-46dehNn] [-l address] [-t timeout]\n",
+	    __progname);
 	exit(1);
 }
 
 struct timeval timeout = { TIMEOUT_DEFAULT, 0 };
 int debug = 0;
+int noident = 0;
 int on = 1;
+int unknown_err = 0;
+
+int (*parent_uprintf)(struct ident_resolver *, struct passwd *) =
+    parent_username;
 
 struct event proc_rd, proc_wr;
 union {
@@ -200,14 +214,13 @@ main(int argc, char *argv[])
 	struct passwd	*pw;
 
 	char *addr = NULL;
-	char *port = "auth";
 	int family = AF_UNSPEC;
 
 	int pair[2];
 	pid_t parent;
 	int sibling;
 
-	while ((c = getopt(argc, argv, "46dl:p:t:")) != -1) {
+	while ((c = getopt(argc, argv, "46dehl:Nnp:t:")) != -1) {
 		switch (c) {
 		case '4':
 			family = AF_INET;
@@ -218,11 +231,20 @@ main(int argc, char *argv[])
 		case 'd':
 			debug = 1;
 			break;
+		case 'e':
+			unknown_err = 1;
+			break;
+		case 'h':
+			parent_uprintf = parent_token;
+			break;
 		case 'l':
 			addr = optarg;
 			break;
-		case 'p':
-			port = optarg;
+		case 'N':
+			noident = 1;
+			break;
+		case 'n':
+			parent_uprintf = parent_uid;
 			break;
 		case 't':
 			timeout.tv_sec = strtonum(optarg,
@@ -297,7 +319,7 @@ main(int argc, char *argv[])
 		SIMPLEQ_INIT(&sc.child.pushing);
 		SIMPLEQ_INIT(&sc.child.popping);
 
-		identd_listen(addr, port, family);
+		identd_listen(addr, "auth", family);
 
 		if (chroot(pw->pw_dir) == -1)
 			lerr(1, "chroot(%s)", pw->pw_dir);
@@ -355,18 +377,73 @@ parent_rd(int fd, short events, void *arg)
 	pw = getpwuid(uid);
 	if (pw == NULL) {
 		r->error = E_NOUSER;
-	} else {
-		n = asprintf(&r->buf, "%s", pw->pw_name);
-		if (n == -1)
-			r->error = E_UNKNOWN;
-		else {
-			r->error = E_NONE;
-			r->buflen = n;
-		}
+		goto done;
 	}
 
+	if (noident) {
+		parent_noident(r, pw);
+		if (r->error != E_NONE)
+			goto done;
+	}
+
+	n = (*parent_uprintf)(r, pw);
+	if (n == -1) {
+		r->error = E_UNKNOWN;
+		goto done;
+	}
+
+	r->buflen = n;
+
+done:
 	SIMPLEQ_INSERT_TAIL(&sc.parent.replies, r, entry);
 	event_add(&proc_wr, NULL);
+}
+
+int
+parent_username(struct ident_resolver *r, struct passwd *pw)
+{
+	return (asprintf(&r->buf, "%s", pw->pw_name));
+}
+
+int
+parent_uid(struct ident_resolver *r, struct passwd *pw)
+{
+	return (asprintf(&r->buf, "%u", (u_int)pw->pw_uid));
+}
+
+int
+parent_token(struct ident_resolver *r, struct passwd *pw)
+{
+	const char *token;
+	int rv;
+
+	token = gentoken();
+	rv = asprintf(&r->buf, "%s", token);
+	if (rv != -1) {
+		lnotice("token %s == uid %u (%s)", token,
+		    (u_int)pw->pw_uid, pw->pw_name);
+	}
+
+	return (rv);
+}
+
+void
+parent_noident(struct ident_resolver *r, struct passwd *pw)
+{
+	char path[MAXPATHLEN];
+	struct stat st;
+	int rv;
+
+	rv = snprintf(path, sizeof(path), "%s/%s", pw->pw_dir, DOTNOIDENT);
+	if (rv == -1 || rv >= sizeof(path)) {
+		r->error = E_UNKNOWN;
+		return;
+	}
+
+	if (stat(path, &st) == -1)
+		return;
+
+	r->error = E_HIDDEN;
 }
 
 void
@@ -456,8 +533,9 @@ child_rd(int fd, short events, void *arg)
 		    c->server.port, c->client.port, reply.buf);
 		break;
 	case E_NOUSER:
-		n = asprintf(&c->buf, "%u , %u : ERROR : NO-USER\r\n",
-		    c->server.port, c->client.port);
+		n = asprintf(&c->buf, "%u , %u : ERROR : %s\r\n",
+		    c->server.port, c->client.port,
+		    unknown_err ? "UNKNOWN-ERROR" : "NO-USER");
 		break;
 	case E_UNKNOWN:
 		n = asprintf(&c->buf, "%u , %u : ERROR : UNKNOWN-ERROR\r\n",
@@ -663,7 +741,7 @@ identd_request(int fd, short events, void *arg)
 	struct ident_client *c = arg;
 	char buf[64];
 	ssize_t n, i;
-	char *errstr = "INVALID-PORT";
+	char *errstr = unknown_err ? "UNKNOWN-ERROR" : "INVALID-PORT";
 
 	n = read(fd, buf, sizeof(buf));
 	switch (n) {
@@ -701,7 +779,7 @@ identd_request(int fd, short events, void *arg)
 		goto error;
 
 	if (fetchuid(c) == -1) {
-		errstr = "NO-USER";
+		errstr = unknown_err ? "UNKNOWN-ERROR" : "NO-USER";
 		goto error;
 	}
 
@@ -995,12 +1073,12 @@ syslog_warnx(const char *fmt, ...)
 }
 
 void
-syslog_info(const char *fmt, ...)
+syslog_notice(const char *fmt, ...)
 {
 	va_list ap;
 
 	va_start(ap, fmt);
-	vsyslog(LOG_INFO, fmt, ap);
+	vsyslog(LOG_NOTICE, fmt, ap);
 	va_end(ap);
 }
 
@@ -1043,6 +1121,23 @@ getport(struct sockaddr_storage *ss)
 	return (buf);
 }
 
+const char *
+gentoken(void)
+{
+	static char buf[21];
+	u_int32_t r;
+	int i;
+
+	buf[0] = 'a' + arc4random_uniform(26);
+	for (i = 1; i < sizeof(buf) - 1; i++) {
+		r = arc4random_uniform(36);
+		buf[i] = (r < 26 ? 'a' : '0' - 26) + r;
+	}
+	buf[i] = '\0';
+
+	return (buf);
+}
+
 int
 fetchuid(struct ident_client *c)
 {
@@ -1054,8 +1149,8 @@ fetchuid(struct ident_client *c)
 	size_t len;
 
 	memset(&tir, 0, sizeof(tir));
-	memcpy(&tir.faddr, &c->client.ss, sizeof(&tir.faddr));
-	memcpy(&tir.laddr, &c->server.ss, sizeof(&tir.laddr));
+	memcpy(&tir.faddr, &c->client.ss, sizeof(tir.faddr));
+	memcpy(&tir.laddr, &c->server.ss, sizeof(tir.laddr));
 
 	switch (c->server.ss.ss_family) {
 	case AF_INET:

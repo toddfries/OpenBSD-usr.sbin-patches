@@ -1,4 +1,4 @@
-.\"   $OpenBSD: identd.8,v 1.3 2013/03/18 17:09:11 jmc Exp $
+.\"   $OpenBSD: identd.8,v 1.10 2013/04/29 04:17:58 dlg Exp $
 .\"
 .\" Copyright (c) 2013 David Gwynne <dlg@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: March 18 2013 $
+.Dd $Mdocdate: April 29 2013 $
 .Dt IDENTD 8
 .Os
 .Sh NAME
@@ -22,11 +22,9 @@
 .Nd Identification Protocol daemon
 .Sh SYNOPSIS
 .Nm
-.Op Fl 46d
+.Op Fl 46dehNn
 .Op Fl l Ar address
-.Op Fl p Ar port
 .Op Fl t Ar timeout
-.Ar directory
 .Sh DESCRIPTION
 .Nm
 is a server which implements the Identification Protocol as specified in
@@ -51,19 +49,34 @@ Do not daemonize.
 If this option is specified,
 .Nm
 will run in the foreground and log to stderr.
+.It Fl e
+Always return
+.Dq UNKNOWN-ERROR
+instead of the
+.Dq NO-USER
+or
+.Dq INVALID-PORT
+errors.
+.It Fl h
+Hide the actual information about the user by providing an opaque
+token instead.
+This token is entered into the local system logs
+so that the administrator can later discover who the real user was.
 .It Fl l Ar address
 Listen on the specified address.
 By default
 .Nm
 listens on wildcard addresses.
-.It Fl p Ar port
-Listen on the specified port.
-By default
-.Nm
-listens on the port indicated in the
-.Ql auth
-service description; see
-.Xr services 5 .
+.It Fl N
+When replying with a user name or ID, first
+check for a file
+.Pa .noident
+in the user's home directory.
+If this file is accessible, return
+.Dq HIDDEN-USER
+instead of the normal USERID response.
+.It Fl n
+Always return UID numbers instead of usernames.
 .It Fl t Ar timeout
 Specifies the idle timeout for client connections,
 in seconds.
