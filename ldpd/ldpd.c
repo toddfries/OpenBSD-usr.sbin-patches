@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpd.c,v 1.14 2013/05/04 09:26:24 jsg Exp $ */
+/*	$OpenBSD: ldpd.c,v 1.17 2013/06/04 02:25:28 claudio Exp $ */
 
 /*
  * Copyright (c) 2005 Claudio Jeker <claudio@openbsd.org>
@@ -170,8 +170,6 @@ main(int argc, char *argv[])
 	if ((ldpd_conf = parse_config(conffile, opts)) == NULL )
 		exit(1);
 
-	/* parse config file */
-
 	if (ldpd_conf->opts & LDPD_OPT_NOACTION) {
 		if (ldpd_conf->opts & LDPD_OPT_VERBOSE)
 			print_config(ldpd_conf);
@@ -189,7 +187,7 @@ main(int argc, char *argv[])
 		errx(1, "unknown user %s", LDPD_USER);
 
 	log_init(debug);
-	log_verbose(opts & LDPD_OPT_VERBOSE);
+	log_verbose(opts & (LDPD_OPT_VERBOSE | LDPD_OPT_VERBOSE2));
 
 	if (!debug)
 		daemon(1, 0);
@@ -257,6 +255,9 @@ main(int argc, char *argv[])
 	    iev_lde->handler, iev_lde);
 	event_add(&iev_lde->ev, NULL);
 
+	/* notify ldpe about existing interfaces and addresses */
+	kif_redistribute();
+
 	if (kr_init(!(ldpd_conf->flags & LDPD_FLAG_NO_FIB_UPDATE)) == -1)
 		fatalx("kr_init failed");
 
@@ -295,8 +296,6 @@ ldpd_shutdown(void)
 	free(iev_ldpe);
 	msgbuf_clear(&iev_lde->ibuf.w);
 	free(iev_lde);
-
-	close(ldpd_conf->ldp_session_socket);
 	free(ldpd_conf);
 
 	log_info("terminating");

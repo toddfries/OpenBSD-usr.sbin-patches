@@ -1,4 +1,4 @@
-/*	$OpenBSD: notification.c,v 1.9 2011/01/20 23:12:33 jasper Exp $ */
+/*	$OpenBSD: notification.c,v 1.14 2013/06/04 02:34:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -43,17 +43,12 @@ void
 send_notification_nbr(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
     u_int32_t type)
 {
-	struct ibuf	*buf;
-
-	if (nbr->iface->passive)
-		return;
-
-	buf = send_notification(status, nbr->iface, msgid, type);
-	evbuf_enqueue(&nbr->wbuf, buf);
+	send_notification(status, nbr->tcp, msgid, type);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
-struct ibuf *
-send_notification(u_int32_t status, struct iface *iface, u_int32_t msgid,
+void
+send_notification(u_int32_t status, struct tcp_conn *tcp, u_int32_t msgid,
     u_int32_t type)
 {
 	struct ibuf	*buf;
@@ -64,7 +59,7 @@ send_notification(u_int32_t status, struct iface *iface, u_int32_t msgid,
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg) + STATUS_SIZE;
 
-	gen_ldp_hdr(buf, iface, size);
+	gen_ldp_hdr(buf, size);
 
 	size -= LDP_HDR_SIZE;
 
@@ -74,7 +69,7 @@ send_notification(u_int32_t status, struct iface *iface, u_int32_t msgid,
 
 	gen_status_tlv(buf, status, msgid, type);
 
-	return (buf);
+	evbuf_enqueue(&tcp->wbuf, buf);
 }
 
 int
@@ -114,6 +109,12 @@ recv_notification(struct nbr *nbr, char *buf, u_int16_t len)
 		    notification_name(ntohl(st.status_code)));
 
 	if (st.status_code & htonl(STATUS_FATAL)) {
+		if (st.status_code == htonl(S_NO_HELLO) ||
+		    st.status_code == htonl(S_PARM_ADV_MODE) ||
+		    st.status_code == htonl(S_MAX_PDU_LEN) ||
+		    st.status_code == htonl(S_PARM_L_RANGE))
+			nbr_start_idtimer(nbr);
+
 		nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
 		return (-1);
 	}

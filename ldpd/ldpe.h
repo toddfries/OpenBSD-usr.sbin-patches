@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.h,v 1.16 2012/04/12 17:33:43 claudio Exp $ */
+/*	$OpenBSD: ldpe.h,v 1.27 2013/06/04 02:34:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2008 Esben Norby <norby@openbsd.org>
@@ -29,16 +29,39 @@
 
 TAILQ_HEAD(ctl_conns, ctl_conn)	ctl_conns;
 
-struct mapping_entry {
-	TAILQ_ENTRY(mapping_entry)	entry;
-	struct map			map;
+struct hello_source {
+	enum hello_type		 type;
+	struct {
+		struct iface	*iface;
+		struct in_addr	 src_addr;
+	}			 link;
+	struct tnbr		*target;
+};
+
+struct adj {
+	LIST_ENTRY(adj)		 nbr_entry;
+	LIST_ENTRY(adj)		 iface_entry;
+	struct nbr		*nbr;
+	struct hello_source	 source;
+	struct event		 inactivity_timer;
+	u_int16_t		 holdtime;
+	struct in_addr		 addr;
+};
+
+struct nbr;
+struct tcp_conn {
+	struct nbr		*nbr;
+	int			 fd;
+	struct ibuf_read	*rbuf;
+	struct evbuf		 wbuf;
+	struct event		 rev;
 };
 
 struct nbr {
-	RB_ENTRY(nbr)		 id_tree, addr_tree, pid_tree;
-	struct evbuf		 wbuf;
-	struct event		 rev;
-	struct event		 inactivity_timer;
+	RB_ENTRY(nbr)		 id_tree, pid_tree;
+	struct tcp_conn		*tcp;
+	LIST_HEAD(, adj)	 adj_list;	/* adjacencies */
+	struct event		 ev_connect;
 	struct event		 keepalive_timer;
 	struct event		 keepalive_timeout;
 	struct event		 initdelay_timer;
@@ -52,25 +75,18 @@ struct nbr {
 	struct in_addr		 addr;
 	struct in_addr		 id;
 
-	struct ibuf_read	*rbuf;
-	struct iface		*iface;
-
 	time_t			 uptime;
 	u_int32_t		 peerid;	/* unique ID in DB */
 
 	int			 fd;
 	int			 state;
-
-	u_int16_t		 lspace;
-	u_int16_t		 holdtime;
+	int			 idtimer_cnt;
 	u_int16_t		 keepalive;
+};
 
-	u_int8_t		 priority;
-	u_int8_t		 options;
-
-	u_int8_t		 flags;
-	u_int8_t		 hello_type;
-
+struct mapping_entry {
+	TAILQ_ENTRY(mapping_entry)	entry;
+	struct map			map;
 };
 
 /* accept.c */
@@ -81,7 +97,7 @@ void	accept_pause(void);
 void	accept_unpause(void);
 
 /* hello.c */
-int	 send_hello(struct iface *);
+int	 send_hello(enum hello_type, struct iface *, struct tnbr *);
 void	 recv_hello(struct iface *,  struct in_addr, char *, u_int16_t);
 
 /* init.c */
@@ -94,14 +110,14 @@ int	 recv_keepalive(struct nbr *, char *, u_int16_t);
 
 /* notification.c */
 void	 send_notification_nbr(struct nbr *, u_int32_t, u_int32_t, u_int32_t);
-struct ibuf	*send_notification(u_int32_t, struct iface *, u_int32_t,
+void	 send_notification(u_int32_t, struct tcp_conn *, u_int32_t,
 	    u_int32_t);
 int	 recv_notification(struct nbr *, char *, u_int16_t);
 
 /* address.c */
-void	 send_address(struct nbr *, struct iface *);
+void	 send_address(struct nbr *, struct if_addr *);
 int	 recv_address(struct nbr *, char *, u_int16_t);
-void	 send_address_withdraw(struct nbr *, struct iface *);
+void	 send_address_withdraw(struct nbr *, struct if_addr *);
 
 /* labelmapping.c */
 #define PREFIX_SIZE(x)	(((x) + 7) / 8)
@@ -130,12 +146,10 @@ void		 ldpe_iface_ctl(struct ctl_conn *, unsigned int);
 /* interface.c */
 int		 if_fsm(struct iface *, enum iface_event);
 
-struct iface	*if_new(struct kif *, struct kif_addr *);
+struct iface	*if_new(struct kif *);
 void		 if_del(struct iface *);
 void		 if_init(struct ldpd_conf *, struct iface *);
-
-int		 if_act_start(struct iface *);
-int		 if_act_reset(struct iface *);
+struct iface	*if_lookup(u_short);
 
 struct ctl_iface	*if_to_ctl(struct iface *);
 
@@ -149,19 +163,31 @@ int	 if_set_mcast_ttl(int, u_int8_t);
 int	 if_set_tos(int, int);
 int	 if_set_reuse(int, int);
 
+/* adjacency.c */
+struct adj	*adj_new(struct nbr *, struct hello_source *, u_int16_t,
+    struct in_addr);
+void		 adj_del(struct adj *);
+struct adj	*adj_find(struct nbr *, struct hello_source *);
+void		 adj_start_itimer(struct adj *);
+void		 adj_stop_itimer(struct adj *);
+struct tnbr	*tnbr_new(struct in_addr, int);
+void		 tnbr_del(struct tnbr *);
+void		 tnbr_init(struct ldpd_conf *, struct tnbr *);
+struct tnbr	*tnbr_find(struct in_addr);
+
+struct ctl_adj	*adj_to_ctl(struct adj *);
+void		 ldpe_adj_ctl(struct ctl_conn *);
+
 /* neighbor.c */
-struct nbr	*nbr_new(u_int32_t, u_int16_t, struct iface *, struct in_addr);
+struct nbr	*nbr_new(struct in_addr, struct in_addr);
 void		 nbr_del(struct nbr *);
 
-struct nbr	*nbr_find_ip(u_int32_t);
-struct nbr	*nbr_find_ldpid(u_int32_t, u_int16_t);
+struct nbr	*nbr_find_ldpid(u_int32_t);
 struct nbr	*nbr_find_peerid(u_int32_t);
 
 int	 nbr_fsm(struct nbr *, enum nbr_event);
+int	 nbr_session_active_role(struct nbr *);
 
-void	 nbr_itimer(int, short, void *);
-void	 nbr_start_itimer(struct nbr *);
-void	 nbr_stop_itimer(struct nbr *);
 void	 nbr_ktimer(int, short, void *);
 void	 nbr_start_ktimer(struct nbr *);
 void	 nbr_stop_ktimer(struct nbr *);
@@ -172,8 +198,9 @@ void	 nbr_idtimer(int, short, void *);
 void	 nbr_start_idtimer(struct nbr *);
 void	 nbr_stop_idtimer(struct nbr *);
 int	 nbr_pending_idtimer(struct nbr *);
+int	 nbr_pending_connect(struct nbr *);
 
-int	 nbr_act_session_establish(struct nbr *, int);
+int	 nbr_establish_connection(struct nbr *);
 
 void			 nbr_mapping_add(struct nbr *, struct mapping_head *,
 			    struct map *);
@@ -188,11 +215,15 @@ struct ctl_nbr	*nbr_to_ctl(struct nbr *);
 void		 ldpe_nbr_ctl(struct ctl_conn *);
 
 /* packet.c */
-int	 gen_ldp_hdr(struct ibuf *, struct iface *, u_int16_t);
+int	 gen_ldp_hdr(struct ibuf *, u_int16_t);
 int	 gen_msg_tlv(struct ibuf *, u_int32_t, u_int16_t);
-int	 send_packet(struct iface *, void *, size_t, struct sockaddr_in *);
+int	 send_packet(int, struct iface *, void *, size_t, struct sockaddr_in *);
 void	 disc_recv_packet(int, short, void *);
 void	 session_accept(int, short, void *);
+
+struct tcp_conn *tcp_new(int, struct nbr *);
+void		 tcp_close(struct tcp_conn *);
+
 
 void	 session_read(int, short, void *);
 void	 session_write(int, short, void *);

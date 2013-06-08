@@ -1,4 +1,4 @@
-/*	$OpenBSD: packet.c,v 1.17 2013/03/11 17:40:11 deraadt Exp $ */
+/*	$OpenBSD: packet.c,v 1.28 2013/06/05 19:19:10 miod Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -39,15 +39,15 @@
 #include "log.h"
 #include "ldpe.h"
 
-int		 ldp_hdr_sanity_check(struct ldp_hdr *, u_int16_t,
-		    const struct iface *);
-struct iface	*find_iface(struct ldpd_conf *, unsigned int, struct in_addr);
+extern struct ldpd_conf        *leconf;
+
+struct iface	*disc_find_iface(unsigned int, struct in_addr);
 ssize_t		 session_get_pdu(struct ibuf_read *, char **);
 
 static int	 msgcnt = 0;
 
 int
-gen_ldp_hdr(struct ibuf *buf, struct iface *iface, u_int16_t size)
+gen_ldp_hdr(struct ibuf *buf, u_int16_t size)
 {
 	struct ldp_hdr	ldp_hdr;
 
@@ -59,8 +59,7 @@ gen_ldp_hdr(struct ibuf *buf, struct iface *iface, u_int16_t size)
 
 	ldp_hdr.length = htons(size);
 	ldp_hdr.lsr_id = ldpe_router_id();
-	if (iface)
-		ldp_hdr.lspace_id = iface->lspace_id;
+	ldp_hdr.lspace_id = 0;
 
 	return (ibuf_add(buf, &ldp_hdr, LDP_HDR_SIZE));
 }
@@ -76,27 +75,28 @@ gen_msg_tlv(struct ibuf *buf, u_int32_t type, u_int16_t size)
 	bzero(&msg, sizeof(msg));
 	msg.type = htons(type);
 	msg.length = htons(size);
-	msg.msgid = htonl(++msgcnt);
+	if (type != MSG_TYPE_HELLO)
+		msg.msgid = htonl(++msgcnt);
 
 	return (ibuf_add(buf, &msg, sizeof(msg)));
 }
 
-/* send and receive packets */
+/* send packets */
 int
-send_packet(struct iface *iface, void *pkt, size_t len, struct sockaddr_in *dst)
+send_packet(int fd, struct iface *iface, void *pkt, size_t len,
+    struct sockaddr_in *dst)
 {
 	/* set outgoing interface for multicast traffic */
-	if (IN_MULTICAST(ntohl(dst->sin_addr.s_addr)))
+	if (iface && IN_MULTICAST(ntohl(dst->sin_addr.s_addr)))
 		if (if_set_mcast(iface) == -1) {
 			log_warn("send_packet: error setting multicast "
 			    "interface, %s", iface->name);
 			return (-1);
 		}
 
-	if (sendto(iface->discovery_fd, pkt, len, 0,
-	    (struct sockaddr *)dst, sizeof(*dst)) == -1) {
-		log_warn("send_packet: error sending packet on interface %s",
-		    iface->name);
+	if (sendto(fd, pkt, len, 0, (struct sockaddr *)dst,
+	    sizeof(*dst)) == -1) {
+		log_warn("send_packet: error sending packet");
 		return (-1);
 	}
 
@@ -114,15 +114,13 @@ disc_recv_packet(int fd, short event, void *bula)
 	struct sockaddr_in	 src;
 	struct msghdr		 msg;
 	struct iovec		 iov;
-	struct ldpd_conf	*xconf = bula;
 	struct ldp_hdr		 ldp_hdr;
 	struct ldp_msg		 ldp_msg;
-	struct iface		*iface;
+	struct iface		*iface = NULL;
 	char			*buf;
 	struct cmsghdr		*cmsg;
 	ssize_t			 r;
 	u_int16_t		 len;
-	int			 l;
 	unsigned int		 ifindex = 0;
 
 	if (event != EV_READ)
@@ -158,7 +156,8 @@ disc_recv_packet(int fd, short event, void *bula)
 	len = (u_int16_t)r;
 
 	/* find a matching interface */
-	if ((iface = find_iface(xconf, ifindex, src.sin_addr)) == NULL) {
+	if ((fd == leconf->ldp_discovery_socket) &&
+	    (iface = disc_find_iface(ifindex, src.sin_addr)) == NULL) {
 		log_debug("disc_recv_packet: cannot find a matching interface");
 		return;
 	}
@@ -176,11 +175,9 @@ disc_recv_packet(int fd, short event, void *bula)
 		return;
 	}
 
-	if ((l = ldp_hdr_sanity_check(&ldp_hdr, len, iface)) == -1)
-		return;
-
-	if (l > len) {
-		log_debug("disc_recv_packet: invalid LDP packet length %d",
+	if (ntohs(ldp_hdr.length) >
+	    len - sizeof(ldp_hdr.version) - sizeof(ldp_hdr.length)) {
+		log_debug("disc_recv_packet: invalid LDP packet length %u",
 		    ntohs(ldp_hdr.length));
 		return;
 	}
@@ -193,67 +190,78 @@ disc_recv_packet(int fd, short event, void *bula)
 
 	bcopy(buf + LDP_HDR_SIZE, &ldp_msg, sizeof(ldp_msg));
 
-
 	/* switch LDP packet type */
 	switch (ntohs(ldp_msg.type)) {
 	case MSG_TYPE_HELLO:
 		recv_hello(iface, src.sin_addr, buf, len);
 		break;
 	default:
-		log_debug("recv_packet: unknown LDP packet type, interface %s",
-		    iface->name);
+		log_debug("recv_packet: unknown LDP packet type, source %s",
+		    inet_ntoa(src.sin_addr));
 	}
-}
-
-int
-ldp_hdr_sanity_check(struct ldp_hdr *ldp_hdr, u_int16_t len,
-    const struct iface *iface)
-{
-	struct in_addr		 addr;
-
-	if (ldp_hdr->lspace_id != iface->lspace_id) {
-		addr.s_addr = ldp_hdr->lspace_id;
-		log_debug("ldp_hdr_sanity_check: invalid label space "
-		    "ID %s, interface %s", inet_ntoa(addr),
-		    iface->name);
-		return (-1);
-	}
-
-	return (ntohs(ldp_hdr->length));
 }
 
 struct iface *
-find_iface(struct ldpd_conf *xconf, unsigned int ifindex, struct in_addr src)
+disc_find_iface(unsigned int ifindex, struct in_addr src)
 {
-	struct iface	*iface = NULL;
+	struct iface	*iface;
+	struct if_addr	*if_addr;
 
-	/* returned interface needs to be active */
-	LIST_FOREACH(iface, &xconf->iface_list, entry) {
-		switch (iface->type) {
-		case IF_TYPE_POINTOPOINT:
-			if (ifindex == iface->ifindex &&
-			    iface->dst.s_addr == src.s_addr &&
-			    !iface->passive)
-				return (iface);
-			break;
-		default:
-			if (ifindex == iface->ifindex &&
-			    (iface->addr.s_addr & iface->mask.s_addr) ==
-			    (src.s_addr & iface->mask.s_addr) &&
-			    !iface->passive)
-				return (iface);
-			break;
-		}
-	}
+	LIST_FOREACH(iface, &leconf->iface_list, entry)
+		LIST_FOREACH(if_addr, &iface->addr_list, iface_entry)
+			switch (iface->type) {
+			case IF_TYPE_POINTOPOINT:
+				if (ifindex == iface->ifindex &&
+				    if_addr->dstbrd.s_addr == src.s_addr)
+					return (iface);
+				break;
+			default:
+				if (ifindex == iface->ifindex &&
+				    (if_addr->addr.s_addr &
+					if_addr->mask.s_addr) ==
+				    (src.s_addr & if_addr->mask.s_addr))
+					return (iface);
+				break;
+			}
 
 	return (NULL);
+}
+
+struct tcp_conn *
+tcp_new(int fd, struct nbr *nbr)
+{
+	struct tcp_conn *tcp;
+
+	if ((tcp = calloc(1, sizeof(*tcp))) == NULL)
+		fatal("tcp_new");
+	if ((tcp->rbuf = calloc(1, sizeof(struct ibuf_read))) == NULL)
+		fatal("tcp_new");
+
+	if (nbr)
+		tcp->nbr = nbr;
+
+	tcp->fd = fd;
+	evbuf_init(&tcp->wbuf, tcp->fd, session_write, tcp);
+	event_set(&tcp->rev, tcp->fd, EV_READ | EV_PERSIST, session_read, tcp);
+	event_add(&tcp->rev, NULL);
+
+	return (tcp);
+}
+
+void
+tcp_close(struct tcp_conn *tcp)
+{
+	evbuf_clear(&tcp->wbuf);
+	event_del(&tcp->rev);
+	close(tcp->fd);
+	free(tcp->rbuf);
+	free(tcp);
 }
 
 void
 session_accept(int fd, short event, void *bula)
 {
 	struct sockaddr_in	 src;
-	struct nbr		*nbr = NULL;
 	int			 newfd;
 	socklen_t		 len = sizeof(src);
 
@@ -277,34 +285,19 @@ session_accept(int fd, short event, void *bula)
 
 	session_socket_blockmode(newfd, BM_NONBLOCK);
 
-	nbr = nbr_find_ip(src.sin_addr.s_addr);
-	if (nbr == NULL) {
-		struct ibuf	*buf;
-		/* If there is no neighbor matching there is no
-		   Hello adjacency: try to send notification */
-		log_warnx("Connection attempt from unknown neighbor %s: %s",
-		    inet_ntoa(src.sin_addr), "NO HELLO");
-		buf = send_notification(S_NO_HELLO, NULL, 0, 0);
-		write(newfd, buf->buf, buf->wpos);
-		ibuf_free(buf);
-		close(newfd);
-		return;
-	}
-
-	nbr->fd = newfd;
-	nbr_fsm(nbr, NBR_EVT_SESSION_UP);
+	tcp_new(newfd, NULL);
 }
 
 void
 session_read(int fd, short event, void *arg)
 {
-	struct nbr	*nbr = arg;
-	struct iface	*iface = nbr->iface;
+	struct tcp_conn	*tcp = arg;
+	struct nbr	*nbr = tcp->nbr;
 	struct ldp_hdr	*ldp_hdr;
 	struct ldp_msg	*ldp_msg;
 	char		*buf, *pdu;
 	ssize_t		 n, len;
-	int		 l, msg_size;
+	int		 msg_size;
 	u_int16_t	 pdu_len;
 
 	if (event != EV_READ) {
@@ -312,10 +305,14 @@ session_read(int fd, short event, void *arg)
 		return;
 	}
 
-	if ((n = read(fd, nbr->rbuf->buf + nbr->rbuf->wpos,
-	    sizeof(nbr->rbuf->buf) - nbr->rbuf->wpos)) == -1) {
+	if ((n = read(fd, tcp->rbuf->buf + tcp->rbuf->wpos,
+	    sizeof(tcp->rbuf->buf) - tcp->rbuf->wpos)) == -1) {
 		if (errno != EINTR && errno != EAGAIN) {
-			session_shutdown(nbr, S_SHUTDOWN, 0, 0);
+			log_warn("session_read: read error");
+			if (nbr)
+				nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
+			else
+				tcp_close(tcp);
 			return;
 		}
 		/* retry read */
@@ -323,49 +320,131 @@ session_read(int fd, short event, void *arg)
 	}
 	if (n == 0) {
 		/* connection closed */
-		session_shutdown(nbr, S_SHUTDOWN, 0, 0);
+		log_debug("session_read: connection closed by remote end");
+		if (nbr)
+			nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
+		else
+			tcp_close(tcp);
 		return;
 	}
-	nbr->rbuf->wpos += n;
+	tcp->rbuf->wpos += n;
 
-	while ((len = session_get_pdu(nbr->rbuf, &buf)) > 0) {
+	while ((len = session_get_pdu(tcp->rbuf, &buf)) > 0) {
 		pdu = buf;
 		ldp_hdr = (struct ldp_hdr *)pdu;
 		if (ntohs(ldp_hdr->version) != LDP_VERSION) {
-			session_shutdown(nbr, S_BAD_PROTO_VER, 0, 0);
+			if (nbr)
+				session_shutdown(nbr, S_BAD_PROTO_VER, 0, 0);
+			else {
+				send_notification(S_BAD_PROTO_VER, tcp, 0, 0);
+				msgbuf_write(&tcp->wbuf.wbuf);
+				tcp_close(tcp);
+			}
 			free(buf);
 			return;
 		}
 
 		pdu_len = ntohs(ldp_hdr->length);
 		if (pdu_len < LDP_HDR_SIZE || pdu_len > LDP_MAX_LEN) {
-			session_shutdown(nbr, S_BAD_MSG_LEN, 0, 0);
+			if (nbr)
+				session_shutdown(nbr, S_BAD_MSG_LEN, 0, 0);
+			else {
+				send_notification(S_BAD_MSG_LEN, tcp, 0, 0);
+				msgbuf_write(&tcp->wbuf.wbuf);
+				tcp_close(tcp);
+			}
 			free(buf);
 			return;
 		}
 
-		if ((l = ldp_hdr_sanity_check(ldp_hdr, len, iface)) == -1) {
-			session_shutdown(nbr, S_BAD_LDP_ID, 0, 0);
-			free(buf);
-			return;
+		if (nbr) {
+			if (ldp_hdr->lsr_id != nbr->id.s_addr ||
+			    ldp_hdr->lspace_id != 0) {
+				session_shutdown(nbr, S_BAD_LDP_ID, 0, 0);
+				free(buf);
+				return;
+			}
+		} else {
+			nbr = nbr_find_ldpid(ldp_hdr->lsr_id);
+			if (!nbr) {
+				send_notification(S_NO_HELLO, tcp, 0, 0);
+				msgbuf_write(&tcp->wbuf.wbuf);
+				tcp_close(tcp);
+				free(buf);
+				return;
+			}
+			/* handle duplicate SYNs */
+			if (nbr->tcp) {
+				tcp_close(tcp);
+				free(buf);
+				return;
+			}
+
+			nbr->tcp = tcp;
+			tcp->nbr = nbr;
+			nbr_fsm(nbr, NBR_EVT_MATCH_ADJ);
 		}
 
 		pdu += LDP_HDR_SIZE;
 		len -= LDP_HDR_SIZE;
 
 		while (len >= LDP_MSG_LEN) {
+			u_int16_t type;
+
 			ldp_msg = (struct ldp_msg *)pdu;
+			type = ntohs(ldp_msg->type);
 
 			pdu_len = ntohs(ldp_msg->length) + TLV_HDR_LEN;
 			if (pdu_len > len ||
 			    pdu_len < LDP_MSG_LEN - TLV_HDR_LEN) {
-				session_shutdown(nbr, S_BAD_TLV_LEN, 0, 0);
+				session_shutdown(nbr, S_BAD_TLV_LEN,
+				    ldp_msg->msgid, ldp_msg->type);
 				free(buf);
 				return;
 			}
 
+			/* check for error conditions earlier */
+			switch (type) {
+			case MSG_TYPE_NOTIFICATION:
+				/* notifications are always processed */
+				break;
+			case MSG_TYPE_INIT:
+				if ((nbr->state != NBR_STA_INITIAL) &&
+				    (nbr->state != NBR_STA_OPENSENT)) {
+					session_shutdown(nbr, S_SHUTDOWN,
+					    ldp_msg->msgid, ldp_msg->type);
+					free(buf);
+					return;
+				}
+				break;
+			case MSG_TYPE_KEEPALIVE:
+				if ((nbr->state == NBR_STA_INITIAL) ||
+				    (nbr->state == NBR_STA_OPENSENT)) {
+					session_shutdown(nbr, S_SHUTDOWN,
+					    ldp_msg->msgid, ldp_msg->type);
+					free(buf);
+					return;
+				}
+				break;
+			case MSG_TYPE_ADDR:
+			case MSG_TYPE_ADDRWITHDRAW:
+			case MSG_TYPE_LABELMAPPING:
+			case MSG_TYPE_LABELREQUEST:
+			case MSG_TYPE_LABELWITHDRAW:
+			case MSG_TYPE_LABELRELEASE:
+			case MSG_TYPE_LABELABORTREQ:
+			default:
+				if (nbr->state != NBR_STA_OPER) {
+					session_shutdown(nbr, S_SHUTDOWN,
+					    ldp_msg->msgid, ldp_msg->type);
+					free(buf);
+					return;
+				}
+				break;
+			}
+
 			/* switch LDP packet type */
-			switch (ntohs(ldp_msg->type)) {
+			switch (type) {
 			case MSG_TYPE_NOTIFICATION:
 				msg_size = recv_notification(nbr, pdu, pdu_len);
 				break;
@@ -392,10 +471,9 @@ session_read(int fd, short event, void *arg)
 				msg_size = recv_labelrelease(nbr, pdu, pdu_len);
 				break;
 			case MSG_TYPE_LABELABORTREQ:
-			case MSG_TYPE_HELLO:
 			default:
 				log_debug("session_read: unknown LDP packet "
-				    "type interface %s", iface->name);
+				    "from nbr %s", inet_ntoa(nbr->id));
 				free(buf);
 				return;
 			}
@@ -421,15 +499,18 @@ session_read(int fd, short event, void *arg)
 void
 session_write(int fd, short event, void *arg)
 {
-	struct nbr *nbr = arg;
+	struct tcp_conn *tcp = arg;
+	struct nbr *nbr = tcp->nbr;
 
 	if (event & EV_WRITE) {
-		if (msgbuf_write(&nbr->wbuf.wbuf) == -1)
-			nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
+		if (msgbuf_write(&tcp->wbuf.wbuf) == -1) {
+			if (nbr)
+				nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
+		}
 	} else
 		log_debug("session_write: spurious event");
 
-	evbuf_event_add(&nbr->wbuf);
+	evbuf_event_add(&tcp->wbuf);
 }
 
 void
@@ -442,7 +523,7 @@ session_shutdown(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
 	send_notification_nbr(nbr, status, msgid, type);
 
 	/* try to flush write buffer, if it fails tough shit */
-	msgbuf_write(&nbr->wbuf.wbuf);
+	msgbuf_write(&nbr->tcp->wbuf.wbuf);
 
 	nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);
 }
@@ -453,15 +534,12 @@ session_close(struct nbr *nbr)
 	log_debug("session_close: closing session with nbr ID %s",
 	    inet_ntoa(nbr->id));
 
-	evbuf_clear(&nbr->wbuf);
-	event_del(&nbr->rev);
+	tcp_close(nbr->tcp);
+	nbr->tcp = NULL;
 
-	if (evtimer_pending(&nbr->keepalive_timer, NULL))
-		evtimer_del(&nbr->keepalive_timer);
-	if (evtimer_pending(&nbr->keepalive_timeout, NULL))
-		evtimer_del(&nbr->keepalive_timeout);
+	nbr_stop_ktimer(nbr);
+	nbr_stop_ktimeout(nbr);
 
-	close(nbr->fd);
 	accept_unpause();
 }
 

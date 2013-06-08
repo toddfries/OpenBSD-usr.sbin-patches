@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.166 2013/03/14 11:08:20 mpi Exp $
+#	$OpenBSD: Makefile,v 1.168 2013/06/01 14:06:20 naddy Exp $
 
 .include <bsd.own.mk>
 
@@ -8,13 +8,14 @@ SUBDIR=	ac accton acpidump adduser amd apm apmd arp \
 	ftp-proxy fw_update gpioctl hostapd hotplugd httpd ifstated ikectl \
 	inetd iostat iscsictl iscsid kgmon kvm_mkdb \
 	ldapd ldapctl ldomctl ldomd ldpd ldpctl lpr mailwrapper map-mbone \
-	memconfig mksuncd mopd mrinfo mrouted mtrace mtree ndp netgroup_mkdb \
+	memconfig mksuncd mkuboot mopd mrinfo mrouted \
+	mtrace mtree ndp netgroup_mkdb \
 	nginx npppctl npppd nsd ntpd openssl ospfctl ospfd ospf6d ospf6ctl \
 	pcidump pkg_add popa3d portmap ppp pppd pppoe procmap pstat pwd_mkdb \
 	quot quotaon rarpd rbootd rdate relayctl relayd repquota rip6query \
 	ripctl ripd rmt route6d rpc.bootparamd rpc.lockd rpc.statd rtadvd \
-	rtsold rwhod sa sasyncd sensorsd sliplogin slstats smtpd snmpctl \
-	snmpd spamdb spray syslogc syslogd sysmerge tcpdrop tcpdump \
+	rtsold rwhod sa sasyncd sensorsd sliplogin slowcgi slstats smtpd \
+	snmpctl snmpd spamdb spray syslogc syslogd sysmerge tcpdrop tcpdump \
 	tftp-proxy tftpd tokenadm tokeninit traceroute traceroute6 trpt \
 	usbdevs user vipw watchdogd wsconscfg wsfontload wsmoused zdump zic \
 	ztsscale

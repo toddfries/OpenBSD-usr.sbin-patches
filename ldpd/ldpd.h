@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpd.h,v 1.29 2012/04/12 17:33:43 claudio Exp $ */
+/*	$OpenBSD: ldpd.h,v 1.42 2013/06/04 02:34:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -37,8 +37,6 @@
 #define	LDPD_SOCKET		"/var/run/ldpd.sock"
 #define LDPD_USER		"_ldpd"
 
-#define NBR_HASHSIZE		128
-
 #define NBR_IDSELF		1
 #define NBR_CNTSTART		(NBR_IDSELF + 1)
 
@@ -47,6 +45,7 @@
 #define	LDP_BACKLOG		128
 
 #define	LDPD_FLAG_NO_FIB_UPDATE	0x0001
+#define	LDPD_FLAG_TH_ACCEPT	0x0002
 
 #define	F_LDPD_INSERTED		0x0001
 #define	F_CONNECTED		0x0002
@@ -73,6 +72,7 @@ enum imsg_type {
 	IMSG_NONE,
 	IMSG_CTL_RELOAD,
 	IMSG_CTL_SHOW_INTERFACE,
+	IMSG_CTL_SHOW_DISCOVERY,
 	IMSG_CTL_SHOW_NBR,
 	IMSG_CTL_SHOW_LIB,
 	IMSG_CTL_FIB_COUPLE,
@@ -84,7 +84,11 @@ enum imsg_type {
 	IMSG_CTL_LOG_VERBOSE,
 	IMSG_KLABEL_CHANGE,
 	IMSG_KLABEL_DELETE,
-	IMSG_IFINFO,
+	IMSG_IFSTATUS,
+	IMSG_IFUP,
+	IMSG_IFDOWN,
+	IMSG_NEWADDR,
+	IMSG_DELADDR,
 	IMSG_LABEL_MAPPING,
 	IMSG_LABEL_MAPPING_FULL,
 	IMSG_LABEL_REQUEST,
@@ -102,7 +106,6 @@ enum imsg_type {
 	IMSG_NOTIFICATION_SEND,
 	IMSG_NEIGHBOR_UP,
 	IMSG_NEIGHBOR_DOWN,
-	IMSG_NEIGHBOR_CHANGE,
 	IMSG_NETWORK_ADD,
 	IMSG_NETWORK_DEL,
 	IMSG_RECONF_CONF,
@@ -113,21 +116,22 @@ enum imsg_type {
 /* interface states */
 #define	IF_STA_NEW		0x00	/* dummy state for reload */
 #define	IF_STA_DOWN		0x01
-#define	IF_STA_LOOPBACK		0x02
-#define	IF_STA_ACTIVE		0x04
-#define	IF_STA_ANY		0x07
+#define	IF_STA_ACTIVE		0x02
+#define	IF_STA_ANY		(IF_STA_DOWN | IF_STA_ACTIVE)
 
 /* interface events */
 enum iface_event {
 	IF_EVT_NOTHING,
 	IF_EVT_UP,
-	IF_EVT_DOWN
+	IF_EVT_DOWN,
+	IF_EVT_NEWADDR,
+	IF_EVT_DELADDR
 };
 
 /* interface actions */
 enum iface_action {
 	IF_ACT_NOTHING,
-	IF_ACT_STRT,
+	IF_ACT_UPDATE,
 	IF_ACT_RST
 };
 
@@ -138,39 +142,35 @@ enum iface_type {
 };
 
 /* neighbor states */
-#define	NBR_STA_DOWN		0x0001
-#define	NBR_STA_PRESENT		0x0002
-#define	NBR_STA_INITIAL		0x0004
-#define	NBR_STA_OPENREC		0x0008
-#define	NBR_STA_OPENSENT	0x0010
-#define	NBR_STA_OPER		0x0020
-#define	NBR_STA_SESSION		(NBR_STA_PRESENT | NBR_STA_INITIAL | \
-				NBR_STA_OPENREC | NBR_STA_OPENSENT | \
-				NBR_STA_OPER)
+#define	NBR_STA_PRESENT		0x0001
+#define	NBR_STA_INITIAL		0x0002
+#define	NBR_STA_OPENREC		0x0004
+#define	NBR_STA_OPENSENT	0x0008
+#define	NBR_STA_OPER		0x0010
+#define	NBR_STA_SESSION		(NBR_STA_INITIAL | NBR_STA_OPENREC | \
+				NBR_STA_OPENSENT | NBR_STA_OPER)
 
 /* neighbor events */
 enum nbr_event {
 	NBR_EVT_NOTHING,
-	NBR_EVT_HELLO_RCVD,
-	NBR_EVT_SESSION_UP,
+	NBR_EVT_MATCH_ADJ,
+	NBR_EVT_CONNECT_UP,
 	NBR_EVT_CLOSE_SESSION,
 	NBR_EVT_INIT_RCVD,
 	NBR_EVT_KEEPALIVE_RCVD,
 	NBR_EVT_PDU_RCVD,
+	NBR_EVT_PDU_SENT,
 	NBR_EVT_INIT_SENT,
-	NBR_EVT_DOWN
 };
 
 /* neighbor actions */
 enum nbr_action {
 	NBR_ACT_NOTHING,
-	NBR_ACT_STRT_ITIMER,
-	NBR_ACT_RST_ITIMER,
 	NBR_ACT_RST_KTIMEOUT,
-	NBR_ACT_STRT_KTIMER,
-	NBR_ACT_RST_KTIMER,
 	NBR_ACT_SESSION_EST,
-	NBR_ACT_INIT_SEND,
+	NBR_ACT_RST_KTIMER,
+	NBR_ACT_CONNECT_SETUP,
+	NBR_ACT_PASSIVE_INIT,
 	NBR_ACT_KEEPALIVE_SEND,
 	NBR_ACT_CLOSE_SESSION
 };
@@ -195,36 +195,47 @@ struct notify_msg {
 	u_int32_t	type;
 };
 
+struct if_addr {
+	LIST_ENTRY(if_addr)	 global_entry;
+	LIST_ENTRY(if_addr)	 iface_entry;
+	struct in_addr		 addr;
+	struct in_addr		 mask;
+	struct in_addr		 dstbrd;
+};
+
 struct iface {
 	LIST_ENTRY(iface)	 entry;
 	struct event		 hello_timer;
 
-	LIST_HEAD(, lde_nbr)	 lde_nbr_list;
-
 	char			 name[IF_NAMESIZE];
-	struct in_addr		 addr;
-	struct in_addr		 dst;
-	struct in_addr		 mask;
+	LIST_HEAD(, if_addr)	 addr_list;
+	LIST_HEAD(, adj)	 adj_list;
 
-	u_int16_t		 lspace_id;
-
-	u_int64_t		 baudrate;
 	time_t			 uptime;
 	unsigned int		 ifindex;
 	int			 discovery_fd;
-	int			 session_fd;
 	int			 state;
-	int			 mtu;
-	u_int16_t		 holdtime;
-	u_int16_t		 keepalive;
+	u_int16_t		 hello_holdtime;
 	u_int16_t		 hello_interval;
 	u_int16_t		 flags;
 	enum iface_type		 type;
 	u_int8_t		 media_type;
 	u_int8_t		 linkstate;
-	u_int8_t		 priority;
-	u_int8_t		 passive;
 };
+
+/* source of targeted hellos */
+struct tnbr {
+	LIST_ENTRY(tnbr)	 entry;
+	struct event		 hello_timer;
+	int			 discovery_fd;
+	struct adj		*adj;
+	struct in_addr		 addr;
+
+	u_int16_t		 hello_holdtime;
+	u_int16_t		 hello_interval;
+	u_int8_t		 flags;
+};
+#define F_TNBR_CONFIGURED	 0x01
 
 /* ldp_conf */
 enum {
@@ -238,6 +249,11 @@ enum blockmodes {
 	BM_NONBLOCK
 };
 
+enum hello_type {
+	HELLO_LINK,
+	HELLO_TARGETED
+};
+
 #define	MODE_DIST_INDEPENDENT	0x01
 #define	MODE_DIST_ORDERED	0x02
 #define	MODE_RET_LIBERAL	0x04
@@ -247,8 +263,11 @@ enum blockmodes {
 
 struct ldpd_conf {
 	struct event		disc_ev;
+	struct event		edisc_ev;
 	struct in_addr		rtr_id;
 	LIST_HEAD(, iface)	iface_list;
+	LIST_HEAD(, if_addr)	addr_list;
+	LIST_HEAD(, tnbr)	tnbr_list;
 
 	u_int32_t		opts;
 #define LDPD_OPT_VERBOSE	0x00000001
@@ -256,9 +275,13 @@ struct ldpd_conf {
 #define LDPD_OPT_NOACTION	0x00000004
 	time_t			uptime;
 	int			ldp_discovery_socket;
+	int			ldp_ediscovery_socket;
 	int			ldp_session_socket;
 	int			flags;
 	u_int8_t		mode;
+	u_int16_t		keepalive;
+	u_int16_t		thello_holdtime;
+	u_int16_t		thello_interval;
 };
 
 /* kroute */
@@ -273,8 +296,8 @@ struct kroute {
 	u_int8_t	priority;
 };
 
-struct kif_addr {
-	TAILQ_ENTRY(kif_addr)	 entry;
+struct kaddr {
+	u_short			 ifindex;
 	struct in_addr		 addr;
 	struct in_addr		 mask;
 	struct in_addr		 dstbrd;
@@ -293,55 +316,36 @@ struct kif {
 /* control data structures */
 struct ctl_iface {
 	char			 name[IF_NAMESIZE];
-	struct in_addr		 addr;
-	struct in_addr		 mask;
-	struct in_addr		 lspace;
-	struct in_addr		 rtr_id;
-	struct in_addr		 dr_id;
-	struct in_addr		 dr_addr;
-	struct in_addr		 bdr_id;
-	struct in_addr		 bdr_addr;
-	time_t			 hello_timer;
 	time_t			 uptime;
-	u_int64_t		 baudrate;
 	unsigned int		 ifindex;
 	int			 state;
-	int			 mtu;
-	int			 nbr_cnt;
-	int			 adj_cnt;
+	u_int16_t		 adj_cnt;
 	u_int16_t		 flags;
-	u_int16_t		 holdtime;
+	u_int16_t		 hello_holdtime;
 	u_int16_t		 hello_interval;
 	enum iface_type		 type;
 	u_int8_t		 linkstate;
 	u_int8_t		 mediatype;
-	u_int8_t		 priority;
-	u_int8_t		 passive;
+};
+
+struct ctl_adj {
+	struct in_addr		 id;
+	enum hello_type		 type;
+	char			 ifname[IF_NAMESIZE];
+	struct in_addr		 src_addr;
+	u_int16_t		 holdtime;
 };
 
 struct ctl_nbr {
-	char			 name[IF_NAMESIZE];
 	struct in_addr		 id;
 	struct in_addr		 addr;
-	struct in_addr		 dr;
-	struct in_addr		 bdr;
-	struct in_addr		 lspace;
-	time_t			 dead_timer;
 	time_t			 uptime;
-	u_int32_t		 db_sum_lst_cnt;
-	u_int32_t		 ls_req_lst_cnt;
-	u_int32_t		 ls_retrans_lst_cnt;
-	u_int32_t		 state_chng_cnt;
 	int			 nbr_state;
-	int			 iface_state;
-	u_int8_t		 priority;
-	u_int8_t		 options;
 };
 
 struct ctl_rt {
 	struct in_addr		 prefix;
 	struct in_addr		 nexthop;
-	struct in_addr		 lspace;
 	struct in_addr		 adv_rtr;
 	time_t			 uptime;
 	u_int32_t		 local_label;
@@ -359,14 +363,9 @@ int			 cmdline_symset(char *);
 /* control.c */
 void	session_socket_blockmode(int, enum blockmodes);
 
-/* in_cksum.c */
-u_int16_t	 in_cksum(void *, size_t);
-
-/* iso_cksum.c */
-u_int16_t	 iso_cksum(void *, u_int16_t, u_int16_t);
-
 /* kroute.c */
 int		 kif_init(void);
+void		 kif_redistribute(void);
 int		 kr_init(int);
 int		 kr_change(struct kroute *);
 int		 kr_delete(struct kroute *);
@@ -376,7 +375,7 @@ void		 kr_fib_decouple(void);
 void		 kr_dispatch_msg(int, short, void *);
 void		 kr_show_route(struct imsg *);
 void		 kr_ifinfo(char *, pid_t);
-struct kif	*kif_findname(char *, struct in_addr, struct kif_addr **);
+struct kif	*kif_findname(char *);
 void		 kr_reload(void);
 
 u_int8_t	mask2prefixlen(in_addr_t);

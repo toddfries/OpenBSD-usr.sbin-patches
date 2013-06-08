@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.35 2013/04/12 18:22:49 eric Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.37 2013/06/03 16:04:03 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -22,7 +22,6 @@
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <sys/tree.h>
-#include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 
@@ -235,12 +234,20 @@ mta_session_imsg(struct mproc *p, struct imsg *imsg)
 		m_msg(&m, imsg);
 		m_get_id(&m, &reqid);
 		m_end(&m);
-		if (imsg->fd == -1)
-			fatalx("mta: cannot obtain msgfd");
 
 		s = mta_tree_pop(&wait_fd, reqid);
 		if (s == NULL) {
-			close(imsg->fd);
+			if (imsg->fd != -1)
+				close(imsg->fd);
+			return;
+		}
+
+		if (imsg->fd == -1) {
+			log_debug("debug: mta: failed to obtain msg fd");
+			mta_flush_task(s, IMSG_DELIVERY_TEMPFAIL,
+			    "Could not get message fd", 0);
+			mta_enter_state(s, MTA_READY);
+			io_reload(&s->io);
 			return;
 		}
 
@@ -312,6 +319,8 @@ mta_session_imsg(struct mproc *p, struct imsg *imsg)
 
 		bzero(resp_ca_cert->cert, resp_ca_cert->cert_len);
 		bzero(resp_ca_cert->key, resp_ca_cert->key_len);
+		free(resp_ca_cert->cert);
+		free(resp_ca_cert->key);
 		free(resp_ca_cert);
 
 		return;
@@ -425,7 +434,7 @@ mta_connect(struct mta_session *s)
 
 	if (s->helo == NULL) {
 		if (s->relay->helotable && s->route->src->sa) {
-			m_create(p_lka, IMSG_LKA_HELO, 0, 0, -1, 64);
+			m_create(p_lka, IMSG_LKA_HELO, 0, 0, -1);
 			m_add_id(p_lka, s->id);
 			m_add_string(p_lka, s->relay->helotable);
 			m_add_sockaddr(p_lka, s->route->src->sa);
@@ -608,7 +617,7 @@ mta_enter_state(struct mta_session *s, int newstate)
 
 		stat_increment("mta.task.running", 1);
 
-		m_create(p_queue, IMSG_QUEUE_MESSAGE_FD, 0, 0, -1, 18);
+		m_create(p_queue, IMSG_QUEUE_MESSAGE_FD, 0, 0, -1);
 		m_add_id(p_queue, s->id);
 		m_add_msgid(p_queue, s->task->msgid);
 		m_close(p_queue);
@@ -642,6 +651,10 @@ mta_enter_state(struct mta_session *s, int newstate)
 
 		if ((q = mta_queue_data(s)) == -1) {
 			s->flags |= MTA_FREE;
+			break;
+		}
+		if (q == 0) {
+			mta_enter_state(s, MTA_BODY);
 			break;
 		}
 
@@ -684,6 +697,8 @@ mta_response(struct mta_session *s, char *line)
 	struct mta_envelope	*e;
 	char			 buf[SMTPD_MAXLINESIZE];
 	int			 delivery;
+	struct sockaddr		 sa;
+	socklen_t		 sa_len;
 
 	switch (s->state) {
 
@@ -779,7 +794,21 @@ mta_response(struct mta_session *s, char *line)
 			TAILQ_REMOVE(&s->task->envelopes, e, entry);
 			snprintf(buf, sizeof(buf), "%s",
 			    mta_host_to_text(s->route->dst));
-			mta_delivery(e, buf, delivery, line);
+
+			/* we're about to log, associate session to envelope */
+			e->session = s->id;
+
+			/* XXX */
+			/*
+			 * getsockname() can only fail with ENOBUFS here
+			 * best effort, don't log source ...
+			 */
+			sa_len = sizeof sa;
+			if (getsockname(s->io.sock, &sa, &sa_len) < 0)
+				mta_delivery(e, NULL, buf, delivery, line);
+			else
+				mta_delivery(e, sa_to_text(&sa),
+				    buf, delivery, line);
 			free(e->dest);
 			free(e->rcpt);
 			free(e);
@@ -848,7 +877,6 @@ mta_io(struct io *io, int evt)
 	size_t			 len;
 	const char		*error;
 	int			 cont;
-	const char		*schema;
 
 	log_trace(TRACE_IO, "mta: %p: %s %s", s, io_strevent(evt),
 	    io_strio(io));
@@ -856,15 +884,6 @@ mta_io(struct io *io, int evt)
 	switch (evt) {
 
 	case IO_CONNECTED:
-		if (s->use_smtp_tls)
-			schema = "smtp+tls://";
-		else if (s->use_starttls)
-			schema = "tls://";
-		else if (s->use_smtps)
-			schema = "smtps://";
-		else
-			schema = "smtp://";
-
 		log_info("smtp-out: Connected on session %016"PRIx64, s->id);
 
 		if (s->use_smtps) {
@@ -1067,6 +1086,8 @@ mta_flush_task(struct mta_session *s, int delivery, const char *error, size_t co
 	struct mta_envelope	*e;
 	char			 relay[SMTPD_MAXLINESIZE];
 	size_t			 n;
+	struct sockaddr		 sa;
+	socklen_t		 sa_len;
 
 	snprintf(relay, sizeof relay, "%s", mta_host_to_text(s->route->dst));
 
@@ -1079,7 +1100,22 @@ mta_flush_task(struct mta_session *s, int delivery, const char *error, size_t co
 		}
 
 		TAILQ_REMOVE(&s->task->envelopes, e, entry);
-		mta_delivery(e, relay, delivery, error);
+
+		/* we're about to log, associate session to envelope */
+		e->session = s->id;
+
+		/* XXX */
+		/*
+		 * getsockname() can only fail with ENOBUFS here
+		 * best effort, don't log source ...
+		 */
+		sa_len = sizeof sa;
+		if (getsockname(s->io.sock, &sa, &sa_len) < 0)
+			mta_delivery(e, NULL, relay, delivery, error);
+		else
+			mta_delivery(e, sa_to_text(&sa),
+			    relay, delivery, error);
+
 		free(e->dest);
 		free(e->rcpt);
 		free(e);

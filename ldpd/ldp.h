@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldp.h,v 1.9 2011/01/10 11:58:39 claudio Exp $ */
+/*	$OpenBSD: ldp.h,v 1.13 2013/06/04 02:25:28 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -31,13 +31,11 @@
 
 #define LDP_MAX_LEN		4096
 
-#define INFINITE_TMR		(-1)
 #define LINK_DFLT_HOLDTIME	15
 #define TARGETED_DFLT_HOLDTIME	45
-
-#define DEFAULT_HOLDTIME	15
 #define MIN_HOLDTIME		1
 #define MAX_HOLDTIME		0xffff
+#define	INFINITE_HOLDTIME	0xffff
 
 #define DEFAULT_KEEPALIVE	180
 #define MIN_KEEPALIVE		1
@@ -46,10 +44,10 @@
 
 #define	DEFAULT_HELLO_INTERVAL	5
 #define	MIN_HELLO_INTERVAL	1
-#define	MAX_HELLO_INTERVAL	0xffff	/* XXX */
+#define	MAX_HELLO_INTERVAL	0xffff
 
 #define	INIT_DELAY_TMR		15
-#define DEFAULT_NBR_TMOUT	86400	/* 24 hours */
+#define	MAX_DELAY_TMR		120
 
 /* LDP message types */
 #define MSG_TYPE_NOTIFICATION	0x0001
@@ -94,7 +92,6 @@ struct ldp_hdr {
 } __packed;
 
 #define	LDP_HDR_SIZE		10
-#define	INFINITE_HOLDTIME	0xffff
 
 /* TLV record */
 struct tlv {
@@ -125,6 +122,12 @@ struct hello_prms_tlv {
 	u_int16_t	length;
 	u_int16_t	holdtime;
 	u_int16_t	flags;
+};
+
+struct hello_prms_opt4_tlv {
+	u_int16_t	type;
+	u_int16_t	length;
+	u_int32_t	value;
 };
 
 #define HELLO_PRMS_SIZE		8

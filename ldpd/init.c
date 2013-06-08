@@ -1,4 +1,4 @@
-/*	$OpenBSD: init.c,v 1.7 2011/01/10 12:02:48 claudio Exp $ */
+/*	$OpenBSD: init.c,v 1.12 2013/06/04 02:34:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -37,6 +37,8 @@
 #include "log.h"
 #include "ldpe.h"
 
+extern struct ldpd_conf        *leconf;
+
 int	gen_init_prms_tlv(struct ibuf *, struct nbr *, u_int16_t);
 int	tlv_decode_opt_init_prms(char *, u_int16_t);
 
@@ -46,9 +48,6 @@ send_init(struct nbr *nbr)
 	struct ibuf		*buf;
 	u_int16_t		 size;
 
-	if (nbr->iface->passive)
-		return;
-
 	log_debug("send_init: neighbor ID %s", inet_ntoa(nbr->id));
 
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
@@ -56,7 +55,7 @@ send_init(struct nbr *nbr)
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg) + SESS_PRMS_SIZE;
 
-	gen_ldp_hdr(buf, nbr->iface, size);
+	gen_ldp_hdr(buf, size);
 
 	size -= LDP_HDR_SIZE;
 
@@ -66,7 +65,7 @@ send_init(struct nbr *nbr)
 
 	gen_init_prms_tlv(buf, nbr, size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
 }
 
 int
@@ -103,12 +102,13 @@ recv_init(struct nbr *nbr, char *buf, u_int16_t len)
 		return (-1);
 	}
 
-	if (nbr->iface->keepalive < ntohs(sess.keepalive_time))
-		nbr->keepalive = nbr->iface->keepalive;
+	if (leconf->keepalive < ntohs(sess.keepalive_time))
+		nbr->keepalive = leconf->keepalive;
 	else
 		nbr->keepalive = ntohs(sess.keepalive_time);
 
-	nbr_fsm(nbr, NBR_EVT_INIT_RCVD);
+	if (!nbr_pending_idtimer(nbr))
+		nbr_fsm(nbr, NBR_EVT_INIT_RCVD);
 
 	return (ntohs(init.length));
 }
@@ -125,12 +125,11 @@ gen_init_prms_tlv(struct ibuf *buf, struct nbr *nbr, u_int16_t size)
 	parms.type = htons(TLV_TYPE_COMMONSESSION);
 	parms.length = htons(size);
 	parms.proto_version = htons(LDP_VERSION);
-	parms.keepalive_time = htons(nbr->iface->keepalive);
+	parms.keepalive_time = htons(leconf->keepalive);
 	parms.reserved = 0;
 	parms.pvlim = 0;
 	parms.max_pdu_len = 0;
 	parms.lsr_id = nbr->id.s_addr;
-	/* XXX: nbr lspace */
 	parms.lspace_id = 0;
 
 	return (ibuf_add(buf, &parms, SESS_PRMS_SIZE));

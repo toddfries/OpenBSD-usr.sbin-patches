@@ -1,4 +1,4 @@
-/*	$OpenBSD: labelmapping.c,v 1.19 2011/01/10 11:52:04 claudio Exp $ */
+/*	$OpenBSD: labelmapping.c,v 1.24 2013/06/04 02:34:48 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -56,14 +56,11 @@ send_labelmapping(struct nbr *nbr)
 	struct ldp_hdr		*ldp_hdr;
 	u_int16_t		 tlv_size, size;
 
-	if (nbr->iface->passive)
-		return;
-
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_labelmapping");
 
 	/* real size will be set up later */
-	gen_ldp_hdr(buf, nbr->iface, 0);
+	gen_ldp_hdr(buf, 0);
 
 	size = LDP_HDR_SIZE - TLV_HDR_LEN;
 
@@ -86,7 +83,8 @@ send_labelmapping(struct nbr *nbr)
 	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
 	ldp_hdr->length = htons(size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
 int
@@ -98,12 +96,6 @@ recv_labelmapping(struct nbr *nbr, char *buf, u_int16_t len)
 	u_int32_t		label;
 	int			feclen, lbllen, tlen;
 	u_int8_t		addr_type;
-
-	if (nbr->state != NBR_STA_OPER) {
-		log_debug("recv_labelmapping: neighbor ID %s not operational",
-		    inet_ntoa(nbr->id));
-		return (-1);
-	}
 
 	bcopy(buf, &lm, sizeof(lm));
 
@@ -170,14 +162,11 @@ send_labelrequest(struct nbr *nbr)
 	struct ldp_hdr		*ldp_hdr;
 	u_int16_t		 tlv_size, size;
 
-	if (nbr->iface->passive)
-		return;
-
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_labelrequest");
 
 	/* real size will be set up later */
-	gen_ldp_hdr(buf, nbr->iface, 0);
+	gen_ldp_hdr(buf, 0);
 
 	size = LDP_HDR_SIZE - TLV_HDR_LEN;
 
@@ -195,7 +184,8 @@ send_labelrequest(struct nbr *nbr)
 	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
 	ldp_hdr->length = htons(size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
 int
@@ -206,12 +196,6 @@ recv_labelrequest(struct nbr *nbr, char *buf, u_int16_t len)
 	struct map	map;
 	int		feclen, tlen;
 	u_int8_t	addr_type;
-
-	if (nbr->state != NBR_STA_OPER) {
-		log_debug("recv_labelrequest: neighbor ID %s not operational",
-		    inet_ntoa(nbr->id));
-		return (-1);
-	}
 
 	bcopy(buf, &lr, sizeof(lr));
 
@@ -267,14 +251,11 @@ send_labelwithdraw(struct nbr *nbr)
 	struct ldp_hdr		*ldp_hdr;
 	u_int16_t		 tlv_size, size;
 
-	if (nbr->iface->passive)
-		return;
-
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_labelwithdraw");
 
 	/* real size will be set up later */
-	gen_ldp_hdr(buf, nbr->iface, 0);
+	gen_ldp_hdr(buf, 0);
 
 	size = LDP_HDR_SIZE - TLV_HDR_LEN;
 
@@ -300,7 +281,8 @@ send_labelwithdraw(struct nbr *nbr)
 	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
 	ldp_hdr->length = htons(size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
 int
@@ -312,12 +294,6 @@ recv_labelwithdraw(struct nbr *nbr, char *buf, u_int16_t len)
 	u_int32_t	label = NO_LABEL;
 	int		feclen, tlen, numfec = 0;
 	u_int8_t	addr_type;
-
-	if (nbr->state != NBR_STA_OPER) {
-		log_debug("recv_labelwithdraw: neighbor ID %s not operational",
-		    inet_ntoa(nbr->id));
-		return (-1);
-	}
 
 	bcopy(buf, &lw, sizeof(lw));
 
@@ -408,14 +384,11 @@ send_labelrelease(struct nbr *nbr)
 	struct ldp_hdr		*ldp_hdr;
 	u_int16_t		 tlv_size, size;
 
-	if (nbr->iface->passive)
-		return;
-
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_labelrelease");
 
 	/* real size will be set up later */
-	gen_ldp_hdr(buf, nbr->iface, 0);
+	gen_ldp_hdr(buf, 0);
 
 	size = LDP_HDR_SIZE - TLV_HDR_LEN;
 
@@ -441,7 +414,8 @@ send_labelrelease(struct nbr *nbr)
 	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
 	ldp_hdr->length = htons(size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
 int
@@ -453,12 +427,6 @@ recv_labelrelease(struct nbr *nbr, char *buf, u_int16_t len)
 	u_int32_t	label = NO_LABEL;
 	int		feclen, tlen, numfec = 0;
 	u_int8_t	addr_type;
-
-	if (nbr->state != NBR_STA_OPER) {
-		log_debug("recv_labelrelease: neighbor ID %s not operational",
-		    inet_ntoa(nbr->id));
-		return (-1);
-	}
 
 	bcopy(buf, &lr, sizeof(lr));
 
@@ -546,21 +514,19 @@ send_labelabortreq(struct nbr *nbr)
 	struct ibuf	*buf;
 	u_int16_t	 size;
 
-	if (nbr->iface->passive)
-		return;
-
 	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
 		fatal("send_labelabortreq");
 
 	size = LDP_HDR_SIZE + sizeof(struct ldp_msg);
 
-	gen_ldp_hdr(buf, nbr->iface, size);
+	gen_ldp_hdr(buf, size);
 
 	size -= LDP_HDR_SIZE;
 
 	gen_msg_tlv(buf, MSG_TYPE_LABELABORTREQ, size);
 
-	evbuf_enqueue(&nbr->wbuf, buf);
+	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
 int
@@ -571,12 +537,6 @@ recv_labelabortreq(struct nbr *nbr, char *buf, u_int16_t len)
 	struct tlv	ft;
 	int		feclen, tlen;
 	u_int8_t	addr_type;
-
-	if (nbr->state != NBR_STA_OPER) {
-		log_debug("recv_labelabortreq: neighbor ID %s not operational",
-		    inet_ntoa(nbr->id));
-		return (-1);
-	}
 
 	log_debug("recv_labelabortreq: neighbor ID %s", inet_ntoa(nbr->id));
 
