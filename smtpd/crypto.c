@@ -1,4 +1,4 @@
-/* $OpenBSD: crypto.c,v 1.1 2013/05/04 13:46:21 gilles Exp $	 */
+/* $OpenBSD: crypto.c,v 1.3 2013/07/22 13:20:49 eric Exp $	 */
 
 /*
  * Copyright (c) 2013 Gilles Chehade <gilles@openbsd.org>
@@ -71,7 +71,6 @@ crypto_encrypt_file(FILE * in, FILE * out)
 	uint8_t		tag[GCM_TAG_SIZE];
 	uint8_t		version = API_VERSION;
 	size_t		r, w;
-	off_t		sz;
 	int		len;
 	int		ret = 0;
 	struct stat	sb;
@@ -81,7 +80,6 @@ crypto_encrypt_file(FILE * in, FILE * out)
 		return 0;
 	if (sb.st_size >= 0x1000000000LL)
 		return 0;
-	sz = sb.st_size;
 
 	/* prepend version byte*/
 	if ((w = fwrite(&version, 1, sizeof version, out)) != sizeof version)
@@ -217,6 +215,7 @@ crypto_encrypt_buffer(const char *in, size_t inlen, char *out, size_t outlen)
 	uint8_t		iv[IV_SIZE];
 	uint8_t		tag[GCM_TAG_SIZE];
 	uint8_t		version = API_VERSION;
+	off_t		sz;
 	int		olen;
 	int		len = 0;
 	int		ret = 0;
@@ -226,7 +225,8 @@ crypto_encrypt_buffer(const char *in, size_t inlen, char *out, size_t outlen)
 		return 0;
 
 	/* input should not exceed 64GB */
-	if (inlen >= 0x1000000000LL)
+	sz = inlen;
+	if (sz >= 0x1000000000LL)
 		return 0;
 
 	/* prepend version */
@@ -373,7 +373,6 @@ main(int argc, char *argv[])
 		 * fprintf(fpin, "borken");
 		 * fclose(fpin);
 		 */
-
 		fpin = fopen("/tmp/passwd.enc", "r");
 		fpout = fopen("/tmp/passwd.dec", "w");
 		if (!crypto_decrypt_file(fpin, fpout))

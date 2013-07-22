@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka.c,v 1.152 2013/05/24 17:03:14 eric Exp $	*/
+/*	$OpenBSD: lka.c,v 1.154 2013/07/19 11:14:08 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -582,7 +582,6 @@ lka(void)
 	case -1:
 		fatal("lka: cannot fork");
 	case 0:
-		env->sc_pid = getpid();
 		break;
 	default:
 		return (pid);
@@ -590,7 +589,8 @@ lka(void)
 
 	purge_config(PURGE_EVERYTHING);
 
-	pw = env->sc_pw;
+	if ((pw = getpwnam(SMTPD_USER)) == NULL)
+		fatalx("unknown user " SMTPD_USER);
 
 	config_process(PROC_LKA);
 

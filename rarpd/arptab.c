@@ -1,3 +1,5 @@
+/*	$OpenBSD: arptab.c,v 1.20 2013/07/20 18:25:34 bluhm Exp $ */
+
 /*
  * Copyright (c) 1984, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -74,7 +76,8 @@ getsocket(void)
 struct	sockaddr_in so_mask = {8, 0, 0, { 0xffffffff}};
 struct	sockaddr_inarp blank_sin = {sizeof(blank_sin), AF_INET }, sin_m;
 struct	sockaddr_dl blank_sdl = {sizeof(blank_sdl), AF_LINK }, sdl_m;
-int	expire_time, flags, export_only, doing_proxy;
+time_t	expire_time;
+int	flags, export_only, doing_proxy;
 
 struct	{
 	struct	rt_msghdr m_rtm;
@@ -104,7 +107,8 @@ arptab_set(u_char *eaddr, u_int32_t host)
 	sin->sin_addr.s_addr = host;
 	memcpy((u_char *)LLADDR(&sdl_m), (char *)eaddr, 6);
 	sdl_m.sdl_alen = 6;
-	doing_proxy = flags = export_only = expire_time = 0;
+	expire_time = 0;
+	doing_proxy = flags = export_only = 0;
 	gettimeofday(&time, 0);
 	expire_time = time.tv_sec + 20 * 60;
 

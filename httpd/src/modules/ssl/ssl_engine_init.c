@@ -1,4 +1,4 @@
-/* $OpenBSD: ssl_engine_init.c,v 1.28 2012/07/07 17:08:17 sthen Exp $ */
+/* $OpenBSD: ssl_engine_init.c,v 1.32 2013/07/16 13:22:55 jsing Exp $ */
 
 /*                      _             _
 **  _ __ ___   ___   __| |    ___ ___| |  mod_ssl
@@ -530,6 +530,7 @@ void ssl_init_ConfigureServer(server_rec *s, pool *p, SSLSrvConfigRec *sc)
     char *cpVHostID;
     EVP_PKEY *pKey;
     SSL_CTX *ctx;
+    EC_KEY *ecdhKey;
     STACK_OF(X509_NAME) *skCAList;
     ssl_asn1_t *asn1;
     unsigned char *ucp;
@@ -589,6 +590,10 @@ void ssl_init_ConfigureServer(server_rec *s, pool *p, SSLSrvConfigRec *sc)
         SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv3);
     if (!(sc->nProtocol & SSL_PROTOCOL_TLSV1))
         SSL_CTX_set_options(ctx, SSL_OP_NO_TLSv1);
+    if (sc->bCompression == FALSE)
+        SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION);
+    if (sc->bHonorCipherOrder == TRUE)
+    	SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
     SSL_CTX_set_app_data(ctx, s);
     sc->pSSLCtx = ctx;
 
@@ -637,6 +642,22 @@ void ssl_init_ConfigureServer(server_rec *s, pool *p, SSLSrvConfigRec *sc)
                     cpVHostID);
             ssl_die();
         }
+    }
+
+    /*
+     *  Configure ECDH Curve
+     */
+    if (sc->nECDHCurve > 0) {
+        ecdhKey = EC_KEY_new_by_curve_name(sc->nECDHCurve);
+        if (ecdhKey == NULL) {
+            ssl_log(s, SSL_LOG_ERROR|SSL_ADD_SSLERR,
+                    "Init: (%s) Failed to create new EC key using named curve",
+                    cpVHostID);
+            ssl_die();
+        }
+        SSL_CTX_set_tmp_ecdh(ctx, ecdhKey);
+        SSL_CTX_set_options(ctx, SSL_OP_SINGLE_ECDH_USE);
+        EC_KEY_free(ecdhKey);
     }
 
     /*

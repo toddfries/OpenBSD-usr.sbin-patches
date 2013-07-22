@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.85 2013/05/24 17:03:14 eric Exp $	*/
+/*	$OpenBSD: control.c,v 1.89 2013/07/19 21:14:52 eric Exp $	*/
 
 /*
  * Copyright (c) 2012 Gilles Chehade <gilles@poolp.org>
@@ -116,6 +116,22 @@ control_imsg(struct mproc *p, struct imsg *imsg)
 			return;
 		}
 	}
+	if (p->proc == PROC_MTA) {
+		switch (imsg->hdr.type) {
+		case IMSG_CTL_MTA_SHOW_ROUTES:
+			c = tree_get(&ctl_conns, imsg->hdr.peerid);
+			if (c == NULL)
+				return;
+			m_forward(&c->mproc, imsg);
+			return;
+		case IMSG_CTL_MTA_SHOW_HOSTSTATS:
+			c = tree_get(&ctl_conns, imsg->hdr.peerid);
+			if (c == NULL)
+				return;
+			m_forward(&c->mproc, imsg);
+			return;
+		}
+	}
 
 	switch (imsg->hdr.type) {
 	case IMSG_STAT_INCREMENT:
@@ -181,7 +197,6 @@ control(void)
 	case -1:
 		fatal("control: cannot fork");
 	case 0:
-		env->sc_pid = getpid();
 		break;
 	default:
 		return (pid);
@@ -189,7 +204,8 @@ control(void)
 
 	purge_config(PURGE_EVERYTHING);
 
-	pw = env->sc_pw;
+	if ((pw = getpwnam(SMTPD_USER)) == NULL)
+		fatalx("unknown user " SMTPD_USER);
 
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("control: socket");
@@ -226,7 +242,7 @@ control(void)
 	stat_backend = env->sc_stat;
 	stat_backend->init();
 
-	if (chroot(pw->pw_dir) == -1)
+	if (chroot(PATH_CHROOT) == -1)
 		fatal("control: chroot");
 	if (chdir("/") == -1)
 		fatal("control: chdir(\"/\")");
@@ -559,6 +575,14 @@ control_dispatch_ext(struct mproc *p, struct imsg *imsg)
 		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 		return;
 
+	case IMSG_CTL_PAUSE_EVP:
+		if (c->euid)
+			goto badcred;
+
+		m_forward(p_scheduler, imsg);
+		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+		return;
+
 	case IMSG_CTL_PAUSE_MDA:
 		if (c->euid)
 			goto badcred;
@@ -598,6 +622,14 @@ control_dispatch_ext(struct mproc *p, struct imsg *imsg)
 		log_info("info: smtp paused");
 		env->sc_flags |= SMTPD_SMTP_PAUSED;
 		m_compose(p_smtp, IMSG_CTL_PAUSE_SMTP, 0, 0, -1, NULL, 0);
+		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+		return;
+
+	case IMSG_CTL_RESUME_EVP:
+		if (c->euid)
+			goto badcred;
+
+		m_forward(p_scheduler, imsg);
 		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 		return;
 
@@ -643,6 +675,15 @@ control_dispatch_ext(struct mproc *p, struct imsg *imsg)
 		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 		return;
 
+	case IMSG_CTL_RESUME_ROUTE:
+		if (c->euid)
+			goto badcred;
+
+		log_info("info: route resumed");
+		m_forward(p_mta, imsg);
+		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
+		return;
+
 	case IMSG_CTL_LIST_MESSAGES:
 		if (c->euid)
 			goto badcred;
@@ -654,6 +695,20 @@ control_dispatch_ext(struct mproc *p, struct imsg *imsg)
 		if (c->euid)
 			goto badcred;
 		m_compose(p_scheduler, IMSG_CTL_LIST_ENVELOPES, c->id, 0, -1,
+		    imsg->data, imsg->hdr.len - sizeof(imsg->hdr));
+		return;
+
+	case IMSG_CTL_MTA_SHOW_ROUTES:
+		if (c->euid)
+			goto badcred;
+		m_compose(p_mta, IMSG_CTL_MTA_SHOW_ROUTES, c->id, 0, -1,
+		    imsg->data, imsg->hdr.len - sizeof(imsg->hdr));
+		return;
+
+	case IMSG_CTL_MTA_SHOW_HOSTSTATS:
+		if (c->euid)
+			goto badcred;
+		m_compose(p_mta, IMSG_CTL_MTA_SHOW_HOSTSTATS, c->id, 0, -1,
 		    imsg->data, imsg->hdr.len - sizeof(imsg->hdr));
 		return;
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.148 2013/05/24 17:03:14 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.153 2013/07/19 21:14:52 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -63,11 +63,11 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 	struct delivery_bounce	 bounce;
 	struct bounce_req_msg	*req_bounce;
 	struct envelope		 evp;
-	static uint64_t		 batch_id;
 	struct msg		 m;
 	const char		*reason;
 	uint64_t		 reqid, evpid;
 	uint32_t		 msgid;
+	uint32_t		 penalty;
 	time_t			 nexttry;
 	int			 fd, ret, v, flags;
 
@@ -236,7 +236,8 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			}
 			queue_bounce(&evp, &req_bounce->bounce);
 			evp.lastbounce = req_bounce->timestamp;
-			queue_envelope_update(&evp);
+			if (!queue_envelope_update(&evp))
+				log_warnx("warn: could not update envelope %016"PRIx64, evpid);
 			return;
 
 		case IMSG_MDA_DELIVER:
@@ -264,19 +265,12 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			bounce_add(evpid);
 			return;
 
-		case IMSG_MTA_BATCH:
-			batch_id = generate_uid();
-			m_create(p_mta, IMSG_MTA_BATCH, 0, 0, -1);
-			m_add_id(p_mta, batch_id);
-			m_close(p_mta);
-			return;
-
-		case IMSG_MTA_BATCH_ADD:
+		case IMSG_MTA_TRANSFER:
 			m_msg(&m, imsg);
 			m_get_evpid(&m, &evpid);
 			m_end(&m);
 			if (queue_envelope_load(evpid, &evp) == 0) {
-				log_warnx("queue: batch: failed to load envelope");
+				log_warnx("queue: failed to load envelope");
 				m_create(p_scheduler, IMSG_QUEUE_REMOVE, 0, 0, -1);
 				m_add_evpid(p_scheduler, evpid);
 				m_add_u32(p_scheduler, 1); /* in-flight */
@@ -284,15 +278,8 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 				return;
 			}
 			evp.lasttry = time(NULL);
-			m_create(p_mta, IMSG_MTA_BATCH_ADD, 0, 0, -1);
-			m_add_id(p_mta, batch_id);
+			m_create(p_mta, IMSG_MTA_TRANSFER, 0, 0, -1);
 			m_add_envelope(p_mta, &evp);
-			m_close(p_mta);
-			return;
-
-		case IMSG_MTA_BATCH_END:
-			m_create(p_mta, IMSG_MTA_BATCH_END, 0, 0, -1);
-			m_add_id(p_mta, batch_id);
 			m_close(p_mta);
 			return;
 
@@ -319,7 +306,7 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			evp.flags |= flags;
 			/* In the past if running or runnable */
 			evp.nexttry = nexttry;
-			if (flags == EF_INFLIGHT) {
+			if (flags & EF_INFLIGHT) {
 				/*
 				 * Not exactly correct but pretty close: The
 				 * value is not recorded on the envelope unless
@@ -359,6 +346,7 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 		case IMSG_DELIVERY_TEMPFAIL:
 			m_msg(&m, imsg);
 			m_get_evpid(&m, &evpid);
+			m_get_u32(&m, &penalty);
 			m_get_string(&m, &reason);
 			m_end(&m);
 			if (queue_envelope_load(evpid, &evp) == 0) {
@@ -371,9 +359,11 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			}
 			envelope_set_errormsg(&evp, "%s", reason);
 			evp.retry++;
-			queue_envelope_update(&evp);
+			if (!queue_envelope_update(&evp))
+				log_warnx("warn: could not update envelope %016"PRIx64, evpid);
 			m_create(p_scheduler, IMSG_DELIVERY_TEMPFAIL, 0, 0, -1);
 			m_add_envelope(p_scheduler, &evp);
+			m_add_u32(p_scheduler, penalty);
 			m_close(p_scheduler);
 			return;
 
@@ -422,6 +412,10 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			m_create(p_scheduler, IMSG_DELIVERY_LOOP, 0, 0, -1);
 			m_add_evpid(p_scheduler, evp.id);
 			m_close(p_scheduler);
+			return;
+
+		case IMSG_MTA_SCHEDULE:
+			m_forward(p_scheduler, imsg);
 			return;
 		}
 	}
@@ -534,25 +528,35 @@ queue(void)
 	case -1:
 		fatal("queue: cannot fork");
 	case 0:
-		env->sc_pid = getpid();
 		break;
 	default:
 		return (pid);
 	}
 
 	purge_config(PURGE_EVERYTHING);
-	if (env->sc_pwqueue) {
-		free(env->sc_pw);
-		env->sc_pw = env->sc_pwqueue;
-	}
 
-	pw = env->sc_pw;
+	if ((pw = getpwnam(SMTPD_QUEUE_USER)) == NULL)
+		if ((pw = getpwnam(SMTPD_USER)) == NULL)
+			fatalx("unknown user " SMTPD_USER);
+
+	env->sc_queue_flags |= QUEUE_EVPCACHE;
+	env->sc_queue_evpcache_size = 1024;
+
 	if (chroot(PATH_SPOOL) == -1)
 		fatal("queue: chroot");
 	if (chdir("/") == -1)
 		fatal("queue: chdir(\"/\")");
 
 	config_process(PROC_QUEUE);
+
+	if (env->sc_queue_flags & QUEUE_COMPRESSION)
+		log_info("queue: queue compression enabled");
+
+	if (env->sc_queue_key) {
+		if (! crypto_setup(env->sc_queue_key, strlen(env->sc_queue_key)))
+			fatalx("crypto_setup: invalid key for queue encryption");
+		log_info("queue: queue encryption enabled");
+	}
 
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
@@ -641,10 +645,11 @@ queue_ok(uint64_t evpid)
 }
 
 void
-queue_tempfail(uint64_t evpid, const char *reason)
+queue_tempfail(uint64_t evpid, uint32_t penalty, const char *reason)
 {
 	m_create(p_queue, IMSG_DELIVERY_TEMPFAIL, 0, 0, -1);
 	m_add_evpid(p_queue, evpid);
+	m_add_u32(p_queue, penalty);
 	m_add_string(p_queue, reason);
 	m_close(p_queue);
 }
@@ -669,23 +674,23 @@ queue_loop(uint64_t evpid)
 static void
 queue_log(const struct envelope *e, const char *prefix, const char *status)
 {
-       char rcpt[SMTPD_MAXLINESIZE];
-
-       rcpt[0] = '\0';
-       if (strcmp(e->rcpt.user, e->dest.user) ||
-           strcmp(e->rcpt.domain, e->dest.domain))
-               snprintf(rcpt, sizeof rcpt, "rcpt=<%s@%s>, ",
-                   e->rcpt.user, e->rcpt.domain);
-
-       log_info("%s: %s for %016" PRIx64 ": from=<%s@%s>, to=<%s@%s>, "
-           "%sdelay=%s, stat=%s",
-           e->type == D_MDA ? "delivery" : "relay",
-           prefix,
-           e->id, e->sender.user, e->sender.domain,
-           e->dest.user, e->dest.domain,
-           rcpt,
-           duration_to_text(time(NULL) - e->creation),
-           status);
+	char rcpt[SMTPD_MAXLINESIZE];
+	
+	strlcpy(rcpt, "-", sizeof rcpt);
+	if (strcmp(e->rcpt.user, e->dest.user) ||
+	    strcmp(e->rcpt.domain, e->dest.domain))
+		snprintf(rcpt, sizeof rcpt, "%s@%s",
+		    e->rcpt.user, e->rcpt.domain);
+	
+	log_info("%s: %s for %016" PRIx64 ": from=<%s@%s>, to=<%s@%s>, "
+	    "rcpt=<%s>, delay=%s, stat=%s",
+	    e->type == D_MDA ? "delivery" : "relay",
+	    prefix,
+	    e->id, e->sender.user, e->sender.domain,
+	    e->dest.user, e->dest.domain,
+	    rcpt,
+	    duration_to_text(time(NULL) - e->creation),
+	    status);
 }
 
 void

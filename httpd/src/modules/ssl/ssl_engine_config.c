@@ -191,11 +191,14 @@ void *ssl_config_server_create(pool *p, server_rec *s)
 
     sc = ap_palloc(p, sizeof(SSLSrvConfigRec));
     sc->bEnabled               = UNSET;
+    sc->bCompression           = FALSE;
     sc->szCACertificatePath    = NULL;
     sc->szCACertificateFile    = NULL;
     sc->szCertificateChain     = NULL;
     sc->szLogFile              = NULL;
     sc->szCipherSuite          = NULL;
+    sc->nECDHCurve             = NID_X9_62_prime256v1;
+    sc->bHonorCipherOrder      = UNSET;
     sc->nLogLevel              = SSL_LOG_NONE;
     sc->nVerifyDepth           = UNSET;
     sc->nVerifyClient          = SSL_CVERIFY_UNSET;
@@ -247,11 +250,14 @@ void *ssl_config_server_merge(pool *p, void *basev, void *addv)
     int i;
 
     cfgMergeBool(bEnabled);
+    cfgMergeBool(bCompression);
     cfgMergeString(szCACertificatePath);
     cfgMergeString(szCACertificateFile);
     cfgMergeString(szCertificateChain);
     cfgMergeString(szLogFile);
     cfgMergeString(szCipherSuite);
+    cfgMerge(nECDHCurve, NID_X9_62_prime256v1);
+    cfgMergeBool(bHonorCipherOrder);
     cfgMerge(nLogLevel, SSL_LOG_NONE);
     cfgMergeInt(nVerifyDepth);
     cfgMerge(nVerifyClient, SSL_CVERIFY_UNSET);
@@ -530,6 +536,15 @@ const char *ssl_cmd_SSLEngine(
     return NULL;
 }
 
+const char *ssl_cmd_SSLCompression(
+     cmd_parms *cmd, char *struct_ptr, int flag)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    sc->bCompression = (flag ? TRUE : FALSE);
+    return NULL;
+}
+
 const char *ssl_cmd_SSLCipherSuite(
     cmd_parms *cmd, SSLDirConfigRec *dc, char *arg)
 {
@@ -539,6 +554,34 @@ const char *ssl_cmd_SSLCipherSuite(
         sc->szCipherSuite = arg;
     else
         dc->szCipherSuite = arg;
+    return NULL;
+}
+
+const char *ssl_cmd_SSLECDHCurve(
+    cmd_parms *cmd, char *struct_ptr, char *arg)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    if (strcEQ(arg, "none")) {
+        sc->nECDHCurve = 0;
+        return NULL;
+    }
+
+    sc->nECDHCurve = OBJ_sn2nid((const char *)arg);
+    if (sc->nECDHCurve == 0) {
+        return ap_pstrcat(cmd->pool, "SSLECDHCurve: unknown named curve '",
+                          arg, "'", NULL);
+    }
+
+    return NULL;
+}
+
+const char *ssl_cmd_SSLHonorCipherOrder(
+     cmd_parms *cmd, char *struct_ptr, int flag)
+{
+    SSLSrvConfigRec *sc = mySrvConfig(cmd->server);
+
+    sc->bHonorCipherOrder = (flag ? TRUE : FALSE);
     return NULL;
 }
 

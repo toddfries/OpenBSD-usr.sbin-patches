@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.31 2013/05/24 17:03:14 eric Exp $
+#	$OpenBSD: Makefile,v 1.33 2013/07/19 20:37:08 eric Exp $
 
 .PATH:		${.CURDIR}/..
 
@@ -17,12 +17,12 @@ CFLAGS+=	-Wshadow -Wpointer-arith -Wcast-qual
 CFLAGS+=	-Wsign-compare -Wbounded
 CFLAGS+=	-DNO_IO
 
-SRCS=	enqueue.c parser.c log.c envelope.c
-SRCS+=	queue_backend.c queue_fsqueue.c
+SRCS=	enqueue.c parser.c log.c envelope.c crypto.c
+SRCS+=	queue_backend.c queue_fs.c
 SRCS+=	smtpctl.c util.c
 SRCS+=	compress_backend.c compress_gzip.c
 SRCS+=	to.c expand.c tree.c
 
-LDADD+=	-lutil -lz
-DPADD+=	${LIBUTIL} ${LIBZ}
+LDADD+=	-lutil -lz -lcrypto
+DPADD+=	${LIBUTIL} ${LIBZ} ${LIBCRYPTO}
 .include <bsd.prog.mk>

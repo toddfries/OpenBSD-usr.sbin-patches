@@ -507,6 +507,7 @@ typedef struct {
  */
 typedef struct {
     BOOL         bEnabled;
+    BOOL         bCompression;
     char        *szPublicCertFile[SSL_AIDX_MAX];
     char        *szPrivateKeyFile[SSL_AIDX_MAX];
     char        *szCertificateChain;
@@ -514,6 +515,8 @@ typedef struct {
     char        *szCACertificateFile;
     char        *szLogFile;
     char        *szCipherSuite;
+    int          nECDHCurve;
+    BOOL         bHonorCipherOrder;
     FILE        *fileLogFile;
     int          nLogLevel;
     int          nVerifyDepth;
@@ -589,7 +592,10 @@ const char  *ssl_cmd_SSLPassPhraseDialog(cmd_parms *, char *, char *);
 const char  *ssl_cmd_SSLCryptoDevice(cmd_parms *, char *, char *);
 const char  *ssl_cmd_SSLRandomSeed(cmd_parms *, char *, char *, char *, char *);
 const char  *ssl_cmd_SSLEngine(cmd_parms *, char *, int);
+const char  *ssl_cmd_SSLCompression(cmd_parms *, char *, int);
 const char  *ssl_cmd_SSLCipherSuite(cmd_parms *, SSLDirConfigRec *, char *);
+const char  *ssl_cmd_SSLECDHCurve(cmd_parms *, char *, char *);
+const char  *ssl_cmd_SSLHonorCipherOrder(cmd_parms *, char *, int);
 const char  *ssl_cmd_SSLCertificateFile(cmd_parms *, char *, char *);
 const char  *ssl_cmd_SSLCertificateKeyFile(cmd_parms *, char *, char *);
 const char  *ssl_cmd_SSLCertificateChainFile(cmd_parms *, char *, char *);
