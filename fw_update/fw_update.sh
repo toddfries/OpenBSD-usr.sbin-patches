@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# $OpenBSD: fw_update.sh,v 1.12 2012/09/17 18:28:43 rpe Exp $
+# $OpenBSD: fw_update.sh,v 1.16 2013/08/20 22:42:08 halex Exp $
 # Copyright (c) 2011 Alexander Hall <alexander@beard.se>
 #
 # Permission to use, copy, modify, and distribute this software for any
@@ -16,13 +16,13 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 # This is the list of drivers we should look for
-DRIVERS="acx athn bwi ipw iwi iwn malo otus pgt rsu uath ueagle upgt urtwn
-	uvideo wpi"
+DRIVERS="acx athn bwi ipw iwi iwn malo otus pgt radeondrm rsu uath
+	upgt urtwn uvideo wpi"
 
 PKG_ADD="pkg_add -I -D repair"
 
 usage() {
-	echo "usage: ${0##*/} [-nv]" >&2
+	echo "usage: ${0##*/} [-anv] [driver ...]" >&2
 	exit 1
 }
 
@@ -30,26 +30,36 @@ verbose() {
 	[ "$verbose" ] && echo "${0##*/}: $@"
 }
 
+setpath() {
+	set -- $(sysctl -n kern.version |
+	    sed 's/^OpenBSD \([0-9]\.[0-9]\)\([^ ]*\).*/\1 \2/;q')
+
+	local version=$1 tag=$2
+
+	[[ $tag == -!(stable) ]] && version=snapshots
+	export PKG_PATH=http://firmware.openbsd.org/firmware/$version/
+}
+
+all=false
 verbose=
 nop=
-while getopts 'nv' s "$@" 2>/dev/null; do
+while getopts 'anv' s "$@" 2>/dev/null; do
 	case "$s" in
+	a)	all=true;;
 	v)	verbose=${verbose:--}v ;;
 	n)	nop=-n ;;
 	*)	usage ;;
 	esac
 done
 
-# No additional arguments allowed
-[ $# = $(($OPTIND-1)) ] || usage
+shift $((OPTIND - 1))
 
-set -- $(sysctl -n kern.version | sed 's/^OpenBSD \([0-9]\.[0-9]\)\([^ ]*\).*/\1 \2/;q')
+if $all; then
+	[ $# != 0 ] && usage
+	set -- $DRIVERS
+fi
 
-version=$1
-tag=$2
-
-[[ $tag == -!(stable) ]] && version=snapshots
-export PKG_PATH=http://firmware.openbsd.org/firmware/$version/
+setpath
 
 installed=$(pkg_info -q)
 dmesg=$(cat /var/run/dmesg.boot; echo; dmesg)
@@ -58,12 +68,24 @@ install=
 update=
 extra=
 
-for driver in $DRIVERS; do
-	if print -r -- "$installed" | grep -q "^${driver}-firmware-"; then
+if [ $# = 0 ]; then
+	for driver in $DRIVERS; do
+		if print "$installed" | grep -q "^$driver-firmware-" ||
+		    print -r -- "$dmesg" | egrep -q "^$driver[0-9]+ at "; then
+			set -- "$@" $driver
+		fi
+	done
+fi
+
+for driver; do
+	if print "$installed" | grep -q "^${driver}-firmware-"; then
 		update="$update ${driver}-firmware"
 		extra="$extra -Dupdate_${driver}-firmware"
-	elif print -r -- "$dmesg" | grep -q "^${driver}[0-9][0-9]* at "; then
+	elif printf "%s\n" $DRIVERS | fgrep -qx "$driver"; then
 		install="$install ${driver}-firmware"
+	else
+		print -r "${0##*/}: $driver: unknown driver" >&2
+		exit 1
 	fi
 done
 

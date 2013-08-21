@@ -1,4 +1,4 @@
-.\" $OpenBSD: fw_update.1,v 1.9 2013/07/16 11:13:33 schwarze Exp $
+.\" $OpenBSD: fw_update.1,v 1.15 2013/08/21 06:59:39 jmc Exp $
 .\"
 .\" Copyright (c) 2011 Alexander Hall <alexander@beard.se>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: July 16 2013 $
+.Dd $Mdocdate: August 21 2013 $
 .Dt FW_UPDATE 1
 .Os
 .Sh NAME
@@ -22,12 +22,12 @@
 .Nd install and update non-free firmware packages
 .Sh SYNOPSIS
 .Nm
-.Op Fl nv
+.Op Fl anv
+.Op Ar driver ...
 .Sh DESCRIPTION
 The
 .Nm
-utility checks which firmware are needed on the system and then
-installs or updates the relevant packages from the Internet.
+utility installs or updates firmware packages from the Internet.
 Since firmware with acceptable licenses are already present in
 .Ox ,
 .Nm
@@ -35,15 +35,26 @@ exists purely to install and update firmware that may not be freely
 distributed with
 .Ox .
 .Pp
+If no
+.Ar driver
+is specified, the
+.Nm
+utility tries to determine which firmware are needed on the system.
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl a
+Install or update all available firmware.
+It is an error to specify this option with any
+.Ar driver
+arguments.
 .It Fl n
 Pass the
 .Fl n
 flag to
 .Xr pkg_add 1 ,
-causing it to not actually install any firmware packages,
-just report the steps that would be taken if it was.
+causing it to not actually install or update any firmware packages,
+just report the steps that would be taken if it did.
 .It Fl v
 Turn on verbose output and pass the
 .Fl v
