@@ -1,4 +1,4 @@
-/*	$OpenBSD: route6d.c,v 1.56 2013/03/21 04:43:17 deraadt Exp $	*/
+/*	$OpenBSD: route6d.c,v 1.58 2013/08/26 14:15:08 naddy Exp $	*/
 /*	$KAME: route6d.c,v 1.111 2006/10/25 06:38:13 jinmei Exp $	*/
 
 /*
@@ -40,6 +40,7 @@
 #include <stdarg.h>
 #include <syslog.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <errno.h>
 #include <err.h>
 #include <util.h>
@@ -1138,7 +1139,7 @@ riprecv(void)
 	if (iff_find(ifcp, 'N') != NULL)
 		return;
 
-	tracet(1, "Recv(%s): from %s.%d info(%d)\n",
+	tracet(1, "Recv(%s): from %s.%d info(%zd)\n",
 	    ifcp->ifc_name, inet6_n2p(&nh), ntohs(fsock.sin6_port), nn);
 
 	t = time(NULL);
@@ -3270,9 +3271,9 @@ hms(void)
 int
 ripinterval(int timer)
 {
-	double r = rand();
+	double r = arc4random();
 
-	interval = (int)(timer + timer * RIPRANDDEV * (r / RAND_MAX - 0.5));
+	interval = (int)(timer + timer * RIPRANDDEV * (r / UINT32_MAX - 0.5));
 	nextalarm = time(NULL) + interval;
 	return interval;
 }
@@ -3282,9 +3283,9 @@ ripsuptrig(void)
 {
 	time_t t;
 
-	double r = rand();
+	double r = arc4random();
 	t  = (int)(RIP_TRIG_INT6_MIN + 
-		(RIP_TRIG_INT6_MAX - RIP_TRIG_INT6_MIN) * (r / RAND_MAX));
+		(RIP_TRIG_INT6_MAX - RIP_TRIG_INT6_MIN) * (r / UINT32_MAX));
 	sup_trig_update = time(NULL) + t;
 	return t;
 }
