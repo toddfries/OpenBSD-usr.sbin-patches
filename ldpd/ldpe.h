@@ -1,4 +1,4 @@
-/*	$OpenBSD: ldpe.h,v 1.27 2013/06/04 02:34:48 claudio Exp $ */
+/*	$OpenBSD: ldpe.h,v 1.29 2013/10/15 20:21:26 renato Exp $ */
 
 /*
  * Copyright (c) 2004, 2005, 2008 Esben Norby <norby@openbsd.org>
@@ -19,6 +19,7 @@
 #ifndef _LDPE_H_
 #define _LDPE_H_
 
+#define min(x,y) ((x) <= (y) ? (x) : (y))
 #define max(x,y) ((x) > (y) ? (x) : (y))
 
 #include <sys/types.h>
@@ -170,7 +171,7 @@ void		 adj_del(struct adj *);
 struct adj	*adj_find(struct nbr *, struct hello_source *);
 void		 adj_start_itimer(struct adj *);
 void		 adj_stop_itimer(struct adj *);
-struct tnbr	*tnbr_new(struct in_addr, int);
+struct tnbr	*tnbr_new(struct ldpd_conf *, struct in_addr, int);
 void		 tnbr_del(struct tnbr *);
 void		 tnbr_init(struct ldpd_conf *, struct tnbr *);
 struct tnbr	*tnbr_find(struct in_addr);
@@ -223,7 +224,6 @@ void	 session_accept(int, short, void *);
 
 struct tcp_conn *tcp_new(int, struct nbr *);
 void		 tcp_close(struct tcp_conn *);
-
 
 void	 session_read(int, short, void *);
 void	 session_write(int, short, void *);

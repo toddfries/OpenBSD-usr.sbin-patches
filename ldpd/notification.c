@@ -1,4 +1,4 @@
-/*	$OpenBSD: notification.c,v 1.14 2013/06/04 02:34:48 claudio Exp $ */
+/*	$OpenBSD: notification.c,v 1.16 2013/10/15 20:31:13 renato Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -43,6 +43,8 @@ void
 send_notification_nbr(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
     u_int32_t type)
 {
+	log_debug("send_notification_nbr: nbr ID %s, status %s",
+	    inet_ntoa(nbr->id), notification_name(status));
 	send_notification(status, nbr->tcp, msgid, type);
 	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
@@ -112,7 +114,8 @@ recv_notification(struct nbr *nbr, char *buf, u_int16_t len)
 		if (st.status_code == htonl(S_NO_HELLO) ||
 		    st.status_code == htonl(S_PARM_ADV_MODE) ||
 		    st.status_code == htonl(S_MAX_PDU_LEN) ||
-		    st.status_code == htonl(S_PARM_L_RANGE))
+		    st.status_code == htonl(S_PARM_L_RANGE) ||
+		    st.status_code == htonl(S_KEEPALIVE_BAD))
 			nbr_start_idtimer(nbr);
 
 		nbr_fsm(nbr, NBR_EVT_CLOSE_SESSION);

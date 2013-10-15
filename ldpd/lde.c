@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde.c,v 1.24 2013/06/04 00:45:00 claudio Exp $ */
+/*	$OpenBSD: lde.c,v 1.27 2013/10/15 20:36:30 renato Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Claudio Jeker <claudio@openbsd.org>
@@ -45,7 +45,7 @@ void		 lde_dispatch_imsg(int, short, void *);
 void		 lde_dispatch_parent(int, short, void *);
 
 struct lde_nbr	*lde_nbr_find(u_int32_t);
-struct lde_nbr	*lde_nbr_new(u_int32_t, struct lde_nbr *);
+struct lde_nbr	*lde_nbr_new(u_int32_t, struct in_addr *);
 void		 lde_nbr_del(struct lde_nbr *);
 void		 lde_nbr_clear(void);
 
@@ -174,6 +174,13 @@ lde_shutdown(void)
 	_exit(0);
 }
 
+/* imesg */
+int
+lde_imsg_compose_parent(int type, pid_t pid, void *data, u_int16_t datalen)
+{
+	return (imsg_compose_event(iev_main, type, 0, pid, -1, data, datalen));
+}
+
 int
 lde_imsg_compose_ldpe(int type, u_int32_t peerid, pid_t pid, void *data,
     u_int16_t datalen)
@@ -189,7 +196,7 @@ lde_dispatch_imsg(int fd, short event, void *bula)
 	struct imsgev		*iev = bula;
 	struct imsgbuf		*ibuf = &iev->ibuf;
 	struct imsg		 imsg;
-	struct lde_nbr		 rn, *nbr;
+	struct lde_nbr		 *nbr;
 	struct map		 map;
 	struct timespec		 tp;
 	struct in_addr		 addr;
@@ -303,14 +310,14 @@ lde_dispatch_imsg(int fd, short event, void *bula)
 
 			break;
 		case IMSG_NEIGHBOR_UP:
-			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(rn))
+			if (imsg.hdr.len - IMSG_HEADER_SIZE != sizeof(addr))
 				fatalx("invalid size of OE request");
-			memcpy(&rn, imsg.data, sizeof(rn));
+			memcpy(&addr, imsg.data, sizeof(addr));
 
 			if (lde_nbr_find(imsg.hdr.peerid))
 				fatalx("lde_dispatch_imsg: "
 				    "neighbor already exists");
-			lde_nbr_new(imsg.hdr.peerid, &rn);
+			lde_nbr_new(imsg.hdr.peerid, &addr);
 			break;
 		case IMSG_NEIGHBOR_DOWN:
 			lde_nbr_del(lde_nbr_find(imsg.hdr.peerid));
@@ -318,8 +325,8 @@ lde_dispatch_imsg(int fd, short event, void *bula)
 		case IMSG_CTL_SHOW_LIB:
 			rt_dump(imsg.hdr.pid);
 
-			imsg_compose_event(iev_ldpe, IMSG_CTL_END, 0,
-			    imsg.hdr.pid, -1, NULL, 0);
+			lde_imsg_compose_ldpe(IMSG_CTL_END, 0,
+			    imsg.hdr.pid, NULL, 0);
 			break;
 		case IMSG_CTL_LOG_VERBOSE:
 			/* already checked by ldpe */
@@ -441,8 +448,7 @@ lde_send_change_klabel(struct rt_node *rr, struct rt_lsp *rl)
 	kr.nexthop.s_addr = rl->nexthop.s_addr;
 	kr.remote_label = rl->remote_label;
 
-	imsg_compose_event(iev_main, IMSG_KLABEL_CHANGE, 0, 0, -1,
-	     &kr, sizeof(kr));
+	lde_imsg_compose_parent(IMSG_KLABEL_CHANGE, 0, &kr, sizeof(kr));
 }
 
 void
@@ -458,8 +464,7 @@ lde_send_delete_klabel(struct rt_node *rr, struct rt_lsp *rl)
 	kr.nexthop.s_addr = rl->nexthop.s_addr;
 	kr.remote_label = rl->remote_label;
 
-	imsg_compose_event(iev_main, IMSG_KLABEL_DELETE, 0, 0, -1,
-	     &kr, sizeof(kr));
+	lde_imsg_compose_parent(IMSG_KLABEL_DELETE, 0, &kr, sizeof(kr));
 }
 
 void
@@ -481,10 +486,10 @@ lde_send_labelrequest(struct lde_nbr *ln, struct rt_node *rn)
 	map.prefix = rn->fec.prefix;
 	map.prefixlen = rn->fec.prefixlen;
 
-	imsg_compose_event(iev_ldpe, IMSG_REQUEST_ADD, ln->peerid, 0,
-	     -1, &map, sizeof(map));
-	imsg_compose_event(iev_ldpe, IMSG_REQUEST_ADD_END, ln->peerid, 0,
-	     -1, NULL, 0);
+	lde_imsg_compose_ldpe(IMSG_REQUEST_ADD, ln->peerid, 0,
+	    &map, sizeof(map));
+	lde_imsg_compose_ldpe(IMSG_REQUEST_ADD_END, ln->peerid, 0,
+	    NULL, 0);
 }
 
 void
@@ -519,10 +524,10 @@ lde_send_labelmapping(struct lde_nbr *ln, struct rt_node *rn)
 		me = lde_map_add(ln, rn, 1);
 	me->label = map.label;
 
-	imsg_compose_event(iev_ldpe, IMSG_MAPPING_ADD, ln->peerid, 0,
-	     -1, &map, sizeof(map));
-	imsg_compose_event(iev_ldpe, IMSG_MAPPING_ADD_END, ln->peerid, 0,
-	     -1, NULL, 0);
+	lde_imsg_compose_ldpe(IMSG_MAPPING_ADD, ln->peerid, 0,
+	    &map, sizeof(map));
+	lde_imsg_compose_ldpe(IMSG_MAPPING_ADD_END, ln->peerid, 0,
+	    NULL, 0);
 }
 
 void
@@ -537,11 +542,11 @@ lde_send_labelrelease(struct lde_nbr *ln, struct rt_node *rn, u_int32_t label)
 		map.flags = F_MAP_OPTLABEL;
 		map.label = label;
 	}
-	
-	imsg_compose_event(iev_ldpe, IMSG_RELEASE_ADD, ln->peerid, 0,
-	    -1, &map, sizeof(map));
-	imsg_compose_event(iev_ldpe, IMSG_RELEASE_ADD_END, ln->peerid, 0,
-	    -1, NULL, 0);
+
+	lde_imsg_compose_ldpe(IMSG_RELEASE_ADD, ln->peerid, 0,
+	    &map, sizeof(map));
+	lde_imsg_compose_ldpe(IMSG_RELEASE_ADD_END, ln->peerid, 0,
+	    NULL, 0);
 }
 
 void
@@ -557,8 +562,8 @@ lde_send_notification(u_int32_t peerid, u_int32_t code, u_int32_t msgid,
 	nm.messageid = ntohl(msgid);
 	nm.type = type;
 
-	imsg_compose_event(iev_ldpe, IMSG_NOTIFICATION_SEND, peerid, 0,
-	    -1, &nm, sizeof(nm));
+	lde_imsg_compose_ldpe(IMSG_NOTIFICATION_SEND, peerid, 0,
+	    &nm, sizeof(nm));
 }
 
 static __inline int lde_nbr_compare(struct lde_nbr *, struct lde_nbr *);
@@ -586,14 +591,14 @@ lde_nbr_find(u_int32_t peerid)
 }
 
 struct lde_nbr *
-lde_nbr_new(u_int32_t peerid, struct lde_nbr *new)
+lde_nbr_new(u_int32_t peerid, struct in_addr *id)
 {
 	struct lde_nbr	*nbr;
 
 	if ((nbr = calloc(1, sizeof(*nbr))) == NULL)
 		fatal("lde_nbr_new");
 
-	memcpy(nbr, new, sizeof(*nbr));
+	nbr->id.s_addr = id->s_addr;
 	nbr->peerid = peerid;
 	fec_init(&nbr->recv_map);
 	fec_init(&nbr->sent_map);
@@ -703,7 +708,7 @@ lde_map_del(struct lde_nbr *ln, struct lde_map *me, int sent)
 		fec_remove(&ln->sent_map, &me->fec);
 	else
 		fec_remove(&ln->recv_map, &me->fec);
-	
+
 	lde_map_free(me);
 }
 
@@ -747,7 +752,7 @@ lde_req_del(struct lde_nbr *ln, struct lde_req *lre, int sent)
 		fec_remove(&ln->sent_req, &lre->fec);
 	else
 		fec_remove(&ln->recv_req, &lre->fec);
-	
+
 	free(lre);
 }
 

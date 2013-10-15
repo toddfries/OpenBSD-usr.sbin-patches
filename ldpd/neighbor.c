@@ -1,4 +1,4 @@
-/*	$OpenBSD: neighbor.c,v 1.38 2013/06/04 02:39:10 claudio Exp $ */
+/*	$OpenBSD: neighbor.c,v 1.42 2013/10/15 20:41:10 renato Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -217,7 +217,7 @@ nbr_new(struct in_addr id, struct in_addr addr)
 
 	nbr->state = NBR_STA_PRESENT;
 	nbr->id.s_addr = id.s_addr;
-	nbr->addr = addr;
+	nbr->addr.s_addr = addr.s_addr;
 
 	/* get next unused peerid */
 	while (nbr_find_peerid(++peercnt))
@@ -288,9 +288,9 @@ int
 nbr_session_active_role(struct nbr *nbr)
 {
 	if (ntohl(ldpe_router_id()) > ntohl(nbr->addr.s_addr))
-		return 1;
+		return (1);
 
-	return 0;
+	return (0);
 }
 
 /* timers */
@@ -340,7 +340,7 @@ nbr_ktimeout(int fd, short event, void *arg)
 {
 	struct nbr *nbr = arg;
 
-	log_debug("nbr_ktimeout: neighbor ID %s peerid %lu", inet_ntoa(nbr->id),
+	log_debug("nbr_ktimeout: neighbor ID %s peerid %u", inet_ntoa(nbr->id),
 	    nbr->peerid);
 
 	session_shutdown(nbr, S_KEEPALIVE_TMR, 0, 0);
@@ -373,7 +373,7 @@ nbr_idtimer(int fd, short event, void *arg)
 {
 	struct nbr *nbr = arg;
 
-	log_debug("nbr_idtimer: neighbor ID %s peerid %lu", inet_ntoa(nbr->id),
+	log_debug("nbr_idtimer: neighbor ID %s peerid %u", inet_ntoa(nbr->id),
 	    nbr->peerid);
 
 	if (nbr_session_active_role(nbr))
@@ -454,7 +454,8 @@ nbr_connect_cb(int fd, short event, void *arg)
 		close(nbr->fd);
 		errno = error;
 		log_debug("nbr_connect_cb: error while "
-		    "connecting to %s", inet_ntoa(nbr->addr));
+		    "connecting to %s: %s", inet_ntoa(nbr->addr),
+		    strerror(errno));
 		return;
 	}
 
@@ -470,7 +471,7 @@ nbr_establish_connection(struct nbr *nbr)
 
 	nbr->fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (nbr->fd == -1) {
-		log_debug("nbr_establish_connection: error while "
+		log_warn("nbr_establish_connection: error while "
 		    "creating socket");
 		return (-1);
 	}
@@ -484,7 +485,7 @@ nbr_establish_connection(struct nbr *nbr)
 
 	if (bind(nbr->fd, (struct sockaddr *) &local_sa,
 	    sizeof(struct sockaddr_in)) == -1) {
-		log_debug("nbr_establish_connection: error while "
+		log_warn("nbr_establish_connection: error while "
 		    "binding socket to %s", inet_ntoa(local_sa.sin_addr));
 		close(nbr->fd);
 		return (-1);
@@ -511,7 +512,7 @@ nbr_establish_connection(struct nbr *nbr)
 			event_add(&nbr->ev_connect, NULL);
 			return (0);
 		}
-		log_debug("nbr_establish_connection: error while "
+		log_warn("nbr_establish_connection: error while "
 		    "connecting to %s", inet_ntoa(nbr->addr));
 		close(nbr->fd);
 		return (-1);
@@ -526,15 +527,10 @@ nbr_establish_connection(struct nbr *nbr)
 int
 nbr_act_session_operational(struct nbr *nbr)
 {
-	struct lde_nbr	 rn;
-
 	nbr->idtimer_cnt = 0;
 
-	bzero(&rn, sizeof(rn));
-	rn.id.s_addr = nbr->id.s_addr;
-
-	return (ldpe_imsg_compose_lde(IMSG_NEIGHBOR_UP, nbr->peerid, 0, &rn,
-	    sizeof(rn)));
+	return (ldpe_imsg_compose_lde(IMSG_NEIGHBOR_UP, nbr->peerid, 0,
+	    &nbr->id, sizeof(nbr->id)));
 }
 
 void

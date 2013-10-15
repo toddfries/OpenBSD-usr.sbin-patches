@@ -1,4 +1,4 @@
-/*	$OpenBSD: hello.c,v 1.20 2013/06/04 02:25:28 claudio Exp $ */
+/*	$OpenBSD: hello.c,v 1.23 2013/10/15 20:31:13 renato Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -135,7 +135,7 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 			    leconf->flags & LDPD_FLAG_TH_ACCEPT))
 				return;
 
-			tnbr = tnbr_new(src, 0);
+			tnbr = tnbr_new(leconf, src, 0);
 			if (!tnbr)
 				return;
 			tnbr_init(leconf, tnbr);
@@ -146,7 +146,7 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 	} else {
 		if (ldp.lspace_id != 0) {
 			log_debug("recv_hello: invalid label space "
-			    "ID %s, interface %s", ldp.lspace_id,
+			    "ID %u, interface %s", ldp.lspace_id,
 			    iface->name);
 			return;
 		}
@@ -197,19 +197,14 @@ recv_hello(struct iface *iface, struct in_addr src, char *buf, u_int16_t len)
 	case HELLO_LINK:
 		if (holdtime == 0)
 			holdtime = LINK_DFLT_HOLDTIME;
-		if (iface->hello_holdtime < holdtime)
-			adj->holdtime = iface->hello_holdtime;
-		else
-			adj->holdtime = holdtime;
+
+		adj->holdtime = min(iface->hello_holdtime, holdtime);
 		break;
 	case HELLO_TARGETED:
 		if (holdtime == 0)
 			holdtime = TARGETED_DFLT_HOLDTIME;
-		if (tnbr->hello_holdtime < holdtime)
-			adj->holdtime = tnbr->hello_holdtime;
-		else
-			adj->holdtime = holdtime;
-		break;
+
+		adj->holdtime = min(tnbr->hello_holdtime, holdtime);
 	}
 
 	if (adj->holdtime != INFINITE_HOLDTIME)

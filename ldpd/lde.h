@@ -1,4 +1,4 @@
-/*	$OpenBSD: lde.h,v 1.20 2013/06/03 17:01:59 claudio Exp $ */
+/*	$OpenBSD: lde.h,v 1.23 2013/10/15 20:36:30 renato Exp $ */
 
 /*
  * Copyright (c) 2004, 2005 Esben Norby <norby@openbsd.org>
@@ -41,7 +41,7 @@ struct fec {
  */
 struct lde_req {
 	struct fec		fec;
-	u_int32_t		msgid;	
+	u_int32_t		msgid;
 };
 
 /* mapping entries */
@@ -94,6 +94,7 @@ struct rt_node {
 
 /* lde.c */
 pid_t		lde(struct ldpd_conf *, int [2], int [2], int [2]);
+int		lde_imsg_compose_parent(int, pid_t, void *, u_int16_t);
 int		lde_imsg_compose_ldpe(int, u_int32_t, pid_t, void *, u_int16_t);
 u_int32_t	lde_assign_label(void);
 
@@ -104,14 +105,12 @@ void	lde_send_labelrequest(struct lde_nbr *, struct rt_node *);
 void	lde_send_labelrelease(struct lde_nbr *, struct rt_node *, u_int32_t);
 void	lde_send_notification(u_int32_t, u_int32_t, u_int32_t, u_int32_t);
 
-void		lde_nbr_del(struct lde_nbr *);
 void		lde_nbr_do_mappings(struct rt_node *);
 struct lde_map *lde_map_add(struct lde_nbr *, struct rt_node *, int);
 void		lde_map_del(struct lde_nbr *, struct lde_map *, int);
 struct lde_req *lde_req_add(struct lde_nbr *, struct fec *, int);
 void		lde_req_del(struct lde_nbr *, struct lde_req *, int);
 struct lde_nbr *lde_find_address(struct in_addr);
-
 
 int			 lde_address_add(struct lde_nbr *, struct in_addr *);
 struct lde_nbr_address	*lde_address_find(struct lde_nbr *, struct in_addr *);

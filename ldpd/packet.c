@@ -1,4 +1,4 @@
-/*	$OpenBSD: packet.c,v 1.28 2013/06/05 19:19:10 miod Exp $ */
+/*	$OpenBSD: packet.c,v 1.32 2013/10/15 20:31:14 renato Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -345,11 +345,12 @@ session_read(int fd, short event, void *arg)
 		}
 
 		pdu_len = ntohs(ldp_hdr->length);
-		if (pdu_len < LDP_HDR_SIZE || pdu_len > LDP_MAX_LEN) {
+		if (pdu_len < (LDP_HDR_PDU_LEN + LDP_MSG_LEN) ||
+		    pdu_len > LDP_MAX_LEN) {
 			if (nbr)
-				session_shutdown(nbr, S_BAD_MSG_LEN, 0, 0);
+				session_shutdown(nbr, S_BAD_PDU_LEN, 0, 0);
 			else {
-				send_notification(S_BAD_MSG_LEN, tcp, 0, 0);
+				send_notification(S_BAD_PDU_LEN, tcp, 0, 0);
 				msgbuf_write(&tcp->wbuf.wbuf);
 				tcp_close(tcp);
 			}
@@ -388,6 +389,9 @@ session_read(int fd, short event, void *arg)
 		pdu += LDP_HDR_SIZE;
 		len -= LDP_HDR_SIZE;
 
+		if (nbr->state == NBR_STA_OPER)
+			nbr_fsm(nbr, NBR_EVT_PDU_RCVD);
+
 		while (len >= LDP_MSG_LEN) {
 			u_int16_t type;
 
@@ -405,9 +409,6 @@ session_read(int fd, short event, void *arg)
 
 			/* check for error conditions earlier */
 			switch (type) {
-			case MSG_TYPE_NOTIFICATION:
-				/* notifications are always processed */
-				break;
 			case MSG_TYPE_INIT:
 				if ((nbr->state != NBR_STA_INITIAL) &&
 				    (nbr->state != NBR_STA_OPENSENT)) {
@@ -426,6 +427,7 @@ session_read(int fd, short event, void *arg)
 					return;
 				}
 				break;
+			case MSG_TYPE_NOTIFICATION:
 			case MSG_TYPE_ADDR:
 			case MSG_TYPE_ADDRWITHDRAW:
 			case MSG_TYPE_LABELMAPPING:
@@ -474,8 +476,15 @@ session_read(int fd, short event, void *arg)
 			default:
 				log_debug("session_read: unknown LDP packet "
 				    "from nbr %s", inet_ntoa(nbr->id));
-				free(buf);
-				return;
+				if (!(ntohs(ldp_msg->type) & UNKNOWN_FLAG)) {
+					session_shutdown(nbr, S_UNKNOWN_MSG,
+					    ldp_msg->msgid, ldp_msg->type);
+					free(buf);
+					return;
+				}
+				/* unknown flag is set, ignore the message */
+				msg_size = ntohs(ldp_msg->length);
+				break;
 			}
 
 			if (msg_size == -1) {
@@ -517,8 +526,7 @@ void
 session_shutdown(struct nbr *nbr, u_int32_t status, u_int32_t msgid,
     u_int32_t type)
 {
-	log_debug("session_shutdown: nbr ID %s, status %x",
-	    inet_ntoa(nbr->id), status);
+	log_debug("session_shutdown: nbr ID %s", inet_ntoa(nbr->id));
 
 	send_notification_nbr(nbr, status, msgid, type);
 
