@@ -1,4 +1,4 @@
-/*	$OpenBSD: labelmapping.c,v 1.26 2013/10/15 20:27:40 renato Exp $ */
+/*	$OpenBSD: labelmapping.c,v 1.28 2013/10/17 17:52:20 renato Exp $ */
 
 /*
  * Copyright (c) 2009 Michele Marchetto <michele@openbsd.org>
@@ -45,65 +45,97 @@ void		gen_fec_tlv(struct ibuf *, struct in_addr, u_int8_t);
 
 int	tlv_decode_label(struct nbr *, struct ldp_msg *, char *, u_int16_t,
     u_int32_t *);
-int	tlv_decode_reqid(char *, u_int16_t, u_int32_t *);
 int	tlv_decode_fec_elm(struct nbr *, struct ldp_msg *, char *, u_int16_t,
     u_int8_t *, u_int32_t *, u_int8_t *);
 
-/* Label Mapping Message */
-void
-send_labelmapping(struct nbr *nbr)
+static void
+enqueue_pdu(struct nbr *nbr, struct ibuf *buf, u_int16_t size)
 {
-	struct ibuf		*buf;
-	struct mapping_entry	*me;
 	struct ldp_hdr		*ldp_hdr;
-	u_int16_t		 tlv_size, size;
-
-	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
-		fatal("send_labelmapping");
-
-	/* real size will be set up later */
-	gen_ldp_hdr(buf, 0);
-
-	size = LDP_HDR_SIZE - TLV_HDR_LEN;
-
-	TAILQ_FOREACH(me, &nbr->mapping_list, entry) {
-		tlv_size = BASIC_LABEL_MAP_LEN + PREFIX_SIZE(me->map.prefixlen);
-		if (me->map.flags & F_MAP_REQ_ID)
-			tlv_size += REQID_TLV_LEN;
-		size += tlv_size;
-
-		gen_msg_tlv(buf, MSG_TYPE_LABELMAPPING, tlv_size);
-		gen_fec_tlv(buf, me->map.prefix, me->map.prefixlen);
-		gen_label_tlv(buf, me->map.label);
-		if (me->map.flags & F_MAP_REQ_ID)
-			gen_reqid_tlv(buf, me->map.requestid);
-	}
-
-	/* XXX: should we remove them first? */
-	nbr_mapping_list_clr(nbr, &nbr->mapping_list);
 
 	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
 	ldp_hdr->length = htons(size);
-
 	evbuf_enqueue(&nbr->tcp->wbuf, buf);
+}
+
+/* Generic function that handles all Label Message types */
+void
+send_labelmessage(struct nbr *nbr, u_int16_t type, struct mapping_head *mh)
+{
+	struct ibuf		*buf = NULL;
+	struct mapping_entry	*me;
+	u_int16_t		 tlv_size, size = 0;
+	int			 first = 1;
+
+	while ((me = TAILQ_FIRST(mh)) != NULL) {
+		/* generate pdu */
+		if (first) {
+			if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
+				fatal("send_labelmapping");
+
+			/* real size will be set up later */
+			gen_ldp_hdr(buf, 0);
+
+			size = LDP_HDR_PDU_LEN;
+			first = 0;
+		}
+
+		/* calculate size */
+		tlv_size = LDP_MSG_LEN + TLV_HDR_LEN + FEC_ELM_MIN_LEN +
+		    PREFIX_SIZE(me->map.prefixlen);
+		if (type == MSG_TYPE_LABELMAPPING ||
+		    me->map.flags & F_MAP_OPTLABEL)
+			tlv_size += LABEL_TLV_LEN;
+		if (me->map.flags & F_MAP_REQ_ID)
+			tlv_size += REQID_TLV_LEN;
+
+		/* maximum pdu length exceeded, we need a new ldp pdu */
+		if (size + tlv_size > LDP_MAX_LEN) {
+			enqueue_pdu(nbr, buf, size);
+			first = 1;
+			continue;
+		}
+
+		size += tlv_size;
+
+		/* append message and tlvs */
+		gen_msg_tlv(buf, type, tlv_size);
+		gen_fec_tlv(buf, me->map.prefix, me->map.prefixlen);
+		if (type == MSG_TYPE_LABELMAPPING ||
+		    me->map.flags & F_MAP_OPTLABEL)
+			gen_label_tlv(buf, me->map.label);
+		if (me->map.flags & F_MAP_REQ_ID)
+			gen_reqid_tlv(buf, me->map.requestid);
+
+		TAILQ_REMOVE(mh, me, entry);
+		free(me);
+	}
+
+	enqueue_pdu(nbr, buf, size);
+
 	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
 }
 
+/* Generic function that handles all Label Message types */
 int
-recv_labelmapping(struct nbr *nbr, char *buf, u_int16_t len)
+recv_labelmessage(struct nbr *nbr, char *buf, u_int16_t len, u_int16_t type)
 {
-	struct ldp_msg		lm;
-	struct tlv		ft;
-	struct map		map;
-	u_int32_t		label;
-	int			feclen, lbllen, tlen;
-	u_int8_t		addr_type;
+	struct ldp_msg		 	 lm;
+	struct tlv			 ft;
+	u_int32_t			 label, reqid;
+	u_int8_t			 flags = 0;
+
+	int				 feclen, lbllen, tlen;
+	u_int8_t			 addr_type;
+	struct mapping_entry		*me;
+	struct mapping_head		 mh;
 
 	bcopy(buf, &lm, sizeof(lm));
 
 	buf += sizeof(struct ldp_msg);
 	len -= sizeof(struct ldp_msg);
 
+	/* FEC TLV */
 	if (len < sizeof(ft)) {
 		session_shutdown(nbr, S_BAD_TLV_LEN, lm.msgid, lm.type);
 		return (-1);
@@ -124,486 +156,186 @@ recv_labelmapping(struct nbr *nbr, char *buf, u_int16_t len)
 	buf += TLV_HDR_LEN;	/* just advance to the end of the fec header */
 	len -= TLV_HDR_LEN;
 
-	lbllen = tlv_decode_label(nbr, &lm, buf + feclen, len - feclen,
-	    &label);
-	if (lbllen == -1)
-		return (-1);
-
-	/* TODO opt label request msg id, hop cnt and path vektor TLV */
-
-	bzero(&map, sizeof(map));
-	map.messageid = lm.msgid;
-	map.label = label;
+	TAILQ_INIT(&mh);
 	do {
+		me = calloc(1, sizeof(*me));
+		me->map.messageid = lm.msgid;
+		TAILQ_INSERT_HEAD(&mh, me, entry);
+
 		if ((tlen = tlv_decode_fec_elm(nbr, &lm, buf, feclen,
-		    &addr_type, &map.prefix.s_addr, &map.prefixlen)) == -1)
-			return (-1);
+		    &addr_type, &me->map.prefix.s_addr, &me->map.prefixlen)) == -1)
+			goto err;
+
+		/*
+		 * The Wildcard FEC Element can be used only in the
+		 * Label Withdraw and Label Release messages.
+		 */
 		if (addr_type == FEC_WILDCARD) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, lm.msgid, lm.type);
-			return (-1);
+			switch (type) {
+			case MSG_TYPE_LABELWITHDRAW:
+			case MSG_TYPE_LABELRELEASE:
+				me->map.flags |= F_MAP_WILDCARD;
+				break;
+			default:
+				session_shutdown(nbr, S_BAD_TLV_VAL, lm.msgid,
+				    lm.type);
+				goto err;
+				break;
+			}
 		}
 
-		ldpe_imsg_compose_lde(IMSG_LABEL_MAPPING, nbr->peerid, 0, &map,
-		    sizeof(map));
+		/*
+		 * LDP supports the use of multiple FEC Elements per
+		 * FEC for the Label Mapping message only.
+		 */
+		if (type != MSG_TYPE_LABELMAPPING &&
+		    tlen != feclen) {
+			session_shutdown(nbr, S_BAD_TLV_VAL, lm.msgid,
+			    lm.type);
+			goto err;
+		}
 
 		buf += tlen;
+		len -= tlen;
 		feclen -= tlen;
 	} while (feclen > 0);
+
+	/* Mandatory Label TLV */
+	if (type == MSG_TYPE_LABELMAPPING) {
+		lbllen = tlv_decode_label(nbr, &lm, buf, len, &label);
+		if (lbllen == -1)
+			goto err;
+
+		buf += lbllen;
+		len -= lbllen;
+	}
+
+	/* Optional Parameters */
+	while (len > 0) {
+		struct tlv 	tlv;
+
+		if (len < sizeof(tlv)) {
+			session_shutdown(nbr, S_BAD_TLV_LEN, lm.msgid,
+			    lm.type);
+			goto err;
+		}
+
+		bcopy(buf, &tlv, sizeof(tlv));
+		buf += TLV_HDR_LEN;
+		len -= TLV_HDR_LEN;
+
+		switch (ntohs(tlv.type)) {
+		case TLV_TYPE_LABELREQUEST:
+			switch (type) {
+			case MSG_TYPE_LABELMAPPING:
+			case MSG_TYPE_LABELABORTREQ:
+				if (ntohs(tlv.length) != 4) {
+					session_shutdown(nbr, S_BAD_TLV_LEN,
+					    lm.msgid, lm.type);
+					goto err;
+				}
+
+				flags |= F_MAP_REQ_ID;
+				reqid = ntohl(*(u_int32_t *)buf);
+				break;
+			default:
+				/* ignore */
+				break;
+			}
+			break;
+		case TLV_TYPE_HOPCOUNT:
+		case TLV_TYPE_PATHVECTOR:
+			/* TODO just ignore for now */
+			break;
+		case TLV_TYPE_GENERICLABEL:
+			switch (type) {
+			case MSG_TYPE_LABELWITHDRAW:
+			case MSG_TYPE_LABELRELEASE:
+				if (ntohs(tlv.length) != 4) {
+					session_shutdown(nbr, S_BAD_TLV_LEN,
+					    lm.msgid, lm.type);
+					goto err;
+				}
+
+				label = ntohl(*(u_int32_t *)buf);
+				flags |= F_MAP_OPTLABEL;
+				break;
+			default:
+				/* ignore */
+				break;
+			}
+			break;
+		case TLV_TYPE_ATMLABEL:
+		case TLV_TYPE_FRLABEL:
+			switch (type) {
+			case MSG_TYPE_LABELWITHDRAW:
+			case MSG_TYPE_LABELRELEASE:
+				/* unsupported */
+				session_shutdown(nbr, S_BAD_TLV_VAL, lm.msgid,
+				    lm.type);
+				goto err;
+				break;
+			default:
+				/* ignore */
+				break;
+			}
+			break;
+		default:
+			if (!(ntohs(tlv.type) & UNKNOWN_FLAG)) {
+				send_notification_nbr(nbr, S_UNKNOWN_TLV,
+				    lm.msgid, lm.type);
+			}
+			/* ignore unknown tlv */
+			break;
+		}
+		buf += ntohs(tlv.length);
+		len -= ntohs(tlv.length);
+	}
+
+	/* notify lde about the received message. */
+	while ((me = TAILQ_FIRST(&mh)) != NULL) {
+		int imsg_type = IMSG_NONE;
+
+		me->map.flags |= flags;
+		if (type == MSG_TYPE_LABELMAPPING ||
+		    me->map.flags & F_MAP_OPTLABEL)
+			me->map.label = label;
+		if (me->map.flags & F_MAP_REQ_ID)
+			me->map.requestid = reqid;
+
+		switch (type) {
+		case MSG_TYPE_LABELMAPPING:
+			imsg_type = IMSG_LABEL_MAPPING;
+			break;
+		case MSG_TYPE_LABELREQUEST:
+			imsg_type = IMSG_LABEL_REQUEST;
+			break;
+		case MSG_TYPE_LABELWITHDRAW:
+			imsg_type = IMSG_LABEL_WITHDRAW;
+			break;
+		case MSG_TYPE_LABELRELEASE:
+			imsg_type = IMSG_LABEL_RELEASE;
+			break;
+		case MSG_TYPE_LABELABORTREQ:
+			imsg_type = IMSG_LABEL_ABORT;
+			break;
+		default:
+			break;
+		}
+
+		ldpe_imsg_compose_lde(imsg_type, nbr->peerid, 0, &me->map,
+		    sizeof(struct map));
+
+		TAILQ_REMOVE(&mh, me, entry);
+		free(me);
+	}
 
 	return (ntohs(lm.length));
-}
 
-/* Label Request Message */
-void
-send_labelrequest(struct nbr *nbr)
-{
-	struct ibuf		*buf;
-	struct mapping_entry	*me;
-	struct ldp_hdr		*ldp_hdr;
-	u_int16_t		 tlv_size, size;
+err:
+	mapping_list_clr(&mh);
 
-	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
-		fatal("send_labelrequest");
-
-	/* real size will be set up later */
-	gen_ldp_hdr(buf, 0);
-
-	size = LDP_HDR_SIZE - TLV_HDR_LEN;
-
-	TAILQ_FOREACH(me, &nbr->request_list, entry) {
-		tlv_size = PREFIX_SIZE(me->map.prefixlen);
-		size += tlv_size;
-
-		gen_msg_tlv(buf, MSG_TYPE_LABELREQUEST, tlv_size);
-		gen_fec_tlv(buf, me->map.prefix, me->map.prefixlen);
-	}
-
-	/* XXX: should we remove them first? */
-	nbr_mapping_list_clr(nbr, &nbr->request_list);
-
-	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
-	ldp_hdr->length = htons(size);
-
-	evbuf_enqueue(&nbr->tcp->wbuf, buf);
-	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
-}
-
-int
-recv_labelrequest(struct nbr *nbr, char *buf, u_int16_t len)
-{
-	struct ldp_msg	lr;
-	struct tlv	ft;
-	struct map	map;
-	int		feclen, tlen;
-	u_int8_t	addr_type;
-
-	bcopy(buf, &lr, sizeof(lr));
-
-	buf += sizeof(struct ldp_msg);
-	len -= sizeof(struct ldp_msg);
-
-	if (len < sizeof(ft)) {
-		session_shutdown(nbr, S_BAD_MSG_LEN, lr.msgid, lr.type);
-		return (-1);
-	}
-
-	bcopy(buf, &ft, sizeof(ft));
-	if (ntohs(ft.type) != TLV_TYPE_FEC) {
-		send_notification_nbr(nbr, S_MISS_MSG, lr.msgid, lr.type);
-		return (-1);
-	}
-	feclen = ntohs(ft.length);
-
-	if (feclen > len - TLV_HDR_LEN) {
-		session_shutdown(nbr, S_BAD_TLV_LEN, lr.msgid, lr.type);
-		return (-1);
-	}
-
-	buf += TLV_HDR_LEN;	/* just advance to the end of the fec header */
-	len -= TLV_HDR_LEN;
-
-	/* TODO opt hop cnt and path vektor TLV */
-
-	bzero(&map, sizeof(map));
-	map.messageid = lr.msgid;
-	do {
-		if ((tlen = tlv_decode_fec_elm(nbr, &lr, buf, feclen,
-		    &addr_type, &map.prefix.s_addr, &map.prefixlen)) == -1)
-			return (-1);
-		if (addr_type == FEC_WILDCARD) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, lr.msgid, lr.type);
-			return (-1);
-		}
-
-		ldpe_imsg_compose_lde(IMSG_LABEL_REQUEST, nbr->peerid, 0, &map,
-		    sizeof(map));
-
-		buf += tlen;
-		feclen -= tlen;
-	} while (feclen > 0);
-
-	return (ntohs(lr.length));
-}
-
-/* Label Withdraw Message */
-void
-send_labelwithdraw(struct nbr *nbr)
-{
-	struct ibuf		*buf;
-	struct mapping_entry	*me;
-	struct ldp_hdr		*ldp_hdr;
-	u_int16_t		 tlv_size, size;
-
-	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
-		fatal("send_labelwithdraw");
-
-	/* real size will be set up later */
-	gen_ldp_hdr(buf, 0);
-
-	size = LDP_HDR_SIZE - TLV_HDR_LEN;
-
-	TAILQ_FOREACH(me, &nbr->withdraw_list, entry) {
-		if (me->map.label == NO_LABEL)
-			tlv_size = PREFIX_SIZE(me->map.prefixlen);
-		else
-			tlv_size = BASIC_LABEL_MAP_LEN +
-			    PREFIX_SIZE(me->map.prefixlen);
-
-		size += tlv_size;
-
-		gen_msg_tlv(buf, MSG_TYPE_LABELWITHDRAW, tlv_size);
-		gen_fec_tlv(buf, me->map.prefix, me->map.prefixlen);
-
-		if (me->map.label != NO_LABEL)
-			gen_label_tlv(buf, me->map.label);
-	}
-
-	/* XXX: should we remove them first? */
-	nbr_mapping_list_clr(nbr, &nbr->withdraw_list);
-
-	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
-	ldp_hdr->length = htons(size);
-
-	evbuf_enqueue(&nbr->tcp->wbuf, buf);
-	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
-}
-
-int
-recv_labelwithdraw(struct nbr *nbr, char *buf, u_int16_t len)
-{
-	struct map	map;
-	struct ldp_msg	lw;
-	struct tlv	ft;
-	u_int32_t	label = NO_LABEL;
-	int		feclen, tlen, numfec = 0;
-	u_int8_t	addr_type;
-
-	bcopy(buf, &lw, sizeof(lw));
-
-	buf += sizeof(struct ldp_msg);
-	len -= sizeof(struct ldp_msg);
-
-	if (len < sizeof(ft)) {
-		session_shutdown(nbr, S_BAD_MSG_LEN, lw.msgid, lw.type);
-		return (-1);
-	}
-
-	bcopy(buf, &ft, sizeof(ft));
-	if (ntohs(ft.type) != TLV_TYPE_FEC) {
-		send_notification_nbr(nbr, S_MISS_MSG, lw.msgid, lw.type);
-		return (-1);
-	}
-	feclen = ntohs(ft.length);
-
-	if (feclen > len - TLV_HDR_LEN) {
-		session_shutdown(nbr, S_BAD_TLV_LEN, lw.msgid, lw.type);
-		return (-1);
-	}
-
-	buf += TLV_HDR_LEN;	/* just advance to the end of the fec header */
-	len -= TLV_HDR_LEN;
-
-	/* withdraw may include optional label */
-	if (len > feclen) {
-		int r;
-
-		r = tlv_decode_label(nbr, &lw, buf + feclen, len - feclen,
-		    &label);
-		if (r == -1 || len != feclen + r) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, lw.msgid,
-			    lw.type);
-			return (-1);
-		}
-	}
-
-	bzero(&map, sizeof(map));
-	map.messageid = lw.msgid;
-	if (label != NO_LABEL) {
-		map.label = label;
-		map.flags = F_MAP_OPTLABEL;
-	}
-	do {
-		if ((tlen = tlv_decode_fec_elm(nbr, &lw, buf, feclen,
-		    &addr_type, &map.prefix.s_addr, &map.prefixlen)) == -1)
-			return (-1);
-
-		if (addr_type == FEC_WILDCARD) {
-			/* Wildcard FEC must be the only FEC element */
-			if (numfec != 0) {
-				session_shutdown(nbr, S_BAD_TLV_VAL, lw.msgid,
-				    lw.type);
-				return (-1);
-			}
-			map.prefix.s_addr = 0;
-			map.prefixlen = 0;
-			map.flags |= F_MAP_WILDCARD;
-			numfec = -1;
-		} else {
-			/* Wildcard FEC must be the only FEC element */
-			if (numfec == -1) {
-				session_shutdown(nbr, S_BAD_TLV_VAL, lw.msgid,
-				    lw.type);
-				return (-1);
-			}
-			numfec++;
-			map.flags &= ~F_MAP_WILDCARD;
-		}
-
-		ldpe_imsg_compose_lde(IMSG_LABEL_WITHDRAW, nbr->peerid, 0, &map,
-		    sizeof(map));
-
-		buf += tlen;
-		feclen -= tlen;
-	} while (feclen > 0);
-
-	return (ntohs(lw.length));
-}
-
-/* Label Release Message */
-void
-send_labelrelease(struct nbr *nbr)
-{
-	struct ibuf		*buf;
-	struct mapping_entry	*me;
-	struct ldp_hdr		*ldp_hdr;
-	u_int16_t		 tlv_size, size;
-
-	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
-		fatal("send_labelrelease");
-
-	/* real size will be set up later */
-	gen_ldp_hdr(buf, 0);
-
-	size = LDP_HDR_SIZE - TLV_HDR_LEN;
-
-	TAILQ_FOREACH(me, &nbr->release_list, entry) {
-		if (me->map.label == NO_LABEL)
-			tlv_size = PREFIX_SIZE(me->map.prefixlen);
-		else
-			tlv_size = BASIC_LABEL_MAP_LEN +
-			    PREFIX_SIZE(me->map.prefixlen);
-
-		size += tlv_size;
-
-		gen_msg_tlv(buf, MSG_TYPE_LABELRELEASE, tlv_size);
-		gen_fec_tlv(buf, me->map.prefix, me->map.prefixlen);
-
-		if (me->map.label != NO_LABEL)
-			gen_label_tlv(buf, me->map.label);
-	}
-
-	/* XXX: should we remove them first? */
-	nbr_mapping_list_clr(nbr, &nbr->release_list);
-
-	ldp_hdr = ibuf_seek(buf, 0, sizeof(struct ldp_hdr));
-	ldp_hdr->length = htons(size);
-
-	evbuf_enqueue(&nbr->tcp->wbuf, buf);
-	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
-}
-
-int
-recv_labelrelease(struct nbr *nbr, char *buf, u_int16_t len)
-{
-	struct map	map;
-	struct ldp_msg	lr;
-	struct tlv	ft;
-	u_int32_t	label = NO_LABEL;
-	int		feclen, tlen, numfec = 0;
-	u_int8_t	addr_type;
-
-	bcopy(buf, &lr, sizeof(lr));
-
-	buf += sizeof(struct ldp_msg);
-	len -= sizeof(struct ldp_msg);
-
-	if (len < sizeof(ft)) {
-		session_shutdown(nbr, S_BAD_MSG_LEN, lr.msgid, lr.type);
-		return (-1);
-	}
-
-	bcopy(buf, &ft, sizeof(ft));
-	if (ntohs(ft.type) != TLV_TYPE_FEC) {
-		send_notification_nbr(nbr, S_MISS_MSG, lr.msgid, lr.type);
-		return (-1);
-	}
-	feclen = ntohs(ft.length);
-
-	if (feclen > len - TLV_HDR_LEN) {
-		session_shutdown(nbr, S_BAD_TLV_LEN, lr.msgid, lr.type);
-		return (-1);
-	}
-
-	buf += TLV_HDR_LEN;	/* just advance to the end of the fec header */
-	len -= TLV_HDR_LEN;
-
-	/* release may include optional label */
-	if (len > feclen) {
-		int r;
-
-		r = tlv_decode_label(nbr, &lr, buf + feclen, len - feclen,
-		    &label);
-		if (r == -1 || len != feclen + r) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, lr.msgid,
-			    lr.type);
-			return (-1);
-		}
-	}
-
-	bzero(&map, sizeof(map));
-	map.messageid = lr.msgid;
-	if (label != NO_LABEL) {
-		map.label = label;
-		map.flags = F_MAP_OPTLABEL;
-	}
-	do {
-		if ((tlen = tlv_decode_fec_elm(nbr, &lr, buf, feclen,
-		    &addr_type, &map.prefix.s_addr, &map.prefixlen)) == -1)
-			return (-1);
-
-		if (addr_type == FEC_WILDCARD) {
-			/* Wildcard FEC must be the only FEC element */
-			if (numfec != 0) {
-				session_shutdown(nbr, S_BAD_TLV_VAL, lr.msgid,
-				    lr.type);
-				return (-1);
-			}
-			map.prefix.s_addr = 0;
-			map.prefixlen = 0;
-			map.flags |= F_MAP_WILDCARD;
-
-		} else {
-			/* Wildcard FEC must be the only FEC element */
-			if (numfec == -1) {
-				session_shutdown(nbr, S_BAD_TLV_VAL, lr.msgid,
-				    lr.type);
-				return (-1);
-			}
-			map.flags &= ~F_MAP_WILDCARD;
-		}
-
-		ldpe_imsg_compose_lde(IMSG_LABEL_RELEASE, nbr->peerid, 0, &map,
-		    sizeof(map));
-
-		buf += tlen;
-		feclen -= tlen;
-	} while (feclen > 0);
-
-	return (ntohs(lr.length));
-}
-
-/* Label Abort Req Message */
-void
-send_labelabortreq(struct nbr *nbr)
-{
-	struct ibuf	*buf;
-	u_int16_t	 size;
-
-	if ((buf = ibuf_open(LDP_MAX_LEN)) == NULL)
-		fatal("send_labelabortreq");
-
-	size = LDP_HDR_SIZE + sizeof(struct ldp_msg);
-
-	gen_ldp_hdr(buf, size);
-
-	size -= LDP_HDR_SIZE;
-
-	gen_msg_tlv(buf, MSG_TYPE_LABELABORTREQ, size);
-
-	evbuf_enqueue(&nbr->tcp->wbuf, buf);
-	nbr_fsm(nbr, NBR_EVT_PDU_SENT);
-}
-
-int
-recv_labelabortreq(struct nbr *nbr, char *buf, u_int16_t len)
-{
-	struct map	map;
-	struct ldp_msg	la;
-	struct tlv	ft;
-	int		feclen, tlen;
-	u_int8_t	addr_type;
-
-	log_debug("recv_labelabortreq: neighbor ID %s", inet_ntoa(nbr->id));
-
-	bcopy(buf, &la, sizeof(la));
-
-	buf += sizeof(struct ldp_msg);
-	len -= sizeof(struct ldp_msg);
-
-	if (len < sizeof(ft)) {
-		session_shutdown(nbr, S_BAD_MSG_LEN, la.msgid, la.type);
-		return (-1);
-	}
-
-	bcopy(buf, &ft, sizeof(ft));
-	if (ntohs(ft.type) != TLV_TYPE_FEC) {
-		send_notification_nbr(nbr, S_MISS_MSG, la.msgid, la.type);
-		return (-1);
-	}
-	feclen = ntohs(ft.length);
-
-	if (feclen > len - TLV_HDR_LEN) {
-		session_shutdown(nbr, S_BAD_TLV_LEN, la.msgid, la.type);
-		return (-1);
-	}
-
-	buf += TLV_HDR_LEN;	/* just advance to the end of the fec header */
-	len -= TLV_HDR_LEN;
-
-	bzero(&map, sizeof(map));
-	map.messageid = la.msgid;
-
-	/* abort request may include optional request msg id */
-	if (len > feclen) {
-		int r;
-
-		r = tlv_decode_reqid(buf + feclen, len - feclen,
-		    &map.requestid);
-		if (r == -1 || len != feclen + r) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, la.msgid,
-			    la.type);
-			return (-1);
-		}
-		map.flags = F_MAP_REQ_ID;
-	}
-
-	do {
-		if ((tlen = tlv_decode_fec_elm(nbr, &la, buf, feclen,
-		    &addr_type, &map.prefix.s_addr, &map.prefixlen)) == -1)
-			return (-1);
-		if (addr_type == FEC_WILDCARD) {
-			session_shutdown(nbr, S_BAD_TLV_VAL, la.msgid, la.type);
-			return (-1);
-		}
-
-		ldpe_imsg_compose_lde(IMSG_LABEL_ABORT, nbr->peerid, 0, &map,
-		    sizeof(map));
-
-		buf += tlen;
-		feclen -= tlen;
-	} while (feclen > 0);
-
-	return (ntohs(la.length));
+	return (-1);
 }
 
 /* Other TLV related functions */
@@ -675,26 +407,6 @@ gen_reqid_tlv(struct ibuf *buf, u_int32_t reqid)
 	rt.reqid = htonl(reqid);
 
 	ibuf_add(buf, &rt, sizeof(rt));
-}
-
-int
-tlv_decode_reqid(char *buf, u_int16_t len, u_int32_t *reqid)
-{
-	struct reqid_tlv rt;
-
-	if (len < sizeof(rt))
-		return (-1);
-	bcopy(buf, &rt, sizeof(rt));
-
-	if (ntohs(rt.length) != sizeof(rt) - TLV_HDR_LEN)
-		return (-1);
-
-	if (rt.type != htons(TLV_TYPE_LABELREQUEST))
-		return (-1);
-
-	*reqid = ntohl(rt.reqid);
-
-	return (sizeof(rt));
 }
 
 void

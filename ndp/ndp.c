@@ -1,4 +1,4 @@
-/*	$OpenBSD: ndp.c,v 1.51 2013/10/07 12:46:57 jca Exp $	*/
+/*	$OpenBSD: ndp.c,v 1.53 2013/10/21 12:41:52 jmc Exp $	*/
 /*	$KAME: ndp.c,v 1.101 2002/07/17 08:46:33 itojun Exp $	*/
 
 /*
@@ -144,6 +144,7 @@ void harmonize_rtr(void);
 static char *sec2str(time_t);
 static char *ether_str(struct sockaddr_dl *);
 static void ts_print(const struct timeval *);
+static int rdomain = 0;
 
 static char *rtpref_str[] = {
 	"medium",		/* 00 */
@@ -158,11 +159,12 @@ char *arg = NULL;
 int
 main(int argc, char *argv[])
 {
-	int ch;
+	int		 ch;
+	const char	*errstr;
 
 	pid = getpid();
 	thiszone = gmt2local(0);
-	while ((ch = getopt(argc, argv, "acd:f:i:nprstA:HPR")) != -1)
+	while ((ch = getopt(argc, argv, "acd:f:i:nprstA:HPRV:")) != -1)
 		switch (ch) {
 		case 'a':
 		case 'c':
@@ -203,6 +205,14 @@ main(int argc, char *argv[])
 			mode = 'a';
 			repeat = atoi(optarg);
 			if (repeat < 0) {
+				usage();
+				/*NOTREACHED*/
+			}
+			break;
+		case 'V':
+			rdomain = strtonum(optarg, 0, RT_TABLEID_MAX, &errstr);
+			if (errstr != NULL) {
+				warn("bad rdomain: %s", errstr);
 				usage();
 				/*NOTREACHED*/
 			}
@@ -542,7 +552,7 @@ delete:
 void
 dump(struct in6_addr *addr, int cflag)
 {
-	int mib[6];
+	int mib[7];
 	size_t needed;
 	char *lim, *buf = NULL, *next;
 	struct rt_msghdr *rtm;
@@ -569,14 +579,15 @@ again:;
 	mib[3] = AF_INET6;
 	mib[4] = NET_RT_FLAGS;
 	mib[5] = RTF_LLINFO;
+	mib[6] = rdomain;
 	while (1) {
-		if (sysctl(mib, 6, NULL, &needed, NULL, 0) == -1)
+		if (sysctl(mib, 7, NULL, &needed, NULL, 0) == -1)
 			err(1, "sysctl(PF_ROUTE estimate)");
 		if (needed == 0)
 			break;
 		if ((buf = realloc(buf, needed)) == NULL)
 			err(1, "realloc");
-		if (sysctl(mib, 6, buf, &needed, NULL, 0) == -1) {
+		if (sysctl(mib, 7, buf, &needed, NULL, 0) == -1) {
 			if (errno == ENOMEM)
 				continue;
 			err(1, "sysctl(PF_ROUTE, NET_RT_FLAGS)");
@@ -798,9 +809,9 @@ usage(void)
 {
 	printf("usage: ndp [-nrt] [-a | -c | -p] [-H | -P | -R] ");
 	printf("[-A wait] [-d hostname]\n");
-	printf("\t[-f filename] ");
-	printf("[-i interface [flag ...]]\n");
-	printf("\t[-s nodename etheraddr [temp] [proxy]] [hostname]\n");
+	printf("\t[-f filename] [-i interface [flag ...]]\n");
+	printf("\t[-s nodename etheraddr [temp] [proxy]] ");
+	printf("[-V rdomain] [hostname]\n");
 	exit(1);
 }
 
@@ -819,6 +830,7 @@ rtmsg(int cmd)
 	bzero((char *)&m_rtmsg, sizeof(m_rtmsg));
 	rtm->rtm_flags = flags;
 	rtm->rtm_version = RTM_VERSION;
+	rtm->rtm_tableid = rdomain;
 
 	switch (cmd) {
 	default:

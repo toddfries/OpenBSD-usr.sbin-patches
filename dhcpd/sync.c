@@ -1,4 +1,4 @@
-/*	$OpenBSD: sync.c,v 1.13 2013/04/22 15:02:42 krw Exp $	*/
+/*	$OpenBSD: sync.c,v 1.15 2013/10/18 15:19:40 krw Exp $	*/
 
 /*
  * Copyright (c) 2008 Bob Beck <beck@openbsd.org>
@@ -275,7 +275,7 @@ sync_recv(void)
 	len = ntohs(hdr->sh_length);
 
 	/* Compute and validate HMAC */
-	bcopy(hdr->sh_hmac, hmac[0], DHCP_SYNC_HMAC_LEN);
+	memcpy(hmac[0], hdr->sh_hmac, DHCP_SYNC_HMAC_LEN);
 	bzero(hdr->sh_hmac, DHCP_SYNC_HMAC_LEN);
 	HMAC(EVP_sha1(), sync_key, strlen(sync_key), buf, len,
 	    hmac[1], &hmac_len);
@@ -315,11 +315,12 @@ sync_recv(void)
 			memcpy(&lp->hardware_addr, &lv->lv_hardware_addr,
 			    sizeof(lp->hardware_addr));
 			note("DHCP_SYNC_LEASE from %s for hw %s -> ip %s, "
-			    "start %d, end %d",
+			    "start %lld, end %lld",
 			    inet_ntoa(addr.sin_addr),
 			    print_hw_addr(lp->hardware_addr.htype,
 			    lp->hardware_addr.hlen, lp->hardware_addr.haddr),
-			    piaddr(lp->ip_addr), lp->starts, lp->ends);
+			    piaddr(lp->ip_addr),
+			    (long long)lp->starts, (long long)lp->ends);
 			/* now whack the lease in there */
 			if (lease == NULL) {
 				enter_lease(lp);

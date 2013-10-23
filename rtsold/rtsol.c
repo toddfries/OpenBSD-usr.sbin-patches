@@ -1,4 +1,4 @@
-/*	$OpenBSD: rtsol.c,v 1.17 2009/02/05 09:57:12 chl Exp $	*/
+/*	$OpenBSD: rtsol.c,v 1.19 2013/10/21 09:58:14 phessler Exp $	*/
 /*	$KAME: rtsol.c,v 1.15 2002/05/31 10:10:03 itojun Exp $	*/
 
 /*
@@ -80,7 +80,7 @@ int	 safefile(const char *);
 #endif
 
 int
-sockopen(void)
+sockopen(u_int rdomain)
 {
 	static u_char *rcvcmsgbuf = NULL, *sndcmsgbuf = NULL;
 	int rcvcmsglen, sndcmsglen, on;
@@ -112,6 +112,14 @@ sockopen(void)
 	if ((rssock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6)) < 0) {
 		warnmsg(LOG_ERR, __func__, "socket: %s", strerror(errno));
 		return(-1);
+	}
+
+	/* Set our preferred routing table */
+	if (setsockopt(rssock, SOL_SOCKET, SO_RTABLE,
+	    &rdomain, sizeof(rdomain)) < 0) {
+		warnmsg(LOG_ERR, __func__, "IPV6_RECVPKTINFO: %s",
+		    strerror(errno));
+		exit(1);
 	}
 
 	/* specify to tell receiving interface */
