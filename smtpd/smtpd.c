@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.c,v 1.198 2013/07/19 21:58:54 eric Exp $	*/
+/*	$OpenBSD: smtpd.c,v 1.206 2013/11/13 13:02:44 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -54,7 +54,7 @@
 
 static void parent_imsg(struct mproc *, struct imsg *);
 static void usage(void);
-static void parent_shutdown(void);
+static void parent_shutdown(int);
 static void parent_send_config(int, short, void *);
 static void parent_send_config_lka(void);
 static void parent_send_config_mfa(void);
@@ -75,7 +75,7 @@ static int	offline_enqueue(char *);
 static void	purge_task(int, short, void *);
 static void	log_imsg(int, int, struct imsg *);
 static int	parent_auth_user(const char *, const char *);
-static void	load_ssl_trees(void);
+static void	load_ssl_tree(void);
 
 enum child_type {
 	CHILD_DAEMON,
@@ -136,6 +136,7 @@ int	profiling = 0;
 int	verbose = 0;
 int	debug = 0;
 int	foreground = 0;
+int	control_socket = -1;
 
 struct tree	 children;
 
@@ -280,7 +281,7 @@ parent_imsg(struct mproc *p, struct imsg *imsg)
 			return;
 
 		case IMSG_CTL_SHUTDOWN:
-			parent_shutdown();
+			parent_shutdown(0);
 			return;
 		}
 	}
@@ -299,7 +300,7 @@ usage(void)
 }
 
 static void
-parent_shutdown(void)
+parent_shutdown(int ret)
 {
 	void		*iter;
 	struct child	*child;
@@ -317,7 +318,7 @@ parent_shutdown(void)
 	unlink(SMTPD_SOCKET);
 
 	log_warnx("warn: parent terminating");
-	exit(0);
+	exit(ret);
 }
 
 static void
@@ -342,8 +343,6 @@ parent_send_config_smtp(void)
 	m_compose(p_smtp, IMSG_CONF_START, 0, 0, -1, NULL, 0);
 
 	while (dict_iter(env->sc_ssl_dict, &iter, NULL, (void **)&s)) {
-		if (!(s->flags & F_SCERT))
-			continue;
 		iov[0].iov_base = s;
 		iov[0].iov_len = sizeof(*s);
 		iov[1].iov_base = s->ssl_cert;
@@ -453,6 +452,12 @@ parent_send_config_lka()
 			    0, 0, -1,
 			    &r->r_senders->t_name,
 			    sizeof(r->r_senders->t_name));
+		}
+		if (r->r_recipients) {
+			m_compose(p_lka, IMSG_CONF_RULE_RECIPIENT,
+			    0, 0, -1,
+			    &r->r_recipients->t_name,
+			    sizeof(r->r_recipients->t_name));
 		}
 		if (r->r_destination) {
 			m_compose(p_lka, IMSG_CONF_RULE_DESTINATION,
@@ -570,7 +575,7 @@ parent_sig_handler(int sig, short event, void *p)
 		} while (pid > 0 || (pid == -1 && errno == EINTR));
 
 		if (die)
-			parent_shutdown();
+			parent_shutdown(1);
 		break;
 	default:
 		fatalx("smtpd: unexpected signal");
@@ -710,7 +715,7 @@ main(int argc, char *argv[])
 		errx(1, "config file exceeds SMTPD_MAXPATHLEN");
 
 	if (env->sc_opts & SMTPD_OPT_NOACTION) {
-		load_ssl_trees();
+		load_ssl_tree();
 		fprintf(stderr, "configuration OK\n");
 		exit(0);
 	}
@@ -720,6 +725,9 @@ main(int argc, char *argv[])
 	/* check for root privileges */
 	if (geteuid())
 		errx(1, "need root privileges");
+
+	/* the control socket ensures that only one smtpd instance is running */
+	control_socket = control_create_socket();
 
 	if (!queue_init(backend_queue, 1))
 		errx(1, "could not initialize queue backend");
@@ -756,7 +764,7 @@ main(int argc, char *argv[])
 		errx(1, "machine does not have a hostname set");
 	env->sc_uptime = time(NULL);
 
-	load_ssl_trees();
+	load_ssl_tree();
 
 	fork_peers();
 
@@ -810,44 +818,33 @@ main(int argc, char *argv[])
 }
 
 static void
-load_ssl_trees(void)
+load_ssl_tree(void)
 {
-	struct listener	*l;
 	struct ssl	*ssl;
-	struct rule	*r;
+	void		*iter_dict;
+	const char	*k;
 
-	log_debug("debug: init server-ssl tree");
-	TAILQ_FOREACH(l, env->sc_listeners, entry) {
-		if (!(l->flags & F_SSL))
-			continue;
+	log_debug("debug: init ssl-tree");
+	iter_dict = NULL;
+	while (dict_iter(env->sc_ssl_dict, &iter_dict, &k, (void **)&ssl)) {
+		log_debug("debug: loading pki information for %s", k);
 
-		ssl = dict_get(env->sc_ssl_dict, l->ssl_cert_name);
-		if (ssl == NULL) {
-			if (! ssl_load_certfile(&ssl, "/etc/mail/certs",
-			    l->ssl_cert_name, F_SCERT))
-				errx(1, "cannot load certificate: %s",
-				    l->ssl_cert_name);
-			dict_set(env->sc_ssl_dict, ssl->ssl_name, ssl);
-		}
-	}
+		if (ssl->ssl_cert_file == NULL)
+			errx(1, "load_ssl_tree: missing certificate file for %s", k);
+		if (ssl->ssl_key_file == NULL)
+			errx(1, "load_ssl_tree: missing key file for %s", k);
 
-	log_debug("debug: init client-ssl tree");
-	TAILQ_FOREACH(r, env->sc_rules, r_entry) {
-		if (r->r_action != A_RELAY && r->r_action != A_RELAYVIA)
-			continue;
-		if (! r->r_value.relayhost.cert[0])
-			continue;
+		if (! ssl_load_certificate(ssl, ssl->ssl_cert_file))
+			errx(1, "load_ssl_tree: failed to load certificate file for %s", k);
+		if (! ssl_load_keyfile(ssl, ssl->ssl_key_file))
+			errx(1, "load_ssl_tree: failed to load certificate file for %s", k);
 
-		ssl = dict_get(env->sc_ssl_dict, r->r_value.relayhost.cert);
-		if (ssl)
-			ssl->flags |= F_CCERT;
-		else {
-			if (! ssl_load_certfile(&ssl, "/etc/mail/certs",
-			    r->r_value.relayhost.cert, F_CCERT))
-				errx(1, "cannot load certificate: %s",
-				    r->r_value.relayhost.cert);
-			dict_set(env->sc_ssl_dict, ssl->ssl_name, ssl);
-		}
+		if (ssl->ssl_ca_file)
+			if (! ssl_load_cafile(ssl, ssl->ssl_ca_file))
+				errx(1, "load_ssl_tree: failed to load CA file for %s", k);
+		if (ssl->ssl_dhparams_file)
+			if (! ssl_load_dhparams(ssl, ssl->ssl_dhparams_file))
+				errx(1, "load_ssl_tree: failed to load dhparams file for %s", k);
 	}
 }
 
@@ -874,9 +871,6 @@ fork_peers(void)
 	init_pipes();
 
 	child_add(queue(), CHILD_DAEMON, proc_title(PROC_QUEUE));
-	if (env->sc_queue_key)
-		memset(env->sc_queue_key, 0, strlen(env->sc_queue_key));
-
 	child_add(control(), CHILD_DAEMON, proc_title(PROC_CONTROL));
 	child_add(lka(), CHILD_DAEMON, proc_title(PROC_LKA));
 	child_add(mda(), CHILD_DAEMON, proc_title(PROC_MDA));
@@ -884,6 +878,20 @@ fork_peers(void)
 	child_add(mta(), CHILD_DAEMON, proc_title(PROC_MTA));
 	child_add(scheduler(), CHILD_DAEMON, proc_title(PROC_SCHEDULER));
 	child_add(smtp(), CHILD_DAEMON, proc_title(PROC_SMTP));
+
+	post_fork(PROC_PARENT);
+}
+
+void
+post_fork(int proc)
+{
+	if (proc != PROC_QUEUE && env->sc_queue_key)
+		memset(env->sc_queue_key, 0, strlen(env->sc_queue_key));
+
+	if (proc != PROC_CONTROL) {
+		close(control_socket);
+		control_socket = -1;
+	}
 }
 
 struct child *
@@ -1254,12 +1262,24 @@ offline_done(void)
 static int
 parent_forward_open(char *username, char *directory, uid_t uid, gid_t gid)
 {
-	char pathname[SMTPD_MAXPATHLEN];
-	int	fd;
+	char		pathname[SMTPD_MAXPATHLEN];
+	int		fd;
+	struct stat	sb;
 
 	if (! bsnprintf(pathname, sizeof (pathname), "%s/.forward",
 		directory))
 		fatal("smtpd: parent_forward_open: snprintf");
+
+	if (stat(directory, &sb) < 0) {
+		log_warn("warn: smtpd: parent_forward_open: %s", directory);
+		return -1;
+	}
+	if (sb.st_mode & S_ISVTX) {
+		log_warnx("warn: smtpd: parent_forward_open: %s is sticky",
+		    directory);
+		errno = EAGAIN;
+		return -1;
+	}
 
 	do {
 		fd = open(pathname, O_RDONLY);
@@ -1305,7 +1325,7 @@ imsg_dispatch(struct mproc *p, struct imsg *imsg)
 		clock_gettime(CLOCK_MONOTONIC, &t1);
 		timespecsub(&t1, &t0, &dt);
 
-		log_debug("profile-imsg: %s %s %s %i %lld.%06li",
+		log_debug("profile-imsg: %s %s %s %d %lld.%06ld",
 		    proc_name(smtpd_process),
 		    proc_name(p->proc),
 		    imsg_to_str(imsg->hdr.type),
@@ -1334,11 +1354,11 @@ static void
 log_imsg(int to, int from, struct imsg *imsg)
 {
 
-	if (to == PROC_CONTROL)
+	if (to == PROC_CONTROL && imsg->hdr.type == IMSG_STAT_SET)
 		return;
 
 	if (imsg->fd != -1)
-		log_trace(TRACE_IMSG, "imsg: %s <- %s: %s (len=%zu, fd=%i)",
+		log_trace(TRACE_IMSG, "imsg: %s <- %s: %s (len=%zu, fd=%d)",
 		    proc_name(to),
 		    proc_name(from),
 		    imsg_to_str(imsg->hdr.type),
@@ -1443,6 +1463,8 @@ imsg_to_str(int type)
 	CASE(IMSG_CTL_PROFILE);
 	CASE(IMSG_CTL_UNPROFILE);
 
+	CASE(IMSG_CTL_MTA_SHOW_HOSTS);
+	CASE(IMSG_CTL_MTA_SHOW_RELAYS);
 	CASE(IMSG_CTL_MTA_SHOW_ROUTES);
 	CASE(IMSG_CTL_MTA_SHOW_HOSTSTATS);
 
@@ -1455,6 +1477,7 @@ imsg_to_str(int type)
 	CASE(IMSG_CONF_RULE_SOURCE);
 	CASE(IMSG_CONF_RULE_SENDER);
 	CASE(IMSG_CONF_RULE_DESTINATION);
+	CASE(IMSG_CONF_RULE_RECIPIENT);
 	CASE(IMSG_CONF_RULE_MAPPING);
 	CASE(IMSG_CONF_RULE_USERS);
 	CASE(IMSG_CONF_FILTER);
@@ -1476,6 +1499,8 @@ imsg_to_str(int type)
 	CASE(IMSG_DELIVERY_TEMPFAIL);
 	CASE(IMSG_DELIVERY_PERMFAIL);
 	CASE(IMSG_DELIVERY_LOOP);
+	CASE(IMSG_DELIVERY_HOLD);
+	CASE(IMSG_DELIVERY_RELEASE);
 
 	CASE(IMSG_BOUNCE_INJECT);
 
@@ -1492,7 +1517,6 @@ imsg_to_str(int type)
 	CASE(IMSG_MFA_EVENT_COMMIT);
 	CASE(IMSG_MFA_EVENT_ROLLBACK);
 	CASE(IMSG_MFA_EVENT_DISCONNECT);
-	CASE(IMSG_MFA_SMTP_DATA);
 	CASE(IMSG_MFA_SMTP_RESPONSE);
 
 	CASE(IMSG_MTA_TRANSFER);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: table_static.c,v 1.5 2013/05/24 17:03:14 eric Exp $	*/
+/*	$OpenBSD: table_static.c,v 1.7 2013/11/18 11:47:16 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -135,6 +135,10 @@ table_static_parse(struct table *t, const char *config, enum table_type type)
 		else
 			goto end;
 	}
+	/* Accept empty alias files; treat them as hashes */
+	if (t->t_type == T_NONE && t->t_backend->services & K_ALIAS)
+	    t->t_type = T_HASH;
+
 	ret = 1;
 end:
 	free(lbuf);
@@ -157,7 +161,7 @@ table_static_update(struct table *table)
 		goto err;
 
 	/* replace former table, frees t */
-	while (dict_poproot(&table->t_dict, NULL, (void **)&p))
+	while (dict_poproot(&table->t_dict, (void **)&p))
 		free(p);
 	dict_merge(&table->t_dict, &t->t_dict);
 	table_destroy(t);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.153 2013/07/19 21:14:52 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.156 2013/11/20 09:22:42 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -65,7 +65,7 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 	struct envelope		 evp;
 	struct msg		 m;
 	const char		*reason;
-	uint64_t		 reqid, evpid;
+	uint64_t		 reqid, evpid, holdq;
 	uint32_t		 msgid;
 	uint32_t		 penalty;
 	time_t			 nexttry;
@@ -414,8 +414,24 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			m_close(p_scheduler);
 			return;
 
+		case IMSG_DELIVERY_HOLD:
 		case IMSG_MTA_SCHEDULE:
 			m_forward(p_scheduler, imsg);
+			return;
+		case IMSG_DELIVERY_RELEASE:
+			m_msg(&m, imsg);
+			m_get_id(&m, &holdq);
+			m_get_int(&m, &v);
+			m_end(&m);
+
+			m_create(p_scheduler, IMSG_DELIVERY_RELEASE, 0, 0, -1);
+			if (p->proc == PROC_MTA)
+				m_add_int(p_scheduler, D_MTA);
+			else
+				m_add_int(p_scheduler, D_MDA);
+			m_add_id(p_scheduler, holdq);
+			m_add_int(p_scheduler, v);
+			m_close(p_scheduler);
 			return;
 		}
 	}
@@ -528,6 +544,7 @@ queue(void)
 	case -1:
 		fatal("queue: cannot fork");
 	case 0:
+		post_fork(PROC_QUEUE);
 		break;
 	default:
 		return (pid);

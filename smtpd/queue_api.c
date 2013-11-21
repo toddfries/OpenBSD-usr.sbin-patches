@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_api.c,v 1.1 2013/07/19 20:37:07 eric Exp $	*/
+/*	$OpenBSD: queue_api.c,v 1.3 2013/10/27 18:21:07 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -149,6 +149,7 @@ queue_msg_dispatch(void)
 
 		/* XXX needs more love */
 		r = -1;
+		snprintf(path, sizeof path, "/tmp/message.XXXXXXXXXX");
 		fd = mkstemp(path);
 		if (fd == -1) {
 			log_warn("warn: queue-api: mkstemp");
@@ -243,7 +244,7 @@ queue_msg_dispatch(void)
 		queue_msg_close();
 
 	default:
-		log_warnx("warn: queue-api: bad message %i", imsg.hdr.type);
+		log_warnx("warn: queue-api: bad message %d", imsg.hdr.type);
 		fatalx("queue-api: exiting");
 	}
 }

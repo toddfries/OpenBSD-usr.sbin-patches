@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd-api.h,v 1.8 2013/07/19 21:34:31 eric Exp $	*/
+/*	$OpenBSD: smtpd-api.h,v 1.12 2013/11/20 09:22:42 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -57,12 +57,11 @@ enum filter_imsg {
 	IMSG_FILTER_REGISTER,
 	IMSG_FILTER_EVENT,
 	IMSG_FILTER_QUERY,
+	IMSG_FILTER_PIPE_SETUP,
+	IMSG_FILTER_PIPE_ABORT,
 	IMSG_FILTER_NOTIFY,
-	IMSG_FILTER_DATA,
-	IMSG_FILTER_RESPONSE,
+	IMSG_FILTER_RESPONSE
 };
-
-#define	FILTER_ALTERDATA	0x01 /* The filter wants to alter the message */
 
 /* XXX - server side requires mfa_session.c update on filter_hook changes */
 enum filter_hook {
@@ -119,6 +118,8 @@ enum {
 	PROC_SCHEDULER_ROLLBACK,
 	PROC_SCHEDULER_UPDATE,
 	PROC_SCHEDULER_DELETE,
+	PROC_SCHEDULER_HOLD,
+	PROC_SCHEDULER_RELEASE,
 	PROC_SCHEDULER_BATCH,
 	PROC_SCHEDULER_MESSAGES,
 	PROC_SCHEDULER_ENVELOPES,
@@ -138,6 +139,7 @@ enum envelope_flags {
 	EF_PENDING		= 0x10,
 	EF_INFLIGHT		= 0x20,
 	EF_SUSPEND		= 0x40,
+	EF_HOLD			= 0x80,
 };
 
 struct evpstate {
@@ -229,9 +231,9 @@ void *dict_get(struct dict *, const char *);
 void *dict_xget(struct dict *, const char *);
 void *dict_pop(struct dict *, const char *);
 void *dict_xpop(struct dict *, const char *);
-int dict_poproot(struct dict *, const char * *, void **);
-int dict_root(struct dict *, const char * *, void **);
-int dict_iter(struct dict *, void **, const char * *, void **);
+int dict_poproot(struct dict *, void **);
+int dict_root(struct dict *, const char **, void **);
+int dict_iter(struct dict *, void **, const char **, void **);
 int dict_iterfrom(struct dict *, void **, const char *, const char **, void **);
 void dict_merge(struct dict *, struct dict *);
 
@@ -242,20 +244,20 @@ void filter_api_no_chroot(void);
 
 void filter_api_loop(void);
 void filter_api_accept(uint64_t);
-void filter_api_accept_notify(uint64_t);
+void filter_api_accept_notify(uint64_t, uint64_t *);
 void filter_api_reject(uint64_t, enum filter_status);
 void filter_api_reject_code(uint64_t, enum filter_status, uint32_t,
     const char *);
-void filter_api_data(uint64_t, const char *);
+void filter_api_writeln(uint64_t, const char *);
 
 void filter_api_on_notify(void(*)(uint64_t, enum filter_status));
-void filter_api_on_connect(void(*)(uint64_t, uint64_t, struct filter_connect *));
-void filter_api_on_helo(void(*)(uint64_t, uint64_t, const char *));
-void filter_api_on_mail(void(*)(uint64_t, uint64_t, struct mailaddr *));
-void filter_api_on_rcpt(void(*)(uint64_t, uint64_t, struct mailaddr *));
-void filter_api_on_data(void(*)(uint64_t, uint64_t));
-void filter_api_on_dataline(void(*)(uint64_t, const char *), int);
-void filter_api_on_eom(void(*)(uint64_t, uint64_t));
+void filter_api_on_connect(void(*)(uint64_t, struct filter_connect *));
+void filter_api_on_helo(void(*)(uint64_t, const char *));
+void filter_api_on_mail(void(*)(uint64_t, struct mailaddr *));
+void filter_api_on_rcpt(void(*)(uint64_t, struct mailaddr *));
+void filter_api_on_data(void(*)(uint64_t));
+void filter_api_on_dataline(void(*)(uint64_t, const char *));
+void filter_api_on_eom(void(*)(uint64_t));
 void filter_api_on_event(void(*)(uint64_t, enum filter_hook));
 
 /* queue */
@@ -278,6 +280,8 @@ void scheduler_api_on_commit(size_t(*)(uint32_t));
 void scheduler_api_on_rollback(size_t(*)(uint32_t));
 void scheduler_api_on_update(int(*)(struct scheduler_info *));
 void scheduler_api_on_delete(int(*)(uint64_t));
+void scheduler_api_on_hold(int(*)(uint64_t, uint64_t));
+void scheduler_api_on_release(int(*)(int, uint64_t, int));
 void scheduler_api_on_batch(int(*)(int, struct scheduler_batch *));
 void scheduler_api_on_messages(size_t(*)(uint32_t, uint32_t *, size_t));
 void scheduler_api_on_envelopes(size_t(*)(uint64_t, struct evpstate *, size_t));

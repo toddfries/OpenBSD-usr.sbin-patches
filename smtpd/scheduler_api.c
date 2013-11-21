@@ -1,4 +1,4 @@
-/*	$OpenBSD: scheduler_api.c,v 1.1 2013/07/19 21:34:31 eric Exp $	*/
+/*	$OpenBSD: scheduler_api.c,v 1.4 2013/11/20 09:22:42 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -35,6 +35,8 @@ static size_t (*handler_commit)(uint32_t);
 static size_t (*handler_rollback)(uint32_t);
 static int (*handler_update)(struct scheduler_info *);
 static int (*handler_delete)(uint64_t);
+static int (*handler_hold)(uint64_t, uint64_t);
+static int (*handler_release)(int, uint64_t, int);
 static int (*handler_batch)(int, struct scheduler_batch *);
 static size_t (*handler_messages)(uint32_t, uint32_t *, size_t);
 static size_t (*handler_envelopes)(uint64_t, struct evpstate *, size_t);
@@ -108,11 +110,11 @@ scheduler_msg_dispatch(void)
 {
 	size_t			 n, sz;
 	struct evpstate		 evpstates[MAX_BATCH_SIZE];
-	uint64_t		 evpid, evpids[MAX_BATCH_SIZE];
+	uint64_t		 evpid, evpids[MAX_BATCH_SIZE], u64;
 	uint32_t		 msgids[MAX_BATCH_SIZE], version, msgid;
 	struct scheduler_info	 info;
 	struct scheduler_batch	 batch;
-	int			 typemask, r;
+	int			 typemask, r, type;
 
 	switch (imsg.hdr.type) {
 	case PROC_SCHEDULER_INIT:
@@ -179,6 +181,29 @@ scheduler_msg_dispatch(void)
 		scheduler_msg_end();
 
 		r = handler_delete(evpid);
+
+		imsg_compose(&ibuf, PROC_SCHEDULER_OK, 0, 0, -1, &r, sizeof(r));
+		break;
+
+	case PROC_SCHEDULER_HOLD:
+		log_debug("scheduler-api: PROC_SCHEDULER_HOLD");
+		scheduler_msg_get(&evpid, sizeof(evpid));
+		scheduler_msg_get(&u64, sizeof(u64));
+		scheduler_msg_end();
+
+		r = handler_hold(evpid, u64);
+
+		imsg_compose(&ibuf, PROC_SCHEDULER_OK, 0, 0, -1, &r, sizeof(r));
+		break;
+
+	case PROC_SCHEDULER_RELEASE:
+		log_debug("scheduler-api: PROC_SCHEDULER_RELEASE");
+		scheduler_msg_get(&type, sizeof(type));
+		scheduler_msg_get(&u64, sizeof(u64));
+		scheduler_msg_get(&r, sizeof(r));
+		scheduler_msg_end();
+
+		r = handler_release(type, u64, r);
 
 		imsg_compose(&ibuf, PROC_SCHEDULER_OK, 0, 0, -1, &r, sizeof(r));
 		break;
@@ -271,7 +296,7 @@ scheduler_msg_dispatch(void)
 		break;
 
 	default:
-		log_warnx("warn: scheduler-api: bad message %i", imsg.hdr.type);
+		log_warnx("warn: scheduler-api: bad message %d", imsg.hdr.type);
 		fatalx("scheduler-api: exiting");
 	}
 }
@@ -352,6 +377,18 @@ void
 scheduler_api_on_resume(int(*cb)(uint64_t))
 {
 	handler_resume = cb;
+}
+
+void
+scheduler_api_on_hold(int(*cb)(uint64_t, uint64_t))
+{
+	handler_hold = cb;
+}
+
+void
+scheduler_api_on_release(int(*cb)(int, uint64_t, int))
+{
+	handler_release = cb;
 }
 
 int

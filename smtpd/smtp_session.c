@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtp_session.c,v 1.184 2013/07/19 21:18:54 eric Exp $	*/
+/*	$OpenBSD: smtp_session.c,v 1.189 2013/11/18 12:24:26 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -114,6 +114,7 @@ struct smtp_session {
 	struct listener		*listener;
 	struct sockaddr_storage	 ss;
 	char			 hostname[SMTPD_MAXHOSTNAMELEN];
+	char			 smtpname[SMTPD_MAXHOSTNAMELEN];
 
 	int			 flags;
 	int			 phase;
@@ -151,9 +152,10 @@ struct smtp_session {
 	((s)->listener->flags & F_AUTH && (s)->flags & SF_SECURE && \
 	 !((s)->flags & SF_AUTHENTICATED))
 
-static int smtp_mailaddr(struct mailaddr *, char *, int, char **);
+static int smtp_mailaddr(struct mailaddr *, char *, int, char **, const char *);
 static void smtp_session_init(void);
 static void smtp_connected(struct smtp_session *);
+static void smtp_send_banner(struct smtp_session *);
 static void smtp_mfa_response(struct smtp_session *, int, uint32_t,
     const char *);
 static void smtp_io(struct io *, int);
@@ -189,6 +191,7 @@ static struct { int code; const char *cmd; } commands[] = {
 };
 
 static struct tree wait_lka_ptr;
+static struct tree wait_lka_helo;
 static struct tree wait_lka_rcpt;
 static struct tree wait_mfa_response;
 static struct tree wait_mfa_data;
@@ -206,6 +209,7 @@ smtp_session_init(void)
 
 	if (!init) {
 		tree_init(&wait_lka_ptr);
+		tree_init(&wait_lka_helo);
 		tree_init(&wait_lka_rcpt);
 		tree_init(&wait_mfa_response);
 		tree_init(&wait_mfa_data);
@@ -247,6 +251,8 @@ smtp_session(struct listener *listener, int sock,
 	s->state = STATE_NEW;
 	s->phase = PHASE_INIT;
 
+	strlcpy(s->smtpname, listener->hostname, sizeof(s->smtpname));
+
 	/* For local enqueueing, the hostname is already set */
 	if (hostname) {
 		s->flags |= SF_AUTHENTICATED;
@@ -273,10 +279,11 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 	void				*ssl;
 	char				 user[SMTPD_MAXLOGNAME];
 	struct msg			 m;
-	const char			*line;
+	const char			*line, *helo;
 	uint64_t			 reqid, evpid;
 	uint32_t			 code, msgid;
 	int				 status, success, dnserror;
+	X509				*x;
 
 	switch (imsg->hdr.type) {
 	case IMSG_DNS_PTR:
@@ -318,13 +325,18 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 		io_reload(&s->io);
 		return;
 
-	case IMSG_MFA_SMTP_DATA:
+	case IMSG_LKA_HELO:
 		m_msg(&m, imsg);
 		m_get_id(&m, &reqid);
-		m_get_string(&m, &line);
+		s = tree_xpop(&wait_lka_helo, reqid);
+		m_get_int(&m, &status);
+		if (status == LKA_OK) {
+			m_get_string(&m, &helo);
+			strlcpy(s->smtpname, helo, sizeof(s->smtpname));
+		}
 		m_end(&m);
-		if ((s = tree_get(&wait_mfa_data, reqid)))
-			smtp_message_write(s, line);
+		smtp_reply(s, SMTPD_BANNER, s->smtpname, SMTPD_NAME);
+		io_reload(&s->io);
 		return;
 
 	case IMSG_MFA_SMTP_RESPONSE:
@@ -377,13 +389,15 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 			return;
 		}
 
-		fprintf(s->ofile,
-		    "Received: from %s (%s [%s]);\n"
-		    "\tby %s (%s) with %sSMTP%s%s id %08x;\n",
-		    s->evp.helo,
-		    s->hostname,
-		    ss_to_text(&s->ss),
-		    s->listener->helo[0] ? s->listener->helo : env->sc_hostname,
+		fprintf(s->ofile, "Received: ");
+		if (! (s->listener->flags & F_MASK_SOURCE)) {
+			fprintf(s->ofile, "from %s (%s [%s]);\n\t",
+			    s->evp.helo,
+			    s->hostname,
+			    ss_to_text(&s->ss));
+		}
+		fprintf(s->ofile, "by %s (%s) with %sSMTP%s%s id %08x;\n",
+		    s->smtpname,
 		    SMTPD_NAME,
 		    s->flags & SF_EHLO ? "E" : "",
 		    s->flags & SF_SECURE ? "S" : "",
@@ -391,17 +405,15 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 		    evpid_to_msgid(s->evp.id));
 
 		if (s->flags & SF_SECURE) {
+			x = SSL_get_peer_certificate(s->io.ssl);
 			fprintf(s->ofile,
 			    "\tTLS version=%s cipher=%s bits=%d verify=%s;\n",
 			    SSL_get_cipher_version(s->io.ssl),
 			    SSL_get_cipher_name(s->io.ssl),
 			    SSL_get_cipher_bits(s->io.ssl, NULL),
-			    "NO");
-			/* XXX - this can be uncommented when we *fully* verify */
-			/*
-			 *  (s->flags & SF_VERIFIED) ? "YES" :
-			 *  (SSL_get_peer_certificate(s->io.ssl) ? "FAIL" : "NO"));
-			 */
+			    (s->flags & SF_VERIFIED) ? "YES" : (x ? "FAIL" : "NO"));
+			if (x)
+				X509_free(x);
 		}
 
 		if (s->rcptcount == 1) {
@@ -553,7 +565,7 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 		if (resp_ca_cert->status == CA_FAIL) {
 			log_info("smtp-in: Disconnecting session %016" PRIx64
 			    ": CA failure", s->id);
-			smtp_free(s, "CA failure");	
+			smtp_free(s, "CA failure");
 			return;
 		}
 
@@ -575,6 +587,8 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 
 		bzero(resp_ca_cert->cert, resp_ca_cert->cert_len);
 		bzero(resp_ca_cert->key, resp_ca_cert->key_len);
+		free(resp_ca_cert->cert);
+		free(resp_ca_cert->key);
 		free(resp_ca_cert);
 		return;
 
@@ -584,7 +598,12 @@ smtp_session_imsg(struct mproc *p, struct imsg *imsg)
 
 		if (resp_ca_vrfy->status == CA_OK)
 			s->flags |= SF_VERIFIED;
-
+		else if (s->listener->flags & F_TLS_VERIFY) {
+			log_info("smtp-in: Disconnecting session %016" PRIx64
+			    ": SSL certificate check failed", s->id);
+			smtp_free(s, "SSL certificate check failed");	
+			return;
+		}
 		smtp_io(&s->io, IO_TLSVERIFIED);
 		io_resume(&s->io, IO_PAUSE_IN);
 		return;
@@ -629,11 +648,7 @@ smtp_mfa_response(struct smtp_session *s, int status, uint32_t code,
 			tree_xset(&wait_ssl_init, s->id, s);
 			return;
 		}
-		if (s->listener->helo[0])
-			smtp_reply(s, SMTPD_BANNER, s->listener->helo, SMTPD_NAME);
-		else
-			smtp_reply(s, SMTPD_BANNER, env->sc_hostname, SMTPD_NAME);
-		io_reload(&s->io);
+		smtp_send_banner(s);
 		return;
 
 	case IMSG_MFA_REQ_HELO:
@@ -648,7 +663,7 @@ smtp_mfa_response(struct smtp_session *s, int status, uint32_t code,
 		smtp_enter_state(s, STATE_HELO);
 		smtp_reply(s, "250%c%s Hello %s [%s], pleased to meet you",
 		    (s->flags & SF_EHLO) ? '-' : ' ',
-		    env->sc_hostname,
+		    s->smtpname,
 		    s->evp.helo,
 		    ss_to_text(&s->ss));
 
@@ -743,6 +758,7 @@ smtp_io(struct io *io, int evt)
 	struct smtp_session    *s = io->arg;
 	char		       *line;
 	size_t			len, i;
+	X509		       *x;
 
 	log_trace(TRACE_IO, "smtp: %p: %s %s", s, io_strevent(evt),
 	    io_strio(io));
@@ -762,19 +778,29 @@ smtp_io(struct io *io, int evt)
 			break;
 		}
 
+		if (s->listener->flags & F_TLS_VERIFY) {
+			log_info("smtp-in: Disconnecting session %016" PRIx64
+			    ": client did not present certificate", s->id);
+			smtp_free(s, "client did not present certificate");	
+			return;
+		}
+
 		/* No verification required, cascade */
 
 	case IO_TLSVERIFIED:
-		if (SSL_get_peer_certificate(s->io.ssl))
+		x = SSL_get_peer_certificate(s->io.ssl);
+		if (x) {
 			log_info("smtp-in: Client certificate verification %s "
 			    "on session %016"PRIx64,
 			    (s->flags & SF_VERIFIED) ? "succeeded" : "failed",
 			    s->id);
+			X509_free(x);
+		}
 
 		if (s->listener->flags & F_SMTPS) {
 			stat_increment("smtp.smtps", 1);
-			smtp_reply(s, SMTPD_BANNER, env->sc_hostname, SMTPD_NAME);
 			io_set_write(&s->io);
+			smtp_send_banner(s);
 		}
 		else {
 			stat_increment("smtp.tls", 1);
@@ -833,6 +859,7 @@ smtp_io(struct io *io, int evt)
 
 			m_create(p_mfa, IMSG_MFA_REQ_EOM, 0, 0, -1);
 			m_add_id(p_mfa, s->id);
+			m_add_u32(p_mfa, s->datalen);
 			m_close(p_mfa);
 			smtp_wait_mfa(s, IMSG_MFA_REQ_EOM);
 			return;
@@ -1069,7 +1096,8 @@ smtp_command(struct smtp_session *s, char *line)
 
 		smtp_message_reset(s, 1);
 
-		if (smtp_mailaddr(&s->evp.sender, args, 1, &args) == 0) {
+		if (smtp_mailaddr(&s->evp.sender, args, 1, &args,
+		    s->smtpname) == 0) {
 			smtp_reply(s, "553 Sender address syntax error");
 			break;
 		}
@@ -1096,7 +1124,8 @@ smtp_command(struct smtp_session *s, char *line)
 			break;
 		}
 
-		if (smtp_mailaddr(&s->evp.rcpt, args, 0, &args) == 0) {
+		if (smtp_mailaddr(&s->evp.rcpt, args, 0, &args,
+		    s->smtpname) == 0) {
 			smtp_reply(s,
 			    "553 Recipient address syntax error");
 			break;
@@ -1332,6 +1361,34 @@ smtp_connected(struct smtp_session *s)
 	smtp_wait_mfa(s, IMSG_MFA_REQ_CONNECT);
 }
 
+static void
+smtp_send_banner(struct smtp_session *s)
+{
+	struct sockaddr_storage	 ss;
+	struct sockaddr		*sa;
+	socklen_t		 sa_len;
+
+	if (s->listener->hostnametable[0]) {
+		sa_len = sizeof(ss);
+		sa = (struct sockaddr *)&ss;
+		if (getsockname(s->io.sock, sa, &sa_len) == -1) {
+			log_warn("warn: getsockname()");
+		}
+		else {
+			m_create(p_lka, IMSG_LKA_HELO, 0, 0, -1);
+			m_add_id(p_lka, s->id);
+			m_add_string(p_lka, s->listener->hostnametable);
+			m_add_sockaddr(p_lka, sa);
+			m_close(p_lka);
+			tree_xset(&wait_lka_helo, s->id, s);
+			return;
+		}
+	}
+
+	smtp_reply(s, SMTPD_BANNER, s->smtpname, SMTPD_NAME);
+	io_reload(&s->io);
+}
+
 void
 smtp_enter_state(struct smtp_session *s, int newstate)
 {
@@ -1387,7 +1444,7 @@ smtp_message_end(struct smtp_session *s)
 		if (s->msgflags & MF_ERROR_SIZE)
 			smtp_reply(s, "554 Message too big");
 		else
-			smtp_reply(s, "%i Message rejected", s->msgcode);
+			smtp_reply(s, "%d Message rejected", s->msgcode);
 		smtp_message_reset(s, 0);
 		smtp_enter_state(s, STATE_HELO);
 		return;
@@ -1419,6 +1476,7 @@ smtp_message_reset(struct smtp_session *s, int prepare)
 	if (prepare) {
 		s->evp.ss = s->ss;
 		strlcpy(s->evp.tag, s->listener->tag, sizeof(s->evp.tag));
+		strlcpy(s->evp.smtpname, s->smtpname, sizeof(s->evp.smtpname));
 		strlcpy(s->evp.hostname, s->hostname, sizeof s->evp.hostname);
 		strlcpy(s->evp.helo, s->helo, sizeof s->evp.helo);
 
@@ -1518,7 +1576,8 @@ smtp_free(struct smtp_session *s, const char * reason)
 }
 
 static int
-smtp_mailaddr(struct mailaddr *maddr, char *line, int mailfrom, char **args)
+smtp_mailaddr(struct mailaddr *maddr, char *line, int mailfrom, char **args,
+    const char *domain)
 {
 	char   *p, *e;
 
@@ -1552,6 +1611,16 @@ smtp_mailaddr(struct mailaddr *maddr, char *line, int mailfrom, char **args)
 		    maddr->user[0] == '\0' &&
 		    maddr->domain[0] == '\0')
 			return (1);
+
+		/* We accept empty domain for RCPT TO if user is postmaster */
+		if (!mailfrom &&
+		    strcasecmp(maddr->user, "postmaster") == 0 &&
+		    maddr->domain[0] == '\0') {
+			(void)strlcpy(maddr->domain, domain,
+			    sizeof(maddr->domain));
+			return (1);
+		}
+			
 		return (0);
 	}
 
@@ -1584,6 +1653,10 @@ smtp_verify_certificate(struct smtp_session *s)
 
 	/* Send the client certificate */
 	bzero(&req_ca_vrfy, sizeof req_ca_vrfy);
+	if (strlcpy(req_ca_vrfy.pkiname, s->listener->ssl_cert_name, sizeof req_ca_vrfy.pkiname)
+	    >= sizeof req_ca_vrfy.pkiname)
+		return 0;
+
 	req_ca_vrfy.reqid = s->id;
 	req_ca_vrfy.cert_len = i2d_X509(x, &req_ca_vrfy.cert);
 	if (xchain)
@@ -1595,6 +1668,7 @@ smtp_verify_certificate(struct smtp_session *s)
 	m_composev(p_lka, IMSG_LKA_SSL_VERIFY_CERT, 0, 0, -1,
 	    iov, nitems(iov));
 	free(req_ca_vrfy.cert);
+	X509_free(x);
 
 	if (xchain) {		
 		/* Send the chain, one cert at a time */

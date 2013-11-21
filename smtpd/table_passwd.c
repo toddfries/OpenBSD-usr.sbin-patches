@@ -1,4 +1,4 @@
-/*	$OpenBSD: table_passwd.c,v 1.2 2013/07/22 13:14:49 eric Exp $	*/
+/*	$OpenBSD: table_passwd.c,v 1.5 2013/11/18 11:47:16 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Gilles Chehade <gilles@poolp.org>
@@ -81,12 +81,11 @@ static int
 table_passwd_update(void)
 {
 	FILE	       *fp;
-	char	       *buf, *lbuf;
+	char	       *buf, *lbuf = NULL;
 	size_t		len;
 	char	       *line;
 	struct passwd	pw;
 	struct dict    *npasswd;
-
 
 	/* Parse configuration */
 	fp = fopen(config, "r");
@@ -99,7 +98,6 @@ table_passwd_update(void)
 
 	dict_init(npasswd);
 
-	lbuf = NULL;
 	while ((buf = fgetln(fp, &len))) {
 		if (buf[len - 1] == '\n')
 			buf[len - 1] = '\0';
@@ -120,20 +118,27 @@ table_passwd_update(void)
 		dict_set(npasswd, pw.pw_name, line);
 	}
 	free(lbuf);
+	fclose(fp);
 
 	/* swap passwd table and release old one*/
 	if (passwd)
-		while (dict_poproot(passwd, NULL, (void**)&buf))
+		while (dict_poproot(passwd, (void**)&buf))
 			free(buf);
 	passwd = npasswd;
 
 	return (1);
 
 err:
+	if (fp)
+		fclose(fp);
+	free(lbuf);
+
 	/* release passwd table */
-	if (npasswd)
-		while (dict_poproot(npasswd, NULL, (void**)&buf))
+	if (npasswd) {
+		while (dict_poproot(npasswd, (void**)&buf))
 			free(buf);
+		free(npasswd);
+	}
 	return (0);
 }
 
@@ -169,7 +174,7 @@ table_passwd_lookup(int service, const char *key, char *dst, size_t sz)
 		}
 		break;
 	case K_USERINFO:
-		if (snprintf(dst, sz, "%i:%i:%s",
+		if (snprintf(dst, sz, "%d:%d:%s",
 			pw.pw_uid, pw.pw_gid, pw.pw_dir)
 		    > (ssize_t)sz) {
 			log_warnx("warn: table-passwd: result too large");
@@ -177,7 +182,7 @@ table_passwd_lookup(int service, const char *key, char *dst, size_t sz)
 		}
 		break;
 	default:
-		log_warnx("warn: table-passwd: unknown service %i",
+		log_warnx("warn: table-passwd: unknown service %d",
 		    service);
 		r = -1;
 	}
@@ -250,7 +255,7 @@ parse_passwd_entry(struct passwd *pw, const char *line)
 
 	/* shell */
 	q = p;
-	if ((p = strchr(q, ':')) != NULL)
+	if (strchr(q, ':') != NULL)
 		return 0;
 	pw->pw_shell = q;
 
