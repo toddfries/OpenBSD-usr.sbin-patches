@@ -1,4 +1,4 @@
-/*	$OpenBSD: enqueue.c,v 1.69 2013/10/25 21:31:23 eric Exp $	*/
+/*	$OpenBSD: enqueue.c,v 1.74 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2005 Henning Brauer <henning@bulabula.org>
@@ -26,6 +26,7 @@
 
 #include <ctype.h>
 #include <err.h>
+#include <errno.h>
 #include <event.h>
 #include <imsg.h>
 #include <inttypes.h>
@@ -146,7 +147,7 @@ qp_encoded_write(FILE *fp, char *buf, size_t len)
 			else
 				fprintf(fp, "%c", *buf & 0xff);
 		}
-		else if (! isprint(*buf) && *buf != '\n')
+		else if (! isprint((unsigned char)*buf) && *buf != '\n')
 			fprintf(fp, "=%2X", *buf & 0xff);
 		else
 			fprintf(fp, "%c", *buf);
@@ -171,7 +172,7 @@ enqueue(int argc, char *argv[])
 	int			 save_argc;
 	char			**save_argv;
 
-	bzero(&msg, sizeof(msg));
+	memset(&msg, 0, sizeof(msg));
 	time(&timestamp);
 
 	save_argc = argc;
@@ -316,7 +317,7 @@ enqueue(int argc, char *argv[])
 	}
 	if (!msg.saw_user_agent)
 		send_line(fout, 0, "User-Agent: %s enqueuer (%s)\n",
-		    SMTPD_NAME, "Demoosh");
+		    SMTPD_NAME, "Demoostik");
 
 	/* add separating newline */
 	if (noheader)
@@ -466,7 +467,7 @@ build_from(char *fake_from, struct passwd *pw)
 			    pw->pw_name,
 			    len - apos - 1, p + 1) == -1)
 				err(1, NULL);
-			msg.fromname[apos] = toupper(msg.fromname[apos]);
+			msg.fromname[apos] = toupper((unsigned char)msg.fromname[apos]);
 		} else {
 			if (asprintf(&msg.fromname, "%.*s", len,
 			    pw->pw_gecos) == -1)
@@ -483,7 +484,7 @@ parse_message(FILE *fin, int get_from, int tflag, FILE *fout)
 	uint	 i, cur = HDR_NONE;
 	uint	 header_seen = 0, header_done = 0;
 
-	bzero(&pstate, sizeof(pstate));
+	memset(&pstate, 0, sizeof(pstate));
 	for (;;) {
 		buf = fgetln(fin, &len);
 		if (buf == NULL && ferror(fin))
@@ -705,7 +706,7 @@ open_connection(void)
 	imsg_compose(ibuf, IMSG_SMTP_ENQUEUE_FD, IMSG_VERSION, 0, -1, NULL, 0);
 
 	while (ibuf->w.queued)
-		if (msgbuf_write(&ibuf->w) < 0)
+		if (msgbuf_write(&ibuf->w) < 0 && errno != EAGAIN)
 			err(1, "write error");
 
 	while (1) {

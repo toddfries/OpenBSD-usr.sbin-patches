@@ -1,8 +1,8 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgInfo.pm,v 1.27 2013/01/18 21:19:36 espie Exp $
+# $OpenBSD: PkgInfo.pm,v 1.30 2014/01/09 20:20:01 espie Exp $
 #
-# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -123,7 +123,7 @@ sub print_description
 	my $_;
 
 	open my $fh, '<', $dir.DESC or return;
-	$_ = <$fh> unless -f $dir.COMMENT;
+	$_ = <$fh>; # zap COMMENT
 	while(<$fh>) {
 		chomp;
 		$state->say("#1", $_);
@@ -239,7 +239,7 @@ sub get_line
 sub get_comment
 {
 	my $d = shift;
-	return get_line(-f $d.COMMENT? $d.COMMENT : $d.DESC);
+	return get_line($d.DESC);
 }
 
 sub find_by_spec
@@ -424,10 +424,15 @@ sub print_info
 		if ($state->opt('C')) {
 			$state->header($handle);
 			if ($plist->is_signed) {
-
-				require OpenBSD::x509;
-				$state->banner("Certificate info:");
-				OpenBSD::x509::print_certificate_info($plist);
+				my $sig = $plist->get('digital-signature');
+				if ($sig->{key} eq 'x509') {
+					require OpenBSD::x509;
+					$state->banner("Certificate info:");
+					OpenBSD::x509::print_certificate_info($plist);
+				} elsif ($sig->{key} eq 'signify') {
+					$state->say("reportedly signed by #1", 
+					    $plist->get('signer')->name);
+				}
 			} else {
 				$state->banner("No digital signature");
 			}

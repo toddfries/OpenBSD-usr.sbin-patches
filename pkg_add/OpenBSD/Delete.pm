@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.120 2013/09/24 21:00:57 espie Exp $
+# $OpenBSD: Delete.pm,v 1.127 2014/01/10 16:05:31 espie Exp $
 #
-# Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -104,11 +104,11 @@ sub delete_package
 		$state->fatal("Package real name #1 does not match #2",
 			$plist->pkgname, $pkgname);
 	}
-	if ($plist->is_signed) {
-		if (!$state->{quick}) {
-			require OpenBSD::x509;
-			if (!OpenBSD::x509::check_signature($plist, $state)) {
-				$state->fatal("package #1 was corrupted: signature check failed", $pkgname);
+	if ($plist->has('firmware')) {
+		if ($state->{interactive}) {
+			if (!$state->confirm("\nDelete firmware $pkgname", 0)) {
+				$state->errsay("NOT deleting #1", $pkgname);
+				return;
 			}
 		}
 	}
@@ -148,7 +148,6 @@ sub delete_plist
 
 	my $pkgname = $plist->pkgname;
 	$state->{pkgname} = $pkgname;
-	$ENV{'PKG_PREFIX'} = $plist->localbase;
 	if (!$state->{size_only}) {
 		$plist->register_manpage($state);
 		manpages_unindex($state);
@@ -358,14 +357,14 @@ package OpenBSD::PackingElement::UnexecDelete;
 sub should_run
 {
 	my ($self, $state) = @_;
-	return !$state->{replacing};
+	return !$state->replacing;
 }
 
 package OpenBSD::PackingElement::UnexecUpdate;
 sub should_run
 {
 	my ($self, $state) = @_;
-	return $state->{replacing};
+	return $state->replacing;
 }
 
 package OpenBSD::PackingElement::FileBase;
@@ -454,7 +453,7 @@ sub copy_old_stuff
 
 	if (defined $self->{stillaround}) {
 		delete $self->{stillaround};
-		if ($state->{replacing}) {
+		if ($state->replacing) {
 			$self->rename_file_to_temp($state);
 		}
 		$self->add_object($plist);
@@ -477,9 +476,6 @@ sub prepare_for_deletion
 	return unless defined $s;
 	if ($s->ro) {
 		$s->report_ro($state, $fname);
-	}
-	if ($s->noexec && $self->exec_on_delete) {
-		$s->report_noexec($state, $fname);
 	}
 }
 
@@ -522,7 +518,7 @@ sub delete
 	if (!defined $orig) {
 		$state->fatal("\@sample element does not reference a valid file");
 	}
-	my $action = $state->{replacing} ? "check" : "remove";
+	my $action = $state->replacing ? "check" : "remove";
 	my $origname = $orig->realname($state);
 	if (! -e $realname) {
 		$state->log("File #1 does not exist", $realname);
@@ -620,7 +616,7 @@ sub delete
 	}
 	return if $state->{not};
 	return unless -e $realname or -l $realname;
-	if ($state->{replacing}) {
+	if ($state->replacing) {
 		$state->log("Remember to update #1", $realname);
 		$self->mark_dir($state);
 	} elsif ($state->{extra}) {
@@ -639,7 +635,7 @@ sub delete
 	my ($self, $state) = @_;
 	return unless $state->{extra};
 	my $realname = $self->realname($state);
-	return if $state->{replacing};
+	return if $state->replacing;
 	if ($state->{extra}) {
 		$self->SUPER::delete($state);
 	} else {

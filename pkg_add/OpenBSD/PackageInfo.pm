@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageInfo.pm,v 1.56 2011/08/23 10:32:27 espie Exp $
+# $OpenBSD: PackageInfo.pm,v 1.60 2014/01/11 11:51:01 espie Exp $
 #
-# Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -23,14 +23,13 @@ require Exporter;
 our @ISA=qw(Exporter);
 our @EXPORT=qw(installed_packages installed_info installed_name info_names is_info_name installed_stems
     lock_db unlock_db
-    add_installed delete_installed is_installed borked_package CONTENTS COMMENT DESC
-    REQUIRED_BY REQUIRING DISPLAY UNDISPLAY);
+    add_installed delete_installed is_installed borked_package 
+    CONTENTS DESC REQUIRED_BY REQUIRING DISPLAY UNDISPLAY);
 
 use OpenBSD::PackageName;
 use OpenBSD::Paths;
 use constant {
 	CONTENTS => '+CONTENTS',
-	COMMENT => '+COMMENT',
 	DESC => '+DESC',
 	REQUIRED_BY => '+REQUIRED_BY',
 	REQUIRING => '+REQUIRING',
@@ -42,7 +41,7 @@ my $pkg_db = $ENV{"PKG_DBDIR"} || OpenBSD::Paths->pkgdb;
 
 my ($list, $stemlist);
 
-our @info = (CONTENTS, COMMENT, DESC, REQUIRED_BY, REQUIRING, DISPLAY, UNDISPLAY);
+our @info = (CONTENTS, DESC, REQUIRED_BY, REQUIRING, DISPLAY, UNDISPLAY);
 
 our %info = ();
 for my $i (@info) {

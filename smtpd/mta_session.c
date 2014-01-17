@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.47 2013/11/18 12:24:26 eric Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.50 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -98,12 +98,6 @@ enum mta_state {
 #define MTA_EXT_AUTH_LOGIN     	0x10
 
 
-struct failed_evp {
-	int			 delivery;
-	char			 error[SMTPD_MAXLINESIZE];
-	struct mta_envelope     *evp;
-};
-
 struct mta_session {
 	uint64_t		 id;
 	struct mta_relay	*relay;
@@ -133,7 +127,7 @@ struct mta_session {
 	FILE			*datafp;
 
 #define	MAX_FAILED_ENVELOPES	15
-	struct failed_evp	 failed[MAX_FAILED_ENVELOPES];
+	struct mta_envelope	*failed[MAX_FAILED_ENVELOPES];
 	int			 failedcount;
 };
 
@@ -354,8 +348,8 @@ mta_session_imsg(struct mproc *p, struct imsg *imsg)
 			fatal("mta: ssl_mta_init");
 		io_start_tls(&s->io, ssl);
 
-		bzero(resp_ca_cert->cert, resp_ca_cert->cert_len);
-		bzero(resp_ca_cert->key, resp_ca_cert->key_len);
+		memset(resp_ca_cert->cert, 0, resp_ca_cert->cert_len);
+		memset(resp_ca_cert->key, 0, resp_ca_cert->key_len);
 		free(resp_ca_cert->cert);
 		free(resp_ca_cert->key);
 		free(resp_ca_cert);
@@ -682,23 +676,23 @@ mta_enter_state(struct mta_session *s, int newstate)
 		break;
 
 	case MTA_AUTH_LOGIN_USER:
-		bzero(ibuf, sizeof ibuf);
+		memset(ibuf, 0, sizeof ibuf);
 		if (__b64_pton(s->relay->secret, (unsigned char *)ibuf, sizeof(ibuf)-1) == -1) {
 			log_debug("debug: mta: %p: credentials too large on session", s);
 			mta_error(s, "Credentials too large");
 			break;
 		}
 
-		bzero(obuf, sizeof obuf);
+		memset(obuf, 0, sizeof obuf);
 		__b64_ntop((unsigned char *)ibuf + 1, strlen(ibuf + 1), obuf, sizeof obuf);
 		mta_send(s, "%s", obuf);
 
-		bzero(ibuf, sizeof ibuf);
-		bzero(obuf, sizeof obuf);
+		memset(ibuf, 0, sizeof ibuf);
+		memset(obuf, 0, sizeof obuf);
 		break;
 
 	case MTA_AUTH_LOGIN_PASS:
-		bzero(ibuf, sizeof ibuf);
+		memset(ibuf, 0, sizeof ibuf);
 		if (__b64_pton(s->relay->secret, (unsigned char *)ibuf, sizeof(ibuf)-1) == -1) {
 			log_debug("debug: mta: %p: credentials too large on session", s);
 			mta_error(s, "Credentials too large");
@@ -706,12 +700,12 @@ mta_enter_state(struct mta_session *s, int newstate)
 		}
 
 		offset = strlen(ibuf+1)+2;
-		bzero(obuf, sizeof obuf);
+		memset(obuf, 0, sizeof obuf);
 		__b64_ntop((unsigned char *)ibuf + offset, strlen(ibuf + offset), obuf, sizeof obuf);
 		mta_send(s, "%s", obuf);
 
-		bzero(ibuf, sizeof ibuf);
-		bzero(obuf, sizeof obuf);
+		memset(ibuf, 0, sizeof ibuf);
+		memset(obuf, 0, sizeof obuf);
 		break;
 
 	case MTA_READY:
@@ -842,7 +836,6 @@ static void
 mta_response(struct mta_session *s, char *line)
 {
 	struct mta_envelope	*e;
-	struct failed_evp	*fevp;
 	struct sockaddr_storage	 ss;
 	struct sockaddr		*sa;
 	const char		*domain;
@@ -1007,11 +1000,7 @@ mta_response(struct mta_session *s, char *line)
 				    buf, delivery, line);
 
 			/* push failed envelope to the session fail queue */
-			e->delivery = delivery;
-			fevp = &s->failed[s->failedcount];
-			fevp->delivery = delivery;
-			fevp->evp = e;
-			strlcpy(fevp->error, line, sizeof fevp->error);
+			s->failed[s->failedcount] = e;
 			s->failedcount++;
 
 			/*
@@ -1368,10 +1357,12 @@ mta_flush_task(struct mta_session *s, int delivery, const char *error, size_t co
 		sa = (struct sockaddr *)&ss;
 		sa_len = sizeof(ss);
 		if (getsockname(s->io.sock, sa, &sa_len) < 0)
-			mta_delivery(e, NULL, relay, delivery, error, 0);
+			mta_delivery_log(e, NULL, relay, delivery, error);
 		else
-			mta_delivery(e, sa_to_text(sa),
-			    relay, delivery, error, 0);
+			mta_delivery_log(e, sa_to_text(sa),
+			    relay, delivery, error);
+
+		mta_delivery_notify(e, 0);
 
 		domain = strchr(e->dest, '@');
 		if (domain) {
@@ -1380,9 +1371,6 @@ mta_flush_task(struct mta_session *s, int delivery, const char *error, size_t co
 				mta_hoststat_cache(domain + 1, e->id);
 		}
 
-		free(e->dest);
-		free(e->rcpt);
-		free(e);
 		n++;
 	}
 
@@ -1404,25 +1392,21 @@ static void
 mta_flush_failedqueue(struct mta_session *s)
 {
 	int			 i;
-	struct failed_evp	*fevp;
 	struct mta_envelope	*e;
 	const char		*domain;
 	uint32_t		 penalty;
 
 	penalty = s->failedcount == MAX_FAILED_ENVELOPES ? 1 : 0;
 	for (i = 0; i < s->failedcount; ++i) {
-		fevp = &s->failed[i];
-		e = fevp->evp;
-		mta_delivery_notify(e, fevp->delivery, fevp->error, penalty);
+		e = s->failed[i];
 
 		domain = strchr(e->dest, '@');
 		if (domain)
-			mta_hoststat_update(domain + 1, fevp->error);
+			mta_hoststat_update(domain + 1, e->status);
 
-		free(e->dest);
-		free(e->rcpt);
-		free(e);
+		mta_delivery_notify(e, penalty);
 	}
+
 	s->failedcount = 0;
 }
 
@@ -1484,7 +1468,7 @@ mta_check_loop(FILE *fp)
 			buf = lbuf;
 		}
 
-		if (strchr(buf, ':') == NULL && !isspace((int)*buf))
+		if (strchr(buf, ':') == NULL && !isspace((unsigned char)*buf))
 			break;
 
 		if (strncasecmp("Received: ", buf, 10) == 0) {
@@ -1553,7 +1537,7 @@ mta_verify_certificate(struct mta_session *s)
 	s->flags |= MTA_WAIT;
 
 	/* Send the client certificate */
-	bzero(&req_ca_vrfy, sizeof req_ca_vrfy);
+	memset(&req_ca_vrfy, 0, sizeof req_ca_vrfy);
 	if (s->relay->cert)
 		pkiname = s->relay->cert;
 	else
@@ -1578,7 +1562,7 @@ mta_verify_certificate(struct mta_session *s)
 	if (xchain) {		
 		/* Send the chain, one cert at a time */
 		for (i = 0; i < sk_X509_num(xchain); ++i) {
-			bzero(&req_ca_vrfy, sizeof req_ca_vrfy);
+			memset(&req_ca_vrfy, 0, sizeof req_ca_vrfy);
 			req_ca_vrfy.reqid = s->id;
 			x = sk_X509_value(xchain, i);
 			req_ca_vrfy.cert_len = i2d_X509(x, &req_ca_vrfy.cert);
@@ -1593,7 +1577,7 @@ mta_verify_certificate(struct mta_session *s)
 	}
 
 	/* Tell lookup process that it can start verifying, we're done */
-	bzero(&req_ca_vrfy, sizeof req_ca_vrfy);
+	memset(&req_ca_vrfy, 0, sizeof req_ca_vrfy);
 	req_ca_vrfy.reqid = s->id;
 	m_compose(p_lka, IMSG_LKA_SSL_VERIFY, 0, 0, -1,
 	    &req_ca_vrfy, sizeof req_ca_vrfy);

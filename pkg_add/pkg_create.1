@@ -1,4 +1,4 @@
-.\"	$OpenBSD: pkg_create.1,v 1.82 2012/06/08 15:15:58 espie Exp $
+.\"	$OpenBSD: pkg_create.1,v 1.94 2014/01/17 11:09:36 espie Exp $
 .\"
 .\" Documentation and design originally from FreeBSD. All the code has
 .\" been rewritten since. We keep the documentation's notice:
@@ -21,7 +21,7 @@
 .\" [jkh] Took John's changes back and made some additional extensions for
 .\" better integration with FreeBSD's new ports collection.
 .\"
-.Dd $Mdocdate: June 8 2012 $
+.Dd $Mdocdate: January 17 2014 $
 .Dt PKG_CREATE 1
 .Os
 .Sh NAME
@@ -36,10 +36,10 @@
 .Op Fl D Ar name Ns Op = Ns Ar value
 .Op Fl L Ar localbase
 .Op Fl M Ar displayfile
-.Op Fl P Ar pkg-dependency
+.Op Fl P Ar pkgpath Ns : Ns Ar pkgspec Ns : Ns Ar default
 .Op Fl s Ar signature-parameter
 .Op Fl U Ar undisplayfile
-.Op Fl W Ar wantedlib
+.Op Fl W Ar libspec
 .Fl d Ar desc
 .Fl D Ar COMMENT Ns = Ns Ar value
 .Fl D Ar PORTSDIR Ns = Ns Ar value
@@ -50,10 +50,16 @@
 .Nm pkg_create
 .Op Fl s Ar signature-parameter
 .Fl f Ar packinglist
+.Nm pkg_create
+.Fl s Ar signature-parameter ...
+.Op Fl j Ar maxjobs
+.Op Fl o Ar dir
+.Op Fl S Ar source
+.Op Ar pkgfile ...
 .Sh DESCRIPTION
 The
 .Nm
-command creates a binary package named
+command is normally used to create a binary package named
 .Ar pkg-name ,
 for subsequent use with
 .Xr pkg_add 1 ,
@@ -74,6 +80,9 @@ infrastructure instead of manual
 .Nm
 invocation is strongly recommended.
 .Pp
+It can also be used to recreate a binary package from an existing installation
+(second synopsis) or to sign a collection of built packages (third synopsis).
+.Pp
 During package creation,
 .Nm
 replaces too long file names with smaller equivalents
@@ -85,14 +94,10 @@ records extra information in the packing-list, such as the existence
 of symlinks and hard links, computes and stores file checksums, and
 verifies that all special objects are properly annotated in the packing-list.
 .Pp
-It will also check all
-.Cm @wantlib
-for reachability, by looking into all installed
-.Cm @depend .
+It will also check all required shared libraries
+for reachability, by looking into all installed dependencies.
 It may also ask the ports tree for extra dependencies,
-provided some other
-.Cm @depend
-refers to the same
+provided some other dependency refers to the same
 .Ev BASE_PKGPATH
 .Po
 see
@@ -100,9 +105,7 @@ see
 .Pc .
 The rationale is that those libraries must already be present for
 the package to build correctly, and thus be reachable through the
-subset of
-.Cm @depend
-that are not pure
+subset of dependencies that are not pure
 .Ev RUN_DEPENDS .
 .Pp
 The options are as follows:
@@ -139,6 +142,9 @@ Set to the port's Makefile
 Set package
 .Dq one line description
 (mandatory).
+.It Ar HISTORY_DIR
+Record checksums of files in permanent location
+.Pa ${HISTORY_DIR}/${FULLPKGPATH:S,/,./g} .
 .It Ar FTP
 Set to the port's Makefile
 .Ar PERMIT_PACKAGE_FTP .
@@ -148,6 +154,15 @@ Strongly recommended, otherwise updates won't work.
 If defined, appended to the description.
 .It Ar MAINTAINER
 If defined, appended to the description.
+.It Ar resign
+Allows signing over already signed packages.
+Obviously, this checks the existing signature first,
+so the
+.Fl D Ar SIGNER
+and
+.Fl D Ar nosig
+apply with the same semantics as
+.Xr pkg_add 1 .
 .It Ar USE_GROFF
 Set to 1 to have groff format manpages behind the scenes during
 package creation.
@@ -165,12 +180,16 @@ for package from the file
 .Ar packinglist .
 Several packing-lists can be mentioned, in which case they will be
 concatenated together.
+.It Fl j Ar maxjobs
+Sign existing packages in parallel.
 .It Fl L Ar localbase
 Record
 .Ar localbase
-as the localbase used in the package.
+as the localbase used in the package
+.Po
 By default,
-.Pa /usr/local .
+.Pa /usr/local
+.Pc .
 Packages built with another localbase can only be installed by using
 the same localbase in
 .Xr pkg_add 1 ,
@@ -187,10 +206,25 @@ Causes
 to always display the progress meter in cases it would not do so by default.
 .It Fl n
 Don't actually create a package.
-.It Fl P Ar pkg-dependency
-Specify a
-.Cm @depend
-dependency on the command line.
+.It Fl o Ar dir
+Specify output directory for signing packages after the fact.
+Otherwise, unsigned packages will be replaced with signed packages.
+.It Fl P Ar pkgpath Ns : Ns Ar pkgspec Ns : Ns Ar default
+Declare a dependency on a package matching
+.Ar pkgspec
+.Pq see Xr packages-specs 7 .
+An appropriate package must be installed before this package may be
+installed, and that package must be deinstalled before this package
+is deinstalled.
+The dependency also contains a
+.Ar pkgpath
+.Po
+see
+.Xr pkgpath 7
+.Pc
+and a
+.Ar default
+package name, in case there is no listing of available packages.
 .It Fl p Ar prefix
 Set
 .Ar prefix
@@ -207,28 +241,55 @@ Print out the actual packing-list of the package being generated
 (query mode).
 Most often used in combination with
 .Fl n .
+.It Fl S Ar source
+Source repository for packages to be signed.
+This can be any url admissible for a
+.Ev PKG_PATH ,
+so that it is possible to sign packages during a transfer, e.g.,
+.Bd -literal -offset indent
+pkg_create -s signify -s mykey-pkg.sec \e
+	-o output -S scp://build-machine/packages/
+.Ed
 .It Xo
-.Fl s Ar x509
-.Fl s Ar cert
+.Fl s Ar signify|x509
+.Op Fl s Ar cert
 .Fl s Ar privkey
 .Xc
 Specify signature parameters for signed packages.
-For now, the only supported use involves three
-.Fl s
-options:
-.Ar x509
-to indicate X.509-style signatures,
-.Ar cert
-the path to the signer's certificate
-and
-.Ar privkey
+Option parameters are as follows:
+.Bl -tag -width ArsignifyDx509 -compact
+.It Ar signify|x509
+choose
+.Xr signify 1
+or X.509-style signatures.
+.It Ar cert
+the path to the signer's certificate (X.509 only)
+.It Ar privkey
 the path to the signer's private key.
-The signer's certificate and the signer's private key should be generated
-using standard openssl x509 commands.
+For
+.Xr signify ,
+the private key name is used to set the
+.Cm \@signer
+annotation.
+If a corresponding public key is found, the first signatures will be
+checked for key mismatches.
+.El
+.Pp
+For X.509, the signer's certificate and the signer's private key
+should be generated using standard openssl x509 commands.
 This assumes the existence of a certificate authority (or several), whose
 public information is recorded as a
 .Pa /etc/ssl/pkgca.pem
 file.
+.Pp
+For
+.Xr signify 1
+private usage, a
+.Ar SIGNER
+must be specified, so that
+.Xr pkg_add 1
+will be able to retrieve the correct public key from
+.Pa /etc/signify/<signer>.pub .
 .It Fl U Ar undisplayfile
 Display the file (using
 .Xr more 1 )
@@ -236,10 +297,26 @@ when deinstalling the package.
 Useful for reminders about stuff to clean up.
 .It Fl v
 Turn on verbose output.
-.It Fl W Ar wantedlib
-Specify a
-.Cm @wantlib
-requirement on the command line.
+.It Fl W Ar libspec
+Package needs a shared library to work.
+.Ar libspec
+is
+.Sq name.major.minor
+or
+.Sq path/name.major.minor .
+The package won't be installed unless a library with the same name,
+the exact same major number and at least the same minor number can
+be located.
+A library without path is searched through dependent packages under the
+same
+.Ar localbase ,
+then in the system libraries under
+.Pa /usr/lib
+and
+.Pa /usr/X11R6/lib .
+A library with a path is only searched through dependent packages,
+that path being relative to
+.Ar localbase .
 .It Fl x
 Disable progress meter.
 .El
@@ -268,10 +345,10 @@ next section.
 .Pp
 Directory names are denoted by a trailing slash.
 .Pp
-There are a few annotations that can be inserted for better control.
+There are some annotations that can be inserted for better control.
 All these commands start with an
 .Sq @ .
-Here is a list:
+The following annotations can be inserted manually:
 .Pp
 .Bl -tag -width Ds -compact
 .It Cm @ask-update Ar pkgspec Ar message
@@ -296,9 +373,6 @@ Classical use case for postgresql:
 .Pp
 Use very sparingly.
 Most cases that seem to require manual updates just require a bit more thought.
-.Pp
-.It Cm @arch Ar arches
-List of architectures for which this package is intended.
 .Pp
 .It Cm @bin Ar filename
 Describe the file as an
@@ -338,30 +412,6 @@ Set the package current directory.
 All subsequent filenames will be assumed relative to
 .Ar pathname .
 .Pp
-.It Xo
-.Cm @depend
-.Sm off
-.Ar pkgpath :
-.Ar pkgspec :
-.Ar default
-.Sm on
-.Xc
-Declare a dependency on a package matching
-.Ar pkgspec
-.Pq see Xr packages-specs 7 .
-An appropriate package must be installed before this package may be
-installed, and that package must be deinstalled before this package
-is deinstalled.
-The dependency also contains a
-.Ar pkgpath
-.Po
-see
-.Xr pkgpath 7
-.Pc
-and a
-.Ar default
-package name, in case there is no listing of available packages.
-.Pp
 .It Cm @dir Ar directoryname
 Create directory
 .Pa directoryname
@@ -379,13 +429,6 @@ If
 .Ar name
 does not begin with an @, same as
 .Dl name/
-.Pp
-.It Cm @display Ar name
-Declare
-.Pa name
-as the file to be displayed at install time (see
-.Fl M
-above).
 .Pp
 .It Cm @endfake
 Mark end of packing-list for
@@ -407,6 +450,19 @@ Some special elements, such as new users and new groups, are always
 created first, so that
 .Cm @exec
 can rely on them.
+.Pp
+.Xr pkg_add 1
+and
+.Xr pkg_delete 1
+set the
+.Ev PATH
+to a predictable value:
+.Bd -literal -offset indent
+/bin:/sbin:/usr/bin:/usr/sbin:/usr/X11R6/bin:${LOCALBASE}/bin:${LOCALBASE}/sbin
+.Ed
+.Pp
+during execution.
+.Pp
 If
 .Ar command
 contains any of the following sequences somewhere in it, they will
@@ -509,10 +565,6 @@ Set default group ownership for all subsequently extracted files to
 Use without an arg to set back to default (extraction)
 group ownership.
 .Pp
-.It Cm @ignore
-Was used internally to tell extraction to ignore the next file.
-No longer needed.
-.Pp
 .It Cm @info Ar filename
 Specialized version of
 .Cm @file ,
@@ -535,16 +587,6 @@ See
 .Sq VARIABLE SUBSTITUTION AND FRAGMENT INCLUSION
 for some details.
 .Pp
-.It Cm @link Ar name
-Added after a file entry by
-.Nm
-to record that the entry is actually a hard link.
-.Pp
-.It Cm @localbase Ar base
-Used internally to record the settings of
-.Fl L
-option.
-.Pp
 .It Cm @man Ar filename
 Specialized version of
 .Cm @file ,
@@ -560,15 +602,6 @@ remove
 .Xr apropos 1
 database when needed.
 .Pp
-.It Cm @md5
-Added after a file entry by
-.Nm
-to record the files's cryptographic checksum.
-Replaced by
-.Cm @sha
-since
-.Ox 4.5 .
-.Pp
 .It Cm @mode Ar mode
 Set default permission for all subsequently extracted files to
 .Ar mode .
@@ -576,16 +609,6 @@ Format is the same as that used by the
 .Xr chmod 1
 command.
 Use without an arg to set back to default (extraction) permissions.
-.Pp
-.It Cm @name Ar pkgname
-Set the name of the package.
-This name is potentially different than the name of
-the file it came in, and is used when keeping track of the package
-for later deinstallation.
-Note that
-.Nm
-will derive this field from the package name and add it automatically
-if none is given.
 .Pp
 .It Cm @newgroup Ar name : Ns Ar gid
 During
@@ -638,7 +661,7 @@ other installed packages don't list the same user.
 .It Cm @option Ar name
 Effects vary depending on
 .Ar name .
-Some options are not documented yet.
+These are the user settable options
 .Bl -tag -width indent
 .It Ar always-update
 By default,
@@ -647,12 +670,6 @@ uses some simplified information to decide whether an installed package
 needs updating.
 With this option, the package is updated whenever anything changes.
 To be used sparingly, as this is more expensive.
-.It Ar explicit-update
-packages tagged with this option, either in the installed version or in an
-update candidate, won't be considered during a global update.
-User has to explicitly ask to update them.
-Typical use is for firmware packages, whose updates are usually tied to
-kernel changes.
 .It Ar no-default-conflict
 By default, a package conflicts with other versions of the same package.
 With this option, the older package version will still be noticed, but the
@@ -776,28 +793,12 @@ If
 ends with a slash,
 it refers to a configuration directory instead.
 .Pp
-.It Cm @sha
-Added after a file entry by
-.Nm
-to record the files's cryptographic checksum,
-as a sha256 digest encoded in base64.
-.Pp
 .It Cm @shell Ar filename
 Specialized version of
 .Cm @file ,
 to handle shells.
 See
 .Xr shells 5 .
-.Pp
-.It Cm @size
-Added after a file entry by
-.Nm
-to record a file size.
-.Pp
-.It Cm @symlink Ar name
-Added after a file entry by
-.Nm
-to record that the entry is actually a symbolic link.
 .Pp
 .It Cm @sysctl Ar var Ns = Ns Ar val
 .It Cm @sysctl Ar var Ns \*(Ge Ns Ar val
@@ -816,9 +817,10 @@ Execute
 .Ar command
 during
 .Xr pkg_delete 1 .
-Expansion of special
+.Ev PATH
+and expansion of special
 .Cm \&%
-sequences is the same as for
+sequences are the same as for
 .Cm @exec .
 Note that
 .Cm @unexec
@@ -845,33 +847,12 @@ Similar to
 .Cm @unexec ,
 except it only gets executed while removing an old package during updates,
 and not during true deletions.
-.Pp
-.It Cm @url
-Original location of the package, automatically recorded in installed packages
-by
-.Xr pkg_add 1 .
-.Pp
-.It Cm @wantlib Ar libspec
-Package needs a shared library to work.
-.Ar libspec
-is
-.Sq name.major.minor
-or
-.Sq path/name.major.minor .
-The package won't be installed unless a library with the same name,
-the exact same major number and at least the same minor number can
-be located.
-A library without path is searched through dependent packages under the
-same
-.Ar localbase ,
-then in the system libraries under
-.Pa /usr/lib
-and
-.Pa /usr/X11R6/lib .
-A library with a path is only searched through dependent packages,
-that path being relative to
-.Ar localbase .
 .El
+.Pp
+See
+.Xr package 5
+for other internal annotations that are automatically added by the
+package tools.
 .Sh VARIABLE SUBSTITUTION AND FRAGMENT INCLUSION
 In packing-lists, installation, deinstallation and requirement scripts,
 description and message files,
@@ -989,6 +970,7 @@ option is specified.
 .Xr pkg_add 1 ,
 .Xr pkg_delete 1 ,
 .Xr pkg_info 1 ,
+.Xr signify 1 ,
 .Xr tar 1 ,
 .Xr bsd.port.mk 5 ,
 .Xr package 5 ,

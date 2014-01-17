@@ -1,4 +1,4 @@
-/*	$OpenBSD: cmds.c,v 1.24 2012/11/29 02:15:44 guenther Exp $	*/
+/*	$OpenBSD: cmds.c,v 1.26 2013/12/29 14:26:22 krw Exp $	*/
 /*	$NetBSD: cmds.c,v 1.12 1997/10/05 15:12:06 mrg Exp $	*/
 
 /*
@@ -197,6 +197,8 @@ upstat(char *msg)
 	fd = safe_open(statfile, O_WRONLY|O_CREAT|O_NOFOLLOW, 0660);
 	if (fd < 0 || flock(fd, LOCK_EX) < 0) {
 		printf("\tcannot create status file\n");
+		if (fd >= 0)
+			(void)close(fd);	/* unlocks as well */
 		return;
 	}
 	(void)fchown(fd, DEFUID, -1);
@@ -593,6 +595,8 @@ putmsg(int argc, char **argv)
 	fd = safe_open(line, O_WRONLY|O_CREAT|O_NOFOLLOW, 0660);
 	if (fd < 0 || flock(fd, LOCK_EX) < 0) {
 		printf("\tcannot create status file\n");
+		if (fd >= 0)
+			(void)close(fd);	/* unlocks as well */
 		PRIV_END;
 		return;
 	}
@@ -838,8 +842,9 @@ prstat(void)
 	fd = safe_open(line, O_RDONLY|O_NOFOLLOW, 0);
 	PRIV_END;
 	if (fd < 0 || flock(fd, LOCK_SH|LOCK_NB) == 0) {
-		(void)close(fd);	/* unlocks as well */
 		printf("\tprinter idle\n");
+		if (fd >= 0)
+			(void)close(fd);	/* unlocks as well */
 		return;
 	}
 	(void)close(fd);
@@ -1061,14 +1066,14 @@ doarg(char *job)
 	/*
 	 * Check for job specified by number (example: 112 or 235ucbarpa).
 	 */
-	if (isdigit(*job)) {
+	if (isdigit((unsigned char)*job)) {
 		jobnum = 0;
 		do
 			jobnum = jobnum * 10 + (*job++ - '0');
-		while (isdigit(*job));
+		while (isdigit((unsigned char)*job));
 		for (qq = queue + nitems; --qq >= queue; ) {
 			n = 0;
-			for (cp = (*qq)->q_name+3; isdigit(*cp); )
+			for (cp = (*qq)->q_name+3; isdigit((unsigned char)*cp); )
 				n = n * 10 + (*cp++ - '0');
 			if (jobnum != n)
 				continue;

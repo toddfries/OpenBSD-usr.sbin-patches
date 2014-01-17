@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.133 2013/02/18 20:24:11 okan Exp $
+# $OpenBSD: Add.pm,v 1.143 2014/01/17 15:54:06 espie Exp $
 #
-# Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -102,12 +102,19 @@ sub perform_installation
 {
 	my ($handle, $state) = @_;
 
-	$state->{archive} = $handle->{location};
-	$state->{end_faked} = 0;
-	$handle->{partial} //= {};
-	$state->{partial} = $handle->{partial};
 	$state->progress->visit_with_size($handle->{plist}, 'install', $state);
 	$handle->{location}->finish_and_close;
+}
+
+sub perform_extraction
+{
+	my ($handle, $state) = @_;
+
+	$handle->{partial} = {};
+	$state->{partial} = $handle->{partial};
+	$state->{archive} = $handle->{location};
+	$state->{check_digest} = $handle->{plist}{check_digest};
+	$state->progress->visit_with_size($handle->{plist}, 'extract', $state);
 }
 
 my $user_tagged = {};
@@ -145,6 +152,10 @@ sub tweak_plist_status
 	my ($plist, $state) = @_;
 
 	my $pkgname = $plist->pkgname;
+	if ($state->defines('FW_UPDATE')) {
+		$plist->has('firmware') or
+			OpenBSD::PackingElement::Firmware->add($plist);
+	}
 	return 0 unless $user_tagged->{$pkgname};
 	if (!$plist->has('manual-installation') && !$state->{automatic}) {
 		OpenBSD::PackingElement::ManualInstallation->add($plist);
@@ -170,13 +181,22 @@ sub prepare_for_addition
 {
 }
 
-sub install
+sub extract
 {
 	my ($self, $state) = @_;
+	$state->{partial}->{$self} = 1;
 	if ($state->{interrupted}) {
 		die "Interrupted";
 	}
+}
+
+sub install
+{
+	my ($self, $state) = @_;
 	$state->{partial}->{$self} = 1;
+	if ($state->{interrupted}) {
+		die "Interrupted";
+	}
 }
 
 sub copy_info
@@ -194,12 +214,7 @@ sub set_modes
 			$uidcache = OpenBSD::UidCache->new;
 			$gidcache = OpenBSD::GidCache->new;
 		}
-		my ($uid, $gid);
-		if (-l $name) {
-			($uid, $gid) = (lstat $name)[4,5];
-		} else {
-			($uid, $gid) = (stat $name)[4,5];
-		}
+		my ($uid, $gid) = (-1, -1);
 		if (defined $self->{owner}) {
 			$uid = $uidcache->lookup($self->{owner}, $uid);
 		}
@@ -213,7 +228,8 @@ sub set_modes
 		if ($v =~ m/^\d+$/o) {
 			chmod oct($v), $name;
 		} else {
-			$state->system(OpenBSD::Paths->chmod, $self->{mode}, $name);
+			$state->system(OpenBSD::Paths->chmod, 
+			    $self->{mode}, $name);
 		}
 	}
 }
@@ -348,6 +364,7 @@ package OpenBSD::PackingElement::FileBase;
 use OpenBSD::Error;
 use File::Basename;
 use File::Path;
+use OpenBSD::Temp;
 
 sub prepare_for_addition
 {
@@ -369,53 +386,6 @@ sub prepare_for_addition
 	if ($s->avail < 0) {
 		$s->report_overflow($state, $fname);
 	}
-}
-
-sub install
-{
-	my ($self, $state) = @_;
-	$self->SUPER::install($state);
-	my $fullname = $self->fullname;
-	my $destdir = $state->{destdir};
-	if ($fullname =~ m,^$state->{localbase}/share/doc/pkg-readmes/,) {
-		$state->{readmes}++;
-	}
-
-	if ($state->{extracted_first}) {
-		if ($state->{not}) {
-			$state->say("moving tempfile -> #1",
-			    $destdir.$fullname) if $state->verbose >= 5;
-			return;
-		}
-		File::Path::mkpath(dirname($destdir.$fullname));
-		if (defined $self->{link}) {
-			link($destdir.$self->{link}, $destdir.$fullname);
-		} elsif (defined $self->{symlink}) {
-			symlink($self->{symlink}, $destdir.$fullname);
-		} else {
-			rename($self->{tempname}, $destdir.$fullname) or
-			    $state->fatal("can't move #1 to #2: #3",
-			    	$self->{tempname}, $fullname, $!);
-			$state->say("moving #1 -> #2",
-			    $self->{tempname}, $destdir.$fullname)
-			    	if $state->verbose >= 5;
-			undef $self->{tempname};
-		}
-	} else {
-		my $file = $self->prepare_to_extract($state);
-
-		$state->say("extracting #1", $destdir.$fullname)
-		    if $state->verbose >= 5;
-		if ($state->{not}) {
-			$state->{archive}->skip;
-			return;
-		} else {
-			$file->create;
-			$self->may_check_digest($file, $state);
-
-		}
-	}
-	$self->set_modes($state, $destdir.$fullname);
 }
 
 sub prepare_to_extract
@@ -449,6 +419,9 @@ sub prepare_to_extract
 			$state->fatal("archive hardlink does not match #1 != #2",
 			    $file->{linkname}, $self->{link});
 		}
+	} elsif (!$file->isFile) {
+		$state->fatal("archive content for #1 should be file", 
+		    $self->name);
 	}
 	if (!$file->verify_modes($self)) {
 		$state->fatal("can't continue");
@@ -463,21 +436,106 @@ sub prepare_to_extract
 	return $file;
 }
 
+sub extract
+{
+	my ($self, $state) = @_;
+
+	my $file = $self->prepare_to_extract($state);
+
+	if (defined $self->{link} || defined $self->{symlink}) {
+		$state->{archive}->skip;
+		return;
+	}
+
+	$self->SUPER::extract($state);
+
+	# figure out a safe directory where to put the temp file
+	my $d = dirname($file->{destdir}.$file->name);
+	# we go back up until we find an existing directory.
+	# hopefully this will be on the same file system.
+	while (!-d $d && -e _ || defined $state->{noshadow}->{$d}) {
+		$d = dirname($d);
+	}
+	if ($state->{not}) {
+		$state->say("extracting tempfile under #1", $d)
+		    if $state->verbose >= 3;
+		$state->{archive}->skip;
+	} else {
+		if (!-e _) {
+			File::Path::mkpath($d);
+		}
+		my ($fh, $tempname) = OpenBSD::Temp::permanent_file($d, "pkg");
+		$self->{tempname} = $tempname;
+
+		# XXX don't apply destdir twice
+		$file->{destdir} = '';
+		$file->set_name($tempname);
+
+		if ($self->{tieto}) {
+			my $src = $self->{tieto}->realname($state);
+			unlink($tempname);
+			$state->say("linking #1 to #2", $src, $tempname)
+			    if $state->verbose >= 3;
+			if (link($src, $tempname) ||
+			    $state->copy_file($src, $tempname)) {
+				# we still need to adjust properties
+				$file->set_modes;
+				$state->{archive}->skip;
+				return;
+			}
+			# okay, it didn't work. recreate tempname.
+			open $fh, ">", $tempname;
+		}
+
+		$state->say("extracting #1", $tempname) if $state->verbose >= 3;
+
+		if (!$file->isFile) {
+			$state->fatal("can't extract #1, it's not a file", 
+			    $self->stringize);
+		}
+		$file->create;
+		$self->may_check_digest($file, $state);
+	}
+}
+
+sub install
+{
+	my ($self, $state) = @_;
+	$self->SUPER::install($state);
+	my $fullname = $self->fullname;
+	my $destdir = $state->{destdir};
+	if ($fullname =~ m,^$state->{localbase}/share/doc/pkg-readmes/,) {
+		$state->{readmes}++;
+	}
+
+	if ($state->{not}) {
+		$state->say("moving tempfile -> #1",
+		    $destdir.$fullname) if $state->verbose >= 5;
+		return;
+	}
+	File::Path::mkpath(dirname($destdir.$fullname));
+	if (defined $self->{link}) {
+		link($destdir.$self->{link}, $destdir.$fullname);
+	} elsif (defined $self->{symlink}) {
+		symlink($self->{symlink}, $destdir.$fullname);
+	} else {
+		rename($self->{tempname}, $destdir.$fullname) or
+		    $state->fatal("can't move #1 to #2: #3",
+			$self->{tempname}, $fullname, $!);
+		$state->say("moving #1 -> #2",
+		    $self->{tempname}, $destdir.$fullname)
+			if $state->verbose >= 5;
+		undef $self->{tempname};
+	}
+	$self->set_modes($state, $destdir.$fullname);
+}
+
 package OpenBSD::PackingElement::RcScript;
 sub install
 {
 	my ($self, $state) = @_;
 	$state->{add_rcscripts}{$self->fullname} = 1;
 	$self->SUPER::install($state);
-}
-
-package OpenBSD::PackingElement::EndFake;
-sub install
-{
-	my ($self, $state) = @_;
-
-	$self->SUPER::install($state);
-	$state->{end_faked} = 1;
 }
 
 package OpenBSD::PackingElement::Sample;
@@ -506,6 +564,10 @@ sub prepare_for_addition
 	if ($s->avail < 0) {
 		$s->report_overflow($state, $fname);
 	}
+}
+
+sub extract
+{
 }
 
 sub install
@@ -552,6 +614,9 @@ sub install
 }
 
 package OpenBSD::PackingElement::Sampledir;
+sub extract
+{
+}
 
 sub install
 {
@@ -614,6 +679,20 @@ sub install
 }
 
 package OpenBSD::PackingElement::Dir;
+sub extract
+{
+	my ($self, $state) = @_;
+	my $fullname = $self->fullname;
+	my $destdir = $state->{destdir};
+
+	return if -e $destdir.$fullname;
+	$self->SUPER::extract($state);
+	$state->say("new directory #1", $destdir.$fullname)
+	    if $state->verbose >= 3;
+	return if $state->{not};
+	File::Path::mkpath($destdir.$fullname);
+}
+
 sub install
 {
 	my ($self, $state) = @_;
@@ -621,7 +700,8 @@ sub install
 	my $fullname = $self->fullname;
 	my $destdir = $state->{destdir};
 
-	$state->say("new directory #1", $destdir.$fullname) if $state->verbose >= 5;
+	$state->say("new directory #1", $destdir.$fullname) 
+	    if $state->verbose >= 5;
 	return if $state->{not};
 	File::Path::mkpath($destdir.$fullname);
 	$self->set_modes($state, $destdir.$fullname);
@@ -646,14 +726,14 @@ package OpenBSD::PackingElement::ExecAdd;
 sub should_run
 {
 	my ($self, $state) = @_;
-	return !$state->{replacing};
+	return !$state->replacing;
 }
 
 package OpenBSD::PackingElement::ExecUpdate;
 sub should_run
 {
 	my ($self, $state) = @_;
-	return $state->{replacing};
+	return $state->replacing;
 }
 
 package OpenBSD::PackingElement::Lib;
@@ -680,19 +760,10 @@ sub prepare_for_addition
 	if (!defined $size) {
 		$size = (stat $cname)[7];
 	}
-	if ($self->exec_on_add) {
-		my $s2 = $state->vstat->stat($cname);
-		if (defined $s2 && $s2->noexec) {
-			$s2->report_noexec($state, $cname);
-		}
-	}
 	my $s = $state->vstat->add($fname, $self->{size}, $pkgname);
 	return unless defined $s;
 	if ($s->ro) {
 		$s->report_ro($state, $fname);
-	}
-	if ($s->noexec && $self->exec_on_delete) {
-		$s->report_noexec($state, $fname);
 	}
 	if ($s->avail < 0) {
 		$s->report_overflow($state, $fname);
@@ -707,6 +778,12 @@ sub copy_info
 	File::Copy::move($self->fullname, $dest) or
 	    $state->errsay("Problem while moving #1 into #2: #3",
 		$self->fullname, $dest, $!);
+}
+
+sub extract
+{
+	my ($self, $state) = @_;
+	$self->may_verify_digest($state);
 }
 
 package OpenBSD::PackingElement::FCONTENTS;

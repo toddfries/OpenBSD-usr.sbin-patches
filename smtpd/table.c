@@ -1,4 +1,4 @@
-/*	$OpenBSD: table.c,v 1.11 2013/11/18 11:47:16 eric Exp $	*/
+/*	$OpenBSD: table.c,v 1.13 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -377,7 +377,7 @@ table_mailaddr_match(const char *s1, const char *s2)
 	if (! text_to_mailaddr(&m2, s2))
 		return 0;
 
-	if (strcasecmp(m1.domain, m2.domain))
+	if (! table_domain_match(m1.domain, m2.domain))
 		return 0;
 
 	if (m2.user[0])
@@ -449,7 +449,7 @@ table_inet6_match(struct sockaddr_in6 *ss, struct netaddr *ssmask)
 	struct in6_addr	 mask;
 	int		 i;
 
-	bzero(&mask, sizeof(mask));
+	memset(&mask, 0, sizeof(mask));
 	for (i = 0; i < ssmask->bits / 8; i++)
 		mask.s6_addr[i] = 0xff;
 	i = ssmask->bits % 8;

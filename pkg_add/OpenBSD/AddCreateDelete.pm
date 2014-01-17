@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddCreateDelete.pm,v 1.16 2012/05/01 10:18:13 espie Exp $
+# $OpenBSD: AddCreateDelete.pm,v 1.22 2014/01/17 10:55:01 espie Exp $
 #
-# Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -89,6 +89,36 @@ sub check_dir
 		$self->fatal("#1: #2 is not a directory", $0, $dir);
 	}
 }
+
+sub ntogo
+{
+	my ($self, $offset) = @_;
+
+	return $self->{wantntogo} ?
+	    $self->progress->ntogo($self, $offset) :
+	    $self->f("ok");
+}
+
+sub ntogo_string
+{
+	my ($self, $offset) = @_;
+
+	return $self->todo($offset // 0);
+}
+
+OpenBSD::Auto::cache(signer_list,
+	sub {
+		my $self = shift;
+		if ($self->defines('SIGNER')) {
+			return [split /,/, $self->{subst}->value('SIGNER')];
+		} else {
+			if ($self->defines('FW_UPDATE')) {
+				return [qr{^.*fw$}];
+			} else {
+				return [qr{^.*pkg$}];
+			}
+		}
+	});
 
 package OpenBSD::AddCreateDelete;
 use OpenBSD::Error;

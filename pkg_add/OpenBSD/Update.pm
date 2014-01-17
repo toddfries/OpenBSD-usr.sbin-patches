@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.153 2012/10/13 10:28:22 jeremy Exp $
+# $OpenBSD: Update.pm,v 1.158 2014/01/11 11:51:01 espie Exp $
 #
-# Copyright (c) 2004-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2004-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -88,14 +88,18 @@ sub process_handle
 		return 0;
 	}
 
-	my $base = 0;
-	eval {
-		$base = $state->quirks->is_base_system($h, $state);
-	};
-	if ($base) {
-		$h->{update_found} = OpenBSD::Handle->system;
-		$set->{updates}++;
-		return 1;
+	if (!$set->{quirks}) {
+		my $base = 0;
+		$state->run_quirks(
+		    sub {
+			my $quirks = shift;
+			$base = $quirks->is_base_system($h, $state);
+		    });
+		if ($base) {
+			$h->{update_found} = OpenBSD::Handle->system;
+			$set->{updates}++;
+			return 1;
+		}
 	}
 
 	my $plist = OpenBSD::PackingList->from_installation($pkgname,
@@ -104,7 +108,7 @@ sub process_handle
 		$state->fatal("can't locate #1", $pkgname);
 	}
 
-	if ($plist->has('explicit-update') && $state->{allupdates}) {
+	if ($plist->has('firmware') && !$state->defines('FW_UPDATE')) {
 		$h->{update_found} = $h;
 		$set->move_kept($h);
 		return 0;
@@ -122,9 +126,13 @@ sub process_handle
 	}
 	push(@search, OpenBSD::Search::Stem->split($sname));
 
-	eval {
-		$state->quirks->tweak_search(\@search, $h, $state);
-	};
+	if (!$set->{quirks}) {
+		$state->run_quirks(
+		    sub {
+			my $quirks = shift;
+			$quirks->tweak_search(\@search, $h, $state);
+		    });
+	}
 	my $oldfound = 0;
 	my @skipped_locs = ();
 
@@ -167,11 +175,6 @@ sub process_handle
 		    if (!$plist->match_pkgpath($p2)) {
 			push(@skipped_locs, $loc);
 			next
-		    }
-		    if ($p2->has('explicit-update') && $state->{allupdates}) {
-			$oldfound = 1;
-			$loc->forget;
-			next;
 		    }
 		    my $r = $plist->signature->compare($p2->signature);
 		    if (defined $r && $r > 0 && !$state->defines('downgrade')) {

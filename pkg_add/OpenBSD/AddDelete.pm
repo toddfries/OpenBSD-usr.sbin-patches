@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: AddDelete.pm,v 1.54 2012/07/06 12:02:50 espie Exp $
+# $OpenBSD: AddDelete.pm,v 1.59 2013/12/30 09:01:30 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -182,6 +182,15 @@ sub handle_options
 		$state->{interactive} = -t STDIN;
 	}
 	$state->{localbase} = $state->opt('L') // OpenBSD::Paths->localbase;
+	$ENV{PATH} = join(':',
+	    '/bin',
+	    '/sbin',
+	    '/usr/bin',
+	    '/usr/sbin',
+	    '/usr/X11R6/bin',
+	    "$state->{localbase}/bin",
+	    "$state->{localbase}/sbin");
+
 	$state->{size_only} = $state->opt('s');
 	$state->{quick} = $state->opt('q') || $state->config->istrue("nochecksum");
 	$state->{extra} = $state->opt('c');
@@ -217,26 +226,10 @@ sub syslog
 	Sys::Syslog::syslog('info', $self->f(@_));
 }
 
-sub ntogo
-{
-	my ($self, $offset) = @_;
-
-	return $self->{wantntogo} ?
-	    $self->progress->ntogo($self, $offset) :
-	    $self->f("ok");
-}
-
 sub todo
 {
 	my ($state, $offset) = @_;
 	return $state->tracker->sets_todo($offset);
-}
-
-sub ntogo_string
-{
-	my ($self, $offset) = @_;
-
-	return $self->todo($offset // 0);
 }
 
 # one-level dependencies tree, for nicer printouts
@@ -283,6 +276,38 @@ sub log
 	}
 }
 
+sub run_quirks
+{
+	my ($state, $sub) = @_;
+
+	if (!exists $state->{quirks}) {
+		eval {
+			require OpenBSD::Quirks;
+			# interface version number.
+			$state->{quirks} = OpenBSD::Quirks->new(1);
+		};
+		if ($@) {
+			my $show = $state->verbose >= 2;
+			if (!$show) {
+				my $l = $state->repo->installed->match_locations(OpenBSD::Search::Stem->new('quirks'));
+				$show = @$l > 0;
+			}
+			$state->errsay("Can't load quirk: #1", $@) if $show;
+			# cache that this didn't work
+			$state->{quirks} = undef;
+		}
+	}
+
+	if (defined $state->{quirks}) {
+		eval {
+			&$sub($state->{quirks});
+		};
+		if ($@) {
+			$state->errsay("Bad quirk: #1", $@);
+		}
+	}
+}
+
 sub vsystem
 {
 	my $self = shift;
@@ -318,7 +343,14 @@ sub choose_location
 {
 	my ($state, $name, $list, $is_quirks) = @_;
 	if (@$list == 0) {
-		$state->errsay("Can't find #1", $name) unless $is_quirks;
+		if (!$is_quirks) {
+			$state->errsay("Can't find #1", $name);
+			$state->run_quirks(
+			    sub {
+				my $quirks = shift;
+				$quirks->filter_obsolete([$name], $state);
+			    });
+		}
 		return undef;
 	} elsif (@$list == 1) {
 		return $list->[0];
@@ -361,6 +393,12 @@ sub status
 	my $self = shift;
 
 	return $self->{status};
+}
+
+sub replacing
+{
+	my $self = shift;
+	return $self->{replacing};
 }
 
 OpenBSD::Auto::cache(ldconfig,

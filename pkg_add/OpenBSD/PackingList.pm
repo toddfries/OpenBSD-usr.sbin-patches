@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingList.pm,v 1.121 2012/12/28 15:09:09 espie Exp $
+# $OpenBSD: PackingList.pm,v 1.129 2014/01/11 11:51:01 espie Exp $
 #
-# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -141,6 +141,8 @@ sub zap_wrong_annotations
 	my $pkgname = $self->pkgname;
 	if (defined $pkgname && $pkgname =~ m/^(?:\.libs\d*|partial)\-/) {
 		delete $self->{'manual-installation'};
+		delete $self->{'firmware'};
+		delete $self->{'digital-signature'};
 	}
 }
 
@@ -438,10 +440,10 @@ sub match_pkgpath
 }
 
 our @unique_categories =
-    (qw(name url digital-signature no-default-conflict manual-installation always-update explicit-update extrainfo localbase arch));
+    (qw(name url signer digital-signature no-default-conflict manual-installation firmware always-update extrainfo localbase arch));
 
 our @list_categories =
-    (qw(conflict pkgpath incompatibility ask-update updateset depend
+    (qw(conflict pkgpath ask-update depend
     	wantlib define-tag groups users items));
 
 our @cache_categories =
@@ -531,6 +533,21 @@ sub to_installation
 	$self->tofile(OpenBSD::PackageInfo::installed_contents($self->pkgname));
 }
 
+sub check_signature
+{
+	my ($plist, $state) = @_;
+	my $sig = $plist->get('digital-signature');
+	if ($sig->{key} eq 'x509') {
+		require OpenBSD::x509;
+		return OpenBSD::x509::check_signature($plist, $state);
+	} elsif ($sig->{key} eq 'signify') {
+		require OpenBSD::signify;
+		return OpenBSD::signify::check_signature($plist, $state);
+	} else {
+		$state->log("Error: unknown signature style $sig->{key}");
+		return 0;
+	}
+}
 
 sub forget
 {

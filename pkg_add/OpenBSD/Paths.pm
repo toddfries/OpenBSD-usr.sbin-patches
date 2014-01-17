@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Paths.pm,v 1.21 2012/01/16 08:42:38 schwarze Exp $
+# $OpenBSD: Paths.pm,v 1.27 2014/01/17 10:54:14 espie Exp $
 #
-# Copyright (c) 2007 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -32,6 +32,8 @@ sub groupadd() { '/usr/sbin/groupadd' }
 sub sysctl() { '/sbin/sysctl' }
 sub openssl() { '/usr/sbin/openssl' }
 sub pkgca() { '/etc/ssl/pkgca.pem' }
+sub signify() { '/usr/bin/signify' }
+sub signifykey { my $s = $_[1]; "/etc/signify/$s.pub" }
 sub pkg_add() { '/usr/sbin/pkg_add' }
 sub chmod() { '/bin/chmod' }	# external command is used for symbolic modes.
 sub gzip() { '/usr/bin/gzip' }
@@ -52,6 +54,7 @@ sub hostname() { '/bin/hostname' }
 sub sudo() { '/usr/bin/sudo' }
 sub du() { '/usr/bin/du' }
 sub diff() { '/usr/bin/diff' }
+sub sha256() { '/bin/sha256' }
 
 # Various paths
 sub shells() { '/etc/shells' }

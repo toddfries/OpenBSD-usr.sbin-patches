@@ -1,9 +1,9 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.35 2012/11/06 08:02:45 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.46 2014/01/17 15:54:06 espie Exp $
 #
-# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -134,15 +134,11 @@ sub handle_options
 		$state->{do_faked} = 1;
 	} elsif (defined $state->opt('B')) {
 		$state->{destdir} = $state->opt('B');
-	} elsif (defined $ENV{'PKG_PREFIX'}) {
-		$state->{destdir} = $ENV{'PKG_PREFIX'};
 	}
 	if (defined $state->{destdir}) {
 		$state->{destdir}.='/';
-		$ENV{'PKG_DESTDIR'} = $state->{destdir};
 	} else {
 		$state->{destdir} = '';
-		delete $ENV{'PKG_DESTDIR'};
 	}
 
 
@@ -201,13 +197,6 @@ OpenBSD::Auto::cache(tracker,
 	require OpenBSD::Tracker;
 	return OpenBSD::Tracker->new;
     });
-
-sub quirks
-{
-	my $state = shift;
-
-	return $state->{quirks};
-}
 
 package OpenBSD::ConflictCache;
 our @ISA = (qw(OpenBSD::Cloner));
@@ -655,7 +644,7 @@ sub iterate
 	}
 }
 
-sub check_x509_signature
+sub check_digital_signature
 {
 	my ($set, $state) = @_;
 	for my $handle ($set->newer) {
@@ -665,21 +654,16 @@ sub check_x509_signature
 			if ($state->defines('nosig')) {
 				$state->errsay("NOT CHECKING DIGITAL SIGNATURE FOR #1",
 				    $plist->pkgname);
-				$state->{check_digest} = 0;
 			} else {
-				require OpenBSD::x509;
-
-				if (!OpenBSD::x509::check_signature($plist,
-				    $state)) {
+				if (!$plist->check_signature($state)) {
 					$state->fatal("#1 is corrupted",
-					    $set->print);
+					    $plist->pkgname);
 				}
-				$state->{check_digest} = 1;
+				$plist->{check_digest} = 1;
 				$state->{packages_with_sig}++;
 			}
 		} else {
 			$state->{packages_without_sig}{$plist->pkgname} = 1;
-			$state->{check_digest} = 0;
 		}
 	}
 }
@@ -720,7 +704,7 @@ sub really_add
 
 	my $errors = 0;
 
-	check_x509_signature($set, $state);
+	check_digital_signature($set, $state);
 
 	if ($state->{not}) {
 		$state->status->what("Pretending to add");
@@ -741,8 +725,6 @@ sub really_add
 #	}
 	$state->{replacing} = $replacing;
 
-	$ENV{'PKG_PREFIX'} = $state->{localbase};
-
 	my $handler = sub {
 		$state->{interrupted} = shift;
 	};
@@ -757,42 +739,39 @@ sub really_add
 		OpenBSD::OldLibs->save($set, $state);
 	}
 
-	if ($replacing && !$state->{delete_first}) {
-		$state->{extracted_first} = 1;
-		for my $handle ($set->newer) {
-			next if $state->{size_only};
-			$set->setup_header($state, $handle, "extracting");
-
-			try {
-				OpenBSD::Replace::perform_extraction($handle,
-				    $state);
-			} catchall {
-				unless ($state->{interrupted}) {
-					$state->errsay($_);
-					$errors++;
-				}
-			};
-			if ($state->{interrupted} || $errors) {
-				$state->fatal(partial_install("Installation of ".
-				    $handle->pkgname." failed", $set, $state));
-			}
-		}
-	} else {
-		$state->{extracted_first} = 0;
+	if ($state->{delete_first}) {
+		delete_old_packages($set, $state);
 	}
 
-	if ($replacing) {
+	for my $handle ($set->newer) {
+		next if $state->{size_only};
+		$set->setup_header($state, $handle, "extracting");
+
+		try {
+			OpenBSD::Add::perform_extraction($handle,
+			    $state);
+		} catchall {
+			unless ($state->{interrupted}) {
+				$state->errsay($_);
+				$errors++;
+			}
+		};
+		if ($state->{interrupted} || $errors) {
+			$state->fatal(partial_install("Installation of ".
+			    $handle->pkgname." failed", $set, $state));
+		}
+	}
+	if (!$state->{delete_first}) {
 		delete_old_packages($set, $state);
 	}
 
 	iterate($set->newer, sub {
 		return if $state->{size_only};
 		my $handle = shift;
-
 		my $pkgname = $handle->pkgname;
 		my $plist = $handle->plist;
-		$set->setup_header($state, $handle,
-		    $replacing ? "installing" : undef);
+
+		$set->setup_header($state, $handle, "installing");
 		$state->set_name_from_handle($handle, '+');
 
 		try {
@@ -826,9 +805,7 @@ sub really_add
 			$plist->get(DISPLAY)->prepare($state);
 		}
 	}
-	for my $handle ($set->newer) {
-		$set->{solver}->register_dependencies($state);
-	}
+	$set->{solver}->register_dependencies($state);
 	if ($replacing) {
 		$set->{forward}->adjust($state);
 	}
@@ -995,6 +972,12 @@ sub inform_user_of_problems
 	my $state = shift;
 	my @cantupdate = $state->tracker->cant_list;
 	if (@cantupdate > 0) {
+		$state->run_quirks(
+		    sub {
+		    	my $quirks = shift;
+			$quirks->filter_obsolete(\@cantupdate, $state);
+		    });
+
 		$state->say("Couldn't find updates for #1", join(', ', @cantupdate));
 	}
 	if (defined $state->{issues}) {
@@ -1023,13 +1006,8 @@ sub quirk_set
 sub do_quirks
 {
 	my ($self, $state) = @_;
-
-	$self->process_set(quirk_set($state), $state);
-	eval {
-		require OpenBSD::Quirks;
-		# interface version number.
-		$state->{quirks} = OpenBSD::Quirks->new(1);
-	};
+	my $set = quirk_set($state);
+	$self->process_set($set, $state);
 }
 
 
@@ -1092,16 +1070,10 @@ sub finish_display
 	my ($self, $state) = @_;
 	OpenBSD::Add::manpages_index($state);
 
-
 	# and display delayed thingies.
-	if ($state->{packages_with_sig}) {
-		$state->print("Packages with signatures: #1",
-		    $state->{packages_with_sig});
-		if ($state->{packages_without_sig}) {
-			print ". UNSIGNED PACKAGES: ",
-			    join(', ', keys %{$state->{packages_without_sig}});
-		}
-		print "\n";
+	if ($state->{packages_without_sig}) {
+		print "UNSIGNED PACKAGES: ",
+		    join(', ', keys %{$state->{packages_without_sig}}), "\n";
 	}
 	if (defined $state->{updatedepends} && %{$state->{updatedepends}}) {
 		print "Forced updates, bogus dependencies for ",
@@ -1115,9 +1087,11 @@ sub tweak_list
 {
 	my ($self, $state) = @_;
 
-	eval {
-		$state->quirks->tweak_list($state->{setlist}, $state);
-	}
+	$state->run_quirks(
+	    sub {
+	    	my $quirks = shift;
+		$quirks->tweak_list($state->{setlist}, $state);
+	    });
 }
 
 sub main
@@ -1125,9 +1099,7 @@ sub main
 	my ($self, $state) = @_;
 
 	$state->progress->set_header('');
-	if ($state->{allow_replacing}) {
-		$self->do_quirks($state);
-	}
+	$self->do_quirks($state);
 
 	$self->process_setlist($state);
 }

@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: ProgressMeter.pm,v 1.38 2010/12/24 09:04:14 espie Exp $
+# $OpenBSD: ProgressMeter.pm,v 1.40 2013/12/23 15:04:37 espie Exp $
 #
 # Copyright (c) 2010 Marc Espie <espie@openbsd.org>
 #

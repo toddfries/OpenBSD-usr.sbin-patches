@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Persistant.pm,v 1.1 2011/07/06 13:05:52 espie Exp $
+# $OpenBSD: Persistant.pm,v 1.3 2014/01/09 20:20:01 espie Exp $
 #
-# Copyright (c) 2003-2011 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -132,6 +132,12 @@ sub cleanup
 		CORE::close($getfh);
 		waitpid($self->{controller}, 0);
 	}
+}
+
+sub reinitialize
+{
+	my $self = shift;
+	$self->initiate;
 }
 
 1;

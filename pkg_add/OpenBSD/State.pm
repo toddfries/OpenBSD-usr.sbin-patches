@@ -1,7 +1,7 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: State.pm,v 1.23 2012/05/01 10:18:13 espie Exp $
+# $OpenBSD: State.pm,v 1.25 2014/01/09 20:20:01 espie Exp $
 #
-# Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2007-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -123,6 +123,10 @@ sub find
 	require OpenBSD::PackageLocator;
 
 	return OpenBSD::PackageLocator->find($pkg, $self->{state});
+}
+
+sub reinitialize
+{
 }
 
 sub match_locations

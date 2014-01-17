@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.129 2013/11/20 09:22:42 eric Exp $	*/
+/*	$OpenBSD: parse.y,v 1.135 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -141,7 +141,7 @@ typedef struct {
 
 %}
 
-%token	AS QUEUE COMPRESSION ENCRYPTION MAXMESSAGESIZE LISTEN ON ANY PORT EXPIRE
+%token	AS QUEUE COMPRESSION ENCRYPTION MAXMESSAGESIZE MAXMTADEFERRED LISTEN ON ANY PORT EXPIRE
 %token	TABLE SECURE SMTPS CERTIFICATE DOMAIN BOUNCEWARN LIMIT INET4 INET6
 %token  RELAY BACKUP VIA DELIVER TO LMTP MAILDIR MBOX HOSTNAME HOSTNAMES
 %token	ACCEPT REJECT INCLUDE ERROR MDA FROM FOR SOURCE MTA PKI SCHEDULER
@@ -308,6 +308,15 @@ limits_mta	: opt_limit_mta limits_mta
 opt_limit_scheduler : STRING NUMBER {
 			if (!strcmp($1, "max-inflight")) {
 				conf->sc_scheduler_max_inflight = $2;
+			}
+			else if (!strcmp($1, "max-evp-batch-size")) {
+				conf->sc_scheduler_max_evp_batch_size = $2;
+			}
+			else if (!strcmp($1, "max-msg-batch-size")) {
+				conf->sc_scheduler_max_msg_batch_size = $2;
+			}
+			else if (!strcmp($1, "max-schedule")) {
+				conf->sc_scheduler_max_schedule = $2;
 			}
 			else {
 				yyerror("invalid scheduler limit keyword: %s", $1);
@@ -520,7 +529,7 @@ relay_via	: opt_relay_common relay_via
 		;
 
 main		: BOUNCEWARN {
-			bzero(conf->sc_bounce_warn, sizeof conf->sc_bounce_warn);
+			memset(conf->sc_bounce_warn, 0, sizeof conf->sc_bounce_warn);
 		} bouncedelays
 		| QUEUE COMPRESSION {
 			conf->sc_queue_flags |= QUEUE_COMPRESSION;
@@ -534,7 +543,7 @@ main		: BOUNCEWARN {
 				YYERROR;
 			}
 			conf->sc_queue_key = strdup(password);
-			bzero(password, strlen(password));
+			memset(password, 0, strlen(password));
 			if (conf->sc_queue_key == NULL) {
 				yyerror("memory exhausted");
 				YYERROR;
@@ -577,6 +586,9 @@ main		: BOUNCEWARN {
 		| MAXMESSAGESIZE size {
 			conf->sc_maxsize = $2;
 		}
+		| MAXMTADEFERRED NUMBER  {
+			conf->sc_mta_max_deferred = $2;
+		}
 		| LIMIT MDA limits_mda
 		| LIMIT MTA FOR DOMAIN STRING {
 			struct mta_limits	*d;
@@ -595,8 +607,8 @@ main		: BOUNCEWARN {
 		} limits_mta
 		| LIMIT SCHEDULER limits_scheduler
 		| LISTEN {
-			bzero(&l, sizeof l);
-			bzero(&listen_opts, sizeof listen_opts);
+			memset(&l, 0, sizeof l);
+			memset(&listen_opts, 0, sizeof listen_opts);
 			listen_opts.family = AF_UNSPEC;
 		} ON STRING listen {
 			listen_opts.ifx = $4;
@@ -617,7 +629,6 @@ main		: BOUNCEWARN {
 				YYERROR;
 			}
 		} filter_list
-		;
 		| PKI STRING	{
 			char buf[MAXHOSTNAMELEN];
 			xlowercase(buf, $2, sizeof(buf));
@@ -1144,6 +1155,7 @@ lookup(char *s)
 		{ "maildir",		MAILDIR },
 		{ "mask-source",	MASK_SOURCE },
 		{ "max-message-size",  	MAXMESSAGESIZE },
+		{ "max-mta-deferred",  	MAXMTADEFERRED },
 		{ "mbox",		MBOX },
 		{ "mda",		MDA },
 		{ "mta",		MTA },
@@ -1183,9 +1195,9 @@ lookup(char *s)
 
 #define MAXPUSHBACK	128
 
-char	*parsebuf;
+u_char	*parsebuf;
 int	 parseindex;
-char	 pushback_buffer[MAXPUSHBACK];
+u_char	 pushback_buffer[MAXPUSHBACK];
 int	 pushback_index = 0;
 
 int
@@ -1276,8 +1288,8 @@ findeol(void)
 int
 yylex(void)
 {
-	char	 buf[8096];
-	char	*p, *val;
+	u_char	 buf[8096];
+	u_char	*p, *val;
 	int	 quotec, next, c;
 	int	 token;
 
@@ -1300,7 +1312,7 @@ top:
 				return (findeol());
 			}
 			if (isalnum(c) || c == '_') {
-				*p++ = (char)c;
+				*p++ = c;
 				continue;
 			}
 			*p = '\0';
@@ -1345,7 +1357,7 @@ top:
 				yyerror("string too long");
 				return (findeol());
 			}
-			*p++ = (char)c;
+			*p++ = c;
 		}
 		yylval.v.string = strdup(buf);
 		if (yylval.v.string == NULL)
@@ -1505,7 +1517,7 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 		return (-1);
 
 	conf = x_conf;
-	bzero(conf, sizeof(*conf));
+	memset(conf, 0, sizeof(*conf));
 
 	strlcpy(conf->sc_hostname, hostname, sizeof(conf->sc_hostname));
 
@@ -1555,7 +1567,11 @@ parse_config(struct smtpd *x_conf, const char *filename, int opts)
 	conf->sc_qexpire = SMTPD_QUEUE_EXPIRY;
 	conf->sc_opts = opts;
 
+	conf->sc_mta_max_deferred = 100;
 	conf->sc_scheduler_max_inflight = 5000;
+	conf->sc_scheduler_max_schedule = 10;
+	conf->sc_scheduler_max_evp_batch_size = 256;
+	conf->sc_scheduler_max_msg_batch_size = 1024;
 
 	conf->sc_mda_max_session = 50;
 	conf->sc_mda_max_user_session = 7;
@@ -1721,7 +1737,6 @@ create_listener(struct listenerlist *ll,  struct listen_opts *lo)
 
 	flags = lo->flags;
 
-
 	if (lo->port) {
 		lo->flags = lo->ssl|lo->auth|flags;
 		lo->port = htons(lo->port);
@@ -1782,6 +1797,9 @@ config_listener(struct listener *h,  struct listen_opts *lo)
 	(void)strlcpy(h->hostname, lo->hostname, sizeof(h->hostname));
 	if (lo->hostnametable)
 		(void)strlcpy(h->hostnametable, lo->hostnametable->t_name, sizeof(h->hostnametable));
+
+	if (lo->ssl & F_TLS_VERIFY)
+		h->flags |= F_TLS_VERIFY;
 }
 
 struct listener *
@@ -1791,7 +1809,7 @@ host_v4(const char *s, in_port_t port)
 	struct sockaddr_in	*sain;
 	struct listener		*h;
 
-	bzero(&ina, sizeof(ina));
+	memset(&ina, 0, sizeof(ina));
 	if (inet_pton(AF_INET, s, &ina) != 1)
 		return (NULL);
 
@@ -1812,7 +1830,7 @@ host_v6(const char *s, in_port_t port)
 	struct sockaddr_in6	*sin6;
 	struct listener		*h;
 
-	bzero(&ina6, sizeof(ina6));
+	memset(&ina6, 0, sizeof(ina6));
 	if (inet_pton(AF_INET6, s, &ina6) != 1)
 		return (NULL);
 
@@ -1835,7 +1853,7 @@ host_dns(struct listenerlist *al, struct listen_opts *lo)
 	struct sockaddr_in6	*sin6;
 	struct listener		*h;
 
-	bzero(&hints, sizeof(hints));
+	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = PF_UNSPEC;
 	hints.ai_socktype = SOCK_DGRAM; /* DUMMY */
 	error = getaddrinfo(lo->ifx, NULL, &hints, &res0);

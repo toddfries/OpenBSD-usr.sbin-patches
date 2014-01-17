@@ -1,4 +1,4 @@
-/*	$OpenBSD: table_ldap.c,v 1.6 2013/07/22 13:14:49 eric Exp $	*/
+/*	$OpenBSD: table_ldap.c,v 1.8 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -186,7 +186,7 @@ ldap_connect(const char *addr)
 		return (NULL);
 	}
 
-	bzero(&hints, sizeof(hints));
+	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = PF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM; /* DUMMY */
 	error = getaddrinfo(lu.host, NULL, &hints, &res0);
@@ -310,7 +310,7 @@ ldap_config(void)
 		}
 
 		key = buf;
-		while (isspace((int)*key))
+		while (isspace((unsigned char)*key))
 			++key;
 		if (*key == '\0' || *key == '#')
 			continue;
@@ -318,8 +318,8 @@ ldap_config(void)
 		strsep(&value, " \t:");
 		if (value) {
 			while (*value) {
-				if (!isspace(*value) &&
-				    !(*value == ':' && isspace(*(value + 1))))
+				if (!isspace((unsigned char)*value) &&
+				    !(*value == ':' && isspace((unsigned char)*(value + 1))))
 					break;
 				++value;
 			}
@@ -506,7 +506,7 @@ ldap_run_query(int type, const char *key, char *dst, size_t sz)
 		return (-1);
 	}
 
-	bzero(res, sizeof(res));
+	memset(res, 0, sizeof(res));
 	ret = ldap_query(filter, q->attrs, res, q->attrn);
 	if (ret <= 0 || dst == NULL)
 		goto end;

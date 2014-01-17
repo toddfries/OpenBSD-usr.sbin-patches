@@ -1,9 +1,9 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCheck.pm,v 1.41 2013/09/11 15:36:18 espie Exp $
+# $OpenBSD: PkgCheck.pm,v 1.45 2014/01/10 16:09:08 espie Exp $
 #
-# Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
+# Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -316,15 +316,11 @@ sub handle_options
 	$self->{quick} = $self->opt('q');
 	if (defined $self->opt('B')) {
 		$self->{destdir} = $self->opt('B');
-	} elsif (defined $ENV{'PKG_PREFIX'}) {
-		$self->{destdir} = $ENV{'PKG_PREFIX'};
-	}
+	} 
 	if (defined $self->{destdir}) {
 		$self->{destdir} .= '/';
-		$ENV{'PKG_DESTDIR'} = $self->{destdir};
 	} else {
 		$self->{destdir} = '';
-		delete $ENV{'PKG_DESTDIR'};
 	}
 }
 
@@ -687,13 +683,6 @@ sub package_files_check
 		my $name = shift;
 		my $plist = OpenBSD::PackingList->from_installation($name);
 		$state->log->set_context($name);
-		if ($plist->is_signed && !$state->defines('nosig')) {
-			require OpenBSD::x509;
-
-			if (!OpenBSD::x509::check_signature($plist, $state)) {
-				$state->fatal("#1 is corrupted", $name);
-			}
-		}
 		if ($state->{quick}) {
 			$plist->basic_check($state);
 		} else {

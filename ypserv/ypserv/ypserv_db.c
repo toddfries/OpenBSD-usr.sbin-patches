@@ -1,4 +1,4 @@
-/*	$OpenBSD: ypserv_db.c,v 1.26 2009/10/27 23:59:58 deraadt Exp $ */
+/*	$OpenBSD: ypserv_db.c,v 1.28 2013/12/05 17:36:12 jca Exp $ */
 
 /*
  * Copyright (c) 1994 Mats O Jansson <moj@stacken.kth.se>
@@ -59,7 +59,7 @@
 
 LIST_HEAD(domainlist, opt_domain);	/* LIST of domains */
 LIST_HEAD(maplist, opt_map);		/* LIST of maps (in a domain) */
-CIRCLEQ_HEAD(mapq, opt_map);		/* CIRCLEQ of maps (LRU) */
+TAILQ_HEAD(mapq, opt_map);		/* TAILQ of maps (LRU) */
 
 struct opt_map {
 	mapname map;			/* map name (malloc'd) */
@@ -67,7 +67,7 @@ struct opt_map {
 	struct opt_domain *dom;         /* back ptr to our domain */
 	int     host_lookup;            /* host lookup */
 	int     secure;                 /* secure map? */
-	CIRCLEQ_ENTRY(opt_map) mapsq;   /* map queue pointers */
+	TAILQ_ENTRY(opt_map) mapsq;   /* map queue pointers */
 	LIST_ENTRY(opt_map) mapsl;      /* map list pointers */
 };
 
@@ -89,7 +89,7 @@ void
 ypdb_init(void)
 {
 	LIST_INIT(&doms);
-	CIRCLEQ_INIT(&maps);
+	TAILQ_INIT(&maps);
 }
 
 /*
@@ -137,14 +137,16 @@ yp_private(datum key, int ypprivate)
 static void
 ypdb_close_last(void)
 {
-	struct opt_map *last = CIRCLEQ_LAST(&maps);
+	struct opt_map *last;
 
-	if (last == (void *)&maps) {
+	if (TAILQ_EMPTY(&maps)) {
 		yplog("  ypdb_close_last: LRU list is empty!");
 		return;
 	}
 
-	CIRCLEQ_REMOVE(&maps, last, mapsq);	/* remove from LRU circleq */
+	last = TAILQ_LAST(&maps, mapq);
+
+	TAILQ_REMOVE(&maps, last, mapsq);	/* remove from LRU circleq */
 	LIST_REMOVE(last, mapsl);		/* remove from domain list */
 
 #ifdef DEBUG
@@ -167,7 +169,7 @@ ypdb_close_all(void)
 #ifdef DEBUG
 	yplog("  ypdb_close_all(): start");
 #endif
-	while (!CIRCLEQ_EMPTY(&maps))
+	while (!TAILQ_EMPTY(&maps))
 		ypdb_close_last();
 #ifdef DEBUG
 	yplog("  ypdb_close_all(): done");
@@ -228,8 +230,8 @@ ypdb_open_db(domainname domain, mapname map, ypstat *status,
 		yplog("  ypdb_open_db: cached open: domain=%s, map=%s, db=0x%x",
 		    domain, map, m->db);
 #endif
-		CIRCLEQ_REMOVE(&maps, m, mapsq);	/* adjust LRU queue */
-		CIRCLEQ_INSERT_HEAD(&maps, m, mapsq);
+		TAILQ_REMOVE(&maps, m, mapsq);	/* adjust LRU queue */
+		TAILQ_INSERT_HEAD(&maps, m, mapsq);
 		*status = YP_TRUE;
 		if (map_info)
 			*map_info = m;
@@ -328,7 +330,7 @@ ypdb_open_db(domainname domain, mapname map, ypstat *status,
 	m->db = db;
 	m->dom = d;
 	m->host_lookup = FALSE;
-	CIRCLEQ_INSERT_HEAD(&maps, m, mapsq);
+	TAILQ_INSERT_HEAD(&maps, m, mapsq);
 	LIST_INSERT_HEAD(&d->dmaps, m, mapsl);
 	if (strcmp(map, YP_HOSTNAME) == 0 || strcmp(map, YP_HOSTADDR) == 0) {
 		if (!usedns) {
@@ -369,6 +371,7 @@ lookup_host(int nametable, int host_lookup, DBM *db, char *keystr,
 	static char val[BUFSIZ+1]; /* match libc */
 	static char hostname[MAXHOSTNAMELEN];
 	char tmpbuf[MAXHOSTNAMELEN + 20], *v, *ptr;
+	size_t len;
 	int l;
 
 	if (!host_lookup)
@@ -388,10 +391,10 @@ lookup_host(int nametable, int host_lookup, DBM *db, char *keystr,
 			addr_name = (struct in_addr *)host->h_addr_list[0];
 			snprintf(tmpbuf, sizeof(tmpbuf), "%s %s\n",
 			    inet_ntoa(*addr_name), host->h_name);
-			if (v - val + strlen(tmpbuf) + 1 > sizeof(val))
+			len = strlcat(val, tmpbuf, sizeof(val));
+			if (len >= sizeof(val))
 				break;
-			strlcpy(v, tmpbuf, sizeof(val)); /* v == val */
-			v = v + strlen(tmpbuf);
+			v = val + len;
 		}
 		result->val.valdat_val = val;
 		result->val.valdat_len = v - val;
@@ -421,11 +424,16 @@ lookup_host(int nametable, int host_lookup, DBM *db, char *keystr,
 		return(YP_NOKEY);
 	}
 
-	snprintf(val, sizeof(val), "%s %s", keystr, host->h_name);
+	len = snprintf(val, sizeof(val), "%s %s", keystr, host->h_name);
+	if (len == (size_t)-1 || len >= sizeof(val))
+		return(YP_YPERR);
+	v = val + len;
 	while ((ptr = *(host->h_aliases)) != NULL) {
 		strlcat(val, " ", sizeof(val));
-		if (strlcat(val, ptr, sizeof(val)) > sizeof(val))
+		len = strlcat(val, ptr, sizeof(val));
+		if (len >= sizeof(val))
 			break;
+		v = val + len;
 		host->h_aliases++;
 	}
 	result->val.valdat_val = val;

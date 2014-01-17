@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.92 2013/10/30 21:37:48 eric Exp $	*/
+/*	$OpenBSD: control.c,v 1.94 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2012 Gilles Chehade <gilles@poolp.org>
@@ -193,7 +193,7 @@ control_create_socket(void)
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		fatal("control: socket");
 
-	bzero(&sun, sizeof(sun));
+	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
 	if (strlcpy(sun.sun_path, SMTPD_SOCKET,
 	    sizeof(sun.sun_path)) >= sizeof(sun.sun_path))
@@ -275,7 +275,7 @@ control(void)
 
 	tree_init(&ctl_conns);
 
-	bzero(&digest, sizeof digest);
+	memset(&digest, 0, sizeof digest);
 	digest.startup = time(NULL);
 
 	config_peer(PROC_SCHEDULER);
@@ -688,7 +688,6 @@ control_dispatch_ext(struct mproc *p, struct imsg *imsg)
 		if (c->euid)
 			goto badcred;
 
-		log_info("info: route resumed");
 		m_forward(p_mta, imsg);
 		m_compose(p, IMSG_CTL_OK, 0, 0, -1, NULL, 0);
 		return;

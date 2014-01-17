@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.102 2013/11/19 10:22:42 eric Exp $	*/
+/*	$OpenBSD: util.c,v 1.105 2014/01/08 15:30:49 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -198,7 +198,7 @@ mkdirs(char *path, mode_t mode)
 	if (strlen(path) >= sizeof buf)
 		return 0;
 
-	bzero(buf, sizeof buf);
+	memset(buf, 0, sizeof buf);
 	for (p = path; *p; p++) {
 		if (*p == '/') {
 			if (buf[0] != '\0')
@@ -424,12 +424,14 @@ hostname_match(const char *hostname, const char *pattern)
 			while (*pattern == '*')
 				pattern++;
 			while (*hostname != '\0' &&
-			    tolower((int)*hostname) != tolower((int)*pattern))
+			    tolower((unsigned char)*hostname) !=
+			    tolower((unsigned char)*pattern))
 				hostname++;
 			continue;
 		}
 
-		if (tolower((int)*pattern) != tolower((int)*hostname))
+		if (tolower((unsigned char)*pattern) !=
+		    tolower((unsigned char)*hostname))
 			return 0;
 		pattern++;
 		hostname++;
@@ -445,7 +447,7 @@ valid_localpart(const char *s)
  * RFC 5322 defines theses characters as valid: !#$%&'*+-/=?^_`{|}~
  * some of them are potentially dangerous, and not so used after all.
  */
-#define IS_ATEXT(c)     (isalnum((int)(c)) || strchr("*!%+-/=_", (c)))
+#define IS_ATEXT(c) (isalnum((unsigned char)(c)) || strchr("*!%+-/=_", (c)))
 nextatom:
 	if (! IS_ATEXT(*s) || *s == '\0')
 		return 0;
@@ -495,12 +497,12 @@ valid_domainpart(const char *s)
 	}
 	
 nextsub:
-	if (!isalnum((int)*s))
+	if (!isalnum((unsigned char)*s))
 		return 0;
 	while (*(++s) != '\0') {
 		if (*s == '.')
 			break;
-		if (isalnum((int)*s) || *s == '-')
+		if (isalnum((unsigned char)*s) || *s == '-')
 			continue;
 		return 0;
 	}
@@ -604,7 +606,7 @@ lowercase(char *buf, const char *s, size_t len)
 		return 0;
 
 	while (*buf != '\0') {
-		*buf = tolower((int)*buf);
+		*buf = tolower((unsigned char)*buf);
 		buf++;
 	}
 
@@ -621,7 +623,7 @@ uppercase(char *buf, const char *s, size_t len)
 		return 0;
 
 	while (*buf != '\0') {
-		*buf = toupper((int)*buf);
+		*buf = toupper((unsigned char)*buf);
 		buf++;
 	}
 
@@ -691,7 +693,7 @@ session_socket_no_linger(int fd)
 {
 	struct linger	 lng;
 
-	bzero(&lng, sizeof(lng));
+	memset(&lng, 0, sizeof(lng));
 	if (setsockopt(fd, SOL_SOCKET, SO_LINGER, &lng, sizeof(lng)) == -1)
 		fatal("session_socket_no_linger");
 }
@@ -731,13 +733,13 @@ parse_smtp_response(char *line, size_t len, char **msg, int *cont)
 		return "line too short";
 
 	/* validate reply code */
-	if (line[0] < '2' || line[0] > '5' || !isdigit(line[1]) ||
-	    !isdigit(line[2]))
+	if (line[0] < '2' || line[0] > '5' || !isdigit((unsigned char)line[1]) ||
+	    !isdigit((unsigned char)line[2]))
 		return "reply code out of range";
 
 	/* validate reply message */
 	for (i = 0; i < len; i++)
-		if (!isprint(line[i]))
+		if (!isprint((unsigned char)line[i]))
 			return "non-printable character in reply";
 
 	return NULL;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.436 2013/11/20 09:22:42 eric Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.441 2013/12/06 14:26:25 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -41,21 +41,17 @@
 #define	EXPAND_BUFFER		 1024
 
 #define SMTPD_QUEUE_EXPIRY	 (4 * 24 * 60 * 60)
-#define SMTPD_USER		 "_smtpd"
-#define SMTPD_QUEUE_USER	 "_smtpq"
 #define SMTPD_SOCKET		 "/var/run/smtpd.sock"
 #ifndef SMTPD_NAME
 #define	SMTPD_NAME		 "OpenSMTPD"
 #endif
-#define	SMTPD_VERSION		 "5.4"
+#define	SMTPD_VERSION		 "5.4.1"
 #define SMTPD_BANNER		 "220 %s ESMTP %s"
 #define SMTPD_SESSION_TIMEOUT	 300
 #define SMTPD_BACKLOG		 5
 
 #define	PATH_SMTPCTL		"/usr/sbin/smtpctl"
 
-#define PATH_CHROOT             "/var/empty"
-#define PATH_SPOOL		"/var/spool/smtpd"
 #define PATH_OFFLINE		"/offline"
 #define PATH_PURGE		"/purge"
 #define PATH_TEMPORARY		"/temporary"
@@ -511,7 +507,12 @@ struct smtpd {
 	size_t				sc_mda_task_lowat;
 	size_t				sc_mda_task_release;
 
+	size_t				sc_mta_max_deferred;
+
 	size_t				sc_scheduler_max_inflight;
+	size_t				sc_scheduler_max_evp_batch_size;
+	size_t				sc_scheduler_max_msg_batch_size;
+	size_t				sc_scheduler_max_schedule;
 
 	int				sc_qexpire;
 #define MAX_BOUNCE_WARN			4
@@ -755,6 +756,8 @@ struct mta_envelope {
 	char				*rcpt;
 	struct mta_task			*task;
 	int				 delivery;
+	int				 penalty;
+	char				 status[SMTPD_MAXLINESIZE];
 };
 
 struct mta_task {
@@ -1181,8 +1184,7 @@ void mta_route_down(struct mta_relay *, struct mta_route *);
 void mta_route_collect(struct mta_relay *, struct mta_route *);
 void mta_source_error(struct mta_relay *, struct mta_route *, const char *);
 void mta_delivery_log(struct mta_envelope *, const char *, const char *, int, const char *);
-void mta_delivery_notify(struct mta_envelope *, int, const char *, uint32_t);
-void mta_delivery(struct mta_envelope *, const char *, const char *, int, const char *, uint32_t);
+void mta_delivery_notify(struct mta_envelope *, uint32_t);
 struct mta_task *mta_route_next_task(struct mta_relay *, struct mta_route *);
 const char *mta_host_to_text(struct mta_host *);
 const char *mta_relay_to_text(struct mta_relay *);

@@ -1,4 +1,4 @@
-.\"	$OpenBSD: tftp-proxy.8,v 1.2 2012/10/06 07:12:11 jmc Exp $
+.\"	$OpenBSD: tftp-proxy.8,v 1.5 2013/12/23 13:07:47 florian Exp $
 .\"
 .\" Copyright (c) 2005 joshua stein <jcs@openbsd.org>
 .\"
@@ -25,7 +25,7 @@
 .\" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 .\" THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 .\"
-.Dd $Mdocdate: October 6 2012 $
+.Dd $Mdocdate: December 23 2013 $
 .Dt TFTP-PROXY 8
 .Os
 .Sh NAME
@@ -34,6 +34,7 @@
 .Sh SYNOPSIS
 .Nm tftp-proxy
 .Op Fl 46dv
+.Op Fl a Ar address
 .Op Fl l Ar address
 .Op Fl p Ar port
 .Op Fl w Ar transwait
@@ -51,7 +52,7 @@ a rule with divert-reply set.
 .Pp
 The proxy inserts
 .Xr pf 4
-pass rules using the
+pass and/or rdr rules using the
 .Ar anchor
 facility to allow payload packets between the client and the server.
 Once the rules are inserted,
@@ -76,6 +77,19 @@ to use IPv4 addresses only.
 Forces
 .Nm
 to use IPv6 addresses only.
+.It Fl a Ar address
+The proxy will use
+.Ar address
+as the source address for the initial request from the client to the server for
+NAT traversal.
+Instead of a
+.Dq pass in
+rule an
+.Dq rdr
+rule will be generated.
+It is possible to have two
+.Fl a
+options to specify both an IPv4 and an IPv6 address.
 .It Fl d
 Do not daemonize.
 If this option is specified,
@@ -86,7 +100,7 @@ the client IP, type of request, and filename to stderr.
 Listen on the specified address.
 By default
 .Nm
-listens on wildcard addresses.
+listens on localhost addresses.
 .It Fl p Ar port
 Listen on the specified port.
 By default

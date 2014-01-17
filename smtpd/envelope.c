@@ -1,4 +1,4 @@
-/*	$OpenBSD: envelope.c,v 1.23 2013/11/18 11:47:16 eric Exp $	*/
+/*	$OpenBSD: envelope.c,v 1.26 2013/12/26 17:25:32 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -74,7 +74,7 @@ envelope_buffer_to_dict(struct dict *d,  const char *ibuf, size_t buflen)
 	size_t		 len;
 	char		*buf, *field, *nextline;
 
-	bzero(lbuf, sizeof lbuf);
+	memset(lbuf, 0, sizeof lbuf);
 	if (strlcpy(lbuf, ibuf, sizeof lbuf) >= sizeof lbuf)
 		goto err;
 	buf = lbuf;
@@ -86,13 +86,13 @@ envelope_buffer_to_dict(struct dict *d,  const char *ibuf, size_t buflen)
 		buflen -= (nextline - buf);
 
 		field = buf;
-		while (*buf && (isalnum(*buf) || *buf == '-'))
+		while (*buf && (isalnum((unsigned char)*buf) || *buf == '-'))
 			buf++;
 		if (! *buf)
 			goto err;
 
 		/* skip whitespaces before separator */
-		while (*buf && isspace(*buf))
+		while (*buf && isspace((unsigned char)*buf))
 			*buf++ = 0;
 
 		/* we *want* ':' */
@@ -101,7 +101,7 @@ envelope_buffer_to_dict(struct dict *d,  const char *ibuf, size_t buflen)
 		*buf++ = 0;
 
 		/* skip whitespaces after separator */
-		while (*buf && isspace(*buf))
+		while (*buf && isspace((unsigned char)*buf))
 			*buf++ = 0;
 		dict_set(d, field, buf);
 		buf = nextline;
@@ -156,7 +156,7 @@ envelope_load_buffer(struct envelope *ep, const char *ibuf, size_t buflen)
 		goto end;
 	}
 
-	bzero(ep, sizeof *ep);
+	memset(ep, 0, sizeof *ep);
 	ret = envelope_ascii_load(ep, &d);
 	if (ret)
 		ep->version = SMTPD_ENVELOPE_VERSION;
@@ -281,8 +281,8 @@ ascii_load_sockaddr(struct sockaddr_storage *ss, char *buf)
 	struct sockaddr_in6 ssin6;
 	struct sockaddr_in  ssin;
 
-	bzero(&ssin, sizeof ssin);
-	bzero(&ssin6, sizeof ssin6);
+	memset(&ssin, 0, sizeof ssin);
+	memset(&ssin6, 0, sizeof ssin6);
 
 	if (!strcmp("local", buf)) {
 		ss->ss_family = AF_LOCAL;
@@ -518,6 +518,7 @@ envelope_ascii_load(struct envelope *ep, struct dict *d)
 	return (1);
 
 err:
+	log_warnx("envelope: invalid field \"%s\"", field);
 	return (0);
 }
 
@@ -796,7 +797,7 @@ envelope_ascii_dump(const struct envelope *ep, char **dest, size_t *len, const c
 	if (*dest == NULL)
 		return;
 
-	bzero(buf, sizeof buf);
+	memset(buf, 0, sizeof buf);
 	if (! ascii_dump_field(field, ep, buf, sizeof buf))
 		goto err;
 	if (buf[0] == '\0')

@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.c,v 1.14 2013/04/17 19:26:10 krw Exp $	*/
+/*	$OpenBSD: parse.c,v 1.17 2013/12/18 20:37:04 krw Exp $	*/
 
 /* Common parser code for dhcpd and dhclient. */
 
@@ -205,12 +205,6 @@ parse_hardware_param(FILE *cfile, struct hardware *hardware)
 	case TOK_ETHERNET:
 		hardware->htype = HTYPE_ETHER;
 		break;
-	case TOK_TOKEN_RING:
-		hardware->htype = HTYPE_IEEE802;
-		break;
-	case TOK_FDDI:
-		hardware->htype = HTYPE_FDDI;
-		break;
 	case TOK_IPSEC_TUNNEL:
 		hardware->htype = HTYPE_IPSEC_TUNNEL;
 		break;
@@ -380,7 +374,8 @@ convert_num(unsigned char *buf, char *str, int base, int size)
 			if (ptr[1] == 'x') {
 				base = 16;
 				ptr += 2;
-			} else if (isascii(ptr[1]) && isdigit(ptr[1])) {
+			} else if (isascii((unsigned char)ptr[1]) &&
+			    isdigit((unsigned char)ptr[1])) {
 				base = 8;
 				ptr += 1;
 			} else
