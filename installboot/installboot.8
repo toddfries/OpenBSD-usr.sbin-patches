@@ -1,4 +1,4 @@
-.\"	$OpenBSD: installboot.8,v 1.1 2014/01/05 16:02:40 jsing Exp $
+.\"	$OpenBSD: installboot.8,v 1.4 2014/01/18 18:14:21 jmc Exp $
 .\"
 .\" Copyright (c) 2013, 2014 Joel Sing
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: January 5 2014 $
+.Dd $Mdocdate: January 18 2014 $
 .Dt INSTALLBOOT 8
 .Os
 .Sh NAME
@@ -23,6 +23,7 @@
 .Sh SYNOPSIS
 .Nm installboot
 .Op Fl nv
+.Op Fl r Ar root
 .Ar disk
 .Op Ar stage1 Op Ar stage2
 .Sh DESCRIPTION
@@ -38,6 +39,11 @@ The options are as follows:
 .Bl -tag -width Ds
 .It Fl n
 Perform a dry run - do not actually write any bootstrap to the disk.
+.It Fl r Ar root
+Specify the mount point of the
+.Ar root
+filesystem to operate on, defaulting to
+.Ar / .
 .It Fl v
 Increase verbosity during operation.
 .It Ar disk
@@ -66,11 +72,10 @@ To install bootstrap on an
 amd64 machine, using
 .Ar /usr/mdec/biosboot
 as the primary bootstrap and
-.Ar /boot
+.Ar /usr/mdec/boot
 as the secondary bootstrap:
 .Bd -literal -offset 3n
-# cp /usr/mdec/boot /boot
-# installboot -v wd0 /usr/mdec/biosboot /boot
+# installboot -v wd0 /usr/mdec/biosboot /usr/mdec/boot
 .Ed
 .Sh SEE ALSO
 .Xr disklabel 8

@@ -1,6 +1,7 @@
-/*	$OpenBSD: installboot.h,v 1.4 2014/01/18 03:07:05 jsing Exp $	*/
+/*	$OpenBSD: sparc64_installboot.h,v 1.1 2014/01/19 02:58:50 jsing Exp $	*/
+
 /*
- * Copyright (c) 2012, 2013 Joel Sing <jsing@openbsd.org>
+ * Copyright (c) 2013 Joel Sing <jsing@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,27 +16,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-extern int nowrite;
-extern int stages;
-extern int verbose;
-
-extern char *root;
-extern char *stage1;
-extern char *stage2;
-
-#ifdef BOOTSTRAP
-void	bootstrap(int, char *, char *);
-#endif
-
-void	filecopy(const char *, const char *);
-char	*fileprefix(const char *, const char *);
-
-void	md_init(void);
-void	md_loadboot(void);
-void	md_installboot(int, char *);
-
-#ifdef SOFTRAID
-void	sr_installboot(int, char *);
-void	sr_install_bootblk(int, int, int);
-void	sr_install_bootldr(int, char *);
-#endif
+extern char	*blkstore;
+extern char	*ldrstore;
+extern size_t	blksize;
+extern size_t	ldrsize;

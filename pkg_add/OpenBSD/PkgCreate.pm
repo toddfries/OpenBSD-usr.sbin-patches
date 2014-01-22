@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.94 2014/01/17 10:54:14 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.97 2014/01/20 21:10:55 naddy Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -1217,7 +1217,7 @@ sub sign_existing_package
 	    chdir($output);
 	    open(STDOUT, '>>', 'SHA256');
 	    },
-	    OpenBSD::Paths->sha256, $plist->pkgname.".tgz");
+	    OpenBSD::Paths->sha256, '-b', $plist->pkgname.".tgz");
 }
 
 sub sign_list
@@ -1282,7 +1282,10 @@ sub sign_list
 	}
 	$state->system(sub {
 	    chdir($state->{output_dir}) if $state->{output_dir};
+	    open(STDOUT, '>', 'SHA256.new');
 	    }, 'sort', 'SHA256');
+	rename($state->{output_dir}.'/SHA256.new', 
+	    $state->{output_dir}.'/SHA256');
 }
 
 sub sign_existing_repository

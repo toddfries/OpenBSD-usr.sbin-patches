@@ -1,4 +1,4 @@
-/*	$OpenBSD: vax_installboot.c,v 1.1 2013/12/28 12:03:57 jsing Exp $	*/
+/*	$OpenBSD: landisk_installboot.c,v 1.1 2014/01/19 02:58:50 jsing Exp $	*/
 
 /*
  * Copyright (c) 2013 Joel Sing <jsing@openbsd.org>

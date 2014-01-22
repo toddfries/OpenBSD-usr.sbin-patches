@@ -1,7 +1,7 @@
-/*	$OpenBSD: hp300_installboot.c,v 1.1 2013/12/28 13:58:15 jsing Exp $	*/
+/*	$OpenBSD: stubs.c,v 1.2 2014/01/18 01:49:30 jsing Exp $	*/
 
 /*
- * Copyright (c) 2013 Joel Sing <jsing@openbsd.org>
+ * Copyright (c) 2014 Joel Sing <jsing@openbsd.org>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -16,13 +16,14 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <err.h>
+
 #include "installboot.h"
 
 void
 md_init(void)
 {
-	stages = 1;
-	stage1 = "/usr/mdec/uboot.lif";
+	errx(1, "not yet implemented");
 }
 
 void
@@ -33,5 +34,4 @@ md_loadboot(void)
 void
 md_installboot(int devfd, char *dev)
 {
-	bootstrap(devfd, dev, stage1);
 }
