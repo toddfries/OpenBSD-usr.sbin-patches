@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.127 2014/01/10 16:05:31 espie Exp $
+# $OpenBSD: Delete.pm,v 1.131 2014/02/03 16:13:13 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -42,12 +42,12 @@ sub keep_old_files
 sub manpages_unindex
 {
 	my ($state) = @_;
-	return unless defined $state->{mandirs};
+	return unless defined $state->{rmman};
 	my $destdir = $state->{destdir};
 	require OpenBSD::Makewhatis;
 
-	while (my ($k, $v) = each %{$state->{mandirs}}) {
-		my @l = map { $destdir.$_ } @$v;
+	while (my ($k, $v) = each %{$state->{rmman}}) {
+		my @l = map { "$destdir$k/$_" } @$v;
 		if ($state->{not}) {
 			$state->say("Removing manpages in #1: #2",
 			    $destdir.$k, join(' ', @l))
@@ -60,18 +60,13 @@ sub manpages_unindex
 			}
 		}
 	}
-	undef $state->{mandirs};
+	delete $state->{rmman};
 }
 
 sub validate_plist
 {
 	my ($plist, $state) = @_;
 
-	if ($plist->has('system-package')) {
-		$state->{problems}++;
-		$state->errsay("Error: can't delete system packages");
-		return;
-	}
 	$plist->prepare_for_deletion($state, $plist->pkgname);
 }
 
@@ -149,7 +144,7 @@ sub delete_plist
 	my $pkgname = $plist->pkgname;
 	$state->{pkgname} = $pkgname;
 	if (!$state->{size_only}) {
-		$plist->register_manpage($state);
+		$plist->register_manpage($state, 'rmman');
 		manpages_unindex($state);
 		$state->progress->visit_with_size($plist, 'delete', $state);
 		if ($plist->has(UNDISPLAY)) {
@@ -320,8 +315,6 @@ sub prepare_for_deletion
 	my ($self, $state, $pkgname) = @_;
 	my $fname = $state->{destdir}.$self->fullname;
 	$state->vstat->remove_directory($fname, $self);
-	return unless $self->{noshadow};
-	$state->{noshadow}{$fname} = 1;
 }
 
 sub delete

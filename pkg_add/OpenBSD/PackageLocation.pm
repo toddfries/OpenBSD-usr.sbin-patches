@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageLocation.pm,v 1.32 2014/01/18 01:02:25 espie Exp $
+# $OpenBSD: PackageLocation.pm,v 1.36 2014/02/02 23:09:56 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -28,7 +28,7 @@ sub new
 {
 	my ($class, $repository, $name) = @_;
 
-	my $self = { repository => $repository, name => $repository->canonicalize($name), state => $repository->{state} };
+	my $self = { repository => $repository, name => $repository->canonicalize($name) };
 	bless $self, $class;
 	return $self;
 
@@ -81,7 +81,7 @@ sub _opened
 		return;
 	}
 	require OpenBSD::Ustar;
-	my $archive = OpenBSD::Ustar->new($fh, $self->{state});
+	my $archive = OpenBSD::Ustar->new($fh, $self->{repository}{state});
 	$archive->set_description($self->{repository}->url($self->{name}));
 	$self->{_archive} = $archive;
 
@@ -96,14 +96,28 @@ sub _opened
 	return $self;
 }
 
+sub store_end_of_stream
+{
+
+	my $self = shift;
+	my $sym = $self->{fh};
+	# don't bother for streams that don't end right after CONTENTS
+	return if !*$sym->{NewStream};
+	$self->{length} = *$sym->{CompSize}->get64bit +
+	    *$sym->{Info}{HeaderLength} +
+	    *$sym->{Info}{TrailerLength};
+}
+
 sub find_contents
 {
 	my ($self, $extra) = @_;
 
-	while (my $e = $self->_next) {
+	while (my $e = $self->next) {
 		if ($e->isFile && is_info_name($e->{name})) {
 			if ($e->{name} eq CONTENTS ) {
-				return $e->contents($extra);
+				my $v = $e->contents($extra);
+				$self->store_end_of_stream;
+				return $v;
 			}
 		} else {
 			$self->unput;
@@ -148,7 +162,7 @@ sub grab_info
 		close $fh;
 	}
 
-	while (my $e = $self->_next) {
+	while (my $e = $self->next) {
 		if ($e->isFile && is_info_name($e->{name})) {
 			$e->{name} = $dir.$e->{name};
 			undef $e->{mtime};
@@ -157,7 +171,7 @@ sub grab_info
 			if ($@) {
 				unlink($e->{name});
 				$@ =~ s/\s+at.*//o;
-				$self->{state}->errprint('#1', $@);
+				$self->{repository}{state}->errprint('#1', $@);
 				return 0;
 			}
 		} else {
@@ -193,6 +207,10 @@ sub wipe_info
 {
 	my $self = shift;
 	$self->{repository}->wipe_info($self);
+	delete $self->{contents};
+	$self->deref;
+	delete $self->{_current_name};
+	delete $self->{update_info};
 }
 
 sub info
@@ -259,25 +277,15 @@ sub close_with_client_error
 sub deref
 {
 	my $self = shift;
-	$self->{fh} = undef;
-	$self->{pid} = undef;
-	$self->{pid2} = undef;
-	$self->{_archive} = undef;
-	$self->{_current} = undef;
+	delete $self->{fh};
+	delete $self->{pid};
+	delete $self->{pid2};
+	delete $self->{_archive};
+	delete $self->{_current};
 }
 
 # proxy for archive operations
 sub next
-{
-	my $self = shift;
-
-	if (!defined $self->{dir}) {
-		$self->grabInfoFiles;
-	}
-	return $self->_next;
-}
-
-sub _next
 {
 	my $self = shift;
 

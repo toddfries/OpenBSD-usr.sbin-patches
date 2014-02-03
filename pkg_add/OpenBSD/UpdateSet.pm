@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: UpdateSet.pm,v 1.70 2012/09/06 09:07:50 espie Exp $
+# $OpenBSD: UpdateSet.pm,v 1.74 2014/02/02 15:22:36 espie Exp $
 #
 # Copyright (c) 2007-2010 Marc Espie <espie@openbsd.org>
 #
@@ -105,8 +105,11 @@ sub cleanup
 	for my $h ($self->all_handles) {
 		$h->cleanup($error, $errorinfo);
 	}
-	$self->{error} //= $error;
-	$self->{errorinfo} //= $errorinfo;
+	if (defined $error) {
+		$self->{error} //= $error;
+		$self->{errorinfo} //= $errorinfo;
+	}
+	delete $self->{solver};
 	$self->mark_as_finished;
 }
 
@@ -252,9 +255,11 @@ sub move_kept
 {
 	my $self = shift;
 	for my $h (@_) {
-		delete $self->{older}->{$h->pkgname};
-		delete $self->{newer}->{$h->pkgname};
-		$self->{kept}->{$h->pkgname} = $h;
+		delete $self->{older}{$h->pkgname};
+		delete $self->{newer}{$h->pkgname};
+		$self->{kept}{$h->pkgname} = $h;
+		$h->complete_dependency_info;
+		$h->{update_found} = $h;
 	}
 	return $self;
 }

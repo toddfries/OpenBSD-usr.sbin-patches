@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Update.pm,v 1.158 2014/01/11 11:51:01 espie Exp $
+# $OpenBSD: Update.pm,v 1.161 2014/02/02 15:22:36 espie Exp $
 #
 # Copyright (c) 2004-2014 Marc Espie <espie@openbsd.org>
 #
@@ -109,7 +109,6 @@ sub process_handle
 	}
 
 	if ($plist->has('firmware') && !$state->defines('FW_UPDATE')) {
-		$h->{update_found} = $h;
 		$set->move_kept($h);
 		return 0;
 	}
@@ -142,8 +141,7 @@ sub process_handle
 	for my $n ($set->newer) {
 		if (($state->{hard_replace} ||
 		    $n->location->update_info->match_pkgpath($plist)) &&
-			defined $n->plist &&
-			$n->plist->conflict_list->conflicts_with($sname)) {
+			$n->conflict_list->conflicts_with($sname)) {
 				$self->add_handle($set, $h, $n);
 				return 1;
 		}
@@ -203,9 +201,7 @@ sub process_handle
 
 	if (@$l == 0) {
 		if ($oldfound) {
-			$h->{update_found} = $h;
 			$set->move_kept($h);
-
 			$self->progress_message($state,
 			    "No need to update #1", $pkgname);
 
@@ -274,7 +270,13 @@ sub process_hint
 	if (@$l == 0) {
 		my $t = $hint_name;
 		$t =~ s/\-\d([^-]*)\-?/--/;
-		$l = $set->match_locations(OpenBSD::Search::Stem->new($t), $k);
+		my @search = (OpenBSD::Search::Stem->new($t));
+		$state->run_quirks(
+		    sub {
+			my $quirks = shift;
+			$quirks->tweak_search(\@search, $hint, $state);
+		    });
+		$l = $set->match_locations(@search, $k);
 	}
 	if (@$l > 1) {
 		my $r = find_nearest($hint_name, $l);

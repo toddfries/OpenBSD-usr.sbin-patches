@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackingElement.pm,v 1.227 2014/01/11 11:51:01 espie Exp $
+# $OpenBSD: PackingElement.pm,v 1.231 2014/02/03 16:18:05 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -559,12 +559,12 @@ __PACKAGE__->register_with_factory;
 
 sub register_manpage
 {
-	my ($self, $state) = @_;
+	my ($self, $state, $key) = @_;
+	# XXX don't bother register stuff from partial packages
 	return if defined $self->{tempname};
 	my $fname = $self->fullname;
-	if ($fname =~ m,^(.*/man)/(?:man|cat).*?/,) {
-		my $d = $1;
-		push(@{$state->{mandirs}->{$d}}, $fname);
+	if ($fname =~ m,^(.*/man)/((?:man|cat).*),) {
+		push(@{$state->{$key}{$1}}, $2);
     	}
 }
 
@@ -711,21 +711,6 @@ sub keyword() { 'comment' }
 
 sub category() { 'cvstags'}
 
-package OpenBSD::PackingElement::md5;
-our @ISA=qw(OpenBSD::PackingElement::Annotation);
-
-__PACKAGE__->register_with_factory('md5');
-
-sub add
-{
-	my ($class, $plist, $args) = @_;
-
-	require OpenBSD::md5;
-
-	$plist->{state}->{lastchecksummable}->add_digest(OpenBSD::md5->fromstring($args));
-	return;
-}
-
 package OpenBSD::PackingElement::sha;
 our @ISA=qw(OpenBSD::PackingElement::Annotation);
 
@@ -751,13 +736,11 @@ sub add
 	my ($class, $plist, $args) = @_;
 
 	if ($args eq 'no checksum') {
-		$plist->{state}->{lastfile}->{nochecksum} = 1;
-	} elsif ($args eq 'no shadow') {
-		$plist->{state}->{lastdir}->{noshadow} = 1;
+		$plist->{state}{lastfile}{nochecksum} = 1;
 	} else {
-		my $object = $plist->{state}->{lastfileobject};
-		$object->{tags}->{$args} = 1;
-		push(@{$plist->{tags}->{$args}}, $object);
+		my $object = $plist->{state}{lastfileobject};
+		$object->{tags}{$args} = 1;
+		push(@{$plist->{tags}{$args}}, $object);
 	}
 	return undef;
 }
@@ -1387,9 +1370,6 @@ sub write
 {
 	my ($self, $fh) = @_;
 	$self->SUPER::write($fh);
-	if (defined $self->{noshadow}) {
-		print $fh "\@tag no shadow\n";
-	}
 }
 
 package OpenBSD::PackingElement::Dir;
@@ -1839,7 +1819,7 @@ sub register_old_keyword
 }
 
 for my $k (qw(src display mtree ignore_inst dirrm pkgcfl pkgdep newdepend
-    libdepend endfake ignore vendor incompatibility)) {
+    libdepend endfake ignore vendor incompatibility md5)) {
 	__PACKAGE__->register_old_keyword($k);
 }
 

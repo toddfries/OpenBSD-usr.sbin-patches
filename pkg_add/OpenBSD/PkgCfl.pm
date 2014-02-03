@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCfl.pm,v 1.37 2011/07/02 12:12:58 espie Exp $
+# $OpenBSD: PkgCfl.pm,v 1.39 2014/02/01 10:53:17 espie Exp $
 #
 # Copyright (c) 2003-2005 Marc Espie <espie@openbsd.org>
 #
@@ -31,9 +31,9 @@ sub make_conflict_list
 	my $stem = OpenBSD::PackageName::splitstem($pkgname);
 
 	unless (defined $plist->{'no-default-conflict'}) {
-		push(@$l, OpenBSD::Search::PkgSpec->new("$stem-*|partial-$stem-*"));
+		push(@$l, OpenBSD::Search::PkgSpec->new("$stem-*", 1));
 	} else {
-		push(@$l, OpenBSD::Search::Exact->new("$pkgname|partial-$pkgname"));
+		push(@$l, OpenBSD::Search::Exact->new($pkgname, 1));
 	}
 	if (defined $plist->{conflict}) {
 		for my $cfl (@{$plist->{conflict}}) {
@@ -72,13 +72,13 @@ sub register($$)
 {
 	my ($plist, $state) = @_;
 
-	$state->{conflict_list}->{$plist->pkgname} = $plist->conflict_list;
+	$state->{conflict_list}{$plist->pkgname} = $plist->conflict_list;
 }
 
 sub unregister($$)
 {
 	my ($plist, $state) = @_;
-	delete $state->{conflict_list}->{$plist->pkgname};
+	delete $state->{conflict_list}{$plist->pkgname};
 }
 
 sub fill_conflict_lists($)

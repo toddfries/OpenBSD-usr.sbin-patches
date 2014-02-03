@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.46 2014/01/17 15:54:06 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.57 2014/02/03 13:47:20 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -211,7 +211,7 @@ sub add
 	my ($self, $handle, $state) = @_;
 	return if $self->{done}{$handle};
 	$self->{done}{$handle} = 1;
-	for my $conflict (OpenBSD::PkgCfl::find_all($handle->plist, $state)) {
+	for my $conflict (OpenBSD::PkgCfl::find_all($handle, $state)) {
 		$self->{c}{$conflict} = 1;
 	}
 }
@@ -277,61 +277,58 @@ sub setup_header
 	}
 }
 
+sub find_kept_handle
+{
+	my ($set, $n,  $state) = @_;
+	unless (defined $n->{location} && defined $n->{location}{update_info}) {
+		$n->complete($state);
+	}
+	my $plist = $n->dependency_info;
+	return if !defined $plist;
+	my $pkgname = $plist->pkgname;
+	# condition for no update
+	unless (is_installed($pkgname) &&
+	    (!$state->{allow_replacing} ||
+	      !$state->defines('installed') &&
+	      !$plist->has_different_sig($state) &&
+	      !$plist->uses_old_libs)) {
+	      	return;
+	}
+	my $o = $set->{older}{$pkgname};
+	if (!defined $o) {
+		$o = OpenBSD::Handle->create_old($pkgname, $state);
+		if (!defined $o->pkgname) {
+			$state->{bad}++;
+			$set->cleanup(OpenBSD::Handle::CANT_INSTALL, 
+			    "Bogus package already installed");
+		    	return;
+		}
+	}
+	$set->move_kept($o);
+	$o->{tweaked} =
+	    OpenBSD::Add::tweak_package_status($pkgname, $state);
+	$state->updater->progress_message($state, "No change in $pkgname");
+	delete $set->{newer}{$pkgname};
+	$n->cleanup;
+}
+
+sub figure_out_kept
+{
+	my ($set, $state) = @_;
+
+	for my $n ($set->newer) {
+		$set->find_kept_handle($n, $state);
+	}
+}
+
 sub complete
 {
 	my ($set, $state) = @_;
 
 	for my $n ($set->newer) {
-		if (defined $n->{location} && defined $n->{location}{update_info}) {
-			my $plist = $n->{location}{update_info};
-			my $pkgname = $plist->pkgname;
-			if (is_installed($pkgname) &&
-			    (!$state->{allow_replacing} ||
-			      !$state->defines('installed') &&
-			      !$plist->has_different_sig($state) &&
-			      !$plist->uses_old_libs)) {
-				my $o = $set->{older}->{$pkgname};
-				if (!defined $o) {
-					$o = OpenBSD::Handle->create_old($pkgname, $state);
-					$set->add_older($o);
-				}
-				$o->{update_found} = $o;
-				$set->move_kept($o);
-				$o->{tweaked} =
-				    OpenBSD::Add::tweak_package_status($pkgname, $state);
-				$state->updater->progress_message($state, "No change in $pkgname");
-				delete $set->{newer}->{$pkgname};
-				$n->cleanup;
-				next;
-			}
-		}
 		$n->complete($state);
-		my $pkgname = $n->pkgname;
 		my $plist = $n->plist;
 		return 1 if !defined $plist;
-		if (is_installed($pkgname) &&
-		    (!$state->{allow_replacing} ||
-		      !$state->defines('installed') &&
-		      !$plist->has_different_sig($state) &&
-		      !$plist->uses_old_libs)) {
-		      	my $o = $set->{older}->{$pkgname};
-			if (!defined $o) {
-				$o = OpenBSD::Handle->create_old($pkgname, $state);
-				if (!defined $o->pkgname) {
-					$state->{bad}++;
-					$set->cleanup(OpenBSD::Handle::CANT_INSTALL, "Bogus package already installed");
-					return 1;
-				}
-				$set->add_older($o);
-			}
-			$o->{update_found} = $o;
-			$set->move_kept($o);
-			$o->{tweaked} =
-			    OpenBSD::Add::tweak_package_status($pkgname, $state);
-			$state->updater->progress_message($state, "No change in $pkgname");
-			delete $set->{newer}->{$pkgname};
-			$n->cleanup;
-		}
 		return 1 if $n->has_error;
 	}
 	for my $o ($set->older) {
@@ -378,7 +375,7 @@ sub updates
 	if (!$n->location->update_info->match_pkgpath($plist)) {
 		return 0;
 	}
-	if (!$n->plist->conflict_list->conflicts_with($plist->pkgname)) {
+	if (!$n->conflict_list->conflicts_with($plist->pkgname)) {
 		return 0;
 	}
 	my $r = OpenBSD::PackageName->from_string($n->pkgname)->compare(
@@ -439,8 +436,8 @@ sub install_issues
 			return "replacing just installed";
 		}
 
-		next if defined $set->{older}->{$toreplace};
-		next if defined $set->{kept}->{$toreplace};
+		next if defined $set->{older}{$toreplace};
+		next if defined $set->{kept}{$toreplace};
 
 		$later = 1;
 		my $s = $state->tracker->is_to_update($toreplace);
@@ -542,7 +539,7 @@ sub recheck_conflicts
 	for my $h ($set->newer, $set->kept) {
 		for my $h2 ($set->newer, $set->kept) {
 			next if $h2 == $h;
-			if ($h->plist->conflict_list->conflicts_with($h2->pkgname)) {
+			if ($h->conflict_list->conflicts_with($h2->pkgname)) {
 				$state->errsay("#1: internal conflict between #2 and #3",
 				    $set->print, $h->pkgname, $h2->pkgname);
 				return 0;
@@ -568,10 +565,10 @@ use OpenBSD::Error;
 
 sub failed_message
 {
-	my ($base_msg, $interrupted, @l) = @_;
+	my ($base_msg, $received, @l) = @_;
 	my $msg = $base_msg;
-	if ($interrupted) {
-		$msg = "Caught SIG$interrupted. $msg";
+	if ($received) {
+		$msg = "Caught SIG$received. $msg";
 	}
 	if (@l > 0) {
 		$msg.= ", partial installation recorded as ".join(',', @l);
@@ -595,7 +592,7 @@ sub save_partial_set
 sub partial_install
 {
 	my ($base_msg, $set, $state) = @_;
-	return failed_message($base_msg, $state->{interrupted}, save_partial_set($set, $state));
+	return failed_message($base_msg, $state->{received}, save_partial_set($set, $state));
 }
 
 sub build_before
@@ -692,7 +689,7 @@ sub delete_old_packages
 		if (defined $state->{updatedepends}) {
 			delete $state->{updatedepends}->{$oldname};
 		}
-		OpenBSD::PkgCfl::unregister($o->plist, $state);
+		OpenBSD::PkgCfl::unregister($o, $state);
 	});
 	$set->cleanup_old_shared($state);
 	# Here there should be code to handle old libs
@@ -726,13 +723,21 @@ sub really_add
 	$state->{replacing} = $replacing;
 
 	my $handler = sub {
-		$state->{interrupted} = shift;
+		$state->{received} = shift;
+		$state->errsay("Interrupted");
+		if ($state->{hardkill}) {
+			delete $state->{hardkill};
+			return;
+		}
+		$state->{interrupted}++;
 	};
 	local $SIG{'INT'} = $handler;
 	local $SIG{'QUIT'} = $handler;
 	local $SIG{'HUP'} = $handler;
 	local $SIG{'KILL'} = $handler;
 	local $SIG{'TERM'} = $handler;
+
+	$state->{hardkill} = $state->{delete_first};
 
 	if ($replacing) {
 		require OpenBSD::OldLibs;
@@ -762,6 +767,7 @@ sub really_add
 		}
 	}
 	if (!$state->{delete_first}) {
+		$state->{hardkill} = 1;
 		delete_old_packages($set, $state);
 	}
 
@@ -796,15 +802,15 @@ sub really_add
 		my $plist = $handle->plist;
 		OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
 		OpenBSD::Add::tweak_plist_status($plist, $state);
-		$plist->to_cache;
 		OpenBSD::Add::register_installation($plist, $state);
 		add_installed($pkgname);
 		delete $handle->{partial};
-		OpenBSD::PkgCfl::register($plist, $state);
+		OpenBSD::PkgCfl::register($handle, $state);
 		if ($plist->has(DISPLAY)) {
 			$plist->get(DISPLAY)->prepare($state);
 		}
 	}
+	delete $state->{partial};
 	$set->{solver}->register_dependencies($state);
 	if ($replacing) {
 		$set->{forward}->adjust($state);
@@ -814,6 +820,9 @@ sub really_add
 	}
 	delete $state->{delete_first};
 	$state->syslog("Added #1", $set->print);
+	if ($state->{received}) {
+		die "interrupted";
+	}
 }
 
 sub newer_has_errors
@@ -867,13 +876,7 @@ sub process_set
 		}
 	}
 
-	if (!$set->complete($state)) {
-		return $set;
-	}
-
-	if (newer_has_errors($set, $state)) {
-		return ();
-	}
+	$set->figure_out_kept($state);
 
 	my @deps = $set->solver->solve_depends($state);
 	if ($state->verbose >= 2) {
@@ -883,6 +886,14 @@ sub process_set
 		$state->build_deptree($set, @deps);
 		$set->solver->check_for_loops($state);
 		return (@deps, $set);
+	}
+
+	if (!$set->complete($state)) {
+		return $set;
+	}
+
+	if (newer_has_errors($set, $state)) {
+		return ();
 	}
 
 	if ($set->older_to_do) {
@@ -938,18 +949,19 @@ sub process_set
 		}
 	}
 	if ($set->newer > 0 && $set->older_to_do > 0 && !$state->defines('donttie')) {
-		$set->{sha} = {};
+		my $sha = {};
 
 		for my $o ($set->older_to_do) {
-			$o->{plist}->hash_files($set->{sha}, $state);
+			$o->{plist}->hash_files($sha, $state);
 		}
 		for my $n ($set->newer) {
-			$n->{plist}->tie_files($set->{sha}, $state);
+			$n->{plist}->tie_files($sha, $state);
 		}
 	}
 	if ($set->newer > 0 || $set->older_to_do > 0) {
 		for my $h ($set->newer) {
 			$h->plist->set_infodir($h->location->info);
+			delete $h->location->{contents};
 		}
 
 		if (!$set->validate_plists($state)) {
@@ -1071,7 +1083,14 @@ sub finish_display
 	OpenBSD::Add::manpages_index($state);
 
 	# and display delayed thingies.
-	if ($state->{packages_without_sig}) {
+	my $warn = 1;
+	if ($state->defines("unsigned")) {
+		$warn = 0;
+	}
+	if ($state->{packages_with_sig}) {
+		$warn = 1;
+	}
+	if ($warn && $state->{packages_without_sig}) {
 		print "UNSIGNED PACKAGES: ",
 		    join(', ', keys %{$state->{packages_without_sig}}), "\n";
 	}

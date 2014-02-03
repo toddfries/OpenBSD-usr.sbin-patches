@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.143 2014/01/17 15:54:06 espie Exp $
+# $OpenBSD: Add.pm,v 1.147 2014/02/03 16:13:13 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -28,12 +28,12 @@ use File::Copy;
 sub manpages_index
 {
 	my ($state) = @_;
-	return unless defined $state->{mandirs};
+	return unless defined $state->{addman};
 	my $destdir = $state->{destdir};
 	require OpenBSD::Makewhatis;
 
-	while (my ($k, $v) = each %{$state->{mandirs}}) {
-		my @l = map { $destdir.$_ } @$v;
+	while (my ($k, $v) = each %{$state->{addman}}) {
+		my @l = map { "$destdir$k/$_" } @$v;
 		if ($state->{not}) {
 			$state->say("Merging manpages in #1: #2",
 			    $destdir.$k, join(' ', @l))
@@ -47,17 +47,21 @@ sub manpages_index
 			};
 		}
 	}
+	delete $state->{addman};
 }
 
 sub register_installation
 {
 	my ($plist, $state) = @_;
-	return if $state->{not};
-	my $dest = installed_info($plist->pkgname);
-	mkdir($dest);
-	$plist->copy_info($dest, $state);
-	$plist->set_infodir($dest);
-	$plist->to_installation;
+	if ($state->{not}) {
+		$plist->to_cache;
+	} else {
+		my $dest = installed_info($plist->pkgname);
+		mkdir($dest);
+		$plist->copy_info($dest, $state);
+		$plist->set_infodir($dest);
+		$plist->to_installation;
+	}
 }
 
 sub validate_plist
@@ -91,7 +95,7 @@ sub record_partial_installation
 				    $last->{d}->stringize);
 			}
 		} else {
-			undef $last->{d};
+			delete $last->{d};
 		}
 	}
 	register_installation($n, $state);
@@ -102,6 +106,7 @@ sub perform_installation
 {
 	my ($handle, $state) = @_;
 
+	$state->{partial} = $handle->{partial};
 	$state->progress->visit_with_size($handle->{plist}, 'install', $state);
 	$handle->{location}->finish_and_close;
 }
@@ -184,7 +189,7 @@ sub prepare_for_addition
 sub extract
 {
 	my ($self, $state) = @_;
-	$state->{partial}->{$self} = 1;
+	$state->{partial}{$self} = 1;
 	if ($state->{interrupted}) {
 		die "Interrupted";
 	}
@@ -193,7 +198,9 @@ sub extract
 sub install
 {
 	my ($self, $state) = @_;
-	$state->{partial}->{$self} = 1;
+	# XXX "normal" items are already in partial, but NOT stuff
+	# that's install-only, like symlinks and dirs...
+	$state->{partial}{$self} = 1;
 	if ($state->{interrupted}) {
 		die "Interrupted";
 	}
@@ -352,14 +359,6 @@ sub install
 	$state->vsystem(OpenBSD::Paths->sysctl, '--', $name.'='.$self->{value});
 }
 
-package OpenBSD::PackingElement::DirBase;
-sub prepare_for_addition
-{
-	my ($self, $state, $pkgname) = @_;
-	return unless $self->{noshadow};
-	$state->{noshadow}->{$state->{destdir}.$self->fullname} = 1;
-}
-
 package OpenBSD::PackingElement::FileBase;
 use OpenBSD::Error;
 use File::Basename;
@@ -453,7 +452,7 @@ sub extract
 	my $d = dirname($file->{destdir}.$file->name);
 	# we go back up until we find an existing directory.
 	# hopefully this will be on the same file system.
-	while (!-d $d && -e _ || defined $state->{noshadow}->{$d}) {
+	while (!-d $d && -e _) {
 		$d = dirname($d);
 	}
 	if ($state->{not}) {
@@ -525,7 +524,7 @@ sub install
 		$state->say("moving #1 -> #2",
 		    $self->{tempname}, $destdir.$fullname)
 			if $state->verbose >= 5;
-		undef $self->{tempname};
+		delete $self->{tempname};
 	}
 	$self->set_modes($state, $destdir.$fullname);
 }
@@ -638,7 +637,7 @@ sub install
 {
 	my ($self, $state) = @_;
 	$self->SUPER::install($state);
-	$self->register_manpage($state);
+	$self->register_manpage($state, 'addman');
 }
 
 package OpenBSD::PackingElement::InfoFile;

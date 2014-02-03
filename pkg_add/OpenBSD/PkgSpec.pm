@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgSpec.pm,v 1.39 2011/08/31 22:50:21 espie Exp $
+# $OpenBSD: PkgSpec.pm,v 1.43 2014/02/03 12:03:01 espie Exp $
 #
 # Copyright (c) 2003-2007 Marc Espie <espie@openbsd.org>
 #
@@ -295,7 +295,7 @@ sub add_flavor_constraints
 
 sub new
 {
-	my ($class, $p) = @_;
+	my ($class, $p, $with_partial) = @_;
 
 	my $r = $class->parse($p);
 	if (defined $r) {
@@ -305,11 +305,17 @@ sub new
 		$class->add_flavor_constraints($constraints, $r->{flavorspec});
 
 		my $o = bless {
-			exactstem => qr{^$stemspec$},
-			fuzzystem => qr{^$stemspec\-\d.*$},
 			libstem => qr{^\.libs\d*\-$stemspec\-\d.*$},
-			constraints => $constraints,
 		    }, $class;
+
+		if ($with_partial) {
+			$o->{fuzzystem} = qr{^(?:partial\-)*$stemspec\-\d.*$};
+		} else {
+			$o->{fuzzystem} = qr{^$stemspec\-\d.*$};
+		}
+		if (@$constraints != 0) {
+			$o->{constraints} = $constraints;
+		}
 		if (defined $r->{e}) {
 			$o->{e} = 1;
 		}
@@ -327,9 +333,10 @@ sub match_ref
 LOOP1:
 	for my $s (grep(/$o->{fuzzystem}/, @$list)) {
 		my $name = OpenBSD::PackageName->from_string($s);
-		next unless $name->{stem} =~ m/^$o->{exactstem}$/;
-		for my $c (@{$o->{constraints}}) {
-			next LOOP1 unless $c->match($name);
+		if (defined $o->{constraints}) {
+			for my $c (@{$o->{constraints}}) {
+				next LOOP1 unless $c->match($name);
+			}
 		}
 		if (wantarray) {
 			push(@result, $s);
@@ -356,9 +363,10 @@ sub match_locations
 LOOP2:
 	for my $s (grep { $_->name =~ m/$o->{fuzzystem}/} @$list) {
 		my $name = $s->pkgname;
-		next unless $name->{stem} =~ m/^$o->{exactstem}$/;
-		for my $c (@{$o->{constraints}}) {
-			next LOOP2 unless $c->match($name);
+		if (defined $o->{constraints}) {
+			for my $c (@{$o->{constraints}}) {
+				next LOOP2 unless $c->match($name);
+			}
 		}
 		push(@$result, $s);
 	}
@@ -376,8 +384,8 @@ sub subpattern_class
 { "OpenBSD::PkgSpec::SubPattern" }
 sub new
 {
-	my ($class, $pattern) = @_;
-	my @l = map { $class->subpattern_class->new($_) }
+	my ($class, $pattern, $with_partial) = @_;
+	my @l = map { $class->subpattern_class->new($_, $with_partial) }
 		(split /\|/o, $pattern);
 	if (@l == 1) {
 		return $l[0];
