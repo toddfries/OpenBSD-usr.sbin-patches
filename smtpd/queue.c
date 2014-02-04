@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue.c,v 1.156 2013/11/20 09:22:42 eric Exp $	*/
+/*	$OpenBSD: queue.c,v 1.159 2014/02/04 15:44:05 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -67,10 +67,10 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 	const char		*reason;
 	uint64_t		 reqid, evpid, holdq;
 	uint32_t		 msgid;
-	uint32_t		 penalty;
 	time_t			 nexttry;
-	int			 fd, ret, v, flags;
+	int			 fd, mta_ext, ret, v, flags, code;
 
+	memset(&bounce, 0, sizeof(struct delivery_bounce));
 	if (p->proc == PROC_SMTP) {
 
 		switch (imsg->hdr.type) {
@@ -214,9 +214,9 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 				return;
 
 			bounce.type = B_ERROR;
-			bounce.delay = 0;
-			bounce.expire = 0;
 			envelope_set_errormsg(&evp, "Envelope expired");
+			envelope_set_esc_class(&evp, ESC_STATUS_TEMPFAIL);
+			envelope_set_esc_code(&evp, ESC_DELIVERY_TIME_EXPIRED);
 			queue_bounce(&evp, &bounce);
 			queue_log(&evp, "Expire", "Envelope expired");
 			queue_envelope_delete(evpid);
@@ -336,7 +336,25 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 		case IMSG_DELIVERY_OK:
 			m_msg(&m, imsg);
 			m_get_evpid(&m, &evpid);
+			if (p->proc == PROC_MTA)
+				m_get_int(&m, &mta_ext);
 			m_end(&m);
+			if (queue_envelope_load(evpid, &evp) == 0) {
+				log_warn("queue: dsn: failed to load envelope");
+				return;
+			}
+			if (evp.dsn_notify & DSN_SUCCESS) {
+				bounce.type = B_DSN;
+				bounce.dsn_ret = evp.dsn_ret;
+
+				if (p->proc == PROC_MDA)
+					queue_bounce(&evp, &bounce);
+				else if (p->proc == PROC_MTA &&
+				    (mta_ext & MTA_EXT_DSN) == 0) {
+					bounce.mta_without_dsn = 1;
+					queue_bounce(&evp, &bounce);
+				}
+			}
 			queue_envelope_delete(evpid);
 			m_create(p_scheduler, IMSG_DELIVERY_OK, 0, 0, -1);
 			m_add_evpid(p_scheduler, evpid);
@@ -346,8 +364,8 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 		case IMSG_DELIVERY_TEMPFAIL:
 			m_msg(&m, imsg);
 			m_get_evpid(&m, &evpid);
-			m_get_u32(&m, &penalty);
 			m_get_string(&m, &reason);
+			m_get_int(&m, &code);
 			m_end(&m);
 			if (queue_envelope_load(evpid, &evp) == 0) {
 				log_warnx("queue: tempfail: failed to load envelope");
@@ -358,12 +376,13 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 				return;
 			}
 			envelope_set_errormsg(&evp, "%s", reason);
+			envelope_set_esc_class(&evp, ESC_STATUS_TEMPFAIL);
+			envelope_set_esc_code(&evp, code);
 			evp.retry++;
 			if (!queue_envelope_update(&evp))
 				log_warnx("warn: could not update envelope %016"PRIx64, evpid);
 			m_create(p_scheduler, IMSG_DELIVERY_TEMPFAIL, 0, 0, -1);
 			m_add_envelope(p_scheduler, &evp);
-			m_add_u32(p_scheduler, penalty);
 			m_close(p_scheduler);
 			return;
 
@@ -371,6 +390,7 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 			m_msg(&m, imsg);
 			m_get_evpid(&m, &evpid);
 			m_get_string(&m, &reason);
+			m_get_int(&m, &code);
 			m_end(&m);
 			if (queue_envelope_load(evpid, &evp) == 0) {
 				log_warnx("queue: permfail: failed to load envelope");
@@ -381,9 +401,9 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 				return;
 			}
 			bounce.type = B_ERROR;
-			bounce.delay = 0;
-			bounce.expire = 0;
 			envelope_set_errormsg(&evp, "%s", reason);
+			envelope_set_esc_class(&evp, ESC_STATUS_PERMFAIL);
+			envelope_set_esc_code(&evp, code);
 			queue_bounce(&evp, &bounce);
 			queue_envelope_delete(evpid);
 			m_create(p_scheduler, IMSG_DELIVERY_PERMFAIL, 0, 0, -1);
@@ -404,9 +424,9 @@ queue_imsg(struct mproc *p, struct imsg *imsg)
 				return;
 			}
 			envelope_set_errormsg(&evp, "%s", "Loop detected");
+			envelope_set_esc_class(&evp, ESC_STATUS_TEMPFAIL);
+			envelope_set_esc_code(&evp, ESC_ROUTING_LOOP_DETECTED);
 			bounce.type = B_ERROR;
-			bounce.delay = 0;
-			bounce.expire = 0;
 			queue_bounce(&evp, &bounce);
 			queue_envelope_delete(evp.id);
 			m_create(p_scheduler, IMSG_DELIVERY_LOOP, 0, 0, -1);
@@ -482,6 +502,9 @@ queue_bounce(struct envelope *e, struct delivery_bounce *d)
 	b.lasttry = 0;
 	b.creation = time(NULL);
 	b.expire = 3600 * 24 * 7;
+
+	if (e->dsn_notify & DSN_NEVER)
+		return;
 
 	if (b.id == 0)
 		log_warnx("warn: queue_bounce: evpid=0");
@@ -590,8 +613,6 @@ queue(void)
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGHUP, SIG_IGN);
 
-	fdlimit(1.0);
-
 	config_peer(PROC_PARENT);
 	config_peer(PROC_CONTROL);
 	config_peer(PROC_SMTP);
@@ -662,21 +683,22 @@ queue_ok(uint64_t evpid)
 }
 
 void
-queue_tempfail(uint64_t evpid, uint32_t penalty, const char *reason)
+queue_tempfail(uint64_t evpid, const char *reason, enum enhanced_status_code code)
 {
 	m_create(p_queue, IMSG_DELIVERY_TEMPFAIL, 0, 0, -1);
 	m_add_evpid(p_queue, evpid);
-	m_add_u32(p_queue, penalty);
 	m_add_string(p_queue, reason);
+	m_add_int(p_queue, (int)code);
 	m_close(p_queue);
 }
 
 void
-queue_permfail(uint64_t evpid, const char *reason)
+queue_permfail(uint64_t evpid, const char *reason, enum enhanced_status_code code)
 {
 	m_create(p_queue, IMSG_DELIVERY_PERMFAIL, 0, 0, -1);
 	m_add_evpid(p_queue, evpid);
 	m_add_string(p_queue, reason);
+	m_add_int(p_queue, (int)code);
 	m_close(p_queue);
 }
 

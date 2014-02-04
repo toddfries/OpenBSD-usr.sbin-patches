@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd-api.h,v 1.13 2013/12/05 09:26:47 eric Exp $	*/
+/*	$OpenBSD: smtpd-api.h,v 1.16 2014/02/04 15:44:06 eric Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -164,7 +164,6 @@ struct scheduler_info {
 	time_t			lasttry;
 	time_t			lastbounce;
 	time_t			nexttry;
-	uint8_t			penalty;
 };
 
 #define SCHED_NONE		0x00
@@ -177,6 +176,7 @@ struct scheduler_info {
 #define SCHED_MTA		0x40
 
 struct scheduler_batch {
+	int		 mask;
 	int		 type;
 	time_t		 delay;
 	size_t		 evpcount;
@@ -184,6 +184,11 @@ struct scheduler_batch {
 };
 
 #define PROC_TABLE_API_VERSION	1
+
+struct table_open_params {
+	uint32_t	version;
+	char		name[SMTPD_MAXLINESIZE];
+};
 
 enum table_service {
 	K_NONE		= 0x00,
@@ -207,6 +212,79 @@ enum {
 	PROC_TABLE_CHECK,
 	PROC_TABLE_LOOKUP,
 	PROC_TABLE_FETCH,
+};
+
+enum enhanced_status_code {
+	/* 0.0 */
+	ESC_OTHER_STATUS				= 00,
+
+	/* 1.x */
+	ESC_OTHER_ADDRESS_STATUS			= 10,
+	ESC_BAD_DESTINATION_MAILBOX_ADDRESS		= 11,
+	ESC_BAD_DESTINATION_SYSTEM_ADDRESS		= 12,
+	ESC_BAD_DESTINATION_MAILBOX_ADDRESS_SYNTAX     	= 13,
+	ESC_DESTINATION_MAILBOX_ADDRESS_AMBIGUOUS	= 14,
+	ESC_DESTINATION_ADDRESS_VALID			= 15,
+	ESC_DESTINATION_MAILBOX_HAS_MOVED      		= 16,
+	ESC_BAD_SENDER_MAILBOX_ADDRESS_SYNTAX		= 17,
+	ESC_BAD_SENDER_SYSTEM_ADDRESS			= 18,
+
+	/* 2.x */
+	ESC_OTHER_MAILBOX_STATUS			= 20,
+	ESC_MAILBOX_DISABLED				= 21,
+	ESC_MAILBOX_FULL				= 22,
+	ESC_MESSAGE_LENGTH_TOO_LARGE   			= 23,
+	ESC_MAILING_LIST_EXPANSION_PROBLEM		= 24,
+
+	/* 3.x */
+	ESC_OTHER_MAIL_SYSTEM_STATUS			= 30,
+	ESC_MAIL_SYSTEM_FULL				= 31,
+	ESC_SYSTEM_NOT_ACCEPTING_MESSAGES		= 32,
+	ESC_SYSTEM_NOT_CAPABLE_OF_SELECTED_FEATURES    	= 33,
+	ESC_MESSAGE_TOO_BIG_FOR_SYSTEM		    	= 34,
+	ESC_SYSTEM_INCORRECTLY_CONFIGURED      	    	= 35,
+
+	/* 4.x */
+	ESC_OTHER_NETWORK_ROUTING_STATUS      	    	= 40,
+	ESC_NO_ANSWER_FROM_HOST		      	    	= 41,
+	ESC_BAD_CONNECTION		      	    	= 42,
+	ESC_DIRECTORY_SERVER_FAILURE   	      	    	= 43,
+	ESC_UNABLE_TO_ROUTE	   	      	    	= 44,
+	ESC_MAIL_SYSTEM_CONGESTION   	      	    	= 45,
+	ESC_ROUTING_LOOP_DETECTED   	      	    	= 46,
+	ESC_DELIVERY_TIME_EXPIRED   	      	    	= 47,
+
+	/* 5.x */
+	ESC_OTHER_PROTOCOL_STATUS   	      	    	= 50,
+	ESC_INVALID_COMMAND	   	      	    	= 51,
+	ESC_SYNTAX_ERROR	   	      	    	= 52,
+	ESC_TOO_MANY_RECIPIENTS	   	      	    	= 53,
+	ESC_INVALID_COMMAND_ARGUMENTS  	      	    	= 54,
+	ESC_WRONG_PROTOCOL_VERSION  	      	    	= 55,
+
+	/* 6.x */
+	ESC_OTHER_MEDIA_ERROR   	      	    	= 60,
+	ESC_MEDIA_NOT_SUPPORTED   	      	    	= 61,
+	ESC_CONVERSION_REQUIRED_AND_PROHIBITED		= 62,
+	ESC_CONVERSION_REQUIRED_BUT_NOT_SUPPORTED      	= 63,
+	ESC_CONVERSION_WITH_LOSS_PERFORMED	     	= 64,
+	ESC_CONVERSION_FAILED			     	= 65,
+
+	/* 7.x */
+	ESC_OTHER_SECURITY_STATUS      		     	= 70,
+	ESC_DELIVERY_NOT_AUTHORIZED_MESSAGE_REFUSED	= 71,
+	ESC_MAILING_LIST_EXPANSION_PROHIBITED		= 72,
+	ESC_SECURITY_CONVERSION_REQUIRED_NOT_POSSIBLE  	= 73,
+	ESC_SECURITY_FEATURES_NOT_SUPPORTED	  	= 74,
+	ESC_CRYPTOGRAPHIC_FAILURE			= 75,
+	ESC_CRYPTOGRAPHIC_ALGORITHM_NOT_SUPPORTED	= 76,
+	ESC_MESSAGE_INTEGRITY_FAILURE			= 77,
+};
+
+enum enhanced_status_class {
+	ESC_STATUS_OK		= 2,
+	ESC_STATUS_TEMPFAIL	= 4,
+	ESC_STATUS_PERMFAIL	= 5,
 };
 
 static inline uint32_t
@@ -237,6 +315,12 @@ int dict_root(struct dict *, const char **, void **);
 int dict_iter(struct dict *, void **, const char **, void **);
 int dict_iterfrom(struct dict *, void **, const char *, const char **, void **);
 void dict_merge(struct dict *, struct dict *);
+
+
+/* esc.c */
+const char *esc_code(enum enhanced_status_class, enum enhanced_status_code);
+const char *esc_description(enum enhanced_status_code);
+
 
 /* filter_api.c */
 void filter_api_setugid(uid_t, gid_t);
@@ -298,6 +382,7 @@ void table_api_on_check(int(*)(int, const char *));
 void table_api_on_lookup(int(*)(int, const char *, char *, size_t));
 void table_api_on_fetch(int(*)(int, char *, size_t));
 int table_api_dispatch(void);
+const char *table_api_get_name(void);
 
 /* tree.c */
 #define tree_init(t) do { SPLAY_INIT(&((t)->tree)); (t)->count = 0; } while(0)

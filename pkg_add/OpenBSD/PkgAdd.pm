@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.57 2014/02/03 13:47:20 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.59 2014/02/04 23:39:16 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -461,7 +461,8 @@ sub install_issues
 			$state->fatal("can't find #1 in installation", $name);
 		}
 		if ($old->has_error(OpenBSD::Handle::BAD_PACKAGE)) {
-			$state->fatal("couldn't find packing-list for #1", $name);
+			$state->fatal("couldn't find packing-list for #1", 
+			    $name);
 		}
 
 		if ($old->plist->has('manual-installation')) {
@@ -843,7 +844,15 @@ sub newer_has_errors
 			$state->tracker->cant($set);
 			return 1;
 		}
+	}
+	return 0;
+}
 
+sub newer_is_bad_arch
+{
+	my ($set, $state) = @_;
+
+	for my $handle ($set->newer) {
 		if ($handle->plist->has('arch')) {
 			unless ($handle->plist->{arch}->check($state->{arch})) {
 				$state->set_name_from_handle($handle);
@@ -878,6 +887,10 @@ sub process_set
 
 	$set->figure_out_kept($state);
 
+	if (newer_has_errors($set, $state)) {
+		return ();
+	}
+
 	my @deps = $set->solver->solve_depends($state);
 	if ($state->verbose >= 2) {
 		$set->solver->dump($state);
@@ -893,6 +906,10 @@ sub process_set
 	}
 
 	if (newer_has_errors($set, $state)) {
+		return ();
+	}
+
+	if (newer_is_bad_arch($set, $state)) {
 		return ();
 	}
 
@@ -990,7 +1007,8 @@ sub inform_user_of_problems
 			$quirks->filter_obsolete(\@cantupdate, $state);
 		    });
 
-		$state->say("Couldn't find updates for #1", join(', ', @cantupdate));
+		$state->say("Couldn't find updates for #1", 
+		    join(', ', sort @cantupdate));
 	}
 	if (defined $state->{issues}) {
 		$state->say("There were some ambiguities. ".

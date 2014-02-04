@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.22 2013/12/26 17:25:32 eric Exp $	*/
+/*	$OpenBSD: config.c,v 1.24 2014/02/04 13:44:41 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -20,6 +20,7 @@
 #include <sys/queue.h>
 #include <sys/tree.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
 
 #include <event.h>
 #include <imsg.h>
@@ -42,7 +43,7 @@ purge_config(uint8_t what)
 	struct listener	*l;
 	struct table	*t;
 	struct rule	*r;
-	struct ssl	*s;
+	struct pki	*p;
 
 	if (what & PURGE_LISTENERS) {
 		while ((l = TAILQ_FIRST(env->sc_listeners)) != NULL) {
@@ -66,16 +67,16 @@ purge_config(uint8_t what)
 		free(env->sc_rules);
 		env->sc_rules = NULL;
 	}
-	if (what & PURGE_SSL) {
-		while (dict_poproot(env->sc_ssl_dict, (void **)&s)) {
-			memset(s->ssl_cert, 0, s->ssl_cert_len);
-			memset(s->ssl_key, 0, s->ssl_key_len);
-			free(s->ssl_cert);
-			free(s->ssl_key);
-			free(s);
+	if (what & PURGE_PKI) {
+		while (dict_poproot(env->sc_pki_dict, (void **)&p)) {
+			memset(p->pki_cert, 0, p->pki_cert_len);
+			memset(p->pki_key, 0, p->pki_key_len);
+			free(p->pki_cert);
+			free(p->pki_key);
+			free(p);
 		}
-		free(env->sc_ssl_dict);
-		env->sc_ssl_dict = NULL;
+		free(env->sc_pki_dict);
+		env->sc_pki_dict = NULL;
 	}
 }
 
@@ -99,8 +100,16 @@ init_pipes(void)
 void
 config_process(enum smtp_proc_type proc)
 {
+	struct rlimit rl;
+
 	smtpd_process = proc;
 	setproctitle("%s", proc_title(proc));
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
+		fatal("fdlimit: getrlimit");
+	rl.rlim_cur = rl.rlim_max;
+	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
+		fatal("fdlimit: setrlimit");
 }
 
 void

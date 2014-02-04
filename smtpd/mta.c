@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta.c,v 1.178 2013/12/26 17:25:32 eric Exp $	*/
+/*	$OpenBSD: mta.c,v 1.182 2014/02/04 15:44:05 eric Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -125,11 +125,25 @@ static const char *mta_route_to_text(struct mta_route *);
 static int mta_route_cmp(const struct mta_route *, const struct mta_route *);
 SPLAY_PROTOTYPE(mta_route_tree, mta_route, entry, mta_route_cmp);
 
+struct mta_block {
+	SPLAY_ENTRY(mta_block)	 entry;
+	struct mta_source	*source;
+	char			*domain;
+};
+
+SPLAY_HEAD(mta_block_tree, mta_block);
+void mta_block(struct mta_source *, char *);
+void mta_unblock(struct mta_source *, char *);
+int mta_is_blocked(struct mta_source *, char *);
+static int mta_block_cmp(const struct mta_block *, const struct mta_block *);
+SPLAY_PROTOTYPE(mta_block_tree, mta_block, entry, mta_block_cmp);
+
 static struct mta_relay_tree		relays;
 static struct mta_domain_tree		domains;
 static struct mta_host_tree		hosts;
 static struct mta_source_tree		sources;
 static struct mta_route_tree		routes;
+static struct mta_block_tree		blocks;
 
 static struct tree wait_mx;
 static struct tree wait_preference;
@@ -170,7 +184,9 @@ mta_imsg(struct mproc *p, struct imsg *imsg)
 	struct mta_domain	*domain;
 	struct mta_host		*host;
 	struct mta_route	*route;
+	struct mta_block	*block;
 	struct mta_mx		*mx, *imx;
+	struct mta_source	*source;
 	struct hoststat		*hs;
 	struct mta_envelope	*e;
 	struct sockaddr_storage	 ss;
@@ -178,6 +194,7 @@ mta_imsg(struct mproc *p, struct imsg *imsg)
 	struct msg		 m;
 	const char		*secret;
 	const char		*hostname;
+	const char		*dom;
 	uint64_t		 reqid;
 	time_t			 t;
 	char			 buf[SMTPD_MAXLINESIZE];
@@ -249,6 +266,16 @@ mta_imsg(struct mproc *p, struct imsg *imsg)
 			if (strcmp(buf, e->dest))
 				e->rcpt = xstrdup(buf, "mta_envelope:rcpt");
 			e->task = task;
+			if (evp.dsn_orcpt.user[0] && evp.dsn_orcpt.domain[0]) {
+				snprintf(buf, sizeof buf, "%s@%s",
+			    	    evp.dsn_orcpt.user, evp.dsn_orcpt.domain);
+				e->dsn_orcpt = xstrdup(buf,
+				    "mta_envelope:dsn_orcpt");
+			}
+			strlcpy(e->dsn_envid, evp.dsn_envid,
+			    sizeof e->dsn_envid);
+			e->dsn_notify = evp.dsn_notify;
+			e->dsn_ret = evp.dsn_ret;
 
 			TAILQ_INSERT_TAIL(&task->envelopes, e, entry);
 			log_debug("debug: mta: received evp:%016" PRIx64
@@ -479,6 +506,50 @@ mta_imsg(struct mproc *p, struct imsg *imsg)
 			    imsg->hdr.peerid,
 			    0, -1, NULL, 0);
 			return;
+
+		case IMSG_CTL_MTA_BLOCK:
+			m_msg(&m, imsg);
+			m_get_sockaddr(&m, (struct sockaddr*)&ss);
+			m_get_string(&m, &dom);
+			m_end(&m);
+			source = mta_source((struct sockaddr*)&ss);
+			if (strlen(dom)) {
+				strlcpy(buf, dom, sizeof(buf));
+				mta_block(source, buf);
+			}
+			else
+				mta_block(source, NULL);
+			mta_source_unref(source);
+			m_compose(p, IMSG_CTL_OK, imsg->hdr.peerid, 0, -1, NULL, 0);
+			return;
+
+		case IMSG_CTL_MTA_UNBLOCK:
+			m_msg(&m, imsg);
+			m_get_sockaddr(&m, (struct sockaddr*)&ss);
+			m_get_string(&m, &dom);
+			m_end(&m);
+			source = mta_source((struct sockaddr*)&ss);
+			if (strlen(dom)) {
+				strlcpy(buf, dom, sizeof(buf));
+				mta_unblock(source, buf);
+			}
+			else
+				mta_unblock(source, NULL);
+			mta_source_unref(source);
+			m_compose(p, IMSG_CTL_OK, imsg->hdr.peerid, 0, -1, NULL, 0);
+			return;
+
+		case IMSG_CTL_MTA_SHOW_BLOCK:
+			SPLAY_FOREACH(block, mta_block_tree, &blocks) {
+				snprintf(buf, sizeof(buf), "%s -> %s",
+				    mta_source_to_text(block->source),
+				    block->domain ? block->domain : "*");
+				m_compose(p, IMSG_CTL_MTA_SHOW_BLOCK,
+				    imsg->hdr.peerid, 0, -1, buf, strlen(buf) + 1);
+			}
+			m_compose(p, IMSG_CTL_MTA_SHOW_BLOCK, imsg->hdr.peerid,
+			    0, -1, NULL, 0);
+			return;
 		}
 	}
 
@@ -545,6 +616,7 @@ mta(void)
 	SPLAY_INIT(&hosts);
 	SPLAY_INIT(&sources);
 	SPLAY_INIT(&routes);
+	SPLAY_INIT(&blocks);
 
 	tree_init(&wait_secret);
 	tree_init(&wait_mx);
@@ -604,6 +676,7 @@ mta_source_error(struct mta_relay *relay, struct mta_route *route, const char *e
 void
 mta_route_error(struct mta_relay *relay, struct mta_route *route)
 {
+#if 0
 	route->nerror += 1;
 
 	if (route->nerror > MAXERROR_PER_ROUTE) {
@@ -611,6 +684,7 @@ mta_route_error(struct mta_relay *relay, struct mta_route *route)
 		    "disabling for a while", mta_route_to_text(route));
 		mta_route_disable(route, 2, ROUTE_DISABLED_SMTP);
 	}
+#endif
 }
 
 void
@@ -634,7 +708,9 @@ mta_route_ok(struct mta_relay *relay, struct mta_route *route)
 void
 mta_route_down(struct mta_relay *relay, struct mta_route *route)
 {
+#if 0
 	mta_route_disable(route, 2, ROUTE_DISABLED_SMTP);
+#endif
 }
 
 void
@@ -706,12 +782,15 @@ mta_delivery_flush_event(int fd, short event, void *arg)
 
 	if (tree_poproot(&flush_evp, NULL, (void**)(&e))) {
 
-		if (e->delivery == IMSG_DELIVERY_OK)
-			queue_ok(e->id);
-		else if (e->delivery == IMSG_DELIVERY_TEMPFAIL)
-			queue_tempfail(e->id, e->penalty, e->status);
+		if (e->delivery == IMSG_DELIVERY_OK) {
+			m_create(p_queue, IMSG_DELIVERY_OK, 0, 0, -1);
+			m_add_evpid(p_queue, e->id);
+			m_add_int(p_queue, e->ext);
+			m_close(p_queue);
+		} else if (e->delivery == IMSG_DELIVERY_TEMPFAIL)
+			queue_tempfail(e->id, e->status, ESC_OTHER_STATUS);
 		else if (e->delivery == IMSG_DELIVERY_PERMFAIL)
-			queue_permfail(e->id, e->status);
+			queue_permfail(e->id, e->status, ESC_OTHER_STATUS);
 		else if (e->delivery == IMSG_DELIVERY_LOOP)
 			queue_loop(e->id);
 		else {
@@ -724,6 +803,7 @@ mta_delivery_flush_event(int fd, short event, void *arg)
 
 		free(e->dest);
 		free(e->rcpt);
+		free(e->dsn_orcpt);
 		free(e);
 
 		tv.tv_sec = 0;
@@ -756,11 +836,10 @@ mta_delivery_log(struct mta_envelope *e, const char *source, const char *relay,
 }
 
 void
-mta_delivery_notify(struct mta_envelope *e, uint32_t penalty)
+mta_delivery_notify(struct mta_envelope *e)
 {
 	struct timeval	tv;
 
-	e->penalty = penalty;
 	tree_xset(&flush_evp, e->id, e);
 	if (tree_count(&flush_evp) == 1) {
 		tv.tv_sec = 0;
@@ -1007,6 +1086,8 @@ mta_on_source(struct mta_relay *relay, struct mta_source *source)
 			relay->failstr = "No MX found for destination";
 		else if (errmask & CONNECTOR_ERROR_FAMILY)
 			relay->failstr = "Address family mismatch on destination MXs";
+		else if (errmask & CONNECTOR_ERROR_BLOCKED)
+			relay->failstr = "All routes to destination blocked";
 		else
 			relay->failstr = "No valid route to destination";	
 	}
@@ -1024,6 +1105,12 @@ mta_connect(struct mta_connector *c)
 	struct mta_limits	*l = c->relay->limits;
 	int			 limits;
 	time_t			 nextconn, now;
+
+	/* toggle the block flag */
+	if (mta_is_blocked(c->source, c->relay->domain->name))
+		c->flags |= CONNECTOR_ERROR_BLOCKED;
+	else
+		c->flags &= ~CONNECTOR_ERROR_BLOCKED;
 
     again:
 
@@ -1352,7 +1439,7 @@ mta_flush(struct mta_relay *relay, int fail, const char *error)
 			}
 
 			mta_delivery_log(e, NULL, relay->domain->name, fail, error);
-			mta_delivery_notify(e, 0);
+			mta_delivery_notify(e);
 
 			n++;
 		}
@@ -1604,9 +1691,9 @@ mta_relay(struct envelope *e)
 
 	key.flags |= e->agent.mta.relay.flags;
 	key.port = e->agent.mta.relay.port;
-	key.cert = e->agent.mta.relay.cert;
-	if (!key.cert[0])
-		key.cert = NULL;
+	key.pki_name = e->agent.mta.relay.pki_name;
+	if (!key.pki_name[0])
+		key.pki_name = NULL;
 	key.authtable = e->agent.mta.relay.authtable;
 	if (!key.authtable[0])
 		key.authtable = NULL;
@@ -1633,7 +1720,7 @@ mta_relay(struct envelope *e)
 		    xstrdup(key.backupname, "mta: backupname") : NULL;
 		r->backuppref = -1;
 		r->port = key.port;
-		r->cert = key.cert ? xstrdup(key.cert, "mta: cert") : NULL;
+		r->pki_name = key.pki_name ? xstrdup(key.pki_name, "mta: pki_name") : NULL;
 		if (key.authtable)
 			r->authtable = xstrdup(key.authtable, "mta: authtable");
 		if (key.authlabel)
@@ -1688,7 +1775,7 @@ mta_relay_unref(struct mta_relay *relay)
 	free(relay->authlabel);
 	free(relay->authtable);
 	free(relay->backupname);
-	free(relay->cert);
+	free(relay->pki_name);
 	free(relay->helotable);
 	free(relay->heloname);
 	free(relay->secret);
@@ -1732,10 +1819,10 @@ mta_relay_to_text(struct mta_relay *relay)
 		strlcat(buf, relay->authlabel, sizeof buf);
 	}
 
-	if (relay->cert) {
+	if (relay->pki_name) {
 		strlcat(buf, sep, sizeof buf);
-		strlcat(buf, "cert=", sizeof buf);
-		strlcat(buf, relay->cert, sizeof buf);
+		strlcat(buf, "pki_name=", sizeof buf);
+		strlcat(buf, relay->pki_name, sizeof buf);
 	}
 
 	if (relay->flags & RELAY_MX) {
@@ -1840,6 +1927,7 @@ mta_relay_show(struct mta_relay *r, struct mproc *p, uint32_t id, time_t t)
 		SHOWFLAG(CONNECTOR_ERROR_MX,		"ERROR_MX");
 		SHOWFLAG(CONNECTOR_ERROR_ROUTE_NET,	"ERROR_ROUTE_NET");
 		SHOWFLAG(CONNECTOR_ERROR_ROUTE_SMTP,	"ERROR_ROUTE_SMTP");
+		SHOWFLAG(CONNECTOR_ERROR_BLOCKED,	"ERROR_BLOCKED");
 
 		SHOWFLAG(CONNECTOR_LIMIT_HOST,		"LIMIT_HOST");
 		SHOWFLAG(CONNECTOR_LIMIT_ROUTE,		"LIMIT_ROUTE");
@@ -1911,11 +1999,11 @@ mta_relay_cmp(const struct mta_relay *a, const struct mta_relay *b)
 	if (a->heloname && ((r = strcmp(a->heloname, b->heloname))))
 		return (r);
 
-	if (a->cert == NULL && b->cert)
+	if (a->pki_name == NULL && b->pki_name)
 		return (-1);
-	if (a->cert && b->cert == NULL)
+	if (a->pki_name && b->pki_name == NULL)
 		return (1);
-	if (a->cert && ((r = strcmp(a->cert, b->cert))))
+	if (a->pki_name && ((r = strcmp(a->pki_name, b->pki_name))))
 		return (r);
 
 	if (a->backupname && ((r = strcmp(a->backupname, b->backupname))))
@@ -2298,6 +2386,79 @@ mta_route_cmp(const struct mta_route *a, const struct mta_route *b)
 
 SPLAY_GENERATE(mta_route_tree, mta_route, entry, mta_route_cmp);
 
+void
+mta_block(struct mta_source *src, char *dom)
+{
+	struct mta_block key, *b;
+
+	key.source = src;
+	key.domain = dom;
+
+	b = SPLAY_FIND(mta_block_tree, &blocks, &key);
+	if (b != NULL)
+		return;
+
+	b = xcalloc(1, sizeof(*b), "mta_block");
+	if (dom)
+		b->domain = xstrdup(dom, "mta_block");
+	b->source = src;
+	mta_source_ref(src);
+	SPLAY_INSERT(mta_block_tree, &blocks, b);
+}
+
+void
+mta_unblock(struct mta_source *src, char *dom)
+{
+	struct mta_block key, *b;
+
+	key.source = src;
+	key.domain = dom;
+
+	b = SPLAY_FIND(mta_block_tree, &blocks, &key);
+	if (b == NULL)
+		return;
+
+	SPLAY_REMOVE(mta_block_tree, &blocks, b);
+
+	mta_source_unref(b->source);
+	free(b->domain);
+	free(b);
+}
+
+int
+mta_is_blocked(struct mta_source *src, char *dom)
+{
+	struct mta_block key;
+
+	key.source = src;
+	key.domain = dom;
+
+	if (SPLAY_FIND(mta_block_tree, &blocks, &key))
+		return (1);
+
+	return (0);
+}
+
+static
+int
+mta_block_cmp(const struct mta_block *a, const struct mta_block *b)
+{
+	if (a->source < b->source)
+		return (-1);
+	if (a->source > b->source)
+		return (1);
+	if (!a->domain && b->domain)
+		return (-1);
+	if (a->domain && !b->domain)
+		return (1);
+	if (a->domain == b->domain)
+		return (0);
+	return (strcmp(a->domain, b->domain));
+}
+
+SPLAY_GENERATE(mta_block_tree, mta_block, entry, mta_block_cmp);
+
+
 
 /* hoststat errors are not critical, we do best effort */
 void
@@ -2313,8 +2474,7 @@ mta_hoststat_update(const char *host, const char *error)
 	tm = time(NULL);
 	hs = dict_get(&hoststat, buf);
 	if (hs == NULL) {
-		hs = calloc(1, sizeof *hs);
-		if (hs == NULL)
+		if ((hs = calloc(1, sizeof *hs)) == NULL)
 			return;
 		tree_init(&hs->deferred);
 		runq_schedule(runq_hoststat, tm+HOSTSTAT_EXPIRE_DELAY, NULL, hs);

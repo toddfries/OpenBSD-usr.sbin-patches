@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.105 2014/01/08 15:30:49 deraadt Exp $	*/
+/*	$OpenBSD: util.c,v 1.108 2014/02/04 10:38:06 eric Exp $	*/
 
 /*
  * Copyright (c) 2000,2001 Markus Friedl.  All rights reserved.
@@ -39,6 +39,7 @@
 #include <libgen.h>
 #include <netdb.h>
 #include <pwd.h>
+#include <resolv.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -443,11 +444,7 @@ hostname_match(const char *hostname, const char *pattern)
 int
 valid_localpart(const char *s)
 {
-/*
- * RFC 5322 defines theses characters as valid: !#$%&'*+-/=?^_`{|}~
- * some of them are potentially dangerous, and not so used after all.
- */
-#define IS_ATEXT(c) (isalnum((unsigned char)(c)) || strchr("*!%+-/=_", (c)))
+#define IS_ATEXT(c) (isalnum((unsigned char)(c)) || strchr(MAILADDR_ALLOWED, (c)))
 nextatom:
 	if (! IS_ATEXT(*s) || *s == '\0')
 		return 0;
@@ -658,20 +655,6 @@ generate_uid(void)
 }
 
 void
-fdlimit(double percent)
-{
-	struct rlimit rl;
-
-	if (percent < 0 || percent > 1)
-		fatalx("fdlimit: parameter out of range");
-	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("fdlimit: getrlimit");
-	rl.rlim_cur = percent * rl.rlim_max;
-	if (setrlimit(RLIMIT_NOFILE, &rl) == -1)
-		fatal("fdlimit: setrlimit");
-}
-
-void
 session_socket_blockmode(int fd, enum blockmodes bm)
 {
 	int	flags;
@@ -812,4 +795,17 @@ end:
 	if (fp)
 		fclose(fp);
 	return ret;
+}
+
+int
+base64_encode(unsigned char const *src, size_t srclen,
+	      char *dest, size_t destsize)
+{
+	return __b64_ntop(src, srclen, dest, destsize);
+}
+
+int
+base64_decode(char const *src, unsigned char *dest, size_t destsize)
+{
+	return __b64_pton(src, dest, destsize);
 }
