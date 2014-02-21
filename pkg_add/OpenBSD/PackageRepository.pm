@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: PackageRepository.pm,v 1.105 2014/02/02 23:09:56 espie Exp $
+# $OpenBSD: PackageRepository.pm,v 1.108 2014/02/08 11:07:33 espie Exp $
 #
 # Copyright (c) 2003-2010 Marc Espie <espie@openbsd.org>
 #
@@ -158,7 +158,9 @@ sub wipe_info
 
 	my $dir = $pkg->{dir};
 	if (defined $dir) {
+		require OpenBSD::Temp;
 		OpenBSD::Error->rmtree($dir);
+		OpenBSD::Temp->reclaim($dir);
 		delete $pkg->{dir};
 	}
 }
@@ -256,6 +258,7 @@ sub grabPlist
 sub parse_problems
 {
 	my ($self, $filename, $hint, $object) = @_;
+	OpenBSD::Temp->reclaim($filename);
 	unlink $filename;
 }
 
@@ -369,6 +372,18 @@ sub may_exist
 {
 	my ($self, $name) = @_;
 	return -r $self->relative_url($name);
+}
+
+my $local = [];
+
+sub opened
+{
+	return $local;
+}
+
+sub maxcount
+{
+	return 3;
 }
 
 sub list
@@ -598,7 +613,8 @@ sub try_until_success
 		if (defined $o) {
 			return $o;
 		}
-		if (defined $self->{lasterror} && $self->{lasterror} == 550) {
+		if (defined $self->{lasterror} && 
+		    ($self->{lasterror} == 550 || $self->{lasterror} == 404)) {
 			last;
 		}
 		if ($self->should_have($pkgname)) {
@@ -669,6 +685,10 @@ sub parse_problems
 		    m/^ftp: connect: Connection timed out/o ||
 		    m/^ftp: Can't connect or login to host/o) {
 			$self->{lasterror} = 421;
+		}
+		# http error
+		if (m/^ftp: Error retrieving file: 404/o) {
+		    	$self->{lasterror} = 404;
 		}
 		if (m/^550\s+/o) {
 			$self->{lasterror} = 550;

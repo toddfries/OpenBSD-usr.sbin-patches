@@ -1,4 +1,4 @@
-/*	$OpenBSD: procmap.c,v 1.50 2013/08/12 05:41:01 otto Exp $ */
+/*	$OpenBSD: procmap.c,v 1.52 2014/02/13 21:17:13 tedu Exp $ */
 /*	$NetBSD: pmap.c,v 1.1 2002/09/01 20:32:44 atatat Exp $ */
 
 /*
@@ -38,7 +38,6 @@
 #include <sys/vnode.h>
 #include <sys/mount.h>
 #include <sys/uio.h>
-#include <sys/namei.h>
 #include <sys/sysctl.h>
 
 #include <uvm/uvm.h>
@@ -76,7 +75,6 @@
 #define PRINT_VM_MAP		0x00000002
 #define PRINT_VM_MAP_HEADER	0x00000004
 #define PRINT_VM_MAP_ENTRY	0x00000008
-#define DUMP_NAMEI_CACHE	0x00000010
 
 struct cache_entry {
 	LIST_ENTRY(cache_entry) ce_next;
@@ -125,7 +123,6 @@ struct kbit {
 		struct vnode vnode;
 		struct uvm_object uvm_object;
 		struct mount mount;
-		struct namecache namecache;
 		struct inode inode;
 		struct iso_node iso_node;
 		struct uvm_device uvm_device;
@@ -197,6 +194,7 @@ RB_GENERATE(uvm_map_addr, vm_map_entry, daddrs.addr_entry, no_impl);
 int
 main(int argc, char *argv[])
 {
+	const char *errstr;
 	char errbuf[_POSIX2_LINE_MAX], *kmem = NULL, *kernel = NULL;
 	struct kinfo_proc *kproc;
 	struct sum total_sum;
@@ -217,7 +215,9 @@ main(int argc, char *argv[])
 			print_ddb = 1;
 			break;
 		case 'D':
-			debug = atoi(optarg);
+			debug = strtonum(optarg, 0, 0xf, &errstr);
+			if (errstr)
+				errx(1, "invalid debug mask");
 			break;
 		case 'l':
 			print_maps = 1;

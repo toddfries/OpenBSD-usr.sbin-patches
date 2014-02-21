@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #
-#	$OpenBSD: adduser.perl,v 1.58 2011/09/22 10:59:23 deraadt Exp $
+#	$OpenBSD: adduser.perl,v 1.61 2014/02/15 06:27:50 tedu Exp $
 #
 # Copyright (c) 1995-1996 Wolfram Schneider <wosch@FreeBSD.org>. Berlin.
 # All rights reserved.
@@ -241,7 +241,7 @@ sub shell_default_valid {
     return $s;
 }
 
-# return default home partition (f.e. "/home")
+# return default home partition (e.g. "/home")
 # create base directory if necessary
 sub home_partition {
     local($home) = @_;
@@ -591,7 +591,7 @@ sub new_users_groups_valid {
     return ($flag, $new_groups);
 }
 
-# your last change
+# your last chance
 sub new_users_ok {
 
     print <<EOF;
@@ -750,7 +750,7 @@ sub new_users_password {
 	    last if $password eq $newpass;
 	    print "They didn't match, please try again\n";
 	}
-	elsif (!&confirm_yn("Set the password so that user cannot logon?", "no")) {
+	elsif (!&confirm_yn("Disable password logins for the user?", "no")) {
 	    last;
 	}
     }
@@ -1231,7 +1231,7 @@ sub mkdirhier {
 }
 
 # stript unused '/'
-# F.i.: //usr///home// -> /usr/home
+# e.g.: //usr///home// -> /usr/home
 sub stripdir {
     local($dir) = @_;
 
@@ -1241,8 +1241,8 @@ sub stripdir {
     return '/';
 }
 
-# Read one of the elements from @list. $confirm is default.
-# If !$allow accept only elements from @list.
+# Read one of the elements from @list. $confirm is the default.
+# If !$allow then accept only elements from @list.
 sub confirm_list {
     local($message, $allow, $confirm, @list) = @_;
     local($read, $c, $print);
@@ -1305,8 +1305,8 @@ sub choosetxt_yn_default {
 
 # YES or NO question
 # return 1 if &confirm("message", "yes") and answer is yes
-#	or if &confirm("message", "no") an answer is no
-# otherwise 0
+#	or if &confirm("message", "no") and answer is no
+# otherwise return 0
 sub confirm_yn {
     local($message, $confirm) = @_;
     local($read, $c);

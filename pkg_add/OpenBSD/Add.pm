@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.147 2014/02/03 16:13:13 espie Exp $
+# $OpenBSD: Add.pm,v 1.149 2014/02/10 19:16:19 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -32,21 +32,25 @@ sub manpages_index
 	my $destdir = $state->{destdir};
 	require OpenBSD::Makewhatis;
 
+	# fudge verbose for API differences
+	my $v = $state->{v};
+	$state->{v} = $state->verbose >= 2;
 	while (my ($k, $v) = each %{$state->{addman}}) {
 		my @l = map { "$destdir$k/$_" } @$v;
 		if ($state->{not}) {
 			$state->say("Merging manpages in #1: #2",
-			    $destdir.$k, join(' ', @l))
-				if $state->verbose >= 2;
+			    $destdir.$k, join(' ', @l)) if $state->verbose;
 		} else {
-			try {
+			eval {
 				OpenBSD::Makewhatis::merge($destdir.$k, \@l,
 				    $state);
-			} catchall {
+			};
+			if ($@) {
 				$state->errsay("Error in makewhatis: #1", $_);
 			};
 		}
 	}
+	$state->{v} = $v;
 	delete $state->{addman};
 }
 
@@ -139,6 +143,7 @@ sub tweak_package_status
 	$pkgname = extract_pkgname($pkgname);
 	return 0 unless is_installed($pkgname);
 	return 0 unless $user_tagged->{$pkgname};
+	return 1 if $state->{not};
 	my $plist = OpenBSD::PackingList->from_installation($pkgname);
 	if ($plist->has('manual-installation') && $state->{automatic} > 1) {
 		delete $plist->{'manual-installation'};
