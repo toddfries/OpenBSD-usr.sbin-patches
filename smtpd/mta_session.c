@@ -1,4 +1,4 @@
-/*	$OpenBSD: mta_session.c,v 1.54 2014/02/04 15:44:05 eric Exp $	*/
+/*	$OpenBSD: mta_session.c,v 1.57 2014/03/02 21:19:36 gilles Exp $	*/
 
 /*
  * Copyright (c) 2008 Pierre-Yves Ritschard <pyr@openbsd.org>
@@ -764,19 +764,18 @@ mta_enter_state(struct mta_session *s, int newstate)
 		break;
 
 	case MTA_MAIL:
-		if (s->currevp == NULL)
-			s->currevp = TAILQ_FIRST(&s->task->envelopes);
+		s->currevp = TAILQ_FIRST(&s->task->envelopes);
 
 		e = s->currevp;
 		s->hangon = 0;
 		s->msgtried++;
 		envid_sz = strlen(e->dsn_envid);
 		if (s->ext & MTA_EXT_DSN) {
-			mta_send(s, "MAIL FROM:<%s> %s%s %s%s",
+			mta_send(s, "MAIL FROM:<%s>%s%s%s%s",
 			    s->task->sender,
-			    e->dsn_ret ? "RET=" : "",
+			    e->dsn_ret ? " RET=" : "",
 			    e->dsn_ret ? dsn_strret(e->dsn_ret) : "",
-			    envid_sz ? "ENVID=" : "",
+			    envid_sz ? " ENVID=" : "",
 			    envid_sz ? e->dsn_envid : "");
 		} else
 			mta_send(s, "MAIL FROM:<%s>", s->task->sender);
@@ -788,11 +787,11 @@ mta_enter_state(struct mta_session *s, int newstate)
 
 		e = s->currevp;
 		if (s->ext & MTA_EXT_DSN) {
-			mta_send(s, "RCPT TO:<%s> %s%s %s%s",
+			mta_send(s, "RCPT TO:<%s>%s%s%s%s",
 			    e->dest,
-			    e->dsn_notify ? "NOTIFY=" : "",
+			    e->dsn_notify ? " NOTIFY=" : "",
 			    e->dsn_notify ? dsn_strnotify(e->dsn_notify) : "",
-			    e->dsn_orcpt ? "ORCPT=" : "",
+			    e->dsn_orcpt ? " ORCPT=" : "",
 			    e->dsn_orcpt ? e->dsn_orcpt : "");
 		} else
 			mta_send(s, "RCPT TO:<%s>", e->dest);
@@ -1023,7 +1022,7 @@ mta_response(struct mta_session *s, char *line)
 				    buf, delivery, line);
 
 			if (domain)
-				mta_hoststat_update(domain + 1, e->status);
+				mta_hoststat_update(domain, e->status);
 			mta_delivery_notify(e);
 
 			if (s->relay->limits->max_failures_per_session &&
@@ -1383,9 +1382,10 @@ mta_flush_task(struct mta_session *s, int delivery, const char *error, size_t co
 
 		domain = strchr(e->dest, '@');
 		if (domain) {
-			mta_hoststat_update(domain + 1, error);
+			domain++;
+			mta_hoststat_update(domain, error);
 			if (cache)
-				mta_hoststat_cache(domain + 1, e->id);
+				mta_hoststat_cache(domain, e->id);
 		}
 
 		n++;
