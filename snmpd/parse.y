@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.29 2014/01/22 00:21:17 henning Exp $	*/
+/*	$OpenBSD: parse.y,v 1.32 2014/04/25 06:57:11 blambert Exp $	*/
 
 /*
  * Copyright (c) 2007, 2008, 2012 Reyk Floeter <reyk@openbsd.org>
@@ -50,6 +50,11 @@
 
 #include "snmpd.h"
 #include "mib.h"
+
+enum socktype {
+	SOCK_TYPE_RESTRICTED = 1,
+	SOCK_TYPE_AGENTX = 2
+};
 
 TAILQ_HEAD(files, file)		 files = TAILQ_HEAD_INITIALIZER(files);
 static struct file {
@@ -120,13 +125,13 @@ typedef struct {
 %token	SYSTEM CONTACT DESCR LOCATION NAME OBJECTID SERVICES RTFILTER
 %token	READONLY READWRITE OCTETSTRING INTEGER COMMUNITY TRAP RECEIVER
 %token	SECLEVEL NONE AUTH ENC USER AUTHKEY ENCKEY ERROR DISABLED
-%token	SOCKET RESTRICTED
+%token	SOCKET RESTRICTED AGENTX HANDLE DEFAULT
 %token	<v.string>	STRING
 %token  <v.number>	NUMBER
 %type	<v.string>	hostcmn
-%type	<v.number>	optwrite yesno seclevel restricted
-%type	<v.data>	objtype
-%type	<v.oid>		oid hostoid
+%type	<v.number>	optwrite yesno seclevel socktype
+%type	<v.data>	objtype cmd
+%type	<v.oid>		oid hostoid trapoid
 %type	<v.auth>	auth
 %type	<v.enc>		enc
 
@@ -227,7 +232,7 @@ main		: LISTEN ON STRING		{
 			if (strlcpy(conf->sc_trcommunity, $3,
 			    sizeof(conf->sc_trcommunity)) >=
 			    sizeof(conf->sc_trcommunity)) {
-				yyerror("r/w community name too long");
+				yyerror("trap community name too long");
 				free($3);
 				YYERROR;
 			}
@@ -237,6 +242,19 @@ main		: LISTEN ON STRING		{
 			hlist = &conf->sc_trapreceivers;
 		} host				{
 			hlist = NULL;
+		}
+		| TRAP HANDLE hostcmn trapoid cmd {
+			struct trapcmd *cmd = $5.data;
+
+			cmd->cmd_oid = $4;
+
+			if (trapcmd_add(cmd) != 0) {
+				free($4);
+				free(cmd);
+				yyerror("duplicate oid");
+				YYERROR;
+			}
+			conf->sc_traphandler = 1;
 		}
 		| RTFILTER yesno		{
 			if ($2 == 1)
@@ -266,7 +284,7 @@ main		: LISTEN ON STRING		{
 			}
 			user = NULL;
 		}
-		| SOCKET STRING restricted {
+		| SOCKET STRING socktype {
 			if ($3) {
 				struct control_sock *rcsock;
 
@@ -276,7 +294,10 @@ main		: LISTEN ON STRING		{
 					YYERROR;
 				}
 				rcsock->cs_name = $2;
-				rcsock->cs_restricted = 1;
+				if ($3 == SOCK_TYPE_RESTRICTED)
+					rcsock->cs_restricted = 1;
+				else if ($3 == SOCK_TYPE_AGENTX)
+					rcsock->cs_agentx = 1;
 				TAILQ_INSERT_TAIL(&conf->sc_ps.ps_rcsocks,
 				    rcsock, cs_entry);
 			} else {
@@ -388,6 +409,19 @@ oid		: STRING				{
 		}
 		;
 
+trapoid		: oid					{ $$ = $1; }
+		| DEFAULT				{
+			struct ber_oid	*sysoid;
+			if ((sysoid =
+			    calloc(1, sizeof(*sysoid))) == NULL) {
+				yyerror("calloc");
+				YYERROR;
+			}
+			ber_string2oid("1.3", sysoid);
+			$$ = sysoid;
+		}
+		;
+
 hostoid		: /* empty */				{ $$ = NULL; }
 		| OBJECTID oid				{ $$ = $2; }
 		;
@@ -475,8 +509,55 @@ enc		: STRING			{
 		}
 		;
 
-restricted	: RESTRICTED		{ $$ = 1; }
+socktype	: RESTRICTED		{ $$ = SOCK_TYPE_RESTRICTED; }
+		| AGENTX		{ $$ = SOCK_TYPE_AGENTX; }
 		| /* nothing */		{ $$ = 0; }
+		;
+
+cmd		: STRING		{
+			struct		 trapcmd *cmd;
+			size_t		 span, limit;
+			char		*pos, **args, **args2;
+			int		 nargs = 32;		/* XXX */
+
+			if ((cmd = calloc(1, sizeof(*cmd))) == NULL ||
+			    (args = calloc(nargs, sizeof(char *))) == NULL) {
+				free(cmd);
+				free($1);
+				YYERROR;
+			}
+
+			pos = $1;
+			limit = strlen($1);
+
+			while ((span = strcspn(pos, " \t")) != 0 &&
+			    pos < $1 + limit) {
+				pos[span] = '\0';
+				args[cmd->cmd_argc] = strdup(pos);
+				if (args[cmd->cmd_argc] == NULL) {
+					trapcmd_free(cmd);
+					free(args);
+					free($1);
+					YYERROR;
+				}
+				cmd->cmd_argc++;
+				if (cmd->cmd_argc >= nargs - 1) {
+					nargs *= 2;
+					args2 = calloc(nargs, sizeof(char *));
+					if (args2 == NULL) {
+						trapcmd_free(cmd);
+						free(args);
+						free($1);
+						YYERROR;
+					}
+					args = args2;
+				}
+				pos += span + 1;
+			}
+			free($1);
+			cmd->cmd_argv = args;
+			$$.data = cmd;
+		}
 		;
 
 %%
@@ -513,15 +594,18 @@ lookup(char *s)
 {
 	/* this has to be sorted always */
 	static const struct keywords keywords[] = {
+		{ "agentx",		AGENTX },
 		{ "auth",		AUTH },
 		{ "authkey",		AUTHKEY },
 		{ "community",		COMMUNITY },
 		{ "contact",		CONTACT },
+		{ "default",		DEFAULT },
 		{ "description",	DESCR },
 		{ "disabled",		DISABLED},
 		{ "enc",		ENC },
 		{ "enckey",		ENCKEY },
 		{ "filter-routes",	RTFILTER },
+		{ "handle",		HANDLE },
 		{ "include",		INCLUDE },
 		{ "integer",		INTEGER },
 		{ "listen",		LISTEN },

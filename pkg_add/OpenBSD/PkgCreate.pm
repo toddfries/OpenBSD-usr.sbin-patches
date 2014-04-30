@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgCreate.pm,v 1.101 2014/02/02 15:35:52 espie Exp $
+# $OpenBSD: PkgCreate.pm,v 1.105 2014/04/18 10:00:48 schwarze Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -790,49 +790,32 @@ sub really_solve_dependency
 	return $v;
 }
 
-my $cache = {};
-sub solve_from_ports
+sub diskcachename
 {
-	my ($self, $state, $dep, $package) = @_;
+	my ($self, $dep) = @_;
 
-	my $portsdir = $state->defines('PORTSDIR');
-	return undef unless defined $portsdir;
-	my $pkgname;
-	if (defined $cache->{$dep->{pkgpath}}) {
-		$pkgname = $cache->{$dep->{pkgpath}};
+	if ($ENV{_DEPENDS_CACHE}) {
+		my $diskcache = $dep->{pkgpath};
+		$diskcache =~ s/\//--/g;
+		return $ENV{_DEPENDS_CACHE}."/pkgcreate-".$diskcache;
 	} else {
-		my ($plist, $diskcache);
-		if ($ENV{_DEPENDS_CACHE}) {
-			$diskcache = $dep->{pkgpath};
-			$diskcache =~ s/\//--/g;
-			$diskcache = $ENV{_DEPENDS_CACHE}."/pkgcreate-".
-			    $diskcache;
-		}
-		if (defined $diskcache && -f $diskcache) {
-			$plist = OpenBSD::PackingList->fromfile($diskcache);
-		} else {
-			$plist = $self->ask_tree($state, $dep, $portsdir,
-			    'print-plist-libs-with-depends',
-			    'wantlib_args=no-wantlib-args');
-			if ($? != 0 || !defined $plist->pkgname) {
-				$state->error("Can't obtain dependency #1 from ports tree",
-				    $dep->{pattern});
-				return undef;
-			}
-			$plist->tofile($diskcache) if defined $diskcache;
-		}
-		OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
-		$self->add_dep($plist);
-		$pkgname = $plist->pkgname;
-		$cache->{$dep->{pkgpath}} = $pkgname;
-	}
-	if ($dep->spec->filter($pkgname) == 0) {
-		$state->error("Dependency #1 doesn't match FULLPKGNAME: #2",
-		    $dep->{pattern}, $pkgname);
 		return undef;
 	}
+}
 
-	return $pkgname;
+sub to_cache
+{
+	my ($self, $plist, $final) = @_;
+	# try to cache atomically. 
+	# no error if it doesn't work
+	require OpenBSD::MkTemp;
+	my ($fh, $tmp) = OpenBSD::MkTemp::mkstemp(
+	    "$ENV{_DEPENDS_CACHE}/my.XXXXXXXXXXX") or return;
+	chmod 0644, $fh;
+	$plist->write($fh);
+	close($fh);
+	rename($tmp, $final);
+	unlink($tmp);
 }
 
 sub ask_tree
@@ -858,6 +841,61 @@ sub ask_tree
 	    \&OpenBSD::PackingList::PrelinkStuffOnly);
 	close($fh);
 	return $plist;
+}
+
+sub really_solve_from_ports
+{
+	my ($self, $state, $dep, $portsdir) = @_;
+
+	my $diskcache = $self->diskcachename($dep);
+	my $plist;
+
+	if (defined $diskcache && -f $diskcache) {
+		$plist = OpenBSD::PackingList->fromfile($diskcache);
+	} else {
+		$plist = $self->ask_tree($state, $dep, $portsdir,
+		    'print-plist-libs-with-depends',
+		    'wantlib_args=no-wantlib-args');
+		if ($? != 0 || !defined $plist->pkgname) {
+			return undef;
+		}
+		if (defined $diskcache) {
+			$self->to_cache($plist, $diskcache);
+		}
+	}
+	OpenBSD::SharedLibs::add_libs_from_plist($plist, $state);
+	$self->add_dep($plist);
+	return $plist->pkgname;
+}
+
+my $cache = {};
+
+sub solve_from_ports
+{
+	my ($self, $state, $dep, $package) = @_;
+
+	my $portsdir = $state->defines('PORTSDIR');
+	return undef unless defined $portsdir;
+	my $pkgname;
+	if (defined $cache->{$dep->{pkgpath}}) {
+		$pkgname = $cache->{$dep->{pkgpath}};
+	} else {
+		$pkgname = $self->really_solve_from_ports($state, $dep, 
+		    $portsdir);
+		$cache->{$dep->{pkgpath}} = $pkgname;
+	}
+	if (!defined $pkgname) {
+		$state->error("Can't obtain dependency #1 from ports tree",
+		    $dep->{pattern});
+		return undef;
+	}
+	if ($dep->spec->filter($pkgname) == 0) {
+		$state->error("Dependency #1 doesn't match FULLPKGNAME: #2",
+		    $dep->{pattern}, $pkgname);
+		return undef;
+	}
+
+	return $pkgname;
 }
 
 # we don't want old libs
@@ -941,7 +979,7 @@ our @ISA = qw(OpenBSD::AddCreateDelete);
 
 sub handle_fragment
 {
-	my ($self, $state, $old, $not, $frag, $_, $cont) = @_;
+	my ($self, $state, $old, $not, $frag, undef, $cont) = @_;
 	my $def = $frag;
 	if ($frag eq 'SHARED') {
 		$def = 'SHARED_LIBS';
@@ -979,19 +1017,19 @@ sub read_fragments
 	    sub {
 		my ($stack, $cont) = @_;
 		while(my $file = pop @$stack) {
-			while (my $_ = $file->readline) {
+			while (my $l = $file->readline) {
 				$state->progress->working(2048) unless $state->opt('q');
-				if (m/^(\@comment\s+\$(?:Open)BSD\$)$/o) {
-					$_ = '@comment $'.'OpenBSD: '.basename($file->name).',v$';
+				if ($l =~m/^(\@comment\s+\$(?:Open)BSD\$)$/o) {
+					$l = '@comment $'.'OpenBSD: '.basename($file->name).',v$';
 				}
-				if (m/^(\!)?\%\%(.*)\%\%$/) {
-					if (my $f2 = $self->handle_fragment($state, $file, $1, $2, $_, $cont)) {
+				if ($l =~ m/^(\!)?\%\%(.*)\%\%$/) {
+					if (my $f2 = $self->handle_fragment($state, $file, $1, $2, $l, $cont)) {
 						push(@$stack, $file);
 						$file = $f2;
 					}
 					next;
 				}
-				my $s = $subst->do($_);
+				my $s = $subst->do($l);
 				if ($fast) {
 					next unless $s =~ m/^\@(?:cwd|lib|depend|wantlib)\b/o || $s =~ m/lib.*\.a$/o;
 				}
@@ -999,7 +1037,7 @@ sub read_fragments
 				my $o = &$cont($s);
 				if (defined $o) {
 					$o->check_version($state, $s);
-					$self->annotate($o, $_, $file);
+					$self->annotate($o, $l, $file);
 				}
 			}
 		}
@@ -1245,17 +1283,8 @@ sub finish_manpages
 	my ($self, $state, $plist) = @_;
 	$plist->grab_manpages($state);
 	if (defined $state->{manpages}) {
-		$state->{v} ++;
-
-		require OpenBSD::Makewhatis;
-
-		try {
-			OpenBSD::Makewhatis::scan_manpages($state->{manpages},
-			    $state);
-		} catchall {
-			$state->errsay("Error in makewhatis: #1", $_);
-		};
-		$state->{v} --;
+		$state->system(OpenBSD::Paths->makewhatis, '-t', '--',
+		    @{$state->{manpages}});
 	}
 
 	if (defined $state->{mandir}) {

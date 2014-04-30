@@ -1,4 +1,4 @@
-/*	$OpenBSD: control.c,v 1.4 2013/03/11 17:40:11 deraadt Exp $ */
+/*	$OpenBSD: control.c,v 1.8 2014/04/21 17:41:52 claudio Exp $ */
 
 /*
  * Copyright (c) 2010 Claudio Jeker <claudio@openbsd.org>
@@ -64,23 +64,27 @@ control_init(char *path)
 
 	if ((control_state = calloc(1, sizeof(*control_state))) == NULL) {
 		log_warn("control_init: calloc");
-		return (-1);
+		return -1;
 	}
 
-	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+	if ((fd = socket(AF_UNIX, SOCK_SEQPACKET, 0)) == -1) {
 		log_warn("control_init: socket");
-		return (-1);
+		return -1;
 	}
 
 	bzero(&sun, sizeof(sun));
 	sun.sun_family = AF_UNIX;
-	strlcpy(sun.sun_path, path, sizeof(sun.sun_path));
+	if (strlcpy(sun.sun_path, path, sizeof(sun.sun_path)) >=
+	    sizeof(sun.sun_path)) {
+		log_warnx("control_init: path %s too long", path);
+		return -1;
+	}
 
 	if (unlink(path) == -1)
 		if (errno != ENOENT) {
 			log_warn("control_init: unlink %s", path);
 			close(fd);
-			return (-1);
+			return -1;
 		}
 
 	old_umask = umask(S_IXUSR|S_IXGRP|S_IWOTH|S_IROTH|S_IXOTH);
@@ -88,7 +92,7 @@ control_init(char *path)
 		log_warn("control_init: bind: %s", path);
 		close(fd);
 		umask(old_umask);
-		return (-1);
+		return -1;
 	}
 	umask(old_umask);
 
@@ -96,14 +100,21 @@ control_init(char *path)
 		log_warn("control_init: chmod");
 		close(fd);
 		(void)unlink(path);
-		return (-1);
+		return -1;
+	}
+
+	if (listen(fd, CONTROL_BACKLOG) == -1) {
+		log_warn("control_init: listen");
+		close(fd);
+		(void)unlink(path);
+		return -1;
 	}
 
 	socket_setblockmode(fd, 1);
 	control_state->fd = fd;
 	TAILQ_INIT(&controls);
 
-	return (0);
+	return 0;
 }
 
 void
@@ -124,20 +135,13 @@ control_cleanup(char *path)
 	free(control_state);
 }
 
-int
-control_listen(void)
+void
+control_event_init(void)
 {
-	if (listen(control_state->fd, CONTROL_BACKLOG) == -1) {
-		log_warn("control_listen: listen");
-		return (-1);
-	}
-
 	event_set(&control_state->ev, control_state->fd, EV_READ,
 	    control_accept, NULL);
 	event_add(&control_state->ev, NULL);
 	evtimer_set(&control_state->evt, control_accept, NULL);
-
-	return (0);
 }
 
 /* ARGSUSED */
@@ -238,8 +242,6 @@ control_dispatch(int fd, short event, void *bula)
 	}
 	if (event & EV_WRITE) {
 		if ((pdu = TAILQ_FIRST(&c->channel)) != NULL) {
-			TAILQ_REMOVE(&c->channel, pdu, entry);
-
 			for (niov = 0; niov < PDU_MAXIOV; niov++) {
 				iov[niov].iov_base = pdu->iov[niov].iov_base;
 				iov[niov].iov_len = pdu->iov[niov].iov_len;
@@ -247,13 +249,16 @@ control_dispatch(int fd, short event, void *bula)
 			bzero(&msg, sizeof(msg));
 			msg.msg_iov = iov;
 			msg.msg_iovlen = niov;
-			if (sendmsg(fd, &msg, 0) == -1 &&
-			    !(errno == EAGAIN || errno == ENOBUFS)) {
+			if (sendmsg(fd, &msg, 0) == -1) {
+				if (errno == EAGAIN || errno == ENOBUFS)
+					goto requeue;
 				control_close(c);
 				return;
 			}
+			TAILQ_REMOVE(&c->channel, pdu, entry);
 		}
 	}
+requeue:
 	if (!TAILQ_EMPTY(&c->channel))
 		flags |= EV_WRITE;
 
@@ -279,7 +284,7 @@ control_getpdu(char *buf, size_t len)
 
 	n = sizeof(*cmh);
 	cmh = pdu_alloc(n);
-	bcopy(buf, cmh, n);
+	memcpy(cmh, buf, n);
 	buf += n;
 	len -= n;
 
@@ -298,7 +303,7 @@ fail:
 			goto fail;
 		if (!(data = pdu_alloc(n)))
 			goto fail;
-		bcopy(buf, data, n);
+		memcpy(data, buf, n);
 		if (pdu_addbuf(p, data, n, i + 1)) {
 			free(data);
 			goto fail;
@@ -310,7 +315,7 @@ fail:
 	return p;
 }
 
-int
+void
 control_queue(void *ch, struct pdu *pdu)
 {
 	struct control *c = ch;
@@ -320,36 +325,4 @@ control_queue(void *ch, struct pdu *pdu)
 	event_del(&c->ev);
 	event_set(&c->ev, c->fd, EV_READ|EV_WRITE, control_dispatch, c);
 	event_add(&c->ev, NULL);
-
-	return 0;
-}
-
-int
-control_compose(void *ch, u_int16_t type, void *buf, size_t len)
-{
-	struct pdu *pdu;
-	struct ctrlmsghdr *cmh;
-	void *ptr;
-
-	if (PDU_LEN(len) > CONTROL_READ_SIZE - PDU_LEN(sizeof(*cmh)))
-		return -1;
-	if ((pdu = pdu_new()) == NULL)
-		return -1;
-	if ((cmh = pdu_alloc(sizeof(*cmh))) == NULL)
-		goto fail;
-	bzero(cmh, sizeof(*cmh));
-	cmh->type = type;
-	cmh->len[0] = len;
-	pdu_addbuf(pdu, cmh, sizeof(*cmh), 0);
-	if (len > 0) {
-		if ((ptr = pdu_alloc(len)) == NULL)
-			goto fail;
-		bcopy(buf, ptr, len);
-		pdu_addbuf(pdu, ptr, len, 1);
-	}
-
-	return control_queue(ch, pdu);
-fail:
-	pdu_free(pdu);
-	return -1;
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: iscsid.h,v 1.9 2011/05/04 21:00:04 claudio Exp $ */
+/*	$OpenBSD: iscsid.h,v 1.13 2014/04/21 17:41:52 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -46,6 +46,13 @@ struct ctrlmsghdr {
 	u_int16_t	len[3];
 };
 
+struct ctrldata {
+	void		*buf;
+	size_t		 len;
+};
+
+#define CTRLARGV(x...)	((struct ctrldata []){ x })
+
 /* Control message types */
 #define CTRL_SUCCESS		1
 #define CTRL_FAILURE		2
@@ -53,6 +60,8 @@ struct ctrlmsghdr {
 #define CTRL_INITIATOR_CONFIG	4
 #define CTRL_SESSION_CONFIG	5
 #define CTRL_LOG_VERBOSE	6
+#define CTRL_VSCSI_STATS	7
+#define CTRL_SHOW_SUM		8
 
 
 TAILQ_HEAD(session_head, session);
@@ -271,6 +280,19 @@ struct kvp {
 #define KVP_KEY_ALLOCED		0x01
 #define KVP_VALUE_ALLOCED	0x02
 
+struct vscsi_stats {
+	u_int64_t	bytes_rd;
+	u_int64_t	bytes_wr;
+	u_int64_t	cnt_read;
+	u_int64_t	cnt_write;
+	u_int64_t	cnt_i2t;
+	u_int64_t	cnt_i2t_dir[3];
+	u_int64_t	cnt_t2i;
+	u_int64_t	cnt_t2i_status[3];
+	u_int32_t	cnt_probe;
+	u_int32_t	cnt_detach;
+};
+
 extern const struct session_params iscsi_sess_defaults;
 extern const struct connection_params iscsi_conn_defaults;
 extern struct session_params initiator_sess_defaults;
@@ -295,9 +317,10 @@ char	*default_initiator_name(void);
 
 int	control_init(char *);
 void	control_cleanup(char *);
-int	control_listen(void);
-int	control_queue(void *, struct pdu *);
+void	control_event_init(void);
+void	control_queue(void *, struct pdu *);
 int	control_compose(void *, u_int16_t, void *, size_t);
+int	control_build(void *, u_int16_t, int, struct ctrldata *);
 
 struct session	*session_find(struct initiator *, char *);
 struct session	*session_new(struct initiator *, u_int8_t);
@@ -356,3 +379,4 @@ void	vscsi_dispatch(int, short, void *);
 void	vscsi_data(unsigned long, int, void *, size_t);
 void	vscsi_status(int, int, void *, size_t);
 void	vscsi_event(unsigned long, u_int, u_int);
+struct vscsi_stats *vscsi_stats(void);

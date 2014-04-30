@@ -1,4 +1,4 @@
-/*	$OpenBSD: queue_backend.c,v 1.47 2013/10/26 12:27:59 eric Exp $	*/
+/*	$OpenBSD: queue_backend.c,v 1.50 2014/04/11 02:58:08 jsg Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@poolp.org>
@@ -116,9 +116,7 @@ queue_init(const char *name, int server)
 
 	pwq = getpwnam(SMTPD_QUEUE_USER);
 	if (pwq == NULL)
-		pwq = getpwnam(SMTPD_USER);
-	if (pwq == NULL)
-		errx(1, "unknown user %s", SMTPD_USER);
+		errx(1, "unknown user %s", SMTPD_QUEUE_USER);
 
 	tree_init(&evpcache_tree);
 	TAILQ_INIT(&evpcache_list);
@@ -319,7 +317,9 @@ queue_message_fd_r(uint32_t msgid)
 			goto err;
 
 		fclose(ifp);
+		ifp = NULL;
 		fclose(ofp);
+		ofp = NULL;
 		lseek(fdin, SEEK_SET, 0);
 	}
 
@@ -339,7 +339,9 @@ queue_message_fd_r(uint32_t msgid)
 			goto err;
 
 		fclose(ifp);
+		ifp = NULL;
 		fclose(ofp);
+		ofp = NULL;
 		lseek(fdin, SEEK_SET, 0);
 	}
 

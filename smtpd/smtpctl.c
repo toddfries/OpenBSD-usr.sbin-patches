@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.116 2014/02/17 13:33:56 eric Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.119 2014/04/22 13:57:58 gilles Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -111,7 +111,7 @@ srv_connect(void)
 
 	memset(&sun, 0, sizeof(sun));
 	sun.sun_family = AF_UNIX;
-	strlcpy(sun.sun_path, SMTPD_SOCKET, sizeof(sun.sun_path));
+	(void)strlcpy(sun.sun_path, SMTPD_SOCKET, sizeof(sun.sun_path));
 	if (connect(ctl_sock, (struct sockaddr *)&sun, sizeof(sun)) == -1) {
 		saved_errno = errno;
 		close(ctl_sock);
@@ -307,9 +307,9 @@ srv_iter_evpids(uint32_t msgid, uint64_t *evpid, int *offset)
 
 	if (evpids == NULL) {
 		alloc = 1000;
-		evpids = malloc(alloc * sizeof(*evpids));
+		evpids = calloc(alloc, sizeof(*evpids));
 		if (evpids == NULL)
-			err(1, "malloc");
+			err(1, "calloc");
 	}
 
 	if (*offset == 0) {
@@ -414,8 +414,8 @@ do_monitor(int argc, struct parameter *argv)
 	count = 0;
 
 	while (1) {
-		srv_send(IMSG_DIGEST, NULL, 0);
-		srv_recv(IMSG_DIGEST);
+		srv_send(IMSG_CTL_GET_DIGEST, NULL, 0);
+		srv_recv(IMSG_CTL_GET_DIGEST);
 		srv_read(&digest, sizeof(digest));
 		srv_end();
 
@@ -711,8 +711,8 @@ do_show_stats(int argc, struct parameter *argv)
 	memset(&kv, 0, sizeof kv);
 
 	while (1) {
-		srv_send(IMSG_STATS_GET, &kv, sizeof kv);
-		srv_recv(IMSG_STATS_GET);
+		srv_send(IMSG_CTL_GET_STATS, &kv, sizeof kv);
+		srv_recv(IMSG_CTL_GET_STATS);
 		srv_read(&kv, sizeof(kv));
 		srv_end();
 
@@ -786,7 +786,7 @@ do_trace(int argc, struct parameter *argv)
 
 	v = str_to_trace(argv[0].u.u_str);
 
-	srv_send(IMSG_CTL_TRACE, &v, sizeof(v));
+	srv_send(IMSG_CTL_TRACE_ENABLE, &v, sizeof(v));
 	return srv_check_result(1);
 }
 
@@ -797,7 +797,7 @@ do_unprofile(int argc, struct parameter *argv)
 
 	v = str_to_profile(argv[0].u.u_str);
 
-	srv_send(IMSG_CTL_UNPROFILE, &v, sizeof(v));
+	srv_send(IMSG_CTL_PROFILE_DISABLE, &v, sizeof(v));
 	return srv_check_result(1);
 }
 
@@ -808,7 +808,7 @@ do_untrace(int argc, struct parameter *argv)
 
 	v = str_to_trace(argv[0].u.u_str);
 
-	srv_send(IMSG_CTL_UNTRACE, &v, sizeof(v));
+	srv_send(IMSG_CTL_TRACE_DISABLE, &v, sizeof(v));
 	return srv_check_result(1);
 }
 
@@ -817,7 +817,7 @@ do_update_table(int argc, struct parameter *argv)
 {
 	const char	*name = argv[0].u.u_str;
 
-	srv_send(IMSG_LKA_UPDATE_TABLE, name, strlen(name) + 1);
+	srv_send(IMSG_CTL_UPDATE_TABLE, name, strlen(name) + 1);
 	return srv_check_result(1);
 }
 
@@ -959,17 +959,17 @@ show_queue_envelope(struct envelope *e, int online)
 
 	if (online) {
 		if (e->flags & EF_PENDING)
-			snprintf(runstate, sizeof runstate, "pending|%zi",
+			(void)snprintf(runstate, sizeof runstate, "pending|%zi",
 			    (ssize_t)(e->nexttry - now));
 		else if (e->flags & EF_INFLIGHT)
-			snprintf(runstate, sizeof runstate, "inflight|%zi",
+			(void)snprintf(runstate, sizeof runstate, "inflight|%zi",
 			    (ssize_t)(now - e->lasttry));
 		else
-			snprintf(runstate, sizeof runstate, "invalid|");
+			(void)snprintf(runstate, sizeof runstate, "invalid|");
 		e->flags &= ~(EF_PENDING|EF_INFLIGHT);
 	}
 	else
-		strlcpy(runstate, "offline|", sizeof runstate);
+		(void)strlcpy(runstate, "offline|", sizeof runstate);
 
 	if (e->flags)
 		errx(1, "%016" PRIx64 ": unexpected flags 0x%04x", e->id,
@@ -1018,8 +1018,8 @@ getflag(uint *bitmap, int bit, char *bitstr, char *buf, size_t len)
 {
 	if (*bitmap & bit) {
 		*bitmap &= ~bit;
-		strlcat(buf, bitstr, len);
-		strlcat(buf, ",", len);
+		(void)strlcat(buf, bitstr, len);
+		(void)strlcat(buf, ",", len);
 	}
 }
 

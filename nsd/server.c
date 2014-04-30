@@ -33,13 +33,18 @@
 #ifndef SHUT_WR
 #define SHUT_WR 1
 #endif
-#ifndef USE_MINI_EVENT
-#include <event.h>
-#else
-#include "mini_event.h"
-#endif
-
 #include <openssl/rand.h>
+#ifndef USE_MINI_EVENT
+#  ifdef HAVE_EVENT_H
+#    include <event.h>
+#  else
+#    include <event2/event.h>
+#    include "event2/event_struct.h"
+#    include "event2/event_compat.h"
+#  endif
+#else
+#  include "mini_event.h"
+#endif
 
 #include "axfr.h"
 #include "namedb.h"
@@ -1493,6 +1498,16 @@ server_main(struct nsd *nsd)
 		}
 		fsync(reload_listener.fd);
 		close(reload_listener.fd);
+		/* wait for reload to finish processing */
+		while(1) {
+			if(waitpid(reload_pid, NULL, 0) == -1) {
+				if(errno == EINTR) continue;
+				if(errno == ECHILD) break;
+				log_msg(LOG_ERR, "waitpid(reload %d): %s",
+					(int)reload_pid, strerror(errno));
+			}
+			break;
+		}
 	}
 	if(nsd->xfrd_listener->fd != -1) {
 		/* complete quit, stop xfrd */
@@ -1507,11 +1522,13 @@ server_main(struct nsd *nsd)
 		close(nsd->xfrd_listener->fd);
 		(void)kill(nsd->pid, SIGTERM);
 	}
-	xfrd_del_tempdir(nsd);
 
 #if 0 /* OS collects memory pages */
 	region_destroy(server_region);
 #endif
+	/* write the nsd.db to disk, wait for it to complete */
+	udb_base_sync(nsd->db->udb, 1);
+	udb_base_close(nsd->db->udb);
 	server_shutdown(nsd);
 }
 

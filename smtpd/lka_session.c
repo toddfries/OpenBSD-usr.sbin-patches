@@ -1,4 +1,4 @@
-/*	$OpenBSD: lka_session.c,v 1.64 2014/02/28 16:00:11 eric Exp $	*/
+/*	$OpenBSD: lka_session.c,v 1.66 2014/04/19 12:55:23 gilles Exp $	*/
 
 /*
  * Copyright (c) 2011 Gilles Chehade <gilles@poolp.org>
@@ -229,20 +229,20 @@ lka_resume(struct lka_session *lks)
 	}
     error:
 	if (lks->error) {
-		m_create(p_smtp, IMSG_LKA_EXPAND_RCPT, 0, 0, -1);
-		m_add_id(p_smtp, lks->id);
-		m_add_int(p_smtp, lks->error);
+		m_create(p_pony, IMSG_SMTP_EXPAND_RCPT, 0, 0, -1);
+		m_add_id(p_pony, lks->id);
+		m_add_int(p_pony, lks->error);
 
 		if (lks->errormsg)
-			m_add_string(p_smtp, lks->errormsg);
+			m_add_string(p_pony, lks->errormsg);
 		else {
 			if (lks->error == LKA_PERMFAIL)
-				m_add_string(p_smtp, "550 Invalid recipient");
+				m_add_string(p_pony, "550 Invalid recipient");
 			else if (lks->error == LKA_TEMPFAIL)
-				m_add_string(p_smtp, "451 Temporary failure");
+				m_add_string(p_pony, "451 Temporary failure");
 		}
 
-		m_close(p_smtp);
+		m_close(p_pony);
 		while ((ep = TAILQ_FIRST(&lks->deliverylist)) != NULL) {
 			TAILQ_REMOVE(&lks->deliverylist, ep, entry);
 			free(ep);
@@ -252,14 +252,14 @@ lka_resume(struct lka_session *lks)
 		/* Process the delivery list and submit envelopes to queue */
 		while ((ep = TAILQ_FIRST(&lks->deliverylist)) != NULL) {
 			TAILQ_REMOVE(&lks->deliverylist, ep, entry);
-			m_create(p_queue, IMSG_QUEUE_SUBMIT_ENVELOPE, 0, 0, -1);
+			m_create(p_queue, IMSG_LKA_ENVELOPE_SUBMIT, 0, 0, -1);
 			m_add_id(p_queue, lks->id);
 			m_add_envelope(p_queue, ep);
 			m_close(p_queue);
 			free(ep);
 		}
 
-		m_create(p_queue, IMSG_QUEUE_COMMIT_ENVELOPES, 0, 0, -1);
+		m_create(p_queue, IMSG_LKA_ENVELOPE_COMMIT, 0, 0, -1);
 		m_add_id(p_queue, lks->id);
 		m_close(p_queue);
 	}
@@ -415,7 +415,7 @@ lka_expand(struct lka_session *lks, struct rule *rule, struct expandnode *xn)
 		fwreq.uid = lk.userinfo.uid;
 		fwreq.gid = lk.userinfo.gid;
 
-		m_compose(p_parent, IMSG_PARENT_FORWARD_OPEN, 0, 0, -1,
+		m_compose(p_parent, IMSG_LKA_OPEN_FORWARD, 0, 0, -1,
 		    &fwreq, sizeof(fwreq));
 		lks->flags |= F_WAITING;
 		break;
@@ -495,10 +495,10 @@ lka_submit(struct lka_session *lks, struct rule *rule, struct expandnode *xn)
 
 		/* only rewrite if not a bounce */
 		if (ep->sender.user[0] && rule->r_as && rule->r_as->user[0])
-			strlcpy(ep->sender.user, rule->r_as->user,
+			(void)strlcpy(ep->sender.user, rule->r_as->user,
 			    sizeof ep->sender.user);
 		if (ep->sender.user[0] && rule->r_as && rule->r_as->domain[0])
-			strlcpy(ep->sender.domain, rule->r_as->domain,
+			(void)strlcpy(ep->sender.domain, rule->r_as->domain,
 			    sizeof ep->sender.domain);
 		break;
 	case A_NONE:
@@ -513,12 +513,12 @@ lka_submit(struct lka_session *lks, struct rule *rule, struct expandnode *xn)
 		/* set username */
 		if ((xn->type == EXPAND_FILTER || xn->type == EXPAND_FILENAME)
 		    && xn->alias) {
-			strlcpy(ep->agent.mda.username, SMTPD_USER,
+			(void)strlcpy(ep->agent.mda.username, SMTPD_USER,
 			    sizeof(ep->agent.mda.username));
 		}
 		else {
 			xn2 = lka_find_ancestor(xn, EXPAND_USERNAME);
-			strlcpy(ep->agent.mda.username, xn2->u.user,
+			(void)strlcpy(ep->agent.mda.username, xn2->u.user,
 			    sizeof(ep->agent.mda.username));
 		}
 
@@ -529,24 +529,24 @@ lka_submit(struct lka_session *lks, struct rule *rule, struct expandnode *xn)
 			free(ep);
 			return;
 		}
-		strlcpy(ep->agent.mda.usertable, rule->r_userbase->t_name,
+		(void)strlcpy(ep->agent.mda.usertable, rule->r_userbase->t_name,
 		    sizeof ep->agent.mda.usertable);
-		strlcpy(ep->agent.mda.username, lk.userinfo.username,
+		(void)strlcpy(ep->agent.mda.username, lk.userinfo.username,
 		    sizeof ep->agent.mda.username);
 
 		if (xn->type == EXPAND_FILENAME) {
 			ep->agent.mda.method = A_FILENAME;
-			strlcpy(ep->agent.mda.buffer, xn->u.buffer,
+			(void)strlcpy(ep->agent.mda.buffer, xn->u.buffer,
 			    sizeof ep->agent.mda.buffer);
 		}
 		else if (xn->type == EXPAND_FILTER) {
 			ep->agent.mda.method = A_MDA;
-			strlcpy(ep->agent.mda.buffer, xn->u.buffer,
+			(void)strlcpy(ep->agent.mda.buffer, xn->u.buffer,
 			    sizeof ep->agent.mda.buffer);
 		}
 		else if (xn->type == EXPAND_USERNAME) {
 			ep->agent.mda.method = rule->r_action;
-			strlcpy(ep->agent.mda.buffer, rule->r_value.buffer,
+			(void)strlcpy(ep->agent.mda.buffer, rule->r_value.buffer,
 			    sizeof ep->agent.mda.buffer);
 
 			memset(tag, 0, sizeof tag);
@@ -556,10 +556,15 @@ lka_submit(struct lka_session *lks, struct rule *rule, struct expandnode *xn)
 				return;
 			}
 			if (rule->r_action == A_MAILDIR && tag[0]) {
-				strlcat(ep->agent.mda.buffer, "/.",
+				(void)strlcat(ep->agent.mda.buffer, "/.",
 				    sizeof(ep->agent.mda.buffer));
-				strlcat(ep->agent.mda.buffer, tag,
-				    sizeof(ep->agent.mda.buffer));
+				if (strlcat(ep->agent.mda.buffer, tag,
+					sizeof(ep->agent.mda.buffer))
+				    >= sizeof(ep->agent.mda.buffer)) {
+					lks->error = LKA_TEMPFAIL;
+					free(ep);
+					return;
+				}
 			}
 		}
 		else

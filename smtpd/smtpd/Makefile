@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.69 2014/02/04 15:44:06 eric Exp $
+#	$OpenBSD: Makefile,v 1.74 2014/04/15 20:55:42 miod Exp $
 
 .PATH:		${.CURDIR}/..
 
@@ -7,8 +7,8 @@ PROG=		smtpd
 SRCS=		aliases.c bounce.c ca.c compress_backend.c config.c		\
 		control.c crypto.c delivery.c dict.c dns.c envelope.c esc.c	\
 		expand.c forward.c iobuf.c ioev.c limit.c lka.c	lka_session.c	\
-		log.c mda.c mfa.c mfa_session.c mproc.c				\
-		mta.c mta_session.c parse.y queue.c queue_backend.c		\
+		log.c mda.c mproc.c				\
+		mta.c mta_session.c parse.y pony.c queue.c queue_backend.c	\
 		ruleset.c runq.c scheduler.c scheduler_backend.c		\
 		smtp.c smtp_session.c smtpd.c ssl.c ssl_privsep.c		\
 		ssl_smtpd.c stat_backend.c table.c to.c tree.c util.c		\
@@ -39,7 +39,7 @@ BINDIR=		/usr/sbin
 
 LDADD+=		-levent -lutil -lssl -lcrypto -lm -lz
 DPADD+=		${LIBEVENT} ${LIBUTIL} ${LIBSSL} ${LIBCRYPTO} ${LIBM} ${LIBZ}
-CFLAGS+=	-g3 -ggdb -I${.CURDIR}/.. -I${.CURDIR}/../../../lib/libc/asr
+CFLAGS+=	-I${.CURDIR}/..
 CFLAGS+=	-Wall -Wstrict-prototypes -Wmissing-prototypes
 CFLAGS+=	-Wmissing-declarations
 CFLAGS+=	-Wshadow -Wpointer-arith -Wcast-qual
@@ -48,9 +48,5 @@ CFLAGS+=	-Wsign-compare
 CFLAGS+=	-DIO_SSL
 CFLAGS+=	-DQUEUE_PROFILING
 YFLAGS=
-
-.if ${MACHINE} == "vax"
-LDFLAGS+=	-Wl,--no-keep-memory
-.endif
 
 .include <bsd.prog.mk>

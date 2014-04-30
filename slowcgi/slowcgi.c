@@ -1,4 +1,4 @@
-/*	$OpenBSD: slowcgi.c,v 1.27 2014/01/19 00:01:05 djm Exp $ */
+/*	$OpenBSD: slowcgi.c,v 1.31 2014/04/16 14:43:43 florian Exp $ */
 /*
  * Copyright (c) 2013 David Gwynne <dlg@openbsd.org>
  * Copyright (c) 2013 Florian Obser <florian@openbsd.org>
@@ -696,8 +696,8 @@ parse_params(uint8_t *buf, uint16_t n, struct request *c, uint16_t id)
 			buf++;
 		} else {
 			if (n > 3) {
-				name_len = ((buf[3] & 0x7f) << 24) +
-				    (buf[2] << 16) + (buf[1] << 8) + buf[0];
+				name_len = ((buf[0] & 0x7f) << 24) +
+				    (buf[1] << 16) + (buf[2] << 8) + buf[3];
 				n -= 4;
 				buf += 4;
 			} else
@@ -711,9 +711,9 @@ parse_params(uint8_t *buf, uint16_t n, struct request *c, uint16_t id)
 				buf++;
 			} else {
 				if (n > 3) {
-					val_len = ((buf[3] & 0x7f) << 24) +
-					    (buf[2] << 16) + (buf[1] << 8) +
-					     buf[0];
+					val_len = ((buf[0] & 0x7f) << 24) +
+					    (buf[1] << 16) + (buf[2] << 8) +
+					     buf[3];
 					n -= 4;
 					buf += 4;
 				} else
@@ -741,7 +741,11 @@ parse_params(uint8_t *buf, uint16_t n, struct request *c, uint16_t id)
 
 		env_entry->val[name_len] = '\0';
 		if (val_len < MAXPATHLEN && strcmp(env_entry->val,
-		    "SCRIPT_NAME") == 0) {
+		    "SCRIPT_NAME") == 0 && c->script_name[0] == '\0') {
+			bcopy(buf, c->script_name, val_len);
+			c->script_name[val_len] = '\0';
+		} else if (val_len < MAXPATHLEN && strcmp(env_entry->val,
+		    "SCRIPT_FILENAME") == 0) {
 			bcopy(buf, c->script_name, val_len);
 			c->script_name[val_len] = '\0';
 		}
@@ -837,6 +841,7 @@ exec_cgi(struct request *c)
 	pid_t		 pid;
 	char		*argv[2];
 	char		**env;
+	char		*path;
 
 	i = 0;
 
@@ -886,6 +891,19 @@ exec_cgi(struct request *c)
 		close(s_in[1]);
 		close(s_out[1]);
 		close(s_err[1]);
+
+		path = strrchr(c->script_name, '/');
+		if (path != NULL) {
+			if (path != c->script_name) {
+				*path = '\0';
+				if (chdir(c->script_name) == -1)
+					lwarn("cannot chdir to %s",
+					    c->script_name);
+				*path = '/';
+			} else
+				if (chdir("/") == -1)
+					lwarn("cannot chdir to /");
+		}
 
 		argv[0] = c->script_name;
 		argv[1] = NULL;

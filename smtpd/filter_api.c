@@ -1,4 +1,4 @@
-/*	$OpenBSD: filter_api.c,v 1.12 2013/12/26 17:25:32 eric Exp $	*/
+/*	$OpenBSD: filter_api.c,v 1.14 2014/04/19 17:35:48 gilles Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -415,7 +415,7 @@ filter_api_init(void)
 	event_init();
 
 	memset(&fi, 0, sizeof(fi));
-	fi.p.proc = PROC_MFA;
+	fi.p.proc = PROC_PONY;
 	fi.p.name = "filter";
 	fi.p.handler = filter_dispatch;
 	fi.uid = pw->pw_uid;
@@ -852,14 +852,4 @@ proc_name(enum smtp_proc_type proc)
 	if (proc == PROC_FILTER)
 		return filter_name;
 	return "filter";
-}
-
-const char *
-imsg_to_str(int imsg)
-{
-	static char buf[32];
-
-	snprintf(buf, sizeof(buf), "%d", imsg);
-
-	return (buf);
 }

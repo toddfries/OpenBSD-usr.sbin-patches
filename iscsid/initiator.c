@@ -1,4 +1,4 @@
-/*	$OpenBSD: initiator.c,v 1.9 2011/05/04 21:00:04 claudio Exp $ */
+/*	$OpenBSD: initiator.c,v 1.12 2014/04/20 16:49:56 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -76,7 +76,7 @@ initiator_init(void)
 	/* initialize initiator defaults */
 	initiator_sess_defaults = iscsi_sess_defaults;
 	initiator_conn_defaults = iscsi_conn_defaults;
-	initiator_sess_defaults.MaxConnections = 8;
+	initiator_sess_defaults.MaxConnections = ISCSID_DEF_CONNS;
 	initiator_conn_defaults.MaxRecvDataSegmentLength = 65536;
 
 	return initiator;
@@ -276,6 +276,7 @@ initiator_login_kvp(struct connection *c, u_int8_t stage)
 	case ISCSI_LOGIN_STG_OPNEG:
 		if (conn_gen_kvp(c, NULL, &nkvp) == -1)
 			return NULL;
+		nkvp += 1; /* add slot for terminator */
 		if (!(kvp = calloc(nkvp, sizeof(*kvp))))
 			return NULL;
 		if (conn_gen_kvp(c, kvp, &nkvp) == -1) {
@@ -338,7 +339,7 @@ initiator_login_build(struct connection *c, struct task_login *tl)
 	}
 	n = htonl(n);
 	/* copy 32bit value over ahslen and datalen */
-	bcopy(&n, &lreq->ahslen, sizeof(n));
+	memcpy(&lreq->ahslen, &n, sizeof(n));
 
 	return p;
 }
@@ -362,7 +363,7 @@ initiator_text_build(struct task *t, struct session *s, struct kvp *kvp)
 	if ((n = text_to_pdu(kvp, p)) == -1)
 		return NULL;
 	n = htonl(n);
-	bcopy(&n, &lreq->ahslen, sizeof(n));
+	memcpy(&lreq->ahslen, &n, sizeof(n));
 
 	return p;
 }

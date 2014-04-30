@@ -1,4 +1,4 @@
-/*	$OpenBSD: vscsi.c,v 1.8 2011/05/04 21:00:04 claudio Exp $ */
+/*	$OpenBSD: vscsi.c,v 1.13 2014/04/21 18:59:05 claudio Exp $ */
 
 /*
  * Copyright (c) 2009 Claudio Jeker <claudio@openbsd.org>
@@ -17,6 +17,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/param.h>	/* for nitems */
 #include <sys/ioctl.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
@@ -35,8 +36,9 @@
 #include "log.h"
 
 struct vscsi {
-	struct event	ev;
-	int		fd;
+	struct event		ev;
+	int			fd;
+	struct vscsi_stats	stats;
 } v;
 
 struct scsi_task {
@@ -47,9 +49,10 @@ struct scsi_task {
 	size_t		datalen;
 };
 
-void vscsi_callback(struct connection *, void *, struct pdu *);
-void vscsi_fail(void *arg);
-void vscsi_dataout(struct connection *, struct scsi_task *, u_int32_t, size_t);
+void	vscsi_callback(struct connection *, void *, struct pdu *);
+void	vscsi_fail(void *arg);
+void	vscsi_dataout(struct connection *, struct scsi_task *, u_int32_t,
+	    size_t, size_t);
 
 void
 vscsi_open(char *dev)
@@ -69,10 +72,6 @@ vscsi_dispatch(int fd, short event, void *arg)
 	struct session *s;
 	struct scsi_task *t;
 	struct pdu *p;
-#if 0
-	char *buf;
-	u_int32_t t32;
-#endif
 
 	if (!(event & EV_READ)) {
 		log_debug("spurious read call");
@@ -81,6 +80,10 @@ vscsi_dispatch(int fd, short event, void *arg)
 
 	if (ioctl(v.fd, VSCSI_I2T, &i2t) == -1)
 		fatal("vscsi_dispatch");
+
+	v.stats.cnt_i2t++;
+	if (i2t.direction < (int)nitems(v.stats.cnt_i2t_dir))
+		v.stats.cnt_i2t_dir[i2t.direction]++;
 
 	s = initiator_t2s(i2t.target);
 	if (s == NULL)
@@ -113,29 +116,49 @@ vscsi_dispatch(int fd, short event, void *arg)
 		    "I'm afraid I can't do that.");
 	sreq->lun[1] = t->lun;
 
-	bcopy(&i2t.cmd, sreq->cdb, i2t.cmdlen);
+	memcpy(sreq->cdb, &i2t.cmd, i2t.cmdlen);
 
-#if 0
-	if (i2t.direction == VSCSI_DIR_WRITE) {
-		if (!(buf = pdu_alloc(i2t.datalen)))
+	/* include immediate data of up to FirstBurstLength bytes if allowed */
+	if (i2t.direction == VSCSI_DIR_WRITE && s->active.ImmediateData) {
+		struct connection *c;
+		char *buf;
+		u_int32_t t32;
+		size_t size;
+
+		size = i2t.datalen > s->active.FirstBurstLength ?
+		    s->active.FirstBurstLength : i2t.datalen;
+
+		/* XXX assumes all connections have same settings */
+		c = TAILQ_FIRST(&s->connections);
+		if (c && size > c->active.MaxRecvDataSegmentLength)
+			size = c->active.MaxRecvDataSegmentLength;
+
+		if (!(buf = pdu_alloc(size)))
 			fatal("vscsi_dispatch");
-		t32 = htonl(i2t.datalen);
-		bcopy(&t32, &sreq->ahslen, sizeof(t32));
-		vscsi_data(VSCSI_DATA_WRITE, i2t.tag, buf, i2t.datalen);
-		pdu_addbuf(p, buf, i2t.datalen, PDU_DATA);
+		t32 = htonl(size);
+		memcpy(&sreq->ahslen, &t32, sizeof(t32));
+		vscsi_data(VSCSI_DATA_WRITE, i2t.tag, buf, size);
+		pdu_addbuf(p, buf, size, PDU_DATA);
 	}
-#endif
 
 	task_init(&t->task, s, 0, t, vscsi_callback, vscsi_fail);
 	task_pdu_add(&t->task, p);
 	session_task_issue(s, &t->task);
 }
 
+/* read / write data to vscsi */
 void
 vscsi_data(unsigned long req, int tag, void *buf, size_t len)
 {
 	struct vscsi_ioc_data data;
 
+	if (req == VSCSI_DATA_READ) {
+		v.stats.cnt_read++;
+		v.stats.bytes_rd += len;
+	} else if (req == VSCSI_DATA_WRITE) {
+		v.stats.cnt_write++;
+		v.stats.bytes_wr += len;
+	}
 	data.tag = tag;
 	data.data = buf;
 	data.datalen = len;
@@ -149,13 +172,17 @@ vscsi_status(int tag, int status, void *buf, size_t len)
 {
 	struct vscsi_ioc_t2i t2i;
 
+	v.stats.cnt_t2i++;
+	if (status < (int)nitems(v.stats.cnt_t2i_status))
+		v.stats.cnt_t2i_status[status]++;
+
 	bzero(&t2i, sizeof(t2i));
 	t2i.tag = tag;
 	t2i.status = status;
 	if (buf) {
 		if (len > sizeof(t2i.sense))
 			len = sizeof(t2i.sense);
-		bcopy(buf, &t2i.sense, len);
+		memcpy(&t2i.sense, buf, len);
 	}
 
 	if (ioctl(v.fd, VSCSI_T2I, &t2i) == -1)
@@ -166,6 +193,11 @@ void
 vscsi_event(unsigned long req, u_int target, u_int lun)
 {
 	struct vscsi_ioc_devevent devev;
+
+	if (req == VSCSI_REQPROBE)
+		v.stats.cnt_probe++;
+	else if (req == VSCSI_REQDETACH)
+		v.stats.cnt_detach++;
 
 	devev.target = target;
 	devev.lun = lun;
@@ -182,7 +214,7 @@ vscsi_callback(struct connection *c, void *arg, struct pdu *p)
 	struct iscsi_pdu_rt2 *r2t;
 	int status = VSCSI_STAT_DONE;
 	u_char *buf = NULL;
-	size_t size = 0, n;
+	size_t size, off, n;
 	int tag;
 
 	sresp = pdu_getbuf(p, NULL, PDU_HEADER);
@@ -198,6 +230,7 @@ vscsi_callback(struct connection *c, void *arg, struct pdu *p)
 			conn_fail(c);
 			break;
 		}
+		size = 0;
 		/* XXX handle the various serial numbers */
 		if (sresp->response) {
 			status = VSCSI_STAT_ERR;
@@ -238,11 +271,10 @@ send_status:
 	case ISCSI_OP_R2T:
 		conn_task_cleanup(c, &t->task);
 		r2t = (struct iscsi_pdu_rt2 *)sresp;
-		if (ntohl(r2t->buffer_offs))
-			fatalx("vscsi: r2t bummer failure");
+		off = ntohl(r2t->buffer_offs);
 		size = ntohl(r2t->desired_datalen);
 
-		vscsi_dataout(c, t, r2t->ttt, size);
+		vscsi_dataout(c, t, r2t->ttt, size, off);
 		break;
 	default:
 		log_debug("scsi task: tag %d, target %d lun %d", t->tag,
@@ -266,7 +298,7 @@ vscsi_fail(void *arg)
 
 void
 vscsi_dataout(struct connection *c, struct scsi_task *t, u_int32_t ttt,
-    size_t len)
+    size_t len, size_t buffer_off)
 {
 	struct pdu *p;
 	struct iscsi_pdu_data_out *dout;
@@ -277,6 +309,8 @@ vscsi_dataout(struct connection *c, struct scsi_task *t, u_int32_t ttt,
 	for (off = 0; off < len; off += size) {
 		size = len - off > c->active.MaxRecvDataSegmentLength ?
 		    c->active.MaxRecvDataSegmentLength : len - off;
+
+		/* XXX also respect the MaxBurstLength */
 
 		if (!(p = pdu_new()))
 			fatal("vscsi_r2t");
@@ -291,9 +325,9 @@ vscsi_dataout(struct connection *c, struct scsi_task *t, u_int32_t ttt,
 		dout->ttt = ttt;
 		dout->datasn = htonl(dsn++);
 		t32 = htonl(size);
-		bcopy(&t32, &dout->ahslen, sizeof(t32));
+		memcpy(&dout->ahslen, &t32, sizeof(t32));
 
-		dout->buffer_offs = htonl(off);
+		dout->buffer_offs = htonl(buffer_off + off);
 		if (!(buf = pdu_alloc(size)))
 			fatal("vscsi_r2t");
 
@@ -302,4 +336,10 @@ vscsi_dataout(struct connection *c, struct scsi_task *t, u_int32_t ttt,
 		task_pdu_add(&t->task, p);
 	}
 	conn_task_issue(c, &t->task);
+}
+
+struct vscsi_stats *
+vscsi_stats(void)
+{
+	return &v.stats;
 }
