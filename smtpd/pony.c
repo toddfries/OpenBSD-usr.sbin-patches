@@ -1,4 +1,4 @@
-/*	$OpenBSD: pony.c,v 1.3 2014/04/29 19:13:13 reyk Exp $	*/
+/*	$OpenBSD: pony.c,v 1.5 2014/05/01 15:50:20 reyk Exp $	*/
 
 /*
  * Copyright (c) 2014 Gilles Chehade <gilles@poolp.org>
@@ -43,11 +43,10 @@ void mda_imsg(struct mproc *, struct imsg *);
 void mta_imsg(struct mproc *, struct imsg *);
 void smtp_imsg(struct mproc *, struct imsg *);
 
-static void pony_imsg(struct mproc *, struct imsg *);
 static void pony_shutdown(void);
 static void pony_sig_handler(int, short, void *);
 
-static void
+void
 pony_imsg(struct mproc *p, struct imsg *imsg)
 {
 	struct msg	m;
@@ -211,6 +210,7 @@ pony(void)
 	config_peer(PROC_QUEUE);
 	config_peer(PROC_LKA);
 	config_peer(PROC_CONTROL);
+	config_peer(PROC_CA);
 	config_done();
 
 	ca_engine_init();

@@ -1,4 +1,4 @@
-/* $OpenBSD: wsmoused.h,v 1.8 2009/06/21 16:13:18 jacekm Exp $ */
+/* $OpenBSD: wsmoused.h,v 1.11 2014/05/14 18:23:22 shadchin Exp $ */
 
 /*
  * Copyright (c) 2001 Jean-Baptiste Marchand, Julien Montagne and Jerome Verdon
@@ -98,12 +98,8 @@ typedef struct mouse_s {
 	char *portname;		/* mouse device */
 	char *ttyname;		/* wsdisplay control tty device */
 	int proto;		/* MOUSE_PROTO_XXX */
-	int baudrate;
-	int old_baudrate;
 	unsigned char rate;	/* report rate */
 	unsigned int resolution;	/* MOUSE_RES_XXX or a positive number */
-	int zmap;		/* MOUSE_{X|Y}AXIS or a button number */
-	int wmode;		/* wheel mode button number */
 	int mfd;		/* mouse file descriptor */
 	int cfd;		/* console file descriptor */
 	long clickthreshold;	/* double click speed in msec */

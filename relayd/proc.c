@@ -1,4 +1,4 @@
-/*	$OpenBSD: proc.c,v 1.11 2014/04/20 14:48:29 reyk Exp $	*/
+/*	$OpenBSD: proc.c,v 1.14 2014/05/08 13:08:48 blambert Exp $	*/
 
 /*
  * Copyright (c) 2010 - 2014 Reyk Floeter <reyk@openbsd.org>
@@ -38,7 +38,6 @@
 #include <pwd.h>
 #include <event.h>
 
-#include <openssl/rand.h>
 #include <openssl/ssl.h>
 
 #include "relayd.h"
@@ -337,10 +336,11 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
     struct privsep_proc *procs, u_int nproc,
     void (*init)(struct privsep *, struct privsep_proc *, void *), void *arg)
 {
-	pid_t		 pid;
-	struct passwd	*pw;
-	const char	*root;
-	u_int		 n;
+	pid_t			 pid;
+	struct passwd		*pw;
+	const char		*root;
+	struct control_sock	*rcs;
+	u_int			 n;
 
 	if (ps->ps_noaction)
 		return (0);
@@ -364,6 +364,9 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 	if (p->p_id == PROC_CONTROL && ps->ps_instance == 0) {
 		if (control_init(ps, &ps->ps_csock) == -1)
 			fatalx(p->p_title);
+		TAILQ_FOREACH(rcs, &ps->ps_rcsocks, cs_entry)
+			if (control_init(ps, rcs) == -1)
+				fatalx(p->p_title);
 	}
 
 	/* Change root directory */
@@ -372,31 +375,19 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 	else
 		root = pw->pw_dir;
 
-#ifndef DEBUG
 	if (chroot(root) == -1)
 		fatal("proc_run: chroot");
 	if (chdir("/") == -1)
 		fatal("proc_run: chdir(\"/\")");
-#else
-#warning disabling privilege revocation and chroot in DEBUG MODE
-	if (p->p_chroot != NULL) {
-		if (chroot(root) == -1)
-			fatal("proc_run: chroot");
-		if (chdir("/") == -1)
-			fatal("proc_run: chdir(\"/\")");
-	}
-#endif
 
 	privsep_process = p->p_id;
 
 	setproctitle("%s", p->p_title);
 
-#ifndef DEBUG
 	if (setgroups(1, &pw->pw_gid) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("proc_run: cannot drop privileges");
-#endif
 
 	/* Fork child handlers */
 	for (n = 1; n < ps->ps_instances[p->p_id]; n++) {
@@ -431,6 +422,9 @@ proc_run(struct privsep *ps, struct privsep_proc *p,
 		TAILQ_INIT(&ctl_conns);
 		if (control_listen(&ps->ps_csock) == -1)
 			fatalx(p->p_title);
+		TAILQ_FOREACH(rcs, &ps->ps_rcsocks, cs_entry)
+			if (control_listen(rcs) == -1)
+				fatalx(p->p_title);
 	}
 
 	if (init != NULL)

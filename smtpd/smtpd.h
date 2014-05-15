@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpd.h,v 1.457 2014/04/29 19:13:14 reyk Exp $	*/
+/*	$OpenBSD: smtpd.h,v 1.461 2014/05/04 16:38:19 reyk Exp $	*/
 
 /*
  * Copyright (c) 2008 Gilles Chehade <gilles@poolp.org>
@@ -31,7 +31,7 @@
 #define MAILNAME_FILE		 "/etc/mail/mailname"
 #define CA_FILE			 "/etc/ssl/cert.pem"
 
-#define PROC_COUNT		 6
+#define PROC_COUNT		 7
 
 #define MAX_HOPS_COUNT		 100
 #define	DEFAULT_MAX_BODY_SIZE	(35*1024*1024)
@@ -301,6 +301,7 @@ enum smtp_proc_type {
 	PROC_CONTROL,
 	PROC_SCHEDULER,
 	PROC_PONY,
+	PROC_CA,
 
 	PROC_FILTER,
 	PROC_CLIENT,
@@ -621,6 +622,7 @@ struct forward_req {
 struct deliver {
 	char			to[SMTPD_MAXPATHLEN];
 	char			from[SMTPD_MAXPATHLEN];
+	char			dest[SMTPD_MAXLINESIZE];
 	char			user[SMTPD_MAXLOGNAME];
 	short			mode;
 
@@ -978,6 +980,7 @@ extern struct mproc *p_lka;
 extern struct mproc *p_queue;
 extern struct mproc *p_scheduler;
 extern struct mproc *p_pony;
+extern struct mproc *p_ca;
 
 extern struct smtpd	*env;
 extern void (*imsg_callback)(struct mproc *, struct imsg *);
@@ -1071,10 +1074,11 @@ void bounce_fd(int);
 
 
 /* ca.c */
+pid_t	 ca(void);
 int	 ca_X509_verify(void *, void *, const char *, const char *, const char **);
 void	 ca_imsg(struct mproc *, struct imsg *);
 void	 ca_init(void);
-int	 ca_engine_init(void);
+void	 ca_engine_init(void);
 
 /* compress_backend.c */
 struct compress_backend *compress_backend_lookup(const char *);
@@ -1303,6 +1307,7 @@ time_t scheduler_compute_schedule(struct scheduler_info *);
 
 /* pony.c */
 pid_t pony(void);
+void pony_imsg(struct mproc *, struct imsg *);
 
 
 /* smtp.c */
@@ -1325,6 +1330,7 @@ void post_fork(int);
 const char *proc_name(enum smtp_proc_type);
 const char *proc_title(enum smtp_proc_type);
 const char *imsg_to_str(int);
+void log_imsg(int, int, struct imsg *);
 
 
 /* ssl_smtpd.c */

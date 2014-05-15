@@ -1,4 +1,4 @@
-/*	$OpenBSD: icmp.c,v 1.10 2008/09/15 20:38:17 claudio Exp $ */
+/*	$OpenBSD: icmp.c,v 1.12 2014/05/07 13:20:47 pelikan Exp $ */
 
 /*
  * Copyright (c) 1997, 1998 The Internet Software Consortium.

@@ -1,4 +1,4 @@
-/*	$OpenBSD: relayd.h,v 1.177 2014/04/22 08:04:23 reyk Exp $	*/
+/*	$OpenBSD: relayd.h,v 1.179 2014/05/08 13:08:48 blambert Exp $	*/
 
 /*
  * Copyright (c) 2006 - 2014 Reyk Floeter <reyk@openbsd.org>
@@ -761,7 +761,10 @@ struct control_sock {
 	int		 cs_fd;
 	int		 cs_restricted;
 	void		*cs_env;
+
+	TAILQ_ENTRY(control_sock) cs_entry;
 };
+TAILQ_HEAD(control_socks, control_sock);
 
 struct {
 	struct event	 ev;
@@ -891,6 +894,7 @@ struct privsep {
 	u_int				 ps_instance;
 
 	struct control_sock		 ps_csock;
+	struct control_socks		 ps_rcsocks;
 
 	/* Event and signal handlers */
 	struct event			 ps_evsigint;
@@ -1118,7 +1122,7 @@ int	 ssl_ctx_load_verify_memory(SSL_CTX *, char *, off_t);
 
 /* ca.c */
 pid_t	 ca(struct privsep *, struct privsep_proc *);
-int	 ca_engine_init(struct relayd *);
+void	 ca_engine_init(struct relayd *);
 
 /* relayd.c */
 struct host	*host_find(struct relayd *, objid_t);

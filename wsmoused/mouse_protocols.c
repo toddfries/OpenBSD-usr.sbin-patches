@@ -1,4 +1,4 @@
-/* $OpenBSD: mouse_protocols.c,v 1.13 2009/06/05 03:37:10 miod Exp $ */
+/* $OpenBSD: mouse_protocols.c,v 1.16 2014/05/14 18:28:22 shadchin Exp $ */
 
 /*
  * Copyright (c) 2001 Jean-Baptiste Marchand, Julien Montagne and Jerome Verdon
@@ -184,7 +184,7 @@ mouse_name(int type)
 }
 
 void
-SetMouseSpeed(int old, int new, unsigned int cflag)
+SetMouseSpeed(int old, unsigned int cflag)
 {
 	struct termios tty;
 	char	*c;
@@ -193,24 +193,6 @@ SetMouseSpeed(int old, int new, unsigned int cflag)
 		debug("Warning: %s unable to get status of mouse fd (%s)\n",
 		    mouse.portname, strerror(errno));
 		return;
-	}
-	/* this will query the initial baudrate only once */
-	if (mouse.old_baudrate < 0) {
-		switch (cfgetispeed(&tty)) {
-		case B9600:
-			mouse.old_baudrate = 9600;
-			break;
-		case B4800:
-			mouse.old_baudrate = 4800;
-			break;
-		case B2400:
-			mouse.old_baudrate = 2400;
-			break;
-		case B1200:
-		default:
-			mouse.old_baudrate = 1200;
-			break;
-		}
 	}
 	tty.c_iflag = IGNBRK | IGNPAR;
 	tty.c_oflag = 0;
@@ -241,28 +223,9 @@ SetMouseSpeed(int old, int new, unsigned int cflag)
 	if (tcsetattr(mouse.mfd, TCSADRAIN, &tty) < 0)
 		logerr(1, "unable to get mouse status. Exiting...\n");
 
-	switch (new) {
-	case 9600:
-		c = "*q";
-		cfsetispeed(&tty, B9600);
-		cfsetospeed(&tty, B9600);
-		break;
-	case 4800:
-		c = "*p";
-		cfsetispeed(&tty, B4800);
-		cfsetospeed(&tty, B4800);
-		break;
-	case 2400:
-		c = "*o";
-		cfsetispeed(&tty, B2400);
-		cfsetospeed(&tty, B2400);
-		break;
-	case 1200:
-	default:
-		c = "*n";
-		cfsetispeed(&tty, B1200);
-		cfsetospeed(&tty, B1200);
-	}
+	c = "*n";
+	cfsetispeed(&tty, B1200);
+	cfsetospeed(&tty, B1200);
 
 	if (mouse.proto == P_LOGIMAN || mouse.proto == P_LOGI) {
 		if (write(mouse.mfd, c, 2) != 2)
@@ -334,7 +297,7 @@ pnpgets(int mouse_fd, char *buf)
 		goto disconnect_idle;
 
 	/* port setup, 1st phase (2.1.3) */
-	SetMouseSpeed(1200, 1200, (CS7 | CREAD | CLOCAL | HUPCL));
+	SetMouseSpeed(1200, (CS7 | CREAD | CLOCAL | HUPCL));
 	i = TIOCM_DTR | TIOCM_RTS;	/* DTR = 0, RTS = 0 */
 	ioctl(mouse_fd, TIOCMBIC, &i);
 	usleep(200000);
@@ -368,7 +331,7 @@ pnpgets(int mouse_fd, char *buf)
 	/*
 	 * This is a simplified procedure; it simply toggles RTS.
 	 */
-	SetMouseSpeed(1200, 1200, (CS7 | CREAD | CLOCAL | HUPCL));
+	SetMouseSpeed(1200, (CS7 | CREAD | CLOCAL | HUPCL));
 
 	ioctl(mouse_fd, TIOCMGET, &i);
 	i |= TIOCM_DTR;		/* DTR = 1 */
@@ -653,16 +616,15 @@ mouse_init(void)
 		 * The baud rate selection command must be sent at the current
 		 * baud rate; try all likely settings
 		 */
-		SetMouseSpeed(9600, mouse.baudrate, mousecflags[mouse.proto]);
-		SetMouseSpeed(4800, mouse.baudrate, mousecflags[mouse.proto]);
-		SetMouseSpeed(2400, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(9600, mousecflags[mouse.proto]);
+		SetMouseSpeed(4800, mousecflags[mouse.proto]);
+		SetMouseSpeed(2400, mousecflags[mouse.proto]);
 #if 0
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 #endif
 		/* select MM series data format */
 		write(mouse.mfd, "S", 1);
-		SetMouseSpeed(mouse.baudrate, mouse.baudrate,
-			      mousecflags[P_MM]);
+		SetMouseSpeed(1200, mousecflags[P_MM]);
 		/* select report rate/frequency */
 		if (mouse.rate <= 0)
 			write(mouse.mfd, "O", 1);
@@ -684,13 +646,13 @@ mouse_init(void)
 
 	case P_LOGIMAN:
 		/* The command must always be sent at 1200 baud */
-		SetMouseSpeed(1200, 1200, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 		write(mouse.mfd, "*X", 2);
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 		break;
 
 	case P_MMHIT:
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 
 		/*
 		 * Initialize Hitachi PUMA Plus - Model 1212E to desired settings.
@@ -740,7 +702,7 @@ mouse_init(void)
 		break;
 
 	case P_THINKING:
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 		/* the PnP ID string may be sent again, discard it */
 		usleep(200000);
 		i = FREAD;
@@ -759,7 +721,7 @@ mouse_init(void)
 		break;
 
 	case P_MSC:
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 #if 0
 		if (mouse.flags & ClearDTR) {
 			i = TIOCM_DTR;
@@ -773,7 +735,7 @@ mouse_init(void)
 		break;
 
 	default:
-		SetMouseSpeed(1200, mouse.baudrate, mousecflags[mouse.proto]);
+		SetMouseSpeed(1200, mousecflags[mouse.proto]);
 		break;
 	}
 }
