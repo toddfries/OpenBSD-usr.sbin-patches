@@ -1,13 +1,9 @@
 # Build wrapper for Nginx
-# $OpenBSD: Makefile.bsd-wrapper,v 1.15 2014/04/15 20:55:42 miod Exp $
+# $OpenBSD: Makefile.bsd-wrapper,v 1.17 2014/06/12 15:27:08 robert Exp $
 
 LNDIR=	/usr/bin/lndir
 
 .include <bsd.own.mk>
-
-.if (${MACHINE_ARCH} == "vax")
-CFLAGS=-O1 ${PIPE} ${DEBUG}
-.endif
 
 CONFIGURE_ARGS=	--prefix=/var/www \
 		--conf-path=/etc/nginx/nginx.conf \
@@ -27,7 +23,6 @@ CONFIGURE_ARGS=	--prefix=/var/www \
 		--with-http_ssl_module \
 		--with-http_stub_status_module \
 		--with-ipv6 \
-		--with-cc-opt="-DNGX_ENABLE_SYSLOG" \
 		--without-mail_pop3_module \
 		--without-mail_imap_module \
 		--without-mail_smtp_module

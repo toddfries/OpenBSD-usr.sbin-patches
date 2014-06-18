@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.13 2011/10/02 22:20:50 edd Exp $	*/
+/*	$OpenBSD: util.c,v 1.15 2014/05/29 16:38:23 tedu Exp $	*/
 /*	$NetBSD: util.c,v 1.5 1996/08/31 20:58:29 mycroft Exp $	*/
 
 /*
@@ -62,20 +62,32 @@ emalloc(size_t size)
 {
 	void *p;
 
-	if ((p = malloc(size)) == NULL)
+	if ((p = calloc(1, size)) == NULL)
 		nomem();
-	memset(p, 0, size);
 	return (p);
 }
 
 /*
- * Realloc, with abort on error.
+ * Reallocarray, with abort on error.
  */
 void *
-erealloc(void *p, size_t size)
+ereallocarray(void *p, size_t sz1, size_t sz2)
 {
 
-	if ((p = realloc(p, size)) == NULL)
+	if ((p = reallocarray(p, sz1, sz2)) == NULL)
+		nomem();
+	return (p);
+}
+
+/*
+ * Calloc, with abort on error.
+ */
+void *
+ecalloc(size_t sz1, size_t sz2)
+{
+	void *p;
+
+	if ((p = calloc(sz1, sz2)) == NULL)
 		nomem();
 	return (p);
 }

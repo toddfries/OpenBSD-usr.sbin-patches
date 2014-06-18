@@ -1,7 +1,7 @@
 #! /usr/bin/perl
 
 # ex:ts=8 sw=4:
-# $OpenBSD: PkgAdd.pm,v 1.65 2014/05/05 16:29:32 espie Exp $
+# $OpenBSD: PkgAdd.pm,v 1.67 2014/06/16 08:56:48 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -667,13 +667,19 @@ sub check_digital_signature
 			$state->{packages_without_sig}{$pkgname} = 1;
 			return if $state->defines('unsigned');
 			my $okay = 0;
+			my $url;
+			if (defined $handle->location) {
+				$url = $handle->location->url;
+			} else {
+				$url = $pkgname;
+			}
 			if ($state->{interactive}) {
 				$state->errprint('UNSIGNED PACKAGE #1: ', 
-				    $pkgname);
+				    $url);
 				$okay = $state->confirm("install anyway", 0);
 			}
 			if (!$okay) {
-				$state->fatal("Unsigned package #1", $pkgname);
+				$state->fatal("Unsigned package #1", $url);
 			}
 		}
 	}
@@ -904,6 +910,7 @@ sub process_set
 		return ();
 	}
 	if ($set->newer == 0 && $set->older_to_do == 0) {
+		$state->tracker->uptodate($set);
 		return ();
 	}
 

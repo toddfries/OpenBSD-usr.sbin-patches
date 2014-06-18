@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Delete.pm,v 1.135 2014/04/18 10:00:48 schwarze Exp $
+# $OpenBSD: Delete.pm,v 1.137 2014/05/20 05:55:43 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -45,20 +45,15 @@ sub manpages_unindex
 	return unless defined $state->{rmman};
 	my $destdir = $state->{destdir};
 
-	# fudge verbose for API differences
-	my $v = $state->{v};
-	$state->{v} = $state->verbose >= 2;
 	while (my ($k, $v) = each %{$state->{rmman}}) {
 		my @l = map { "$destdir$k/$_" } @$v;
 		if ($state->{not}) {
 			$state->say("Removing manpages in #1: #2",
 			    $destdir.$k, join(' ', @l)) if $state->verbose;
 		} else {
-			$state->vsystem(OpenBSD::Paths->makewhatis,
-			    '-u', $destdir.$k, '--', @l);
+			$state->run_makewhatis(['-u', $destdir.$k], \@l);
 		}
 	}
-	$state->{v} = $v;
 	delete $state->{rmman};
 }
 

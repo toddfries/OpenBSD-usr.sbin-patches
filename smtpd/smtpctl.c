@@ -1,4 +1,4 @@
-/*	$OpenBSD: smtpctl.c,v 1.119 2014/04/22 13:57:58 gilles Exp $	*/
+/*	$OpenBSD: smtpctl.c,v 1.121 2014/05/23 13:28:32 espie Exp $	*/
 
 /*
  * Copyright (c) 2013 Eric Faurot <eric@openbsd.org>
@@ -317,9 +317,10 @@ srv_iter_evpids(uint32_t msgid, uint64_t *evpid, int *offset)
 		while (srv_iter_envelopes(msgid, &evp)) {
 			if (n == alloc) {
 				alloc += 256;
-				evpids = realloc(evpids, alloc * sizeof(*evpids));
+				evpids = reallocarray(evpids, alloc,
+				    sizeof(*evpids));
 				if (evpids == NULL)
-					err(1, "realloc");
+					err(1, "reallocarray");
 			}
 			evpids[n++] = evp.id;
 		}
@@ -959,10 +960,10 @@ show_queue_envelope(struct envelope *e, int online)
 
 	if (online) {
 		if (e->flags & EF_PENDING)
-			(void)snprintf(runstate, sizeof runstate, "pending|%zi",
+			(void)snprintf(runstate, sizeof runstate, "pending|%zd",
 			    (ssize_t)(e->nexttry - now));
 		else if (e->flags & EF_INFLIGHT)
-			(void)snprintf(runstate, sizeof runstate, "inflight|%zi",
+			(void)snprintf(runstate, sizeof runstate, "inflight|%zd",
 			    (ssize_t)(now - e->lasttry));
 		else
 			(void)snprintf(runstate, sizeof runstate, "invalid|");

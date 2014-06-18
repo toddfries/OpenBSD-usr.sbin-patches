@@ -1,5 +1,5 @@
 # ex:ts=8 sw=4:
-# $OpenBSD: Add.pm,v 1.151 2014/04/18 10:00:48 schwarze Exp $
+# $OpenBSD: Add.pm,v 1.155 2014/06/17 13:35:06 espie Exp $
 #
 # Copyright (c) 2003-2014 Marc Espie <espie@openbsd.org>
 #
@@ -32,19 +32,15 @@ sub manpages_index
 	my $destdir = $state->{destdir};
 
 	# fudge verbose for API differences
-	my $v = $state->{v};
-	$state->{v} = $state->verbose >= 2;
 	while (my ($k, $v) = each %{$state->{addman}}) {
 		my @l = map { "$destdir$k/$_" } @$v;
 		if ($state->{not}) {
 			$state->say("Merging manpages in #1: #2",
 			    $destdir.$k, join(' ', @l)) if $state->verbose;
 		} else {
-			$state->vsystem(OpenBSD::Paths->makewhatis,
-			    '-d', $destdir.$k, '--', @l);
+			$state->run_makewhatis(['-d', $destdir.$k], \@l);
 		}
 	}
-	$state->{v} = $v;
 	delete $state->{addman};
 }
 
@@ -117,7 +113,35 @@ sub perform_extraction
 	$state->{partial} = $handle->{partial};
 	$state->{archive} = $handle->{location};
 	$state->{check_digest} = $handle->{plist}{check_digest};
-	$state->progress->visit_with_size($handle->{plist}, 'extract', $state);
+	my ($wanted, $tied) = ({}, {});
+	$handle->{plist}->find_extractible($state, $wanted, $tied);
+	my $p = $state->progress->new_sizer($handle->{plist}, $state);
+	while (my $file = $state->{archive}->next) {
+		my $e = $tied->{$file->name};
+		if (defined $e) {
+			delete $tied->{$file->name};
+			$e->prepare_to_extract($state, $file);
+			$state->{archive}->skip;
+			$p->advance($e);
+			# skip to next;
+			next;
+		}
+		$e = $wanted->{$file->name};
+		if (!defined $e) {
+			$state->fatal("archive member not found #1",
+			    $file->name);
+		}
+		delete $wanted->{$file->name};
+		$e->prepare_to_extract($state, $file);
+		$e->extract($state, $file);
+		$p->advance($e);
+		if (keys %$wanted == 0) {
+			return;
+		}
+	}
+	if (keys %$wanted > 0) {
+		$state->fatal("Truncated archive");
+	}
 }
 
 my $user_tagged = {};
@@ -185,6 +209,10 @@ sub prepare_for_addition
 {
 }
 
+sub find_extractible
+{
+}
+
 sub extract
 {
 	my ($self, $state) = @_;
@@ -238,6 +266,16 @@ sub set_modes
 			    $self->{mode}, $name);
 		}
 	}
+}
+
+package OpenBSD::PackingElement::Meta;
+
+# XXX stuff that's invisible to find_extractible should be considered extracted
+# for the most part, otherwise we create broken partial packages
+sub find_extractible
+{
+	my ($self, $state, $wanted, $tied) = @_;
+	$state->{partial}{$self} = 1;
 }
 
 package OpenBSD::PackingElement::ExtraInfo;
@@ -364,6 +402,16 @@ use File::Basename;
 use File::Path;
 use OpenBSD::Temp;
 
+sub find_extractible
+{
+	my ($self, $state, $wanted, $tied) = @_;
+	if ($self->{tied} || $self->{link} || $self->{symlink}) {
+		$tied->{$self->name} = $self;
+	} else {
+		$wanted->{$self->name} = $self;
+	}
+}
+
 sub prepare_for_addition
 {
 	my ($self, $state, $pkgname) = @_;
@@ -388,19 +436,11 @@ sub prepare_for_addition
 
 sub prepare_to_extract
 {
-	my ($self, $state) = @_;
+	my ($self, $state, $file) = @_;
 	my $fullname = $self->fullname;
 	my $destdir = $state->{destdir};
 
-	my $file=$state->{archive}->next;
-	if (!defined $file) {
-		$state->fatal("truncated archive");
-	}
 	$file->{cwd} = $self->cwd;
-	if (!$file->check_name($self)) {
-		$state->fatal("archive does not match #1 != #2",
-		    $file->name, $self->name);
-	}
 	if (defined $self->{symlink} || $file->isSymLink) {
 		unless (defined $self->{symlink} && $file->isSymLink) {
 			$state->fatal("bogus symlink #1", $self->name);
@@ -431,14 +471,11 @@ sub prepare_to_extract
 	if (defined $self->{symlink} && $state->{do_faked}) {
 		$file->{linkname} = $destdir.$file->{linkname};
 	}
-	return $file;
 }
 
 sub extract
 {
-	my ($self, $state) = @_;
-
-	my $file = $self->prepare_to_extract($state);
+	my ($self, $state, $file) = @_;
 
 	if (defined $self->{link} || defined $self->{symlink}) {
 		$state->{archive}->skip;
@@ -486,6 +523,7 @@ sub extract
 		}
 
 		$state->say("extracting #1", $tempname) if $state->verbose >= 3;
+
 
 		if (!$file->isFile) {
 			$state->fatal("can't extract #1, it's not a file", 
@@ -562,6 +600,10 @@ sub prepare_for_addition
 	if ($s->avail < 0) {
 		$s->report_overflow($state, $fname);
 	}
+}
+
+sub find_extractible
+{
 }
 
 sub extract
